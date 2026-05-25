@@ -1,20 +1,24 @@
-import React, { useState } from 'react';
-import { PlaySquare, Loader2, Play, X, ChevronLeft } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { PlaySquare, Loader2, Play, X, ChevronLeft, Heart } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
+import { useFavorites } from '../hooks/useFavorites';
 
 interface SeriesViewProps {
   onPlay: (url: string, title: string) => void;
+  searchQuery?: string;
 }
 
-export function SeriesView({ onPlay }: SeriesViewProps) {
-  const { seriesCategories, seriesStreams, fetchSeriesStreams, loadingSeries, error, credentials } = useXtreamContext();
+export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
+  const { seriesCategories, seriesStreams, allSeriesStreams, fetchSeriesStreams, loadingSeries, error, credentials } = useXtreamContext();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
   const [seriesInfo, setSeriesInfo] = useState<any | null>(null);
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [selectedSeason, setSelectedSeason] = useState<string | null>(null);
+  const [displayCount, setDisplayCount] = useState(100);
+  const { isFavorite, toggleFavorite } = useFavorites();
 
   // Default to first category
   React.useEffect(() => {
@@ -27,8 +31,22 @@ export function SeriesView({ onPlay }: SeriesViewProps) {
   React.useEffect(() => {
     if (selectedCategoryId) {
       fetchSeriesStreams(selectedCategoryId);
+      setDisplayCount(100); // Reset display count on category change
     }
   }, [selectedCategoryId, fetchSeriesStreams]);
+
+  React.useEffect(() => {
+    setDisplayCount(100); // Reset display count on search change
+  }, [searchQuery]);
+
+  const sourceStreams = searchQuery && searchQuery.length > 0 ? allSeriesStreams : seriesStreams;
+  
+  const filteredStreams = useMemo(() => {
+    if (!searchQuery) return sourceStreams;
+    return sourceStreams.filter(stream => stream.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+  }, [sourceStreams, searchQuery]);
+
+  const displayedStreams = filteredStreams.slice(0, displayCount);
 
   const handleSeriesClick = async (series: any) => {
     if (!credentials) return;
@@ -90,8 +108,6 @@ export function SeriesView({ onPlay }: SeriesViewProps) {
 
       {/* Main Content - Streams Grid */}
       <main className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
-        <div className="md:hidden h-16 w-full shrink-0" /> {/* Spacer for mobile header */}
-        
         {/* Mobile Categories Navbar */}
         <div className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
           {seriesCategories.map((cat) => (
@@ -118,56 +134,69 @@ export function SeriesView({ onPlay }: SeriesViewProps) {
                  : 'Carregando...'}
             </h1>
             <p className="text-nc-text-secondary text-sm mt-1">
-              {seriesStreams.length} séries encontradas
+              {filteredStreams.length} séries encontradas
             </p>
           </div>
 
-          {loadingSeries && seriesStreams.length === 0 ? (
+          {loadingSeries && filteredStreams.length === 0 ? (
              <div className="flex items-center justify-center h-64">
                <Loader2 className="w-10 h-10 animate-spin text-nc-text-secondary" />
              </div>
-          ) : seriesStreams.length === 0 ? (
+          ) : filteredStreams.length === 0 ? (
              <div className="flex flex-col items-center justify-center h-64 text-nc-text-secondary">
                <PlaySquare className="w-16 h-16 mb-4 opacity-20" />
                <p>Nenhuma série encontrada nesta categoria.</p>
              </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-             {seriesStreams.map((stream) => (
-               <motion.div
-                 key={stream.series_id}
-                 whileHover={{ scale: 1.05 }}
-                 whileTap={{ scale: 0.95 }}
-                 onClick={() => handleSeriesClick(stream)}
-                 className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
-               >
-                 {stream.cover ? (
-                   <img 
-                     src={stream.cover} 
-                     alt={stream.name}
-                     className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                     loading="lazy"
-                     onError={(e) => {
-                       (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4='; // fallback transparent
-                     }}
-                   />
-                 ) : (
-                   <div className="w-full h-full flex flex-col items-center justify-center bg-nc-bg-input">
-                     <PlaySquare className="w-8 h-8 text-nc-text-secondary/30 mb-2" />
-                   </div>
-                 )}
-                 
-                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
-                   <p className="text-white font-medium text-sm line-clamp-2 leading-tight">
-                     {stream.name}
-                   </p>
-                   {stream.rating && stream.rating !== "0" && (
-                      <p className="text-xs text-yellow-500 mt-1">★ {stream.rating}</p>
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+               {displayedStreams.map((stream) => (
+                 <motion.div
+                   key={stream.series_id}
+                   whileHover={{ scale: 1.05 }}
+                   whileTap={{ scale: 0.95 }}
+                   onClick={() => handleSeriesClick(stream)}
+                   className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
+                 >
+                   {stream.cover ? (
+                     <img 
+                       src={stream.cover} 
+                       alt={stream.name}
+                       className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                       loading="lazy"
+                       onError={(e) => {
+                         (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4='; // fallback transparent
+                       }}
+                     />
+                   ) : (
+                     <div className="w-full h-full flex flex-col items-center justify-center bg-nc-bg-input">
+                       <PlaySquare className="w-8 h-8 text-nc-text-secondary/30 mb-2" />
+                     </div>
                    )}
-                 </div>
-               </motion.div>
-             ))}
-            </div>
+                   
+                   <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
+                     <p className="text-white font-medium text-sm line-clamp-2 leading-tight">
+                       {stream.name}
+                     </p>
+                     {stream.rating && stream.rating !== "0" && (
+                        <p className="text-xs text-yellow-500 mt-1">★ {stream.rating}</p>
+                     )}
+                   </div>
+                 </motion.div>
+               ))}
+              </div>
+              
+              {displayCount < filteredStreams.length && (
+                <div className="mt-8 flex justify-center">
+                  <button
+                    onClick={() => setDisplayCount(prev => prev + 100)}
+                    className="px-6 py-3 bg-nc-bg-card hover:bg-nc-bg-input border border-nc-border/50 rounded-xl text-white font-medium transition-colors"
+                  >
+                    Carregar Mais
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </main>
@@ -209,29 +238,87 @@ export function SeriesView({ onPlay }: SeriesViewProps) {
                   <p>Carregando episódios...</p>
                 </div>
               ) : seriesInfo ? (
-                <div className="flex flex-col md:flex-row gap-8 max-w-6xl mx-auto">
-                  {/* Poster & Info */}
-                  <div className="w-full md:w-1/3 lg:w-1/4 shrink-0 flex flex-col gap-4">
-                    <div className="aspect-[2/3] rounded-xl overflow-hidden bg-nc-bg-card border border-nc-border/50">
-                      <img 
-                        src={seriesInfo.info?.cover || selectedSeries.cover} 
-                        alt="Cover" 
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4='; // fallback transparent
-                        }}
-                      />
-                    </div>
-                    {seriesInfo.info?.plot && (
-                      <p className="text-sm text-nc-text-secondary leading-relaxed line-clamp-6">
-                        {seriesInfo.info.plot}
-                      </p>
-                    )}
+                <div className="flex flex-col gap-8 mx-auto w-full">
+                  {/* Hero & Info Section */}
+                  <div className="relative w-full rounded-2xl overflow-hidden bg-black shrink-0 flex flex-col min-h-[400px] md:min-h-[500px]">
+                     <div className="absolute inset-0 bg-black z-0">
+                       {seriesInfo.info?.backdrop_path?.[0] ? (
+                          <img 
+                            src={seriesInfo.info.backdrop_path[0]}
+                            alt="Backdrop"
+                            className="w-full h-full object-cover opacity-50 object-top"
+                          />
+                       ) : seriesInfo.info?.cover ? (
+                          <img 
+                            src={seriesInfo.info.cover}
+                            alt="Cover fallback"
+                            className="w-full h-full object-cover opacity-30 object-top"
+                          />
+                       ) : null}
+                     </div>
+                     <div className="absolute inset-0 bg-gradient-to-t from-nc-bg via-nc-bg/40 to-transparent z-0" />
+                     <div className="absolute inset-0 bg-gradient-to-r from-nc-bg via-nc-bg/40 to-transparent z-0" />
+                     
+                     <div className="relative z-10 p-6 md:p-10 pt-32 md:pt-48 flex items-end">
+                        <div className="max-w-4xl">
+                           <h1 className="text-3xl md:text-5xl font-bold text-white mb-4">
+                              {seriesInfo.info?.name || selectedSeries.name}
+                           </h1>
+                           <div className="flex flex-wrap items-center gap-4 text-xs md:text-sm font-medium text-nc-text-secondary mb-4">
+                              {seriesInfo.info?.rating && seriesInfo.info.rating !== "0" && (
+                                <span className="flex items-center gap-1 text-green-400">
+                                   ★ {seriesInfo.info.rating}
+                                </span>
+                              )}
+                              {seriesInfo.info?.releasedate && (
+                                <span>{new Date(seriesInfo.info.releasedate).getFullYear() || seriesInfo.info.releasedate}</span>
+                              )}
+                              {seriesInfo.info?.genre && (
+                                <span className="px-2 py-0.5 rounded border border-nc-border/50 text-nc-text-secondary">
+                                  {seriesInfo.info.genre}
+                                </span>
+                              )}
+                           </div>
+                           <p className="text-gray-300 text-sm md:text-base leading-relaxed line-clamp-3 max-w-3xl mb-6">
+                             {seriesInfo.info?.plot || 'Sinopse não disponível.'}
+                           </p>
+                           <button 
+                             onClick={() => toggleFavorite({
+                               id: selectedSeries.series_id,
+                               name: seriesInfo.info?.name || selectedSeries.name,
+                               cover: seriesInfo.info?.cover || selectedSeries.cover || '',
+                               type: 'series'
+                             })}
+                             className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors w-fit font-medium text-white shadow-xl"
+                           >
+                             <Heart className={`w-5 h-5 ${isFavorite(selectedSeries.series_id, 'series') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
+                             {isFavorite(selectedSeries.series_id, 'series') ? 'Favoritado' : 'Adicionar aos Favoritos'}
+                           </button>
+                        </div>
+                     </div>
                   </div>
 
-                  {/* Seasons & Episodes */}
-                  <div className="flex-1 min-w-0 flex flex-col">
-                    {/* Season Tabs */}
+                  {/* Metadata and Episodes Section */}
+                  <div className="flex flex-col lg:flex-row gap-8 max-w-[1400px] w-full mx-auto px-4">
+                     {/* Sidebar Metadata */}
+                     <div className="w-full lg:w-1/4 shrink-0 flex flex-col gap-6">
+                        {seriesInfo.info?.cast && (
+                           <div>
+                              <span className="text-nc-text-secondary text-sm block mb-1">Elenco</span>
+                              <span className="text-white text-sm leading-relaxed">{seriesInfo.info.cast}</span>
+                           </div>
+                        )}
+                        {seriesInfo.info?.director && (
+                           <div>
+                              <span className="text-nc-text-secondary text-sm block mb-1">Diretor</span>
+                              <span className="text-white text-sm">{seriesInfo.info.director}</span>
+                           </div>
+                        )}
+                     </div>
+
+                     {/* Seasons & Episodes */}
+                     <div className="flex-1 min-w-0 flex flex-col">
+                        {/* Season Tabs */}
                     {seriesInfo.episodes && Object.keys(seriesInfo.episodes).length > 0 ? (
                       <>
                         <div className="overflow-x-auto custom-scrollbar flex gap-2 pb-4 mb-4 border-b border-nc-border/50 shrink-0">
@@ -280,6 +367,7 @@ export function SeriesView({ onPlay }: SeriesViewProps) {
                     )}
                   </div>
                 </div>
+              </div>
               ) : (
                 <div className="text-center py-20 text-red-400">
                   Falha ao carregar informações da série.

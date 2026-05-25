@@ -94,6 +94,17 @@ export class XtreamService {
   }
 
   /**
+   * Fetch VOD Info
+   */
+  static async getVodInfo(credentials: XtreamCredentials, vodId: string | number): Promise<any> {
+    const proxyUrl = this.buildUrl(credentials, "get_vod_info", { vod_id: String(vodId) });
+    const response = await fetch(proxyUrl);
+    if (!response.ok) throw new Error("Failed to fetch VOD Info");
+    const data = await response.json();
+    return data;
+  }
+
+  /**
    * Fetch Series Categories
    */
   static async getSeriesCategories(credentials: XtreamCredentials): Promise<Category[]> {

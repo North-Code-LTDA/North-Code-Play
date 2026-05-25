@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
-import { LogOut, Home as HomeIcon, Tv, Film, PlaySquare, Settings, Menu, X } from 'lucide-react';
+import { LogOut, Home as HomeIcon, Tv, Film, PlaySquare, Settings, Menu, X, Search, Heart } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { VideoPlayer } from '../components/VideoPlayer';
 
@@ -10,9 +10,11 @@ import { LiveTvView } from '../views/LiveTvView';
 import { MoviesView } from '../views/MoviesView';
 import { SeriesView } from '../views/SeriesView';
 import { ConfigView } from '../views/ConfigView';
+import { FavoritesView } from '../views/FavoritesView';
 import { XtreamProvider } from '../context/XtreamContext';
+import { useDebounce } from '../hooks/useDebounce';
 
-export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'config';
+export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
 
 export function Home() {
   const navigate = useNavigate();
@@ -20,6 +22,8 @@ export function Home() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [currentView, setCurrentView] = useState<ViewType>('inicio');
   const [activeVideo, setActiveVideo] = useState<{ url: string; title: string } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const debouncedSearchQuery = useDebounce(searchQuery, 500);
 
   useEffect(() => {
     const saved = localStorage.getItem('northcode_tv_credentials');
@@ -39,23 +43,28 @@ export function Home() {
 
   const NavItems = () => (
     <>
-      <button onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'inicio' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'inicio' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <HomeIcon className="w-5 h-5" />
         <span>Início</span>
       </button>
-      <button onClick={() => { setCurrentView('live'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'live' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('live'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'live' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Tv className="w-5 h-5" />
         <span>TV ao Vivo</span>
       </button>
-      <button onClick={() => { setCurrentView('movies'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'movies' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('movies'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'movies' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Film className="w-5 h-5" />
         <span>Filmes</span>
       </button>
-      <button onClick={() => { setCurrentView('series'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'series' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('series'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'series' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <PlaySquare className="w-5 h-5" />
         <span>Séries</span>
       </button>
-      <button onClick={() => { setCurrentView('config'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('favorites'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'favorites' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+        <Heart className="w-5 h-5" />
+        <span>Meus Favoritos</span>
+      </button>
+      <div className="h-4" />
+      <button onClick={() => { setCurrentView('config'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Settings className="w-5 h-5" />
         <span>Configurações</span>
       </button>
@@ -65,23 +74,25 @@ export function Home() {
   const renderView = () => {
     switch (currentView) {
       case 'inicio':
-        return <HomeView onPlay={(url, title) => setActiveVideo({ url, title })} />;
+        return <HomeView onPlay={(url, title) => setActiveVideo({ url, title })} searchQuery={debouncedSearchQuery} />;
       case 'live':
-        return <LiveTvView onPlay={(url, title) => setActiveVideo({ url, title })} />;
+        return <LiveTvView onPlay={(url, title) => setActiveVideo({ url, title })} searchQuery={debouncedSearchQuery} />;
       case 'movies':
-        return <MoviesView onPlay={(url, title) => setActiveVideo({ url, title })} />;
+        return <MoviesView onPlay={(url, title) => setActiveVideo({ url, title })} searchQuery={debouncedSearchQuery} />;
       case 'series':
-        return <SeriesView onPlay={(url, title) => setActiveVideo({ url, title })} />;
+        return <SeriesView onPlay={(url, title) => setActiveVideo({ url, title })} searchQuery={debouncedSearchQuery} />;
+      case 'favorites':
+        return <FavoritesView onPlay={(url, title) => setActiveVideo({ url, title })} searchQuery={debouncedSearchQuery} />;
       case 'config':
         return <ConfigView />;
       default:
-        return <HomeView onPlay={(url, title) => setActiveVideo({ url, title })} />;
+        return <HomeView onPlay={(url, title) => setActiveVideo({ url, title })} searchQuery={debouncedSearchQuery} />;
     }
   };
 
   return (
     <XtreamProvider credentials={credentials}>
-      <div className="min-h-screen bg-nc-bg flex overflow-hidden">
+      <div className="h-[100dvh] bg-nc-bg flex flex-col md:flex-row w-full overflow-hidden">
         <AnimatePresence>
           {activeVideo && (
             <VideoPlayer 
@@ -93,18 +104,18 @@ export function Home() {
         </AnimatePresence>
 
         {/* Sidebar - Desktop */}
-        <aside className="hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-screen sticky top-0 shrink-0">
+        <aside className="hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-[100dvh] sticky top-0 shrink-0">
           <div className="p-6">
             <Logo className="scale-90 origin-left" />
           </div>
           
-          <div className="flex-1 px-4 py-2 space-y-2">
+          <div className="flex-1 px-4 py-2 space-y-2 overflow-y-auto custom-scrollbar">
             <NavItems />
           </div>
 
-          <div className="p-4 border-t border-nc-border/50">
+          <div className="p-4 border-t border-nc-border/50 mt-auto shrink-0">
             <div className="flex items-center gap-3 px-4 py-3 mb-2">
-              <div className="w-8 h-8 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold">
+              <div className="w-8 h-8 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0">
                 {credentials.username.charAt(0).toUpperCase()}
               </div>
               <div className="flex-1 overflow-hidden">
@@ -123,7 +134,7 @@ export function Home() {
         </aside>
 
         {/* Mobile Header */}
-        <header className="md:hidden fixed top-0 w-full h-16 border-b border-nc-border/50 bg-black/80 backdrop-blur-xl z-50 flex items-center justify-between px-4">
+        <header className="md:hidden sticky top-0 w-full h-16 border-b border-nc-border/50 bg-black/80 backdrop-blur-xl z-[45] flex items-center justify-between px-4 shrink-0">
           <Logo className="scale-75 origin-left" />
           <button 
             onClick={() => setIsMobileMenuOpen(true)}
@@ -175,9 +186,26 @@ export function Home() {
         </AnimatePresence>
 
         {/* Main Content */}
-        <main className="flex-1 h-screen overflow-y-auto w-full relative custom-scrollbar flex flex-col">
-          {renderView()}
-        </main>
+        <div className="flex-1 overflow-hidden flex flex-col relative w-full h-full">
+          {/* Top Search Bar */}
+          {currentView !== 'config' && (
+            <div className="w-full shrink-0 p-4 md:px-8 border-b border-nc-border/30 bg-nc-bg/80 backdrop-blur-lg flex items-center justify-end z-[40]">
+              <div className="relative w-full max-w-md">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-nc-text-secondary" />
+                <input 
+                  type="text" 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Pesquisar..." 
+                  className="w-full pl-10 pr-4 py-2.5 bg-nc-bg-input border border-nc-border/50 focus:border-nc-primary rounded-xl text-white outline-none transition-colors"
+                />
+              </div>
+            </div>
+          )}
+          <main className="flex-1 flex overflow-hidden relative">
+            {renderView()}
+          </main>
+        </div>
       </div>
     </XtreamProvider>
   );
