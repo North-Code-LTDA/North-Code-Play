@@ -15,9 +15,10 @@ interface VideoPlayerProps {
   streamUrl: string;
   title: string;
   onBack: () => void;
+  embedded?: boolean;
 }
 
-export function VideoPlayer({ streamUrl, title, onBack }: VideoPlayerProps) {
+export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -165,20 +166,25 @@ export function VideoPlayer({ streamUrl, title, onBack }: VideoPlayerProps) {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center"
+      className={embedded 
+        ? "relative w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black flex flex-col items-center justify-center shrink-0" 
+        : "fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center"
+      }
     >
       {/* Top Bar with Back Button Overlay */}
-      <div className="absolute top-0 left-0 w-full p-6 bg-gradient-to-b from-black/80 to-transparent z-10 flex items-start justify-between gap-4 transition-opacity duration-300">
-        <div className="flex items-center gap-4">
-          <button 
-            onClick={onBack}
-            className="p-3 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-full text-white transition-colors"
-          >
-            <ArrowLeft className="w-6 h-6" />
-          </button>
-          <h2 className="text-white text-xl font-medium truncate drop-shadow-md">{title}</h2>
+      {!embedded && (
+        <div className="absolute top-0 left-0 w-full p-6 bg-gradient-to-b from-black/80 to-transparent z-10 flex items-start justify-between gap-4 transition-opacity duration-300">
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={onBack}
+              className="p-3 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-full text-white transition-colors"
+            >
+              <ArrowLeft className="w-6 h-6" />
+            </button>
+            <h2 className="text-white text-xl font-medium truncate drop-shadow-md">{title}</h2>
+          </div>
         </div>
-      </div>
+      )}
 
       {showWarning && !error && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 bg-yellow-500/90 text-yellow-50 px-4 py-2 rounded-lg backdrop-blur-sm text-sm font-medium flex items-center gap-2 max-w-[90%] text-center border border-yellow-500/50 shadow-xl pointer-events-none">

@@ -1,8 +1,10 @@
-import React, { useState, useMemo } from 'react';
-import { TvMinimalPlay, Loader2, Play, Heart } from 'lucide-react';
-import { motion } from 'motion/react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { TvMinimalPlay, Loader2, Play, Heart, ArrowLeft, Calendar } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites } from '../hooks/useFavorites';
+import { VideoPlayer } from '../components/VideoPlayer';
+import { XtreamService } from '../services/xtreamService';
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string) => void;
@@ -11,185 +13,334 @@ interface LiveTvViewProps {
 
 export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const { liveCategories, liveStreams, allLiveStreams, fetchLiveStreams, loadingLive, error, credentials } = useXtreamContext();
+  
+  // Navigation states
+  const [leftPaneView, setLeftPaneView] = useState<'categories' | 'channels'>('categories');
+  const [isMobilePlayerOpen, setIsMobilePlayerOpen] = useState(false);
+
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
+  const [selectedChannel, setSelectedChannel] = useState<any | null>(null);
   const [displayCount, setDisplayCount] = useState(100);
+  
+  // States for EPG
+  const [epgData, setEpgData] = useState<any[]>([]);
+  const [loadingEpg, setLoadingEpg] = useState(false);
 
-  // Default to first category
-  React.useEffect(() => {
-    if (liveCategories.length > 0 && selectedCategoryId === undefined) {
-      setSelectedCategoryId(liveCategories[0].category_id);
-    }
-  }, [liveCategories, selectedCategoryId]);
+  const { isFavorite, toggleFavorite } = useFavorites();
 
-  // Fetch streams when category changes
-  React.useEffect(() => {
+  // Load streams when category is selected
+  useEffect(() => {
     if (selectedCategoryId) {
       fetchLiveStreams(selectedCategoryId);
-      setDisplayCount(100); // Reset display count on category change
+      setDisplayCount(100);
     }
   }, [selectedCategoryId, fetchLiveStreams]);
-  
-  React.useEffect(() => {
-    setDisplayCount(100); // Reset display count on search change
+
+  // Handle Search query override
+  useEffect(() => {
+    if (searchQuery) {
+      setLeftPaneView('channels');
+      setDisplayCount(100);
+    }
   }, [searchQuery]);
 
-  const sourceStreams = searchQuery && searchQuery.length > 0 ? allLiveStreams : liveStreams;
+  // Fetch EPG when channel is selected
+  useEffect(() => {
+    let isMounted = true;
+    if (selectedChannel && credentials) {
+      setLoadingEpg(true);
+      setEpgData([]);
+      XtreamService.getShortEpg(credentials, selectedChannel.stream_id, 10)
+        .then(data => {
+          if (isMounted) {
+            setEpgData(data?.epg_listings || []);
+            setLoadingEpg(false);
+          }
+        })
+        .catch(err => {
+          if (isMounted) {
+            console.error("EPG fetch error:", err);
+            setLoadingEpg(false);
+          }
+        });
+    }
+    return () => { isMounted = false; };
+  }, [selectedChannel, credentials]);
+
+  const sourceStreams = searchQuery ? allLiveStreams : liveStreams;
   
   const filteredStreams = useMemo(() => {
     if (!searchQuery) return sourceStreams;
-    return sourceStreams.filter(stream => stream.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+    return sourceStreams.filter(stream => stream.name.toLowerCase().includes(searchQuery.toLowerCase()));
   }, [sourceStreams, searchQuery]);
 
   const displayedStreams = filteredStreams.slice(0, displayCount);
 
-  const { isFavorite, toggleFavorite } = useFavorites();
+  // Helper to decode Base64 EPG titles safely
+  const decodeBase64 = (str: string) => {
+    try {
+      return decodeURIComponent(escape(atob(str)));
+    } catch {
+      return str; // Return raw if decoding fails
+    }
+  };
+
+  const activeCategory = liveCategories.find(c => c.category_id === selectedCategoryId);
+
+  // Build stream URL strictly for embedded player wrapper
+  const getStreamUrl = (stream: any) => {
+    if (!credentials) return '';
+    const baseUrl = credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl;
+    let rawUrl = `${baseUrl}/${credentials.username}/${credentials.password}/${stream.stream_id}.ts`;
+    return rawUrl.replace('.ts', '.m3u8');
+  };
 
   return (
-    <div className="flex flex-1 overflow-hidden h-full">
-      {/* Sidebar - Categories */}
-      <aside className="hidden md:flex w-64 border-r border-nc-border/50 bg-nc-bg-card/30 flex-col h-full shrink-0">
-        <div className="p-4 border-b border-nc-border/50">
-          <h2 className="text-xs font-semibold text-nc-text-secondary uppercase tracking-wider">Categorias de TV</h2>
-        </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
-          {loadingLive && liveCategories.length === 0 ? (
-             <div className="flex items-center justify-center py-10">
-               <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
-             </div>
-          ) : (
-            <>
-              {liveCategories.map((cat) => (
-                <button
-                  key={cat.category_id}
-                  onClick={() => setSelectedCategoryId(cat.category_id)}
-                  className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors truncate ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
-                >
-                  {cat.category_name}
-                </button>
-              ))}
-            </>
-          )}
-        </div>
-      </aside>
-
-      {/* Main Content - Streams Grid */}
-      <main className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
-        {/* Mobile Categories Navbar */}
-        <div className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
-          {liveCategories.map((cat) => (
-            <button
-              key={cat.category_id}
-              onClick={() => setSelectedCategoryId(cat.category_id)}
-              className={`shrink-0 snap-center px-4 py-2 rounded-full text-sm transition-colors whitespace-nowrap ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
-            >
-              {cat.category_name}
-            </button>
-          ))}
-        </div>
-
-        <div className="p-6 flex-1">
-          {error && (
-            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 text-red-500 rounded-xl">
-              {error}
+    <div className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg">
+      {/* Left Pane: Categories or Channels */}
+      <div className={`w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/20 h-full shrink-0 flex ${isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
+        
+        {/* Categories View */}
+        {leftPaneView === 'categories' && (
+          <div className="flex flex-col h-full overflow-hidden">
+            <div className="p-4 border-b border-nc-border/50 bg-nc-bg shrink-0">
+              <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de TV</h2>
             </div>
-          )}
-
-          <div className="mb-6">
-            <h1 className="text-2xl font-semibold text-white">
-              {selectedCategoryId 
-                 ? liveCategories.find(c => c.category_id === selectedCategoryId)?.category_name 
-                 : 'Carregando...'}
-            </h1>
-            <p className="text-nc-text-secondary text-sm mt-1">
-              {filteredStreams.length} canais encontrados
-            </p>
-          </div>
-
-          {loadingLive && filteredStreams.length === 0 ? (
-             <div className="flex items-center justify-center h-64">
-               <Loader2 className="w-10 h-10 animate-spin text-nc-text-secondary" />
-             </div>
-          ) : filteredStreams.length === 0 ? (
-             <div className="flex flex-col items-center justify-center h-64 text-nc-text-secondary">
-               <TvMinimalPlay className="w-16 h-16 mb-4 opacity-20" />
-               <p>Nenhum canal encontrado nesta categoria.</p>
-             </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-               {displayedStreams.map((stream) => (
-                 <motion.div
-                   key={stream.stream_id}
-                   whileHover={{ scale: 1.05 }}
-                   whileTap={{ scale: 0.95 }}
-                   onClick={() => {
-                     if (!credentials) return;
-                     // Build TS connection then replace with HLS
-                     const baseUrl = credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl;
-                     let rawUrl = `${baseUrl}/${credentials.username}/${credentials.password}/${stream.stream_id}.ts`;
-                     // Replace .ts with .m3u8 dynamically to force HLS format for the web player
-                     rawUrl = rawUrl.replace('.ts', '.m3u8');
-                     
-                     onPlay(rawUrl, stream.name);
-                   }}
-                   className="group relative aspect-video bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
-                 >
-                   {stream.stream_icon ? (
-                     <img 
-                       src={stream.stream_icon} 
-                       alt={stream.name}
-                       className="w-full h-full object-contain p-4 bg-black/40 group-hover:opacity-50 transition-opacity"
-                       loading="lazy"
-                       onError={(e) => {
-                         (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4='; // fallback transparent
-                       }}
-                     />
-                   ) : (
-                     <div className="w-full h-full flex flex-col items-center justify-center bg-nc-bg-input">
-                       <TvMinimalPlay className="w-8 h-8 text-nc-text-secondary/30 mb-2" />
-                     </div>
-                   )}
-                   
-                   <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
-                     <p className="text-white font-medium text-sm line-clamp-2 leading-tight">
-                       {stream.name}
-                     </p>
-                     <div className="mt-2 flex items-center justify-center w-8 h-8 rounded-full bg-nc-primary text-black">
-                       <Play className="w-4 h-4 ml-0.5" />
-                     </div>
-                   </div>
-                   <button 
-                     onClick={(e) => {
-                       e.stopPropagation();
-                       toggleFavorite({
-                         id: stream.stream_id,
-                         name: stream.name,
-                         cover: stream.stream_icon || '',
-                         type: 'live'
-                       });
-                     }}
-                     className="absolute top-2 right-2 p-2 rounded-full border border-white/10 bg-black/40 hover:bg-black/60 transition-colors z-10 hidden sm:block group-hover:block"
-                   >
-                     <Heart className={`w-4 h-4 ${isFavorite(stream.stream_id, 'live') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
-                   </button>
-                 </motion.div>
-               ))}
-              </div>
-              
-              {displayCount < filteredStreams.length && (
-                <div className="mt-8 flex justify-center">
+            <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar">
+              {loadingLive && liveCategories.length === 0 ? (
+                 <div className="flex items-center justify-center py-10">
+                   <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
+                 </div>
+              ) : (
+                liveCategories.map((cat) => (
                   <button
-                    onClick={() => setDisplayCount(prev => prev + 100)}
-                    className="px-6 py-3 bg-nc-bg-card hover:bg-nc-bg-input border border-nc-border/50 rounded-xl text-white font-medium transition-colors"
+                    key={cat.category_id}
+                    onClick={() => {
+                      setSelectedCategoryId(cat.category_id);
+                      setLeftPaneView('channels');
+                    }}
+                    className="w-full text-left px-4 py-3 rounded-xl text-sm transition-colors truncate text-nc-text-secondary hover:bg-nc-bg-input hover:text-white"
                   >
-                    Carregar Mais
+                    {cat.category_name}
                   </button>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Channels View */}
+        {leftPaneView === 'channels' && (
+          <div className="flex flex-col h-full overflow-hidden">
+            <div className="p-4 border-b border-nc-border/50 bg-nc-bg shrink-0 flex flex-col gap-2">
+              {!searchQuery && (
+                <button 
+                  onClick={() => setLeftPaneView('categories')}
+                  className="flex items-center gap-2 text-nc-text-secondary hover:text-white text-sm w-fit transition-colors"
+                >
+                  <ArrowLeft className="w-4 h-4" /> Voltar às Categorias
+                </button>
+              )}
+              <h2 className="text-lg font-semibold text-white truncate">
+                {searchQuery ? `Busca: ${searchQuery}` : activeCategory?.category_name}
+              </h2>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+              {loadingLive && filteredStreams.length === 0 ? (
+                 <div className="flex items-center justify-center py-10">
+                   <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
+                 </div>
+              ) : filteredStreams.length === 0 ? (
+                 <div className="flex flex-col items-center justify-center py-10 text-nc-text-secondary">
+                   <TvMinimalPlay className="w-12 h-12 mb-4 opacity-20" />
+                   <p className="text-sm">Nenhum canal encontrado.</p>
+                 </div>
+              ) : (
+                <div className="space-y-2">
+                  {displayedStreams.map((stream) => (
+                    <button
+                      key={stream.stream_id}
+                      onClick={() => {
+                        setSelectedChannel(stream);
+                        setIsMobilePlayerOpen(true);
+                      }}
+                      className={`w-full flex items-center gap-3 p-2 rounded-xl transition-colors border ${
+                        selectedChannel?.stream_id === stream.stream_id 
+                          ? 'bg-nc-primary/10 border-nc-primary/30' 
+                          : 'bg-transparent border-transparent hover:bg-nc-bg-input'
+                      }`}
+                    >
+                      <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden">
+                        {stream.stream_icon ? (
+                           <img 
+                             src={stream.stream_icon} 
+                             alt={stream.name}
+                             className="w-full h-full object-contain p-1"
+                             onError={(e) => {
+                               (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4='; 
+                             }}
+                           />
+                        ) : (
+                          <TvMinimalPlay className="w-5 h-5 text-nc-text-secondary/50" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0 text-left flex flex-col">
+                        <p className={`font-medium text-sm truncate ${selectedChannel?.stream_id === stream.stream_id ? 'text-nc-primary' : 'text-white'}`}>
+                          {stream.name}
+                        </p>
+                      </div>
+                      <div 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleFavorite({ id: stream.stream_id, name: stream.name, cover: stream.stream_icon || '', type: 'live' });
+                        }}
+                        className="p-2 shrink-0 text-nc-text-secondary hover:text-white"
+                      >
+                         <Heart className={`w-4 h-4 ${isFavorite(stream.stream_id, 'live') ? 'fill-nc-primary text-nc-primary' : ''}`} />
+                      </div>
+                    </button>
+                  ))}
+                  
+                  {displayCount < filteredStreams.length && (
+                    <button
+                      onClick={() => setDisplayCount(prev => prev + 100)}
+                      className="w-full py-3 mt-4 text-sm bg-nc-bg-input hover:bg-nc-bg-card rounded-xl text-nc-text-secondary transition-colors"
+                    >
+                      Carregar Mais
+                    </button>
+                  )}
                 </div>
               )}
-            </>
-          )}
-        </div>
-      </main>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Right Pane: Player & EPG */}
+      <div className={`flex-1 flex-col w-full h-auto md:h-full overflow-visible md:overflow-hidden bg-nc-bg flex ${!isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
+        {selectedChannel ? (
+          <div className="flex flex-col w-full h-auto md:h-full overflow-visible md:overflow-hidden">
+             {/* Mobile Back Button */}
+             <div className="md:hidden p-4 shrink-0 border-b border-nc-border/50 flex items-center bg-nc-bg">
+               <button 
+                 onClick={() => setIsMobilePlayerOpen(false)}
+                 className="flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors"
+               >
+                 <ArrowLeft className="w-5 h-5" /> Voltar aos Canais
+               </button>
+             </div>
+
+             {/* Top Section (Header + Mini-Player) */}
+             <div className="flex flex-col lg:flex-row gap-4 p-4 shrink-0 border-b border-nc-border/10 bg-nc-bg">
+               {/* Left child: Channel Info */}
+               <div className="flex-1 flex flex-col items-start gap-4 order-2 lg:order-1">
+                 <div className="flex items-center gap-4 w-full">
+                    <div className="w-20 h-20 bg-nc-bg-card rounded-2xl flex items-center justify-center overflow-hidden shrink-0 border border-nc-border/50 p-2">
+                      {selectedChannel.stream_icon ? (
+                        <img 
+                          src={selectedChannel.stream_icon} 
+                          alt={selectedChannel.name}
+                          className="w-full h-full object-contain"
+                        />
+                      ) : (
+                        <TvMinimalPlay className="w-8 h-8 text-nc-text-secondary/50" />
+                      )}
+                    </div>
+                    <div className="overflow-hidden w-full">
+                      <h1 className="text-xl md:text-2xl font-bold text-white truncate">{selectedChannel.name}</h1>
+                      <span className="inline-flex items-center gap-2 px-3 py-1 mt-2 rounded-full bg-red-500/10 text-red-400 text-xs font-medium border border-red-500/20">
+                        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                        AO VIVO
+                      </span>
+                    </div>
+                 </div>
+                 
+                 {/* Current Program Info */}
+                 {epgData && epgData.length > 0 && epgData[0] && (
+                   <div className="mt-2 w-full p-4 bg-nc-bg-card/50 rounded-xl border border-nc-border/50 flex flex-col gap-1">
+                      <p className="text-xs text-nc-primary font-semibold uppercase tracking-wider">Passando Agora</p>
+                      <p className="text-white font-medium">{decodeBase64(epgData[0].title)}</p>
+                      {epgData[0].description && (
+                        <p className="text-sm text-nc-text-secondary line-clamp-2">
+                          {decodeBase64(epgData[0].description)}
+                        </p>
+                      )}
+                      <p className="text-xs text-nc-text-secondary mt-1 font-mono">
+                        {epgData[0].start.split(' ')[1]?.substring(0,5)} - {epgData[0].end.split(' ')[1]?.substring(0,5)}
+                      </p>
+                   </div>
+                 )}
+               </div>
+
+               {/* Right child: Mini-Player */}
+               <div className="w-full lg:w-[45%] lg:max-w-md shrink-0 order-1 lg:order-2 shadow-2xl">
+                 <VideoPlayer 
+                   streamUrl={getStreamUrl(selectedChannel)} 
+                   title={selectedChannel.name} 
+                   onBack={() => setIsMobilePlayerOpen(false)}
+                   embedded={true}
+                 />
+               </div>
+             </div>
+
+             {/* EPG List */}
+             <div className="flex-1 w-full h-auto md:h-full overflow-visible md:overflow-y-auto p-4 custom-scrollbar bg-nc-bg">
+               <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2 border-b border-nc-border/50 pb-2">
+                 <Calendar className="w-5 h-5 text-nc-primary" /> Programação
+               </h3>
+               
+               {loadingEpg ? (
+                 <div className="flex items-center justify-center py-10">
+                   <Loader2 className="w-8 h-8 animate-spin text-nc-primary" />
+                 </div>
+               ) : epgData && epgData.length > 0 ? (
+                 <div className="space-y-3 relative before:absolute before:inset-0 before:ml-[3.5rem] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-nc-border/50 before:to-transparent pb-8">
+                   {epgData.map((prog: any, idx: number) => {
+                     return (
+                       <div key={idx} className="relative flex items-start justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
+                         {/* Timeline Marker */}
+                         <div className={`flex items-center justify-center w-8 h-8 rounded-full border-2 bg-nc-bg shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 shadow absolute left-[3.5rem] md:left-1/2 -translate-x-1/2 top-4 md:top-1/2 md:-translate-y-1/2 transition-colors ${idx === 0 ? 'border-nc-primary text-nc-primary' : 'border-nc-border/50 text-nc-text-secondary'}`}>
+                            <div className={`w-2.5 h-2.5 rounded-full ${idx === 0 ? 'bg-nc-primary' : 'bg-transparent'}`}></div>
+                         </div>
+                         
+                         {/* EPG Card */}
+                         <div className="w-[calc(100%-4.5rem)] md:w-[calc(50%-2.5rem)] ml-[4.5rem] md:ml-0 p-4 rounded-xl border border-nc-border/50 bg-nc-bg-card hover:bg-nc-bg-input transition-colors">
+                           <div className="flex flex-col gap-1">
+                             <div className={`text-xs font-semibold uppercase tracking-wider ${idx === 0 ? 'text-nc-primary' : 'text-nc-text-secondary'}`}>
+                               {prog.start.split(' ')[1]?.substring(0,5)} - {prog.end.split(' ')[1]?.substring(0,5)}
+                             </div>
+                             <h4 className={`font-medium text-base ${idx === 0 ? 'text-white' : 'text-white/80'}`}>
+                               {decodeBase64(prog.title)}
+                             </h4>
+                             {prog.description && (
+                               <p className="text-sm text-nc-text-secondary line-clamp-2 mt-1">
+                                 {decodeBase64(prog.description)}
+                               </p>
+                             )}
+                           </div>
+                         </div>
+                       </div>
+                     );
+                   })}
+                 </div>
+               ) : (
+                 <div className="text-center py-10 bg-nc-bg-card/30 rounded-xl border border-nc-border/50">
+                   <p className="text-nc-text-secondary">Nenhuma programação disponível (EPG Vazio).</p>
+                 </div>
+               )}
+             </div>
+          </div>
+        ) : (
+          <div className="flex-col h-full flex items-center justify-center p-6 text-center text-nc-text-secondary bg-nc-bg">
+             <div className="w-24 h-24 rounded-full bg-nc-bg-card flex items-center justify-center mb-6 shadow-xl">
+               <TvMinimalPlay className="w-12 h-12 text-nc-text-secondary/50" />
+             </div>
+             <h2 className="text-xl md:text-2xl font-bold text-white mb-2">Selecione um Canal</h2>
+             <p className="max-w-md">Escolha um canal na lista à esquerda para assistir e visualizar sua grade de programação ao vivo.</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

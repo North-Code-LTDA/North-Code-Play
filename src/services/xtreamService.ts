@@ -138,4 +138,15 @@ export class XtreamService {
     const data = await response.json();
     return data;
   }
+
+  /**
+   * Fetch Short EPG for a stream
+   */
+  static async getShortEpg(credentials: XtreamCredentials, streamId: string | number, limit: number = 10): Promise<any> {
+    const proxyUrl = this.buildUrl(credentials, "get_short_epg", { stream_id: String(streamId), limit: String(limit) });
+    const response = await fetch(proxyUrl);
+    if (!response.ok) throw new Error("Failed to fetch EPG");
+    const data = await response.json();
+    return data;
+  }
 }
