@@ -23,8 +23,8 @@ export class XtreamService {
       url.searchParams.append(key, value);
     }
 
-    // Proxy the request through our backend to evade CORS
-    return `/api/proxy?url=${encodeURIComponent(url.toString())}`;
+    // Direct play avoids CORS when running inside WebView
+    return url.toString();
   }
 
   /**

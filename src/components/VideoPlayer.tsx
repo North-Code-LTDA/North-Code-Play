@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import muxjs from 'mux.js';
-import { ArrowLeft, Loader2, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { motion } from 'motion/react';
 
 if (typeof window !== 'undefined') {
@@ -22,7 +22,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showWarning, setShowWarning] = useState(false);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -33,7 +32,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
     
     setLoading(true);
     setError(null);
-    setShowWarning(false);
 
     const onCanPlay = () => setLoading(false);
     const onErrorHandler = (e: any) => {
@@ -46,16 +44,9 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
     video.addEventListener('error', onErrorHandler);
 
     try {
-      let finalUrl = streamUrl;
-
-      // Log a warning about Mixed Content since we are using HTTP video streams.
-      if (finalUrl.startsWith('http://') && window.location.protocol === 'https:') {
-         console.warn("Aviso de Conteúdo Misto: Reproduzindo vídeo HTTP em uma página HTTPS. Isso pode ser bloqueado por padrão pelo navegador. Acesse via HTTP ou permita conteúdo não seguro.");
-         setShowWarning(true);
-      }
-
+      // Direct Play: We use the streamUrl directly without proxies
       // Live vs VOD detection
-      const isLive = finalUrl.includes('/live/') || finalUrl.includes('.m3u8');
+      const isLive = streamUrl.includes('/live/') || streamUrl.includes('.m3u8') || streamUrl.endsWith('.ts');
 
       const defaultPlyrOptions: Plyr.Options = {
           controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
@@ -64,12 +55,10 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
       };
 
       if (isLive) {
-        // Force m3u8 extension for HLS playback
-        if (finalUrl.endsWith('.ts')) {
-          finalUrl = finalUrl.replace('.ts', '.m3u8');
-        }
+        // Force m3u8 extension for HLS playback Native vs Hls.js
+        const finalUrl = streamUrl.endsWith('.ts') ? streamUrl.replace('.ts', '.m3u8') : streamUrl;
 
-        console.log("URL Final enviada ao Player:", finalUrl);
+        console.log("Direct Play URL:", finalUrl);
 
         if (Hls.isSupported() && !video.canPlayType('application/vnd.apple.mpegurl')) {
           hls = new Hls({
@@ -116,14 +105,14 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
                   break;
                 default:
                   hls?.destroy();
-                  setError('Erro fatal ao reproduzir o formato HLS.');
+                  setError('Erro fatal ao carregar a transmissão. O formato pode não ser suportado.');
                   setLoading(false);
                   break;
               }
             }
           });
         } else {
-          // Native HLS fallback (Safari)
+          // Native HLS fallback (Safari / Apple devices)
           video.src = finalUrl;
           plyr = new Plyr(video, defaultPlyrOptions);
           video.addEventListener('loadedmetadata', () => {
@@ -132,9 +121,9 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
           });
         }
       } else {
-        console.log("URL Final enviada ao Player:", finalUrl);
+        console.log("Direct Play VOD URL:", streamUrl);
         // It's VOD (Movie / Series) - load directly into the HTML5 <video> tag handled by Plyr
-        video.src = finalUrl;
+        video.src = streamUrl;
         plyr = new Plyr(video, defaultPlyrOptions);
         video.addEventListener('loadedmetadata', () => {
           setLoading(false);
@@ -186,13 +175,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
         </div>
       )}
 
-      {showWarning && !error && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 bg-yellow-500/90 text-yellow-50 px-4 py-2 rounded-lg backdrop-blur-sm text-sm font-medium flex items-center gap-2 max-w-[90%] text-center border border-yellow-500/50 shadow-xl pointer-events-none">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          Se o vídeo não aparecer ou tocar apenas áudio, tente usar uma extensão contra CORS ou execute o app localmente.
-        </div>
-      )}
-
       {loading && !error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-black/60 backdrop-blur-sm">
           <Loader2 className="w-12 h-12 text-nc-primary animate-spin mb-4" />
@@ -207,7 +189,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
           </div>
           <p className="text-red-400 text-lg md:text-xl font-medium max-w-lg mb-4">{error}</p>
           <p className="text-gray-400 text-sm max-w-lg mb-6">
-            Se o vídeo não formatar ou tiver apenas áudio, certifique-se de não estar bloqueado por Mixed Content/CORS. Em nuvem, use uma extensão de liberação de CORS ou rode o Player localmente usando localhost.
+            Se o vídeo não formatar ou tiver apenas áudio, certifique-se de que o formato seja compatível com seu dispositivo Web/Celular/TV.
           </p>
           <button 
             onClick={onBack}
