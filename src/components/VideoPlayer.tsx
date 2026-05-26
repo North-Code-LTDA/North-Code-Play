@@ -60,10 +60,17 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
 
         console.log("Direct Play URL:", finalUrl);
 
-        if (Hls.isSupported() && !video.canPlayType('application/vnd.apple.mpegurl')) {
+        if (Hls.isSupported()) {
           hls = new Hls({
             enableWorker: true,
             lowLatencyMode: true,
+            maxBufferSize: 60 * 1000 * 1000, // 60MB de buffer na memória RAM
+            maxBufferLength: 60, // 60 segundos de vídeo carregados para frente
+            liveSyncDurationCount: 3, // Tolerância de sincronia no ao vivo
+            liveMaxLatencyDurationCount: 10, // Latência máxima antes de forçar o pulo
+            startLevel: -1, // Deixa começar na melhor qualidade inicial viável
+            fragLoadingTimeOut: 20000, // 20 segundos de paciência antes de dar erro de rede
+            manifestLoadingTimeOut: 20000,
           });
 
           hls.loadSource(finalUrl);
@@ -92,15 +99,24 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
             video.play().catch(console.error);
           });
 
+          let errorRecoveryAttempts = 0;
           hls.on(Hls.Events.ERROR, (_event, data) => {
             if (data.fatal) {
+              if (errorRecoveryAttempts >= 5) {
+                hls?.destroy();
+                setError('A transmissão falhou repetidas vezes e não pôde ser recuperada.');
+                setLoading(false);
+                return;
+              }
               switch (data.type) {
                 case Hls.ErrorTypes.NETWORK_ERROR:
-                  console.error('fatal network error encountered, try to recover');
+                  console.error('Erro de rede fatal. Tentando recuperar... ', errorRecoveryAttempts);
+                  errorRecoveryAttempts++;
                   hls?.startLoad();
                   break;
                 case Hls.ErrorTypes.MEDIA_ERROR:
-                  console.error('fatal media error encountered, try to recover');
+                  console.error('Erro de mídia fatal. Tentando recuperar... ', errorRecoveryAttempts);
+                  errorRecoveryAttempts++;
                   hls?.recoverMediaError();
                   break;
                 default:
