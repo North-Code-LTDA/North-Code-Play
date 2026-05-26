@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Loader2 } from 'lucide-react';
 import { useXtreamContext } from '../context/XtreamContext';
@@ -23,16 +23,19 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
   const [selectedMovie, setSelectedMovie] = useState<any | null>(null);
   const [displayCount, setDisplayCount] = useState({ live: 24, vod: 24, series: 24 });
-  const hasFetched = useRef(false);
+
+  const fetchedRef = useRef(false);
 
   // Auto-Fetch data in background if empty when landing on Dashboard
   useEffect(() => {
-    if (credentials && !hasFetched.current) {
-      hasFetched.current = true;
-      if (allLiveStreams.length === 0) fetchLiveStreams();
-      if (allVodStreams.length === 0) fetchVodStreams();
-      if (allSeriesStreams.length === 0) fetchSeriesStreams();
-    }
+    if (!credentials || fetchedRef.current) return;
+    
+    fetchedRef.current = true;
+    
+    if (allLiveStreams.length === 0) fetchLiveStreams();
+    if (allVodStreams.length === 0) fetchVodStreams();
+    if (allSeriesStreams.length === 0) fetchSeriesStreams();
+    
   }, [credentials, allLiveStreams.length, allVodStreams.length, allSeriesStreams.length, fetchLiveStreams, fetchVodStreams, fetchSeriesStreams]);
 
   useEffect(() => {
@@ -40,7 +43,6 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   }, [searchQuery]);
 
   const isLoading = loadingLive || loadingVod || loadingSeries;
-  const hasAnyData = allLiveStreams.length > 0 || allVodStreams.length > 0 || allSeriesStreams.length > 0;
 
   const sourceLive = searchQuery ? allLiveStreams : liveStreams;
   const sourceVod = searchQuery ? allVodStreams : vodStreams;
@@ -76,30 +78,42 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     onPlay(rawUrl, stream.name);
   };
 
-  if (isLoading && !hasAnyData) {
+  const isCompletelyEmpty = allLiveStreams.length === 0 && allVodStreams.length === 0 && allSeriesStreams.length === 0;
+
+  if (isLoading && isCompletelyEmpty) {
     return (
-      <div className="flex-1 flex items-center justify-center min-h-screen">
-        <Loader2 className="w-12 h-12 animate-spin text-nc-text-secondary" />
+      <div className="flex-1 flex flex-col items-center justify-center min-h-screen gap-4">
+        <Loader2 className="w-12 h-12 animate-spin text-nc-primary" />
+        <p className="text-nc-text-secondary animate-pulse px-6 text-center max-w-sm">
+          Baixando catálogos... ISSO PODE DEMORAR ALGUNS SEGUNDOS dependendo da velocidade e tamanho da base da sua operadora.
+        </p>
       </div>
     );
   }
 
   // Combine VOD and Series for Hero banner
-  const contentForHero = [...allVodStreams, ...allSeriesStreams];
-
+  let contentForHero = [...allVodStreams, ...allSeriesStreams];
+  if (contentForHero.length === 0 && allLiveStreams.length > 0) {
+    contentForHero = allLiveStreams; // fallback to live so screen isn't empty while downloading 25MB
+  }
   return (
     <div className="flex flex-col w-full h-full overflow-y-auto overflow-x-hidden">
       <HeroBanner 
         items={contentForHero}
         onPlay={(item) => {
-          if (item.stream_type === 'movie' || item.stream_id) {
+          if (item.stream_type === 'live') {
+            handlePlayLive(item);
+          } else if (item.stream_type === 'movie' || item.stream_id) {
             handlePlayVod(item);
           } else {
             setSelectedSeries(item);
           }
         }}
         onInfo={(item) => {
-          if (item.stream_type === 'movie' || item.stream_id) {
+          if (item.stream_type === 'live') {
+            // Live streams don't typically have info modals, just play them
+            handlePlayLive(item);
+          } else if (item.stream_type === 'movie' || item.stream_id) {
             setSelectedMovie(item);
           } else {
             setSelectedSeries(item);
