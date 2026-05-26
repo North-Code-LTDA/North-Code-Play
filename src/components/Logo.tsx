@@ -1,12 +1,17 @@
-import { Zap } from 'lucide-react';
+import React from 'react';
+import logo from '../assets/logo.png';
 
 export function Logo({ className = "" }: { className?: string }) {
   return (
     <div className={`flex items-center gap-2 ${className}`}>
-      <div className="relative flex items-center justify-center w-10 h-10 rounded-full border-[2.5px] border-white">
-        <Zap className="w-6 h-6 text-white fill-white absolute" />
-      </div>
-      <span className="font-semibold text-2xl tracking-tight text-white">NorthCode</span>
+      <img 
+        src={logo} 
+        alt="North Code Play" 
+        className="w-8 h-8 md:w-10 md:h-10 object-contain" 
+      />
+      <span className="font-semibold text-xl md:text-2xl tracking-tight text-white whitespace-nowrap">
+        North Code Play
+      </span>
     </div>
   );
 }

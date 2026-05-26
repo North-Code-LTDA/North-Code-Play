@@ -189,7 +189,7 @@ export function Home() {
         <div className="flex-1 overflow-hidden flex flex-col relative w-full h-full">
           {/* Top Search Bar */}
           {currentView !== 'config' && (
-            <div className="w-full shrink-0 p-4 md:px-8 border-b border-nc-border/30 bg-nc-bg/80 backdrop-blur-lg flex items-center justify-end z-[40]">
+            <div className="w-full shrink-0 p-4 md:px-8 border-b border-nc-border/30 bg-nc-bg/80 backdrop-blur-lg flex items-center justify-center z-[40]">
               <div className="relative w-full max-w-md">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-nc-text-secondary" />
                 <input 
