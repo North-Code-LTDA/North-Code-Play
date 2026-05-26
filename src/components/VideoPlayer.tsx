@@ -138,20 +138,23 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
     return () => {
       video.removeEventListener('canplay', onCanPlay);
       video.removeEventListener('error', onErrorHandler);
+      if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
       if (hls) {
         hls.destroy();
       }
       if (plyr) {
         plyr.destroy();
       }
-      // Ensure video is paused and cleaned up
-      video.pause();
-      video.src = '';
     };
   }, [streamUrl]);
 
   return (
     <motion.div 
+      key={streamUrl}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
