@@ -24,18 +24,13 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const [selectedMovie, setSelectedMovie] = useState<any | null>(null);
   const [displayCount, setDisplayCount] = useState({ live: 24, vod: 24, series: 24 });
 
-  const fetchedRef = useRef(false);
-
   // Auto-Fetch data in background if empty when landing on Dashboard
   useEffect(() => {
-    if (!credentials || fetchedRef.current) return;
-    
-    fetchedRef.current = true;
-    
-    if (allLiveStreams.length === 0) fetchLiveStreams();
-    if (allVodStreams.length === 0) fetchVodStreams();
-    if (allSeriesStreams.length === 0) fetchSeriesStreams();
-    
+    if (credentials) {
+      if (allLiveStreams.length === 0) fetchLiveStreams();
+      if (allVodStreams.length === 0) fetchVodStreams();
+      if (allSeriesStreams.length === 0) fetchSeriesStreams();
+    }
   }, [credentials, allLiveStreams.length, allVodStreams.length, allSeriesStreams.length, fetchLiveStreams, fetchVodStreams, fetchSeriesStreams]);
 
   useEffect(() => {
@@ -78,42 +73,30 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     onPlay(rawUrl, stream.name);
   };
 
-  const isCompletelyEmpty = allLiveStreams.length === 0 && allVodStreams.length === 0 && allSeriesStreams.length === 0;
-
-  if (isLoading && isCompletelyEmpty) {
+  if (isLoading && allVodStreams.length === 0 && allSeriesStreams.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center min-h-screen gap-4">
-        <Loader2 className="w-12 h-12 animate-spin text-nc-primary" />
-        <p className="text-nc-text-secondary animate-pulse px-6 text-center max-w-sm">
-          Baixando catálogos... ISSO PODE DEMORAR ALGUNS SEGUNDOS dependendo da velocidade e tamanho da base da sua operadora.
-        </p>
+      <div className="flex-1 flex items-center justify-center min-h-screen">
+        <Loader2 className="w-12 h-12 animate-spin text-nc-text-secondary" />
       </div>
     );
   }
 
   // Combine VOD and Series for Hero banner
-  let contentForHero = [...allVodStreams, ...allSeriesStreams];
-  if (contentForHero.length === 0 && allLiveStreams.length > 0) {
-    contentForHero = allLiveStreams; // fallback to live so screen isn't empty while downloading 25MB
-  }
+  const contentForHero = [...allVodStreams, ...allSeriesStreams];
+
   return (
     <div className="flex flex-col w-full h-full overflow-y-auto overflow-x-hidden">
       <HeroBanner 
         items={contentForHero}
         onPlay={(item) => {
-          if (item.stream_type === 'live') {
-            handlePlayLive(item);
-          } else if (item.stream_type === 'movie' || item.stream_id) {
+          if (item.stream_type === 'movie' || item.stream_id) {
             handlePlayVod(item);
           } else {
             setSelectedSeries(item);
           }
         }}
         onInfo={(item) => {
-          if (item.stream_type === 'live') {
-            // Live streams don't typically have info modals, just play them
-            handlePlayLive(item);
-          } else if (item.stream_type === 'movie' || item.stream_id) {
+          if (item.stream_type === 'movie' || item.stream_id) {
             setSelectedMovie(item);
           } else {
             setSelectedSeries(item);
