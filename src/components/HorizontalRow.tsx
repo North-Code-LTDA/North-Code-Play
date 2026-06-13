@@ -70,7 +70,7 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
 
         <div 
           ref={rowRef}
-          className="flex flex-nowrap overflow-x-auto overflow-y-hidden touch-pan-y snap-x snap-mandatory scroll-smooth w-full gap-4 pb-8 pt-4 scrollbar-hide cursor-grab"
+          className="flex flex-row overflow-x-auto overflow-y-hidden scroll-smooth w-full gap-4 pb-8 pt-4 scrollbar-hide"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
           onMouseDown={handleMouseDown}
           onMouseLeave={handleMouseLeave}

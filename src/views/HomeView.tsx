@@ -40,29 +40,50 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   const isLoading = loadingLive || loadingVod || loadingSeries;
 
-  // -- Destaques Live --
+  // -- Helper for sorting by Year and Rating --
+  const sortByYearAndRating = (streams: any[]) => {
+    return [...streams].sort((a, b) => {
+      const aYear = Number(a.year) || 0;
+      const bYear = Number(b.year) || 0;
+      if (aYear !== bYear) return bYear - aYear;
+      
+      const aRating = Number(a.rating) || 0;
+      const bRating = Number(b.rating) || 0;
+      return bRating - aRating;
+    });
+  };
+
+  // -- Destaques Live (Deduplicated VIP Channels) --
   const topKeywords = ['globo', 'telecine', 'premiere', 'espn', 'discovery', 'history', 'sportv', 'hbo'];
   const topLiveStreams = useMemo(() => {
-    return allLiveStreams.filter(item => 
-      topKeywords.some(keyword => item.name?.toLowerCase().includes(keyword))
-    );
+    const topChannels = [];
+    const usedStreamIds = new Set();
+
+    for (const keyword of topKeywords) {
+      const matches = allLiveStreams.filter(item =>
+        item.name?.toLowerCase().includes(keyword) && !usedStreamIds.has(item.stream_id)
+      );
+
+      if (matches.length > 0) {
+        const bestMatch = matches.find(m => {
+          const nameLower = m.name?.toLowerCase() || '';
+          return nameLower.includes('fhd') || nameLower.includes(' hd');
+        }) || matches[0];
+
+        topChannels.push(bestMatch);
+        usedStreamIds.add(bestMatch.stream_id);
+      }
+    }
+    return topChannels;
   }, [allLiveStreams]);
 
   // -- Lançamentos Reais --
   const recentMovies = useMemo(() => {
-    return [...allVodStreams].sort((a, b) => {
-      const aVal = Number(a.added) || Number(a.year) || 0;
-      const bVal = Number(b.added) || Number(b.year) || 0;
-      return bVal - aVal;
-    });
+    return sortByYearAndRating(allVodStreams);
   }, [allVodStreams]);
 
   const recentSeries = useMemo(() => {
-    return [...allSeriesStreams].sort((a, b) => {
-      const aVal = Number(a.added) || Number(a.year) || Number((a as any).last_modified) || 0;
-      const bVal = Number(b.added) || Number(b.year) || Number((b as any).last_modified) || 0;
-      return bVal - aVal;
-    });
+    return sortByYearAndRating(allSeriesStreams);
   }, [allSeriesStreams]);
 
   // -- Categorias Dinamicas VOD --
@@ -74,17 +95,17 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   const actionMovies = useMemo(() => {
     const pids = getCategoryIdsByKeywords(vodCategories, ['ação', 'action']);
-    return allVodStreams.filter(m => pids.includes(String(m.category_id)));
+    return sortByYearAndRating(allVodStreams.filter(m => pids.includes(String(m.category_id))));
   }, [allVodStreams, vodCategories]);
 
   const scifiMovies = useMemo(() => {
     const pids = getCategoryIdsByKeywords(vodCategories, ['ficção', 'sci-fi']);
-    return allVodStreams.filter(m => pids.includes(String(m.category_id)));
+    return sortByYearAndRating(allVodStreams.filter(m => pids.includes(String(m.category_id))));
   }, [allVodStreams, vodCategories]);
 
   const adventureMovies = useMemo(() => {
     const pids = getCategoryIdsByKeywords(vodCategories, ['aventura', 'adventure']);
-    return allVodStreams.filter(m => pids.includes(String(m.category_id)));
+    return sortByYearAndRating(allVodStreams.filter(m => pids.includes(String(m.category_id))));
   }, [allVodStreams, vodCategories]);
 
   // Search overrides
