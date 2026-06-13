@@ -2,7 +2,8 @@ export interface XtreamCredentials {
   serverUrl: string;
   username: string;
   password: string;
-  listName?: string;
+  playlistName?: string;
+  avatar?: string;
 }
 
 export interface XtreamServerInfo {

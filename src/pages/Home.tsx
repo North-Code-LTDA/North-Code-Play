@@ -115,12 +115,16 @@ export function Home() {
 
           <div className="p-4 border-t border-nc-border/50 mt-auto shrink-0">
             <div className="flex items-center gap-3 px-4 py-3 mb-2">
-              <div className="w-8 h-8 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0">
-                {credentials.username.charAt(0).toUpperCase()}
+              <div className="w-9 h-9 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0 overflow-hidden border border-nc-border">
+                {credentials.avatar ? (
+                  <img src={credentials.avatar} alt="Avatar" className="w-full h-full object-cover" />
+                ) : (
+                  (credentials.playlistName || 'M').charAt(0).toUpperCase()
+                )}
               </div>
               <div className="flex-1 overflow-hidden">
-                <p className="text-sm font-medium text-white truncate">{credentials.username}</p>
-                <p className="text-xs text-nc-text-secondary truncate">{credentials.listName}</p>
+                <p className="text-sm font-medium text-white truncate">{credentials.playlistName || 'Minha Lista'}</p>
+                <p className="text-xs text-gray-400 truncate">{credentials.username}</p>
               </div>
             </div>
             <button 
@@ -172,6 +176,19 @@ export function Home() {
                   <NavItems />
                 </div>
                 <div className="p-4 border-t border-nc-border/50">
+                  <div className="flex items-center gap-3 px-4 py-3 mb-2">
+                    <div className="w-9 h-9 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0 overflow-hidden border border-nc-border">
+                      {credentials.avatar ? (
+                        <img src={credentials.avatar} alt="Avatar" className="w-full h-full object-cover" />
+                      ) : (
+                        (credentials.playlistName || 'M').charAt(0).toUpperCase()
+                      )}
+                    </div>
+                    <div className="flex-1 overflow-hidden">
+                      <p className="text-sm font-medium text-white truncate">{credentials.playlistName || 'Minha Lista'}</p>
+                      <p className="text-xs text-gray-400 truncate">{credentials.username}</p>
+                    </div>
+                  </div>
                   <button 
                     onClick={handleLogout}
                     className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"

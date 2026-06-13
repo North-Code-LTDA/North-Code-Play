@@ -1,12 +1,25 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { XtreamService } from '../services/xtreamService';
 
+const AVATAR_OPTIONS = [
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Aneka',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Jasper',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Peanut',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Leo',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Cleo',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Mittens',
+  'https://api.dicebear.com/7.x/avataaars/svg?seed=Boots',
+];
+
 export function Login() {
-  const [listName, setListName] = useState('');
+  const [playlistName, setPlaylistName] = useState('');
+  const [avatar, setAvatar] = useState(AVATAR_OPTIONS[0]);
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const [serverUrl, setServerUrl] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -43,10 +56,11 @@ export function Login() {
     setError(null);
 
     const credentials = {
-      listName: listName.trim() || 'My List',
+      playlistName: playlistName.trim() || 'Minha Lista',
       serverUrl: serverUrl.trim(),
       username: username.trim(),
       password,
+      avatar,
     };
 
     try {
@@ -84,19 +98,53 @@ export function Login() {
           </h1>
 
           <form onSubmit={handleLogin} className="space-y-5">
-            {/* List Name - Optional */}
-            <div className="space-y-1.5">
-              <label htmlFor="listName" className="text-sm font-medium text-nc-text-secondary block">
+            {/* List Name & Avatar Selector */}
+            <div className="space-y-1.5 relative">
+              <label htmlFor="playlistName" className="text-sm font-medium text-nc-text-secondary block">
                 Nome da Lista <span className="text-nc-text-secondary/50 text-xs font-normal">(Opcional)</span>
               </label>
-              <input
-                id="listName"
-                type="text"
-                placeholder="Ex: Minha TV"
-                value={listName}
-                onChange={(e) => setListName(e.target.value)}
-                className="w-full bg-nc-bg-input border border-nc-border rounded-xl px-4 py-3 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-nc-primary focus:border-nc-primary transition-all duration-200"
-              />
+              <div className="flex gap-3 items-center">
+                <button
+                  type="button"
+                  onClick={() => setShowAvatarPicker(!showAvatarPicker)}
+                  className="w-[50px] h-[50px] rounded-full overflow-hidden shrink-0 border-2 border-nc-border hover:border-nc-primary transition-colors focus:outline-none bg-black/20"
+                >
+                  <img src={avatar} alt="Avatar" className="w-full h-full object-cover" />
+                </button>
+                <input
+                  id="playlistName"
+                  type="text"
+                  placeholder="Ex: Minha TV"
+                  value={playlistName}
+                  onChange={(e) => setPlaylistName(e.target.value)}
+                  className="flex-1 min-w-0 bg-nc-bg-input border border-nc-border rounded-xl px-4 py-3 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-nc-primary focus:border-nc-primary transition-all duration-200"
+                />
+              </div>
+
+              <AnimatePresence>
+                {showAvatarPicker && (
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                    className="absolute top-[85px] left-0 z-20 bg-nc-bg border border-nc-border rounded-xl p-3 shadow-2xl w-full"
+                  >
+                    <p className="text-xs font-medium text-nc-text-secondary mb-3">Escolha um Ícone</p>
+                    <div className="grid grid-cols-4 gap-3">
+                      {AVATAR_OPTIONS.map((opt) => (
+                        <button
+                          key={opt}
+                          type="button"
+                          onClick={() => { setAvatar(opt); setShowAvatarPicker(false); }}
+                          className={`rounded-full overflow-hidden border-2 transition-all duration-200 ${avatar === opt ? 'border-nc-primary scale-110 shadow-[0_0_15px_rgba(var(--nc-primary),0.3)]' : 'border-transparent hover:border-white/20 hover:bg-white/5'}`}
+                        >
+                          <img src={opt} alt="Avatar option" className="w-full h-full object-cover" />
+                        </button>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Server URL */}
