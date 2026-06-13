@@ -6,14 +6,15 @@ import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { XtreamService } from '../services/xtreamService';
 
 const AVATAR_OPTIONS = [
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Aneka',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Jasper',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Peanut',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Leo',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Cleo',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Mittens',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Boots',
+  'https://api.dicebear.com/10.x/fun-emoji/svg?seed=Sophie',
+  'https://api.dicebear.com/10.x/fun-emoji/svg?seed=Felix',
+  'https://api.dicebear.com/10.x/fun-emoji/svg?seed=Aneka',
+  'https://api.dicebear.com/10.x/identicon/svg?seed=Sophie',
+  'https://api.dicebear.com/10.x/identicon/svg?seed=Aneka',
+  'https://api.dicebear.com/10.x/identicon/svg?seed=Luna',
+  'https://api.dicebear.com/10.x/thumbs/svg?seed=Aneka',
+  'https://api.dicebear.com/10.x/thumbs/svg?seed=Luna',
+  'https://api.dicebear.com/10.x/thumbs/svg?seed=Sophie',
 ];
 
 export function Login() {
@@ -224,7 +225,7 @@ export function Login() {
           </form>
 
           <p className="text-center text-nc-text-secondary text-sm mt-8">
-            Plataforma North Code Play
+            Plataforma Desenvolvida por North Code
           </p>
         </div>
       </motion.div>
