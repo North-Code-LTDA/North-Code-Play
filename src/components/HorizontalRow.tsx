@@ -11,45 +11,8 @@ interface HorizontalRowProps {
 
 export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRowProps) {
   const rowRef = useRef<HTMLDivElement>(null);
-  const isDown = useRef(false);
-  const startX = useRef(0);
-  const scrollLeft = useRef(0);
 
   if (items.length === 0) return null;
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    isDown.current = true;
-    if (rowRef.current) {
-      rowRef.current.classList.add('cursor-grabbing');
-      rowRef.current.classList.remove('cursor-grab', 'snap-x', 'snap-mandatory');
-      startX.current = e.pageX - rowRef.current.offsetLeft;
-      scrollLeft.current = rowRef.current.scrollLeft;
-    }
-  };
-
-  const handleMouseLeave = () => {
-    isDown.current = false;
-    if (rowRef.current) {
-      rowRef.current.classList.remove('cursor-grabbing');
-      rowRef.current.classList.add('cursor-grab', 'snap-x', 'snap-mandatory');
-    }
-  };
-
-  const handleMouseUp = () => {
-    isDown.current = false;
-    if (rowRef.current) {
-      rowRef.current.classList.remove('cursor-grabbing');
-      rowRef.current.classList.add('cursor-grab', 'snap-x', 'snap-mandatory');
-    }
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDown.current || !rowRef.current) return;
-    e.preventDefault();
-    const x = e.pageX - rowRef.current.offsetLeft;
-    const walk = (x - startX.current) * 2;
-    rowRef.current.scrollLeft = scrollLeft.current - walk;
-  };
 
   const scrollByAmount = (amount: number) => {
     if (rowRef.current) {
@@ -72,10 +35,6 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
           ref={rowRef}
           className="flex flex-row overflow-x-auto overflow-y-hidden scroll-smooth w-full gap-4 pb-8 pt-4 scrollbar-hide"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-          onMouseDown={handleMouseDown}
-          onMouseLeave={handleMouseLeave}
-          onMouseUp={handleMouseUp}
-          onMouseMove={handleMouseMove}
         >
         {items.map((item) => (
           <motion.div

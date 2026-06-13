@@ -41,14 +41,35 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const isLoading = loadingLive || loadingVod || loadingSeries;
 
   // -- Helper for sorting by Year and Rating --
+  const getValidYear = (item: any) => {
+    let year = Number(item.year);
+    if (!isNaN(year) && year >= 1950 && year <= 2026) {
+      return year;
+    }
+    if (item.name) {
+      const match = String(item.name).match(/\b(19[5-9]\d|20[0-2][0-6])\b/);
+      if (match) {
+        return Number(match[0]);
+      }
+    }
+    return 0;
+  };
+
+  const getValidRating = (item: any) => {
+    if (item.rating === null || item.rating === undefined || item.rating === '') return 0;
+    const rating = parseFloat(item.rating);
+    return isNaN(rating) ? 0 : rating;
+  };
+
   const sortByYearAndRating = (streams: any[]) => {
-    return [...streams].sort((a, b) => {
-      const aYear = Number(a.year) || 0;
-      const bYear = Number(b.year) || 0;
+    const validStreams = streams.filter(item => getValidYear(item) > 0 || getValidRating(item) > 0);
+    return validStreams.sort((a, b) => {
+      const aYear = getValidYear(a);
+      const bYear = getValidYear(b);
       if (aYear !== bYear) return bYear - aYear;
       
-      const aRating = Number(a.rating) || 0;
-      const bRating = Number(b.rating) || 0;
+      const aRating = getValidRating(a);
+      const bRating = getValidRating(b);
       return bRating - aRating;
     });
   };
