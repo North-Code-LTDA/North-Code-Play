@@ -16,6 +16,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const { 
     liveStreams, vodStreams, seriesStreams, 
     allLiveStreams, allVodStreams, allSeriesStreams,
+    liveCategories, vodCategories, seriesCategories,
     loadingLive, loadingVod, loadingSeries, credentials,
     fetchLiveStreams, fetchVodStreams, fetchSeriesStreams
   } = useXtreamContext();
@@ -39,24 +40,68 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   const isLoading = loadingLive || loadingVod || loadingSeries;
 
-  const sourceLive = searchQuery ? allLiveStreams : liveStreams;
-  const sourceVod = searchQuery ? allVodStreams : vodStreams;
-  const sourceSeries = searchQuery ? allSeriesStreams : seriesStreams;
+  // -- Destaques Live --
+  const topKeywords = ['globo', 'telecine', 'premiere', 'espn', 'discovery', 'history', 'sportv', 'hbo'];
+  const topLiveStreams = useMemo(() => {
+    return allLiveStreams.filter(item => 
+      topKeywords.some(keyword => item.name?.toLowerCase().includes(keyword))
+    );
+  }, [allLiveStreams]);
 
+  // -- Lançamentos Reais --
+  const recentMovies = useMemo(() => {
+    return [...allVodStreams].sort((a, b) => {
+      const aVal = Number(a.added) || Number(a.year) || 0;
+      const bVal = Number(b.added) || Number(b.year) || 0;
+      return bVal - aVal;
+    });
+  }, [allVodStreams]);
+
+  const recentSeries = useMemo(() => {
+    return [...allSeriesStreams].sort((a, b) => {
+      const aVal = Number(a.added) || Number(a.year) || Number((a as any).last_modified) || 0;
+      const bVal = Number(b.added) || Number(b.year) || Number((b as any).last_modified) || 0;
+      return bVal - aVal;
+    });
+  }, [allSeriesStreams]);
+
+  // -- Categorias Dinamicas VOD --
+  const getCategoryIdsByKeywords = (categories: any[], keywords: string[]) => {
+    return categories
+      .filter(c => keywords.some(k => c.category_name?.toLowerCase().includes(k.toLowerCase())))
+      .map(c => String(c.category_id));
+  };
+
+  const actionMovies = useMemo(() => {
+    const pids = getCategoryIdsByKeywords(vodCategories, ['ação', 'action']);
+    return allVodStreams.filter(m => pids.includes(String(m.category_id)));
+  }, [allVodStreams, vodCategories]);
+
+  const scifiMovies = useMemo(() => {
+    const pids = getCategoryIdsByKeywords(vodCategories, ['ficção', 'sci-fi']);
+    return allVodStreams.filter(m => pids.includes(String(m.category_id)));
+  }, [allVodStreams, vodCategories]);
+
+  const adventureMovies = useMemo(() => {
+    const pids = getCategoryIdsByKeywords(vodCategories, ['aventura', 'adventure']);
+    return allVodStreams.filter(m => pids.includes(String(m.category_id)));
+  }, [allVodStreams, vodCategories]);
+
+  // Search overrides
   const filteredLive = useMemo(() => {
-    if (!searchQuery) return sourceLive;
-    return sourceLive.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [sourceLive, searchQuery]);
+    if (!searchQuery) return topLiveStreams;
+    return allLiveStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+  }, [topLiveStreams, allLiveStreams, searchQuery]);
 
   const filteredVod = useMemo(() => {
-    if (!searchQuery) return sourceVod;
-    return sourceVod.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [sourceVod, searchQuery]);
+    if (!searchQuery) return recentMovies;
+    return allVodStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+  }, [recentMovies, allVodStreams, searchQuery]);
 
   const filteredSeries = useMemo(() => {
-    if (!searchQuery) return sourceSeries;
-    return sourceSeries.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [sourceSeries, searchQuery]);
+    if (!searchQuery) return recentSeries;
+    return allSeriesStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+  }, [recentSeries, allSeriesStreams, searchQuery]);
 
   const handlePlayLive = (stream: any) => {
     if (!credentials) return;
@@ -125,6 +170,33 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
            type="series"
            onItemClick={(item) => setSelectedSeries(item)}
         />
+
+        {!searchQuery && actionMovies.length > 0 && (
+          <HorizontalRow 
+            title="Ação"
+            items={actionMovies.slice(0, displayCount.vod)}
+            type="vod"
+            onItemClick={(item) => setSelectedMovie(item)}
+          />
+        )}
+
+        {!searchQuery && scifiMovies.length > 0 && (
+          <HorizontalRow 
+            title="Ficção Científica"
+            items={scifiMovies.slice(0, displayCount.vod)}
+            type="vod"
+            onItemClick={(item) => setSelectedMovie(item)}
+          />
+        )}
+
+        {!searchQuery && adventureMovies.length > 0 && (
+          <HorizontalRow 
+            title="Aventura"
+            items={adventureMovies.slice(0, displayCount.vod)}
+            type="vod"
+            onItemClick={(item) => setSelectedMovie(item)}
+          />
+        )}
       </div>
 
       <AnimatePresence>

@@ -5,6 +5,7 @@ import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 
 interface MovieDetailsProps {
+  key?: React.Key;
   streamId: string | number;
   streamName: string;
   streamIcon?: string;

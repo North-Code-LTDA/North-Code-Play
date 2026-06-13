@@ -6,6 +6,7 @@ import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 
 interface SeriesDetailsProps {
+  key?: React.Key;
   seriesId: string | number;
   seriesName: string;
   seriesCover?: string;
