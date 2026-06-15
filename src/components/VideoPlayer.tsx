@@ -16,9 +16,11 @@ interface VideoPlayerProps {
   title: string;
   onBack: () => void;
   embedded?: boolean;
+  startAt?: number;
+  streamId?: string | number;
 }
 
-export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: VideoPlayerProps) {
+export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startAt, streamId }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +44,28 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
 
     video.addEventListener('canplay', onCanPlay);
     video.addEventListener('error', onErrorHandler);
+
+    // Progress Tracking Logic
+    const isLive = streamUrl.includes('/live/') || streamUrl.includes('.m3u8') || streamUrl.endsWith('.ts');
+    const match = streamUrl.match(/\/([^/]+)\.[a-zA-Z0-9]+(\?|$)/);
+    const derivedStreamId = streamId || match?.[1] || title;
+    const initialStartAt = startAt ?? (derivedStreamId ? (Number(localStorage.getItem('nc_progress_' + derivedStreamId)) || 0) : 0);
+
+    const onTimeUpdate = () => {
+      if (!isLive && derivedStreamId) {
+        // Save progress every ~5 seconds
+        if (Math.floor(video.currentTime) % 5 === 0 && video.currentTime > 0) {
+          localStorage.setItem('nc_progress_' + derivedStreamId, video.currentTime.toString());
+        }
+      }
+    };
+    video.addEventListener('timeupdate', onTimeUpdate);
+
+    const checkAndStartProgress = () => {
+       if (!isLive && initialStartAt > 0) {
+         video.currentTime = initialStartAt;
+       }
+    };
 
     try {
       // Direct Play: We use the streamUrl directly without proxies
@@ -78,6 +102,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
 
           hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
             setLoading(false);
+            checkAndStartProgress();
             const availableQualities = hls!.levels.map((l: any) => l.height);
             
             plyr = new Plyr(video, {
@@ -133,6 +158,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
           plyr = new Plyr(video, defaultPlyrOptions);
           video.addEventListener('loadedmetadata', () => {
             setLoading(false);
+            checkAndStartProgress();
             video.play().catch(console.error);
           });
         }
@@ -141,8 +167,9 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
         // It's VOD (Movie / Series) - load directly into the HTML5 <video> tag handled by Plyr
         video.src = streamUrl;
         plyr = new Plyr(video, defaultPlyrOptions);
-        video.addEventListener('loadedmetadata', () => {
+          video.addEventListener('loadedmetadata', () => {
           setLoading(false);
+          checkAndStartProgress();
           video.play().catch(console.error);
         });
       }
@@ -154,6 +181,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false }: Vide
     return () => {
       video.removeEventListener('canplay', onCanPlay);
       video.removeEventListener('error', onErrorHandler);
+      video.removeEventListener('timeupdate', onTimeUpdate);
       if (video) {
         video.pause();
         video.removeAttribute('src');
