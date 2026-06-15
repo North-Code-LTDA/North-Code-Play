@@ -67,14 +67,14 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
             <h1 className="text-4xl md:text-5xl lg:text-7xl font-bold text-white tracking-tight mb-4 drop-shadow-lg break-words whitespace-normal text-wrap">
               {currentItem.name}
             </h1>
-            {currentItem.rating && currentItem.rating !== "0" && (
-              <p className="text-yellow-500 font-medium mb-2 drop-shadow-md">
-                ★ {currentItem.rating}
+            {Number(currentItem.rating) > 0 && (
+              <p className="text-yellow-500 font-medium mb-3 drop-shadow-md flex items-center gap-2">
+                ⭐ {Number(currentItem.rating).toFixed(1)} / 10
               </p>
             )}
-            {currentItem.plot && (
-              <p className="text-white/80 line-clamp-3 md:line-clamp-5 mb-6">
-                {currentItem.plot}
+            {(currentItem.plot || currentItem.overview) && (
+              <p className="text-sm md:text-base text-gray-200 line-clamp-3 md:line-clamp-4 mb-6">
+                {currentItem.plot || currentItem.overview}
               </p>
             )}
           </motion.div>
