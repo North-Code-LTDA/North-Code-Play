@@ -191,7 +191,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         }}
       />
 
-      <div className="px-6 md:px-12 pb-12 gap-8 flex flex-col relative z-20 -mt-6 sm:-mt-10 md:-mt-16 lg:-mt-24 shrink-0">
+      <div className="px-6 md:px-12 pb-12 gap-8 flex flex-col relative z-20 mt-4 md:mt-8 lg:mt-16 xl:mt-24 shrink-0">
         <HorizontalRow 
            title="Canais Ao Vivo"
            items={filteredLive.slice(0, displayCount.live)}
