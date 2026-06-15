@@ -42,6 +42,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   // -- Helper for sorting by Year and Rating --
   const getValidYear = (item: any) => {
+    if (!item) return 0;
     let year = Number(item.year);
     if (!isNaN(year) && year >= 1950 && year <= 2026) {
       return year;
@@ -56,7 +57,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   };
 
   const getValidRating = (item: any) => {
-    if (item.rating === null || item.rating === undefined || item.rating === '') return 0;
+    if (!item || item.rating === null || item.rating === undefined || item.rating === '') return 0;
     const rating = parseFloat(item.rating);
     return isNaN(rating) ? 0 : rating;
   };
@@ -170,8 +171,18 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   // Combine VOD and Series for Hero banner
   const contentForHero = useMemo(() => {
-    return sortByYearAndRating([...allVodStreams, ...allSeriesStreams]).slice(0, 30);
-  }, [allVodStreams, allSeriesStreams]);
+    const combined = [...allVodStreams, ...allSeriesStreams];
+    if (combined.length === 0) {
+       return allLiveStreams.length > 0 ? allLiveStreams.slice(0, 30) : [];
+    }
+
+    return combined.sort((a, b) => {
+      const yearA = getValidYear(a);
+      const yearB = getValidYear(b);
+      if (yearA !== yearB) return yearB - yearA;
+      return getValidRating(b) - getValidRating(a);
+    }).slice(0, 30);
+  }, [allVodStreams, allSeriesStreams, allLiveStreams]);
 
   return (
     <div className="flex flex-col w-full h-full overflow-y-auto overflow-x-hidden">

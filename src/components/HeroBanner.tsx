@@ -29,13 +29,17 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   if (heroItems.length === 0) return null;
 
   const currentItem = heroItems[currentIndex];
-  const bgImage = currentItem.stream_icon || currentItem.cover || currentItem.backdrop_path;
+  if (!currentItem) return null;
+
+  const bgImage = currentItem?.stream_icon || currentItem?.cover || currentItem?.backdrop_path;
+
+  const ratingNum = Number(currentItem?.rating || 0);
 
   return (
     <div className="relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden">
       <AnimatePresence mode="popLayout">
         <motion.div
-          key={currentItem.stream_id || currentItem.name}
+          key={currentItem?.stream_id || currentItem?.name}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -44,7 +48,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
         >
           <img
             src={bgImage}
-            alt={currentItem.name}
+            alt={currentItem?.name}
             className="w-full h-full object-cover object-top opacity-80"
             onError={(e) => {
               (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?q=80&w=2070&auto=format&fit=crop';
@@ -58,23 +62,23 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
       <div className="relative z-10 max-w-2xl w-full">
         <AnimatePresence mode="wait">
           <motion.div
-            key={currentItem.stream_id || currentItem.name}
+            key={currentItem?.stream_id || currentItem?.name}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.5 }}
           >
             <h1 className="text-4xl md:text-5xl lg:text-7xl font-bold text-white tracking-tight mb-4 drop-shadow-lg break-words whitespace-normal text-wrap">
-              {currentItem.name}
+              {currentItem?.name}
             </h1>
-            {parseFloat(currentItem.rating) > 0 && (
+            {ratingNum > 0 && (
               <p className="text-yellow-500 font-medium mb-3 drop-shadow-md flex items-center gap-2">
-                ⭐ {parseFloat(currentItem.rating).toFixed(1).replace('.0', '')} / 10
+                ⭐ {ratingNum.toFixed(1)} / 10
               </p>
             )}
-            {(currentItem.plot || currentItem.overview) && (
+            {(currentItem?.plot || currentItem?.overview) && (
               <p className="text-sm md:text-base text-gray-200 line-clamp-3 md:line-clamp-4 mb-6">
-                {currentItem.plot || currentItem.overview}
+                {currentItem?.plot || currentItem?.overview}
               </p>
             )}
           </motion.div>
