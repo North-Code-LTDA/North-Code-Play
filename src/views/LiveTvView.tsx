@@ -218,9 +218,9 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       </div>
 
       {/* Right Pane: Player & EPG */}
-      <div className={`flex-1 min-w-0 flex-col w-full h-auto md:h-full overflow-visible md:overflow-hidden bg-nc-bg flex ${!isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`flex-1 min-w-0 flex-col w-full h-auto md:h-full overflow-visible md:overflow-y-auto bg-nc-bg flex ${!isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
         {selectedChannel ? (
-          <div className="flex flex-col w-full h-auto md:h-full overflow-visible md:overflow-hidden">
+          <div className="flex flex-col w-full h-auto md:h-full overflow-visible md:overflow-y-auto">
              {/* Mobile Back Button */}
              <div className="md:hidden p-4 shrink-0 border-b border-nc-border/50 flex items-center bg-nc-bg">
                <button 
@@ -274,7 +274,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                </div>
 
                {/* Right child: Mini-Player */}
-               <div className="w-full lg:w-[45%] lg:max-w-md shrink-0 order-1 lg:order-2 shadow-2xl">
+               <div className="w-full lg:w-[45%] lg:max-w-md md:max-h-[50vh] lg:max-h-[60vh] xl:max-h-none shrink-0 order-1 lg:order-2 shadow-2xl">
                  <VideoPlayer 
                    streamUrl={getStreamUrl(selectedChannel)} 
                    title={selectedChannel.name} 
@@ -285,7 +285,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
              </div>
 
              {/* EPG List */}
-             <div className="flex-1 w-full h-auto md:h-full overflow-visible md:overflow-y-auto p-4 custom-scrollbar bg-nc-bg">
+             <div className="flex-1 w-full h-auto md:h-full min-h-[300px] overflow-visible md:overflow-y-auto p-4 custom-scrollbar bg-nc-bg">
                <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2 border-b border-nc-border/50 pb-2">
                  <Calendar className="w-5 h-5 text-nc-primary" /> Programação
                </h3>
