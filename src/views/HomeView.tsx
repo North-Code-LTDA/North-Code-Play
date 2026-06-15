@@ -170,12 +170,8 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   // Combine VOD and Series for Hero banner
   const contentForHero = useMemo(() => {
-    const combined = [...allVodStreams, ...allSeriesStreams];
-    if (combined.length === 0 && allLiveStreams.length > 0) {
-      return allLiveStreams.slice(0, 30);
-    }
-    return sortByYearAndRating(combined).slice(0, 30);
-  }, [allVodStreams, allSeriesStreams, allLiveStreams]);
+    return sortByYearAndRating([...allVodStreams, ...allSeriesStreams]).slice(0, 30);
+  }, [allVodStreams, allSeriesStreams]);
 
   return (
     <div className="flex flex-col w-full h-full overflow-y-auto overflow-x-hidden">
