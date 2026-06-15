@@ -14,7 +14,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   const heroItems = useMemo(() => {
     if (!items || items.length === 0) return [];
     return items.filter(
-      (item) => item?.stream_icon || item?.cover || item?.backdrop_path
+      (item) => item.stream_icon || item.cover || item.backdrop_path
     ).slice(0, 10);
   }, [items]);
 
@@ -26,12 +26,12 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
     return () => clearInterval(timer);
   }, [heroItems.length]);
 
-  if (!items || items.length === 0 || !heroItems[currentIndex]) return null;
+  if (heroItems.length === 0) return null;
 
   const currentItem = heroItems[currentIndex];
+  if (!currentItem) return null;
+
   const bgImage = currentItem?.stream_icon || currentItem?.cover || currentItem?.backdrop_path;
-  const rating = Number(currentItem?.rating || 0);
-  const plot = currentItem?.plot || currentItem?.overview;
 
   return (
     <div className="relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden">
@@ -69,14 +69,14 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
             <h1 className="text-4xl md:text-5xl lg:text-7xl font-bold text-white tracking-tight mb-4 drop-shadow-lg break-words whitespace-normal text-wrap">
               {currentItem?.name}
             </h1>
-            {rating > 0 && (
-              <p className="text-yellow-500 font-medium mb-2 drop-shadow-md">
-                ⭐ {rating} / 10
+            {Number(currentItem?.rating) > 0 && (
+              <p className="text-yellow-500 font-medium mb-3 drop-shadow-md flex items-center gap-2">
+                ⭐ {Number(currentItem?.rating).toFixed(1)} / 10
               </p>
             )}
-            {plot && (
-              <p className="line-clamp-3 md:line-clamp-4 text-sm md:text-base text-gray-200 mb-6">
-                {plot}
+            {(currentItem?.plot || currentItem?.overview) && (
+              <p className="text-sm md:text-base text-gray-200 line-clamp-3 md:line-clamp-4 mb-6">
+                {currentItem?.plot || currentItem?.overview}
               </p>
             )}
           </motion.div>
