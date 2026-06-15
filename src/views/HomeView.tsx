@@ -169,35 +169,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   }
 
   // Combine VOD and Series for Hero banner
-  const contentForHero = useMemo(() => {
-    const combined = [...allVodStreams, ...allSeriesStreams];
-    if (combined.length === 0) {
-      return allLiveStreams.length > 0 ? allLiveStreams.slice(0, 30) : [];
-    }
-
-    // Funções de limpeza para metadados sujos da API
-    const getValidYear = (item: any) => {
-      if (!item) return 0;
-      const y = Number(item.year);
-      if (!isNaN(y) && y >= 1950 && y <= 2026) return y;
-      const match = item.name?.match(/\b(19[5-9]\d|20[0-2][0-6])\b/);
-      return match ? Number(match[0]) : 0;
-    };
-
-    const getValidRating = (item: any) => {
-      if (!item?.rating) return 0;
-      const r = parseFloat(item.rating);
-      return isNaN(r) ? 0 : r;
-    };
-
-    return combined
-      .sort((a, b) => {
-        const yearDiff = getValidYear(b) - getValidYear(a);
-        if (yearDiff !== 0) return yearDiff; // 1º Critério: Ano mais recente
-        return getValidRating(b) - getValidRating(a); // 2º Critério: Melhor Nota
-      })
-      .slice(0, 30);
-  }, [allVodStreams, allSeriesStreams, allLiveStreams]);
+  const contentForHero = [...allVodStreams, ...allSeriesStreams];
 
   return (
     <div className="flex flex-col w-full h-full overflow-y-auto overflow-x-hidden">
