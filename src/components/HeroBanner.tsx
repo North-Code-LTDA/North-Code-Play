@@ -14,7 +14,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   const heroItems = useMemo(() => {
     if (!items || items.length === 0) return [];
     return items.filter(
-      (item) => item.stream_icon || item.cover || item.backdrop_path
+      (item) => item?.stream_icon || item?.cover || item?.backdrop_path
     ).slice(0, 10);
   }, [items]);
 
@@ -26,16 +26,18 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
     return () => clearInterval(timer);
   }, [heroItems.length]);
 
-  if (heroItems.length === 0) return null;
+  if (!items || items.length === 0 || !heroItems[currentIndex]) return null;
 
   const currentItem = heroItems[currentIndex];
-  const bgImage = currentItem.stream_icon || currentItem.cover || currentItem.backdrop_path;
+  const bgImage = currentItem?.stream_icon || currentItem?.cover || currentItem?.backdrop_path;
+  const rating = Number(currentItem?.rating || 0);
+  const plot = currentItem?.plot || currentItem?.overview;
 
   return (
     <div className="relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden">
       <AnimatePresence mode="popLayout">
         <motion.div
-          key={currentItem.stream_id || currentItem.name}
+          key={currentItem?.stream_id || currentItem?.name}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -44,7 +46,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
         >
           <img
             src={bgImage}
-            alt={currentItem.name}
+            alt={currentItem?.name}
             className="w-full h-full object-cover object-top opacity-80"
             onError={(e) => {
               (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?q=80&w=2070&auto=format&fit=crop';
@@ -58,23 +60,23 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
       <div className="relative z-10 max-w-2xl w-full">
         <AnimatePresence mode="wait">
           <motion.div
-            key={currentItem.stream_id || currentItem.name}
+            key={currentItem?.stream_id || currentItem?.name}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.5 }}
           >
             <h1 className="text-4xl md:text-5xl lg:text-7xl font-bold text-white tracking-tight mb-4 drop-shadow-lg break-words whitespace-normal text-wrap">
-              {currentItem.name}
+              {currentItem?.name}
             </h1>
-            {currentItem.rating && currentItem.rating !== "0" && (
+            {rating > 0 && (
               <p className="text-yellow-500 font-medium mb-2 drop-shadow-md">
-                ★ {currentItem.rating}
+                ⭐ {rating} / 10
               </p>
             )}
-            {currentItem.plot && (
-              <p className="text-white/80 line-clamp-3 md:line-clamp-5 mb-6">
-                {currentItem.plot}
+            {plot && (
+              <p className="line-clamp-3 md:line-clamp-4 text-sm md:text-base text-gray-200 mb-6">
+                {plot}
               </p>
             )}
           </motion.div>
