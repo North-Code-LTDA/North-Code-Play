@@ -218,7 +218,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       </div>
 
       {/* Right Pane: Player & EPG */}
-      <div className={`flex-1 flex-col w-full h-auto md:h-full overflow-visible md:overflow-hidden bg-nc-bg flex ${!isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`flex-1 min-w-0 flex-col w-full h-auto md:h-full overflow-visible md:overflow-hidden bg-nc-bg flex ${!isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
         {selectedChannel ? (
           <div className="flex flex-col w-full h-auto md:h-full overflow-visible md:overflow-hidden">
              {/* Mobile Back Button */}
@@ -234,7 +234,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
              {/* Top Section (Header + Mini-Player) */}
              <div className="flex flex-col lg:flex-row gap-4 p-4 shrink-0 border-b border-nc-border/10 bg-nc-bg">
                {/* Left child: Channel Info */}
-               <div className="flex-1 flex flex-col items-start gap-4 order-2 lg:order-1">
+               <div className="flex-1 min-w-0 flex flex-col items-start gap-4 order-2 lg:order-1">
                  <div className="flex items-center gap-4 w-full">
                     <div className="w-20 h-20 bg-nc-bg-card rounded-2xl flex items-center justify-center overflow-hidden shrink-0 border border-nc-border/50 p-2">
                       {selectedChannel.stream_icon ? (
@@ -247,8 +247,8 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                         <TvMinimalPlay className="w-8 h-8 text-nc-text-secondary/50" />
                       )}
                     </div>
-                    <div className="overflow-hidden w-full">
-                      <h1 className="text-xl md:text-2xl font-bold text-white truncate">{selectedChannel.name}</h1>
+                    <div className="overflow-hidden min-w-0 flex-1">
+                      <h1 className="text-xl md:text-2xl font-bold text-white truncate block w-full">{selectedChannel.name}</h1>
                       <span className="inline-flex items-center gap-2 px-3 py-1 mt-2 rounded-full bg-red-500/10 text-red-400 text-xs font-medium border border-red-500/20">
                         <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
                         AO VIVO
