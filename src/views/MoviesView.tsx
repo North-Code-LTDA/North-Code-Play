@@ -5,7 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 
 interface MoviesViewProps {
-  onPlay: (url: string, title: string) => void;
+  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
   searchQuery?: string;
 }
 

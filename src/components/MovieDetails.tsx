@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Play, ArrowLeft, Loader2, Star, Calendar, Clock, Info, Heart, RotateCcw, MonitorPlay } from 'lucide-react';
+import { Play, ArrowLeft, Loader2, Star, Calendar, Clock, Info, Heart } from 'lucide-react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
-import { VideoPlayer } from './VideoPlayer';
 
 interface MovieDetailsProps {
   key?: React.Key;
@@ -11,7 +10,7 @@ interface MovieDetailsProps {
   streamName: string;
   streamIcon?: string;
   onClose: () => void;
-  onPlay: (url: string, title: string) => void;
+  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
 }
 
 export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay }: MovieDetailsProps) {
@@ -20,10 +19,8 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const [loading, setLoading] = useState(true);
   const [info, setInfo] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
-
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [savedProgress, setSavedProgress] = useState(0);
-  const [playingState, setPlayingState] = useState<{url: string, startAt: number} | null>(null);
 
   useEffect(() => {
     async function fetchInfo() {
@@ -42,49 +39,35 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     fetchInfo();
   }, [credentials, streamId]);
 
-  const initiatePlay = () => {
-    const progress = localStorage.getItem(`nc_progress_${streamId}`);
-    if (progress && parseFloat(progress) > 30) {
-      setSavedProgress(parseFloat(progress));
-      setShowResumeModal(true);
-    } else {
-      startPlayback(0);
+  const requestFullscreen = () => {
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch((e) => console.log(e));
     }
   };
 
-  const startPlayback = (startAt: number) => {
+  const executePlay = (startAt: number = 0) => {
+    if (startAt === 0) {
+      localStorage.removeItem('nc_progress_' + streamId);
+    }
+    requestFullscreen();
     if (!credentials) return;
     const ext = info?.movie_data?.container_extension || "mp4";
     const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/movie/${credentials.username}/${credentials.password}/${streamId}.${ext}`;
-    
-    if (document.documentElement.requestFullscreen) {
-      document.documentElement.requestFullscreen().catch(err => console.log('Fullscreen rejected:', err));
-    }
-
-    setPlayingState({ url: rawUrl, startAt });
+    onPlay(rawUrl, streamName, startAt, streamId);
     setShowResumeModal(false);
   };
 
-  const handlePlayFromStart = () => {
-    localStorage.removeItem(`nc_progress_${streamId}`);
-    startPlayback(0);
-  };
-
-  const handleResumePlayback = () => {
-    startPlayback(savedProgress);
-  };
-
-  const handleClosePlayer = () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(err => console.log('Exit fullscreen rejected:', err));
+  const handlePlayClick = () => {
+    const progress = Number(localStorage.getItem('nc_progress_' + streamId)) || 0;
+    if (progress > 30) {
+      setSavedProgress(progress);
+      setShowResumeModal(true);
+    } else {
+      executePlay(0);
     }
-    setPlayingState(null);
   };
 
-  const handleForcePlay = () => {
-     if (!credentials) return;
-     initiatePlay();
-  };
+  const handlePlay = handlePlayClick; // To backward compatibility on error screen
 
   if (loading) {
     return (
@@ -103,7 +86,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
         <p className="text-nc-text-secondary mb-6">{error || 'Informações não disponíveis.'}</p>
         <div className="flex gap-4">
           <button onClick={onClose} className="px-6 py-2 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg transition-colors">Voltar</button>
-          <button onClick={handleForcePlay} className="px-6 py-2 bg-nc-primary text-black font-medium rounded-lg transition-colors flex items-center gap-2">
+          <button onClick={handlePlay} className="px-6 py-2 bg-nc-primary text-black font-medium rounded-lg transition-colors flex items-center gap-2">
             <Play className="w-4 h-4 fill-black" /> Formatar de qualquer forma
           </button>
         </div>
@@ -189,7 +172,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
 
             <div className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
               <button 
-                onClick={initiatePlay}
+                onClick={handlePlay}
                 className="flex items-center gap-3 bg-nc-primary hover:bg-nc-primary/90 text-black px-8 py-3.5 rounded-xl font-semibold w-fit transition-transform active:scale-95"
               >
                 <Play className="w-6 h-6 fill-black m-0 p-0" />
@@ -242,38 +225,36 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
       </div>
 
       {showResumeModal && (
-        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center p-6">
-          <div className="bg-nc-bg border border-nc-border/50 rounded-2xl p-8 max-w-sm w-full flex flex-col items-center text-center shadow-2xl animate-in zoom-in-95 duration-200">
-             <div className="w-16 h-16 rounded-full bg-nc-primary/10 flex items-center justify-center mb-6">
-               <MonitorPlay className="w-8 h-8 text-nc-primary" />
-             </div>
-             <h3 className="text-xl font-bold text-white mb-2">Continuar de onde parou?</h3>
-             <p className="text-nc-text-secondary mb-8 leading-relaxed">Você já assistiu a uma parte deste filme anteriormente.</p>
-             
-             <div className="w-full flex-col flex gap-3">
-               <button onClick={handleResumePlayback} className="w-full py-3.5 bg-nc-primary text-black font-semibold rounded-xl transition-transform active:scale-95 flex items-center justify-center gap-2">
-                 <Play className="w-5 h-5 fill-black" /> Retomar assistindo
-               </button>
-               <button onClick={handlePlayFromStart} className="w-full py-3.5 bg-nc-bg-input hover:bg-nc-border/50 text-white font-medium rounded-xl transition-colors flex items-center justify-center gap-2">
-                 <RotateCcw className="w-5 h-5" /> Começar do início
-               </button>
-             </div>
+        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-nc-bg border border-nc-border/50 rounded-2xl p-6 md:p-8 max-w-sm w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
+            <h3 className="text-xl font-bold text-white mb-2">Continuar Assistindo?</h3>
+            <p className="text-nc-text-secondary text-sm mb-6">
+              Você já assistiu uma parte deste filme. O que você gostaria de fazer?
+            </p>
+            <div className="flex flex-col gap-3 w-full">
+              <button
+                onClick={() => executePlay(savedProgress)}
+                className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
+              >
+                Retomar de {Math.floor(savedProgress / 60)} min
+              </button>
+              <button
+                onClick={() => executePlay(0)}
+                className="w-full py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/30"
+              >
+                Assistir do Início
+              </button>
+              <button
+                onClick={() => setShowResumeModal(false)}
+                className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
+              >
+                Cancelar
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {playingState && (
-        <div className="absolute inset-0 z-[200] bg-black">
-          <VideoPlayer 
-            streamUrl={playingState.url} 
-            title={info.name || streamName} 
-            onBack={handleClosePlayer} 
-            startAt={playingState.startAt}
-            streamId={streamId}
-            embedded={false}
-          />
-        </div>
-      )}
     </div>
   </div>
   );

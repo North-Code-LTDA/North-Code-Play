@@ -20,7 +20,7 @@ interface VideoPlayerProps {
   streamId?: string | number;
 }
 
-export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startAt = 0, streamId }: VideoPlayerProps) {
+export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startAt, streamId }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,37 +38,34 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     const onCanPlay = () => setLoading(false);
     const onErrorHandler = (e: any) => {
       console.error('Video error:', e);
-      setError('Erro ao carregar o vídeo. O formato pode não ser suportado nativamente ou houve bloqueio de CORS.');
+      setError('Erro ao carregar o vídeo. O formato pode não ser suportado nivamente ou houve bloqueio de CORS.');
       setLoading(false);
     };
 
     video.addEventListener('canplay', onCanPlay);
     video.addEventListener('error', onErrorHandler);
 
-    let hasSeeked = false;
+    // Progress Tracking Logic
+    const isLive = streamUrl.includes('/live/') || streamUrl.includes('.m3u8') || streamUrl.endsWith('.ts');
+    const match = streamUrl.match(/\/([^/]+)\.[a-zA-Z0-9]+(\?|$)/);
+    const derivedStreamId = streamId || match?.[1] || title;
+    const initialStartAt = startAt ?? (derivedStreamId ? (Number(localStorage.getItem('nc_progress_' + derivedStreamId)) || 0) : 0);
 
-    const onLoadedMetadata = () => {
-      setLoading(false);
-      if (startAt > 0 && !hasSeeked) {
-        video.currentTime = startAt;
-        hasSeeked = true;
-      }
-      video.play().catch(console.error);
-    };
-
-    // Progress tracking throttling
-    let lastSavedTime = 0;
     const onTimeUpdate = () => {
-      if (!streamId) return;
-      const currentTime = video.currentTime;
-      // Save every 5 seconds to avoid spamming localStorage
-      if (Math.abs(currentTime - lastSavedTime) >= 5) {
-        localStorage.setItem(`nc_progress_${streamId}`, currentTime.toString());
-        lastSavedTime = currentTime;
+      if (!isLive && derivedStreamId) {
+        // Save progress every ~5 seconds
+        if (Math.floor(video.currentTime) % 5 === 0 && video.currentTime > 0) {
+          localStorage.setItem('nc_progress_' + derivedStreamId, video.currentTime.toString());
+        }
       }
     };
-
     video.addEventListener('timeupdate', onTimeUpdate);
+
+    const checkAndStartProgress = () => {
+       if (!isLive && initialStartAt > 0) {
+         video.currentTime = initialStartAt;
+       }
+    };
 
     try {
       // Direct Play: We use the streamUrl directly without proxies
@@ -105,6 +102,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
 
           hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
             setLoading(false);
+            checkAndStartProgress();
             const availableQualities = hls!.levels.map((l: any) => l.height);
             
             plyr = new Plyr(video, {
@@ -123,10 +121,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
                }
             });
             
-            if (startAt > 0 && !hasSeeked) {
-              video.currentTime = startAt;
-              hasSeeked = true;
-            }
             video.play().catch(console.error);
           });
 
@@ -162,14 +156,22 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
           // Native HLS fallback (Safari / Apple devices)
           video.src = finalUrl;
           plyr = new Plyr(video, defaultPlyrOptions);
-          video.addEventListener('loadedmetadata', onLoadedMetadata);
+          video.addEventListener('loadedmetadata', () => {
+            setLoading(false);
+            checkAndStartProgress();
+            video.play().catch(console.error);
+          });
         }
       } else {
         console.log("Direct Play VOD URL:", streamUrl);
         // It's VOD (Movie / Series) - load directly into the HTML5 <video> tag handled by Plyr
         video.src = streamUrl;
         plyr = new Plyr(video, defaultPlyrOptions);
-        video.addEventListener('loadedmetadata', onLoadedMetadata);
+          video.addEventListener('loadedmetadata', () => {
+          setLoading(false);
+          checkAndStartProgress();
+          video.play().catch(console.error);
+        });
       }
     } catch (err: any) {
       console.error("Player setup error:", err);
@@ -180,7 +182,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       video.removeEventListener('canplay', onCanPlay);
       video.removeEventListener('error', onErrorHandler);
       video.removeEventListener('timeupdate', onTimeUpdate);
-      video.removeEventListener('loadedmetadata', onLoadedMetadata);
       if (video) {
         video.pause();
         video.removeAttribute('src');
@@ -194,6 +195,13 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       }
     };
   }, [streamUrl]);
+
+  const handleBack = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(err => console.log('Fullscreen exit error:', err));
+    }
+    onBack();
+  };
 
   return (
     <motion.div 
@@ -211,7 +219,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
         <div className="absolute top-0 left-0 w-full p-6 bg-gradient-to-b from-black/80 to-transparent z-10 flex items-start justify-between gap-4 transition-opacity duration-300">
           <div className="flex items-center gap-4">
             <button 
-              onClick={onBack}
+              onClick={handleBack}
               className="p-3 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-full text-white transition-colors"
             >
               <ArrowLeft className="w-6 h-6" />
@@ -238,7 +246,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
             Se o vídeo não formatar ou tiver apenas áudio, certifique-se de que o formato seja compatível com seu dispositivo Web/Celular/TV.
           </p>
           <button 
-            onClick={onBack}
+            onClick={handleBack}
             className="px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors font-medium"
           >
             Voltar para o menu

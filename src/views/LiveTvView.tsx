@@ -7,7 +7,7 @@ import { VideoPlayer } from '../components/VideoPlayer';
 import { XtreamService } from '../services/xtreamService';
 
 interface LiveTvViewProps {
-  onPlay: (url: string, title: string) => void;
+  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
   searchQuery?: string;
 }
 

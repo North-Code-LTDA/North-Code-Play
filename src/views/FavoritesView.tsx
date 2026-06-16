@@ -7,7 +7,7 @@ import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
 
 interface FavoritesViewProps {
-  onPlay: (url: string, title: string) => void;
+  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
   searchQuery?: string;
 }
 

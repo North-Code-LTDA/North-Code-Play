@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Play, X, ChevronLeft, Loader2, Heart, MonitorPlay, RotateCcw } from 'lucide-react';
+import { Play, X, ChevronLeft, Loader2, Heart } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
-import { VideoPlayer } from './VideoPlayer';
 
 interface SeriesDetailsProps {
   key?: React.Key;
@@ -12,7 +11,7 @@ interface SeriesDetailsProps {
   seriesName: string;
   seriesCover?: string;
   onClose: () => void;
-  onPlay: (url: string, title: string) => void;
+  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
 }
 
 export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPlay }: SeriesDetailsProps) {
@@ -24,8 +23,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
 
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [savedProgress, setSavedProgress] = useState(0);
-  const [selectedEpisodeForResume, setSelectedEpisodeForResume] = useState<any>(null);
-  const [playingState, setPlayingState] = useState<{url: string, startAt: number, title: string, id: string | number} | null>(null);
+  const [selectedEpisode, setSelectedEpisode] = useState<any>(null);
 
   useEffect(() => {
     async function fetchInfo() {
@@ -49,50 +47,36 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     fetchInfo();
   }, [credentials, seriesId]);
 
-  const handlePlayEpisode = (episode: any) => {
-    if (!credentials) return;
-    const progress = localStorage.getItem(`nc_progress_${episode.id}`);
-    if (progress && parseFloat(progress) > 30) {
-      setSavedProgress(parseFloat(progress));
-      setSelectedEpisodeForResume(episode);
-      setShowResumeModal(true);
-    } else {
-      startPlayback(episode, 0);
+  const requestFullscreen = () => {
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch((e) => console.log(e));
     }
   };
 
-  const startPlayback = (episode: any, startAt: number) => {
+  const executePlay = (episode: any, startAt: number = 0) => {
+    if (startAt === 0) {
+      localStorage.removeItem('nc_progress_' + episode.id);
+    }
+    requestFullscreen();
     if (!credentials) return;
     const ext = episode.container_extension || "mp4";
     const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/series/${credentials.username}/${credentials.password}/${episode.id}.${ext}`;
-    const playTitle = `${seriesName} - S${selectedSeason}E${episode.episode_num || episode.id} - ${episode.title || ''}`;
-
-    if (document.documentElement.requestFullscreen) {
-      document.documentElement.requestFullscreen().catch(err => console.log('Fullscreen rejected:', err));
-    }
-
-    setPlayingState({ url: rawUrl, startAt, title: playTitle, id: episode.id });
+    onPlay(rawUrl, `${seriesName} - S${selectedSeason}E${episode.episode_num || episode.id}`, startAt, episode.id);
     setShowResumeModal(false);
-    setSelectedEpisodeForResume(null);
   };
 
-  const handlePlayFromStart = () => {
-    if (!selectedEpisodeForResume) return;
-    localStorage.removeItem(`nc_progress_${selectedEpisodeForResume.id}`);
-    startPlayback(selectedEpisodeForResume, 0);
-  };
-
-  const handleResumePlayback = () => {
-    if (!selectedEpisodeForResume) return;
-    startPlayback(selectedEpisodeForResume, savedProgress);
-  };
-
-  const handleClosePlayer = () => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(err => console.log('Exit fullscreen rejected:', err));
+  const handlePlayEpisodeClick = (episode: any) => {
+    const progress = Number(localStorage.getItem('nc_progress_' + episode.id)) || 0;
+    if (progress > 30) {
+      setSavedProgress(progress);
+      setSelectedEpisode(episode);
+      setShowResumeModal(true);
+    } else {
+      executePlay(episode, 0);
     }
-    setPlayingState(null);
   };
+
+  const handlePlayEpisode = handlePlayEpisodeClick;
 
   return (
     <motion.div
@@ -266,37 +250,34 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
         )}
       </div>
 
-      {showResumeModal && (
-        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center p-6">
-          <div className="bg-nc-bg border border-nc-border/50 rounded-2xl p-8 max-w-sm w-full flex flex-col items-center text-center shadow-2xl animate-in zoom-in-95 duration-200">
-             <div className="w-16 h-16 rounded-full bg-nc-primary/10 flex items-center justify-center mb-6">
-               <MonitorPlay className="w-8 h-8 text-nc-primary" />
-             </div>
-             <h3 className="text-xl font-bold text-white mb-2">Continuar o episódio?</h3>
-             <p className="text-nc-text-secondary mb-8 leading-relaxed">Você já assistiu a uma parte de <strong>{selectedEpisodeForResume?.title || `Episódio ${selectedEpisodeForResume?.episode_num}`}</strong>.</p>
-             
-             <div className="w-full flex-col flex gap-3">
-               <button onClick={handleResumePlayback} className="w-full py-3.5 bg-nc-primary text-black font-semibold rounded-xl transition-transform active:scale-95 flex items-center justify-center gap-2">
-                 <Play className="w-5 h-5 fill-black" /> Retomar assistindo
-               </button>
-               <button onClick={handlePlayFromStart} className="w-full py-3.5 bg-nc-bg-input hover:bg-nc-border/50 text-white font-medium rounded-xl transition-colors flex items-center justify-center gap-2">
-                 <RotateCcw className="w-5 h-5" /> Começar do início
-               </button>
-             </div>
+      {showResumeModal && selectedEpisode && (
+        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-nc-bg border border-nc-border/50 rounded-2xl p-6 md:p-8 max-w-sm w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
+            <h3 className="text-xl font-bold text-white mb-2">Continuar Assistindo?</h3>
+            <p className="text-nc-text-secondary text-sm mb-6">
+              Você já assistiu uma parte deste episódio. O que você gostaria de fazer?
+            </p>
+            <div className="flex flex-col gap-3 w-full">
+              <button
+                onClick={() => executePlay(selectedEpisode, savedProgress)}
+                className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
+              >
+                Retomar de {Math.floor(savedProgress / 60)} min
+              </button>
+              <button
+                onClick={() => executePlay(selectedEpisode, 0)}
+                className="w-full py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/30"
+              >
+                Assistir do Início
+              </button>
+              <button
+                onClick={() => setShowResumeModal(false)}
+                className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
+              >
+                Cancelar
+              </button>
+            </div>
           </div>
-        </div>
-      )}
-
-      {playingState && (
-        <div className="absolute inset-0 z-[200] bg-black">
-          <VideoPlayer 
-            streamUrl={playingState.url} 
-            title={playingState.title} 
-            onBack={handleClosePlayer} 
-            startAt={playingState.startAt}
-            streamId={playingState.id}
-            embedded={false}
-          />
         </div>
       )}
 
