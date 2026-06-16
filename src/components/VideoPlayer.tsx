@@ -62,7 +62,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     video.addEventListener('timeupdate', onTimeUpdate);
 
     const checkAndStartProgress = () => {
-       if (!isLive && initialStartAt > 0) {
+       if (!isLive && initialStartAt !== undefined) {
          video.currentTime = initialStartAt;
        }
     };
