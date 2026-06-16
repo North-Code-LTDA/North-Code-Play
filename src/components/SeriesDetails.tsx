@@ -11,7 +11,7 @@ interface SeriesDetailsProps {
   seriesName: string;
   seriesCover?: string;
   onClose: () => void;
-  onPlay: (url: string, title: string, streamId?: string | number, startAt?: number) => void;
+  onPlay: (url: string, title: string) => void;
 }
 
 export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPlay }: SeriesDetailsProps) {
@@ -23,7 +23,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
 
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [savedProgress, setSavedProgress] = useState(0);
-  const [selectedEpisodeForModal, setSelectedEpisodeForModal] = useState<any>(null);
+  const [selectedEpisode, setSelectedEpisode] = useState<any>(null);
 
   useEffect(() => {
     async function fetchInfo() {
@@ -47,34 +47,44 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     fetchInfo();
   }, [credentials, seriesId]);
 
-  const doPlay = (episode: any, startAt: number) => {
-    if (!credentials) return;
+  const requestFullscreen = () => {
     if (document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen().catch((e) => console.log(e));
     }
-    const ext = episode.container_extension || "mp4";
-    const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/series/${credentials.username}/${credentials.password}/${episode.id}.${ext}`;
-    
-    sessionStorage.setItem('nc_current_stream_id', String(episode.id));
-    sessionStorage.setItem('nc_current_start_at', String(startAt));
-    if (startAt === 0) {
-      localStorage.removeItem(`nc_progress_${episode.id}`);
-    }
-    onPlay(rawUrl, `${seriesName} - S${selectedSeason}E${episode.episode_num || episode.id}`, episode.id, startAt);
-    setShowResumeModal(false);
-    setSelectedEpisodeForModal(null);
   };
 
-  const handlePlayEpisode = (episode: any) => {
-    const saved = localStorage.getItem(`nc_progress_${episode.id}`);
-    if (saved && Number(saved) > 30) {
-      setSavedProgress(Number(saved));
-      setSelectedEpisodeForModal(episode);
+  const getExactId = (episode: any) => {
+    const ext = episode.container_extension || "mp4";
+    const url = `${credentials?.serverUrl}/series/${credentials?.username}/${credentials?.password}/${episode.id}.${ext}`;
+    return url.split('/').pop()?.split('.')[0] || episode.id;
+  };
+
+  const executePlay = (episode: any, startAt: number = 0) => {
+    const exactId = getExactId(episode);
+    if (startAt === 0) {
+      localStorage.removeItem('nc_progress_' + exactId);
+    }
+    requestFullscreen();
+    if (!credentials) return;
+    const ext = episode.container_extension || "mp4";
+    const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/series/${credentials.username}/${credentials.password}/${episode.id}.${ext}`;
+    onPlay(rawUrl, `${seriesName} - S${selectedSeason}E${episode.episode_num || episode.id}`);
+    setShowResumeModal(false);
+  };
+
+  const handlePlayEpisodeClick = (episode: any) => {
+    const exactId = getExactId(episode);
+    const progress = Number(localStorage.getItem('nc_progress_' + exactId)) || 0;
+    if (progress > 30) {
+      setSavedProgress(progress);
+      setSelectedEpisode(episode);
       setShowResumeModal(true);
     } else {
-      doPlay(episode, 0);
+      executePlay(episode, 0);
     }
   };
+
+  const handlePlayEpisode = handlePlayEpisodeClick;
 
   return (
     <motion.div
@@ -83,40 +93,6 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       exit={{ opacity: 0, y: 50 }}
       className="absolute inset-0 z-[60] bg-nc-bg/95 backdrop-blur-xl flex flex-col overflow-hidden w-full h-full"
     >
-      
-      {/* Resume Modal */}
-      {showResumeModal && selectedEpisodeForModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-nc-bg-card border border-nc-border/50 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-200">
-            <Play className="w-12 h-12 text-nc-primary mb-4" />
-            <h3 className="text-2xl font-bold text-white mb-2">Continuar Assistindo?</h3>
-            <p className="text-nc-text-secondary mb-8">
-              Você parou em {Math.floor(savedProgress / 60)} min no episódio {selectedEpisodeForModal.episode_num}. O que deseja fazer?
-            </p>
-            <div className="flex flex-col gap-3 w-full">
-              <button 
-                onClick={() => doPlay(selectedEpisodeForModal, savedProgress)} 
-                className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl hover:bg-nc-primary/90 transition-colors"
-              >
-                Retomar de {Math.floor(savedProgress / 60)} min
-              </button>
-              <button 
-                onClick={() => doPlay(selectedEpisodeForModal, 0)} 
-                className="w-full py-3 bg-nc-bg-input text-white font-semibold rounded-xl hover:bg-white/10 transition-colors"
-              >
-                Assistir do Início
-              </button>
-              <button 
-                onClick={() => { setShowResumeModal(false); setSelectedEpisodeForModal(null); }} 
-                className="w-full py-3 mt-2 text-nc-text-secondary hover:text-white transition-colors"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-nc-border/50 bg-black/50 shrink-0">
         <button 
@@ -243,12 +219,12 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                   {/* Episodes List */}
                   <div className="flex flex-col gap-3">
                     {selectedSeason && seriesInfo.episodes[selectedSeason]?.map((episode: any) => (
-                      <motion.div
+                      <motion.button
                         key={episode.id}
                         whileHover={{ scale: 1.01 }}
                         whileTap={{ scale: 0.99 }}
                         onClick={() => handlePlayEpisode(episode)}
-                        className="w-full bg-nc-bg-card border border-nc-border/50 rounded-xl p-4 flex gap-4 items-center cursor-pointer hover:border-nc-primary/50 transition-colors group"
+                        className="w-full text-left bg-nc-bg-card border border-nc-border/50 rounded-xl p-4 flex gap-4 items-center cursor-pointer hover:border-nc-primary/50 transition-colors group"
                       >
                         <div className="w-12 h-12 rounded-full bg-nc-bg-input flex items-center justify-center shrink-0 group-hover:bg-nc-primary group-hover:text-black transition-colors">
                           <Play className="w-5 h-5 ml-1" />
@@ -263,7 +239,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                             </p>
                           )}
                         </div>
-                      </motion.div>
+                      </motion.button>
                     ))}
                   </div>
                 </>
@@ -281,6 +257,38 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
           </div>
         )}
       </div>
+
+      {showResumeModal && selectedEpisode && (
+        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-nc-bg border border-nc-border/50 rounded-2xl p-6 md:p-8 max-w-sm w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
+            <h3 className="text-xl font-bold text-white mb-2">Continuar Assistindo?</h3>
+            <p className="text-nc-text-secondary text-sm mb-6">
+              Você já assistiu uma parte deste episódio. O que você gostaria de fazer?
+            </p>
+            <div className="flex flex-col gap-3 w-full">
+              <button
+                onClick={() => executePlay(selectedEpisode, savedProgress)}
+                className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
+              >
+                Retomar de {Math.floor(savedProgress / 60)} min
+              </button>
+              <button
+                onClick={() => executePlay(selectedEpisode, 0)}
+                className="w-full py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/30"
+              >
+                Assistir do Início
+              </button>
+              <button
+                onClick={() => setShowResumeModal(false)}
+                className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </motion.div>
   );
 }
