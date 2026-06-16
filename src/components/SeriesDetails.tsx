@@ -4,7 +4,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
-import { VideoPlayer } from './VideoPlayer';
 
 interface SeriesDetailsProps {
   key?: React.Key;
@@ -25,7 +24,6 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [savedProgress, setSavedProgress] = useState(0);
   const [selectedEpisode, setSelectedEpisode] = useState<any>(null);
-  const [playingVideo, setPlayingVideo] = useState<{ url: string; title: string; startAt: number; episode: any; season: string } | null>(null);
 
   useEffect(() => {
     async function fetchInfo() {
@@ -61,24 +59,16 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     return url.split('/').pop()?.split('.')[0] || episode.id;
   };
 
-  const executePlay = (episode: any, startAt: number = 0, targetSeason?: string) => {
-    const seasonToUse = targetSeason || selectedSeason;
+  const executePlay = (episode: any, startAt: number = 0) => {
     const exactId = getExactId(episode);
     if (startAt === 0) {
       localStorage.removeItem('nc_progress_' + exactId);
     }
     requestFullscreen();
-    if (!credentials || !seasonToUse) return;
+    if (!credentials) return;
     const ext = episode.container_extension || "mp4";
     const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/series/${credentials.username}/${credentials.password}/${episode.id}.${ext}`;
-    
-    setPlayingVideo({
-      url: rawUrl,
-      title: `${seriesName} - S${seasonToUse}E${episode.episode_num || episode.id}`,
-      startAt,
-      episode,
-      season: seasonToUse
-    });
+    onPlay(rawUrl, `${seriesName} - S${selectedSeason}E${episode.episode_num || episode.id}`);
     setShowResumeModal(false);
   };
 
@@ -96,65 +86,6 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
 
   const handlePlayEpisode = handlePlayEpisodeClick;
 
-  const closeVideo = () => {
-    setPlayingVideo(null);
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    }
-  };
-
-  const handleNextEpisode = () => {
-    if (!playingVideo || !seriesInfo?.episodes) return;
-    
-    const currentSeason = playingVideo.season;
-    const currentSeasonEps = seriesInfo.episodes[currentSeason];
-    if (!currentSeasonEps) return;
-
-    const currentIndex = currentSeasonEps.findIndex((ep: any) => ep.id === playingVideo.episode.id);
-
-    if (currentIndex >= 0 && currentIndex < currentSeasonEps.length - 1) {
-      // Next in same season
-      const nextEp = currentSeasonEps[currentIndex + 1];
-      executePlay(nextEp, 0, currentSeason);
-    } else {
-      // Check next season
-      const seasons = Object.keys(seriesInfo.episodes).map(Number).sort((a, b) => a - b);
-      const currentSeasonIndex = seasons.indexOf(Number(currentSeason));
-      
-      if (currentSeasonIndex >= 0 && currentSeasonIndex < seasons.length - 1) {
-        const nextSeason = String(seasons[currentSeasonIndex + 1]);
-        const nextSeasonEps = seriesInfo.episodes[nextSeason];
-        if (nextSeasonEps && nextSeasonEps.length > 0) {
-          setSelectedSeason(nextSeason); // Update UI
-          const nextEp = nextSeasonEps[0];
-          executePlay(nextEp, 0, nextSeason);
-        } else {
-          closeVideo();
-        }
-      } else {
-        closeVideo(); // End of series
-      }
-    }
-  };
-
-  const hasNextEpisodeCheck = () => {
-    if (!playingVideo || !seriesInfo?.episodes) return false;
-    const currentSeason = playingVideo.season;
-    const currentSeasonEps = seriesInfo.episodes[currentSeason];
-    if (!currentSeasonEps) return false;
-
-    const currentIndex = currentSeasonEps.findIndex((ep: any) => ep.id === playingVideo.episode.id);
-    if (currentIndex >= 0 && currentIndex < currentSeasonEps.length - 1) return true;
-    
-    const seasons = Object.keys(seriesInfo.episodes).map(Number).sort((a, b) => a - b);
-    const currentSeasonIndex = seasons.indexOf(Number(currentSeason));
-    if (currentSeasonIndex >= 0 && currentSeasonIndex < seasons.length - 1) {
-       const nextSeason = String(seasons[currentSeasonIndex + 1]);
-       if (seriesInfo.episodes[nextSeason] && seriesInfo.episodes[nextSeason].length > 0) return true;
-    }
-    return false;
-  };
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 50 }}
@@ -162,19 +93,6 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       exit={{ opacity: 0, y: 50 }}
       className="absolute inset-0 z-[60] bg-nc-bg/95 backdrop-blur-xl flex flex-col overflow-hidden w-full h-full"
     >
-      <AnimatePresence>
-        {playingVideo && (
-          <VideoPlayer
-            streamUrl={playingVideo.url}
-            title={playingVideo.title}
-            startAt={playingVideo.startAt}
-            streamId={getExactId(playingVideo.episode)}
-            onBack={closeVideo}
-            hasNextEpisode={hasNextEpisodeCheck()}
-            onNextEpisode={handleNextEpisode}
-          />
-        )}
-      </AnimatePresence>
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-nc-border/50 bg-black/50 shrink-0">
         <button 

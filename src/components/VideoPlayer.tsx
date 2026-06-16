@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import muxjs from 'mux.js';
-import { ArrowLeft, Loader2, SkipForward } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { motion } from 'motion/react';
 
 if (typeof window !== 'undefined') {
@@ -18,11 +18,9 @@ interface VideoPlayerProps {
   embedded?: boolean;
   startAt?: number;
   streamId?: string | number;
-  hasNextEpisode?: boolean;
-  onNextEpisode?: () => void;
 }
 
-export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startAt, streamId, hasNextEpisode, onNextEpisode }: VideoPlayerProps) {
+export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startAt, streamId }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,13 +60,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       }
     };
     video.addEventListener('timeupdate', onTimeUpdate);
-
-    const onEnded = () => {
-      if (hasNextEpisode && onNextEpisode) {
-        onNextEpisode();
-      }
-    };
-    video.addEventListener('ended', onEnded);
 
     const checkAndStartProgress = () => {
        if (!isLive && initialStartAt > 0) {
@@ -191,7 +182,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       video.removeEventListener('canplay', onCanPlay);
       video.removeEventListener('error', onErrorHandler);
       video.removeEventListener('timeupdate', onTimeUpdate);
-      video.removeEventListener('ended', onEnded);
       if (video) {
         video.pause();
         video.removeAttribute('src');
@@ -219,8 +209,8 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     >
       {/* Top Bar with Back Button Overlay */}
       {!embedded && (
-        <div className="absolute top-0 left-0 w-full p-6 bg-gradient-to-b from-black/80 to-transparent z-10 flex items-start justify-between gap-4 transition-opacity duration-300 pointer-events-none hover:pointer-events-auto">
-          <div className="flex items-center gap-4 pointer-events-auto">
+        <div className="absolute top-0 left-0 w-full p-6 bg-gradient-to-b from-black/80 to-transparent z-10 flex items-start justify-between gap-4 transition-opacity duration-300">
+          <div className="flex items-center gap-4">
             <button 
               onClick={onBack}
               className="p-3 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-full text-white transition-colors"
@@ -228,17 +218,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
               <ArrowLeft className="w-6 h-6" />
             </button>
             <h2 className="text-white text-xl font-medium truncate drop-shadow-md">{title}</h2>
-          </div>
-          <div className="flex items-center gap-4 pointer-events-auto">
-            {hasNextEpisode && onNextEpisode && (
-              <button 
-                onClick={onNextEpisode}
-                className="px-4 py-3 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors flex items-center justify-center gap-2 font-medium"
-              >
-                Próximo Episódio
-                <SkipForward className="w-5 h-5" />
-              </button>
-            )}
           </div>
         </div>
       )}
