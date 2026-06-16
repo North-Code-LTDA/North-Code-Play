@@ -53,9 +53,16 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     }
   };
 
+  const getExactId = (episode: any) => {
+    const ext = episode.container_extension || "mp4";
+    const url = `${credentials?.serverUrl}/series/${credentials?.username}/${credentials?.password}/${episode.id}.${ext}`;
+    return url.split('/').pop()?.split('.')[0] || episode.id;
+  };
+
   const executePlay = (episode: any, startAt: number = 0) => {
+    const exactId = getExactId(episode);
     if (startAt === 0) {
-      localStorage.removeItem('nc_progress_' + episode.id);
+      localStorage.removeItem('nc_progress_' + exactId);
     }
     requestFullscreen();
     if (!credentials) return;
@@ -66,7 +73,8 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   };
 
   const handlePlayEpisodeClick = (episode: any) => {
-    const progress = Number(localStorage.getItem('nc_progress_' + episode.id)) || 0;
+    const exactId = getExactId(episode);
+    const progress = Number(localStorage.getItem('nc_progress_' + exactId)) || 0;
     if (progress > 30) {
       setSavedProgress(progress);
       setSelectedEpisode(episode);
@@ -211,12 +219,12 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                   {/* Episodes List */}
                   <div className="flex flex-col gap-3">
                     {selectedSeason && seriesInfo.episodes[selectedSeason]?.map((episode: any) => (
-                      <motion.div
+                      <motion.button
                         key={episode.id}
                         whileHover={{ scale: 1.01 }}
                         whileTap={{ scale: 0.99 }}
                         onClick={() => handlePlayEpisode(episode)}
-                        className="w-full bg-nc-bg-card border border-nc-border/50 rounded-xl p-4 flex gap-4 items-center cursor-pointer hover:border-nc-primary/50 transition-colors group"
+                        className="w-full text-left bg-nc-bg-card border border-nc-border/50 rounded-xl p-4 flex gap-4 items-center cursor-pointer hover:border-nc-primary/50 transition-colors group"
                       >
                         <div className="w-12 h-12 rounded-full bg-nc-bg-input flex items-center justify-center shrink-0 group-hover:bg-nc-primary group-hover:text-black transition-colors">
                           <Play className="w-5 h-5 ml-1" />
@@ -231,7 +239,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                             </p>
                           )}
                         </div>
-                      </motion.div>
+                      </motion.button>
                     ))}
                   </div>
                 </>
