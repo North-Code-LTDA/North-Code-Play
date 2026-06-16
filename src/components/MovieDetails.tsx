@@ -10,7 +10,7 @@ interface MovieDetailsProps {
   streamName: string;
   streamIcon?: string;
   onClose: () => void;
-  onPlay: (url: string, title: string) => void;
+  onPlay: (url: string, title: string, streamId?: string | number, startAt?: number) => void;
 }
 
 export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay }: MovieDetailsProps) {
@@ -19,6 +19,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const [loading, setLoading] = useState(true);
   const [info, setInfo] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [savedProgress, setSavedProgress] = useState(0);
 
@@ -39,35 +40,32 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     fetchInfo();
   }, [credentials, streamId]);
 
-  const requestFullscreen = () => {
+  const doPlay = (startAt: number) => {
+    if (!credentials) return;
     if (document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen().catch((e) => console.log(e));
     }
-  };
-
-  const executePlay = (startAt: number = 0) => {
-    if (startAt === 0) {
-      localStorage.removeItem('nc_progress_' + streamId);
-    }
-    requestFullscreen();
-    if (!credentials) return;
     const ext = info?.movie_data?.container_extension || "mp4";
     const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/movie/${credentials.username}/${credentials.password}/${streamId}.${ext}`;
-    onPlay(rawUrl, streamName);
+    
+    sessionStorage.setItem('nc_current_stream_id', String(streamId));
+    sessionStorage.setItem('nc_current_start_at', String(startAt));
+    if (startAt === 0) {
+      localStorage.removeItem(`nc_progress_${streamId}`);
+    }
+    onPlay(rawUrl, streamName, streamId, startAt);
     setShowResumeModal(false);
   };
 
   const handlePlayClick = () => {
-    const progress = Number(localStorage.getItem('nc_progress_' + streamId)) || 0;
-    if (progress > 30) {
-      setSavedProgress(progress);
+    const saved = localStorage.getItem(`nc_progress_${streamId}`);
+    if (saved && Number(saved) > 30) {
+      setSavedProgress(Number(saved));
       setShowResumeModal(true);
     } else {
-      executePlay(0);
+      doPlay(0);
     }
   };
-
-  const handlePlay = handlePlayClick; // To backward compatibility on error screen
 
   if (loading) {
     return (
@@ -86,7 +84,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
         <p className="text-nc-text-secondary mb-6">{error || 'Informações não disponíveis.'}</p>
         <div className="flex gap-4">
           <button onClick={onClose} className="px-6 py-2 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg transition-colors">Voltar</button>
-          <button onClick={handlePlay} className="px-6 py-2 bg-nc-primary text-black font-medium rounded-lg transition-colors flex items-center gap-2">
+          <button onClick={() => doPlay(0)} className="px-6 py-2 bg-nc-primary text-black font-medium rounded-lg transition-colors flex items-center gap-2">
             <Play className="w-4 h-4 fill-black" /> Formatar de qualquer forma
           </button>
         </div>
@@ -103,6 +101,39 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   return (
     <div className="absolute inset-0 z-[50] bg-nc-bg w-full h-full overflow-hidden">
       
+      {/* Resume Modal */}
+      {showResumeModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-nc-bg-card border border-nc-border/50 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-200">
+            <Play className="w-12 h-12 text-nc-primary mb-4" />
+            <h3 className="text-2xl font-bold text-white mb-2">Continuar Assistindo?</h3>
+            <p className="text-nc-text-secondary mb-8">
+              Você parou em {Math.floor(savedProgress / 60)} min. O que deseja fazer?
+            </p>
+            <div className="flex flex-col gap-3 w-full">
+              <button 
+                onClick={() => doPlay(savedProgress)} 
+                className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl hover:bg-nc-primary/90 transition-colors"
+              >
+                Retomar de {Math.floor(savedProgress / 60)} min
+              </button>
+              <button 
+                onClick={() => doPlay(0)} 
+                className="w-full py-3 bg-nc-bg-input text-white font-semibold rounded-xl hover:bg-white/10 transition-colors"
+              >
+                Assistir do Início
+              </button>
+              <button 
+                onClick={() => setShowResumeModal(false)} 
+                className="w-full py-3 mt-2 text-nc-text-secondary hover:text-white transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Fixed Page Background */}
       {coverImage && (
         <div className="absolute inset-0 z-0 pointer-events-none">
@@ -172,7 +203,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
 
             <div className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
               <button 
-                onClick={handlePlay}
+                onClick={handlePlayClick}
                 className="flex items-center gap-3 bg-nc-primary hover:bg-nc-primary/90 text-black px-8 py-3.5 rounded-xl font-semibold w-fit transition-transform active:scale-95"
               >
                 <Play className="w-6 h-6 fill-black m-0 p-0" />
@@ -223,38 +254,6 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
           </div>
         </div>
       </div>
-
-      {showResumeModal && (
-        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-nc-bg border border-nc-border/50 rounded-2xl p-6 md:p-8 max-w-sm w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
-            <h3 className="text-xl font-bold text-white mb-2">Continuar Assistindo?</h3>
-            <p className="text-nc-text-secondary text-sm mb-6">
-              Você já assistiu uma parte deste filme. O que você gostaria de fazer?
-            </p>
-            <div className="flex flex-col gap-3 w-full">
-              <button
-                onClick={() => executePlay(savedProgress)}
-                className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
-              >
-                Retomar de {Math.floor(savedProgress / 60)} min
-              </button>
-              <button
-                onClick={() => executePlay(0)}
-                className="w-full py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/30"
-              >
-                Assistir do Início
-              </button>
-              <button
-                onClick={() => setShowResumeModal(false)}
-                className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
     </div>
   </div>
   );

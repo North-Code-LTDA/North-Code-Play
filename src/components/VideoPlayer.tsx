@@ -16,16 +16,26 @@ interface VideoPlayerProps {
   title: string;
   onBack: () => void;
   embedded?: boolean;
-  startAt?: number;
   streamId?: string | number;
+  startAt?: number;
 }
 
-export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startAt, streamId }: VideoPlayerProps) {
+export function VideoPlayer({ streamUrl, title, onBack, embedded = false, streamId: propStreamId, startAt: propStartAt }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Fallback to sessionStorage to respect rigorous architectural boundaries
+  const sessionStreamId = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('nc_current_stream_id') : null;
+  const sessionStartAt = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('nc_current_start_at') : null;
+  const streamId = propStreamId || sessionStreamId;
+  const startAt = propStartAt ?? (sessionStartAt ? Number(sessionStartAt) : 0);
+
   useEffect(() => {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('nc_current_stream_id');
+      sessionStorage.removeItem('nc_current_start_at');
+    }
     const video = videoRef.current;
     if (!video || !streamUrl) return;
 
@@ -35,37 +45,32 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     setLoading(true);
     setError(null);
 
+    let lastSaveTime = 0;
+    const onTimeUpdate = () => {
+      if (!video || !streamId) return;
+      const current = video.currentTime;
+      if (Math.abs(current - lastSaveTime) > 5) {
+        lastSaveTime = current;
+        localStorage.setItem(`nc_progress_${streamId}`, current.toString());
+      }
+    };
+
+    const applyStartTime = () => {
+      if (startAt && startAt > 0) {
+        video.currentTime = startAt;
+      }
+    };
+
     const onCanPlay = () => setLoading(false);
     const onErrorHandler = (e: any) => {
       console.error('Video error:', e);
-      setError('Erro ao carregar o vídeo. O formato pode não ser suportado nivamente ou houve bloqueio de CORS.');
+      setError('Erro ao carregar o vídeo. O formato pode não ser suportado nativamente ou houve bloqueio de CORS.');
       setLoading(false);
     };
 
     video.addEventListener('canplay', onCanPlay);
     video.addEventListener('error', onErrorHandler);
-
-    // Progress Tracking Logic
-    const isLive = streamUrl.includes('/live/') || streamUrl.includes('.m3u8') || streamUrl.endsWith('.ts');
-    const match = streamUrl.match(/\/([^/]+)\.[a-zA-Z0-9]+(\?|$)/);
-    const derivedStreamId = streamId || match?.[1] || title;
-    const initialStartAt = startAt ?? (derivedStreamId ? (Number(localStorage.getItem('nc_progress_' + derivedStreamId)) || 0) : 0);
-
-    const onTimeUpdate = () => {
-      if (!isLive && derivedStreamId) {
-        // Save progress every ~5 seconds
-        if (Math.floor(video.currentTime) % 5 === 0 && video.currentTime > 0) {
-          localStorage.setItem('nc_progress_' + derivedStreamId, video.currentTime.toString());
-        }
-      }
-    };
     video.addEventListener('timeupdate', onTimeUpdate);
-
-    const checkAndStartProgress = () => {
-       if (!isLive && initialStartAt > 0) {
-         video.currentTime = initialStartAt;
-       }
-    };
 
     try {
       // Direct Play: We use the streamUrl directly without proxies
@@ -88,12 +93,12 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
           hls = new Hls({
             enableWorker: true,
             lowLatencyMode: true,
-            maxBufferSize: 60 * 1000 * 1000, // 60MB de buffer na memória RAM
-            maxBufferLength: 60, // 60 segundos de vídeo carregados para frente
-            liveSyncDurationCount: 3, // Tolerância de sincronia no ao vivo
-            liveMaxLatencyDurationCount: 10, // Latência máxima antes de forçar o pulo
-            startLevel: -1, // Deixa começar na melhor qualidade inicial viável
-            fragLoadingTimeOut: 20000, // 20 segundos de paciência antes de dar erro de rede
+            maxBufferSize: 60 * 1000 * 1000,
+            maxBufferLength: 60,
+            liveSyncDurationCount: 3,
+            liveMaxLatencyDurationCount: 10,
+            startLevel: -1,
+            fragLoadingTimeOut: 20000,
             manifestLoadingTimeOut: 20000,
           });
 
@@ -102,7 +107,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
 
           hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
             setLoading(false);
-            checkAndStartProgress();
             const availableQualities = hls!.levels.map((l: any) => l.height);
             
             plyr = new Plyr(video, {
@@ -120,7 +124,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
                   }
                }
             });
-            
+            applyStartTime();
             video.play().catch(console.error);
           });
 
@@ -158,7 +162,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
           plyr = new Plyr(video, defaultPlyrOptions);
           video.addEventListener('loadedmetadata', () => {
             setLoading(false);
-            checkAndStartProgress();
+            applyStartTime();
             video.play().catch(console.error);
           });
         }
@@ -167,9 +171,9 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
         // It's VOD (Movie / Series) - load directly into the HTML5 <video> tag handled by Plyr
         video.src = streamUrl;
         plyr = new Plyr(video, defaultPlyrOptions);
-          video.addEventListener('loadedmetadata', () => {
+        video.addEventListener('loadedmetadata', () => {
           setLoading(false);
-          checkAndStartProgress();
+          applyStartTime();
           video.play().catch(console.error);
         });
       }
