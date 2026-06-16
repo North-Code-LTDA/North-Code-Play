@@ -47,28 +47,28 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     fetchInfo();
   }, [credentials, seriesId]);
 
-  const requestFullscreen = () => {
+  const triggerFullscreen = () => {
     if (document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen().catch((e) => console.log(e));
     }
   };
 
   const executePlay = (episode: any, startAt: number = 0) => {
-    const episodeId = episode.id || episode.stream_id;
+    const id = String(episode.id);
     if (startAt === 0) {
-      localStorage.removeItem('nc_progress_' + episodeId);
+      localStorage.removeItem('nc_progress_' + id);
     }
-    requestFullscreen();
+    triggerFullscreen();
     if (!credentials) return;
     const ext = episode.container_extension || "mp4";
-    const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/series/${credentials.username}/${credentials.password}/${episodeId}.${ext}`;
-    onPlay(rawUrl, `${seriesName} - S${selectedSeason}E${episode.episode_num || episodeId}`);
+    const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/series/${credentials.username}/${credentials.password}/${id}.${ext}`;
+    onPlay(rawUrl, `${seriesName} - S${selectedSeason}E${episode.episode_num || id}`);
     setShowResumeModal(false);
   };
 
   const handlePlayEpisodeClick = (episode: any) => {
-    const episodeId = episode.id || episode.stream_id;
-    const progress = Number(localStorage.getItem('nc_progress_' + episodeId)) || 0;
+    const id = String(episode.id);
+    const progress = Number(localStorage.getItem('nc_progress_' + id)) || 0;
     if (progress > 30) {
       setSavedProgress(progress);
       setSelectedEpisode(episode);
@@ -255,7 +255,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       {showResumeModal && selectedEpisode && (
         <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-nc-bg border border-nc-border/50 rounded-2xl p-6 md:p-8 max-w-sm w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
-            <h3 className="text-xl font-bold text-white mb-2">Continuar Episódio?</h3>
+            <h3 className="text-xl font-bold text-white mb-2">Continuar Assistindo?</h3>
             <p className="text-nc-text-secondary text-sm mb-6">
               Você já assistiu uma parte deste episódio. O que você gostaria de fazer?
             </p>
