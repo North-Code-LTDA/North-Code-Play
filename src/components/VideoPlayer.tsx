@@ -26,6 +26,25 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isIdle, setIsIdle] = useState(false);
+  const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleMouseMove = () => {
+    setIsIdle(false);
+    if (idleTimeoutRef.current) {
+      clearTimeout(idleTimeoutRef.current);
+    }
+    idleTimeoutRef.current = setTimeout(() => {
+      setIsIdle(true);
+    }, 3000);
+  };
+
+  useEffect(() => {
+    handleMouseMove();
+    return () => {
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -219,14 +238,16 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
+      onMouseMove={handleMouseMove}
+      onTouchStart={handleMouseMove}
       className={embedded 
-        ? "relative w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black flex flex-col items-center justify-center shrink-0" 
-        : "fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center"
+        ? `relative w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black flex flex-col items-center justify-center shrink-0 ${isIdle ? 'cursor-none' : 'cursor-auto'}` 
+        : `fixed inset-0 z-[9999] w-screen h-screen bg-black overflow-hidden flex flex-col ${isIdle ? 'cursor-none' : 'cursor-auto'}`
       }
     >
       {/* Top Bar with Back Button Overlay */}
       {!embedded && (
-        <div className="absolute top-0 left-0 w-full p-6 bg-gradient-to-b from-black/80 to-transparent z-10 flex items-start justify-between gap-4 transition-opacity duration-300">
+        <div className={`absolute top-0 left-0 w-full p-6 bg-gradient-to-b from-black/80 to-transparent z-10 flex items-start justify-between gap-4 transition-opacity duration-300 ${isIdle ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <div className="flex items-center gap-4">
             <button 
               onClick={handleBack}
