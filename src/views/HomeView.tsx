@@ -32,8 +32,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     if (combined.length === 0) return;
 
     try {
-      const watchedItems: any[] = [];
-      const addedIds = new Set();
+      const watchedMap = new Map();
       
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
@@ -42,21 +41,30 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           const value = Number(localStorage.getItem(key));
           
           if (value > 30) {
-            // Verifica se é um episódio e resgata o ID da série pai
             const parentSeriesId = localStorage.getItem('nc_parent_series_' + progressId);
             const targetId = parentSeriesId ? parentSeriesId : progressId;
 
-            // Busca no catálogo pelo ID alvo (Filme ou Série)
             const item = combined.find((c: any) => String(c.stream_id || c.series_id || c.id) === String(targetId));
             
-            if (item && !addedIds.has(item.stream_id || item.series_id || item.id)) {
-              watchedItems.push(item);
-              addedIds.add(item.stream_id || item.series_id || item.id);
+            if (item) {
+              const itemId = item.stream_id || item.series_id || item.id;
+              const lastWatched = Number(localStorage.getItem('nc_last_watched_' + progressId)) || 0;
+
+              // Se o item ainda não está no Map OU se encontramos um episódio mais recente dessa mesma série, atualizamos
+              if (!watchedMap.has(itemId) || watchedMap.get(itemId).lastWatched < lastWatched) {
+                watchedMap.set(itemId, { item, lastWatched });
+              }
             }
           }
         }
       }
-      setContinueWatching(watchedItems);
+
+      // Extrai os valores do Map, ordena cronologicamente (decrescente) e mapeia apenas os itens
+      const sortedItems = Array.from(watchedMap.values())
+        .sort((a, b) => b.lastWatched - a.lastWatched)
+        .map(w => w.item);
+
+      setContinueWatching(sortedItems);
     } catch (error) {
       console.warn('Error reading from localStorage for continue watching:', error);
     }

@@ -78,6 +78,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
         // Save progress every ~5 seconds
         if (Math.floor(video.currentTime) % 5 === 0 && video.currentTime > 0) {
           localStorage.setItem('nc_progress_' + derivedStreamId, video.currentTime.toString());
+          localStorage.setItem('nc_last_watched_' + derivedStreamId, Date.now().toString());
         }
       }
     };
