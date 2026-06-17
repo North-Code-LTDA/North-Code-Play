@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
@@ -232,7 +233,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     onBack();
   };
 
-  return (
+  const playerContent = (
     <motion.div 
       key={streamUrl}
       initial={{ opacity: 0 }}
@@ -242,7 +243,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       onTouchStart={handleMouseMove}
       className={embedded 
         ? `relative w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black flex flex-col items-center justify-center shrink-0 ${isIdle ? 'cursor-none' : 'cursor-auto'}` 
-        : `fixed inset-0 z-[9999] w-screen h-screen bg-black overflow-hidden flex flex-col ${isIdle ? 'cursor-none' : 'cursor-auto'}`
+        : `fixed inset-0 z-[9999] bg-black flex flex-col items-center justify-center ${isIdle ? 'cursor-none' : 'cursor-auto'}`
       }
     >
       {/* Top Bar with Back Button Overlay */}
@@ -318,4 +319,10 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       </div>
     </motion.div>
   );
+
+  if (!embedded && typeof document !== 'undefined') {
+    return createPortal(playerContent, document.body);
+  }
+
+  return playerContent;
 }
