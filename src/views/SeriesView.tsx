@@ -1,10 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { PlaySquare, Loader2, Play, X, ChevronLeft, Heart } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
+import { HorizontalRow } from '../components/HorizontalRow';
 
 interface SeriesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -19,7 +20,55 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [selectedSeason, setSelectedSeason] = useState<string | null>(null);
   const [displayCount, setDisplayCount] = useState(100);
-  const { isFavorite, toggleFavorite } = useFavorites();
+  const { favorites } = useFavorites();
+  const [continueWatching, setContinueWatching] = useState<any[]>([]);
+
+  const favoriteSeries = useMemo(() => {
+    return favorites
+      .filter(f => f.type === 'series')
+      .map(f => allSeriesStreams.find(s => String(s.series_id || s.id) === String(f.id)))
+      .filter(Boolean);
+  }, [favorites, allSeriesStreams]);
+
+  useEffect(() => {
+    if (allSeriesStreams.length === 0) return;
+
+    try {
+      const watchedMap = new Map();
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('nc_progress_')) {
+          const progressId = key.replace('nc_progress_', '');
+          const value = Number(localStorage.getItem(key));
+          
+          if (value > 30) {
+            const parentSeriesId = localStorage.getItem('nc_parent_series_' + progressId);
+            const targetId = parentSeriesId ? parentSeriesId : progressId;
+
+            const item = allSeriesStreams.find((c: any) => String(c.series_id || c.id) === String(targetId));
+            
+            if (item) {
+              const itemId = item.series_id || item.id;
+              const lastWatched = Number(localStorage.getItem('nc_last_watched_' + progressId)) || 0;
+
+              if (!watchedMap.has(itemId) || watchedMap.get(itemId).lastWatched < lastWatched) {
+                watchedMap.set(itemId, { item, lastWatched });
+              }
+            }
+          }
+        }
+      }
+
+      const sortedItems = Array.from(watchedMap.values())
+        .sort((a, b) => b.lastWatched - a.lastWatched)
+        .map(w => w.item);
+
+      setContinueWatching(sortedItems);
+    } catch (error) {
+      console.warn('Error reading from localStorage for continue watching series:', error);
+    }
+  }, [allSeriesStreams]);
 
   // Default to first category
   React.useEffect(() => {
@@ -138,6 +187,28 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
               {filteredStreams.length} séries encontradas
             </p>
           </div>
+
+          {continueWatching.length > 0 && (
+            <div className="mb-12">
+              <HorizontalRow 
+                 title="Assistidos Recentemente"
+                 items={continueWatching}
+                 type="series"
+                 onItemClick={handleSeriesClick}
+              />
+            </div>
+          )}
+
+          {favoriteSeries.length > 0 && (
+            <div className="mb-12">
+              <HorizontalRow 
+                 title="Séries Favoritas"
+                 items={favoriteSeries}
+                 type="series"
+                 onItemClick={handleSeriesClick}
+              />
+            </div>
+          )}
 
           {loadingSeries && filteredStreams.length === 0 ? (
              <div className="flex items-center justify-center h-64">

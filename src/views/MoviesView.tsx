@@ -1,8 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Film, Loader2, Play } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
+import { useFavorites } from '../hooks/useFavorites';
+import { HorizontalRow } from '../components/HorizontalRow';
 
 interface MoviesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -14,6 +16,52 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
   const [displayCount, setDisplayCount] = useState(100);
+  const { favorites } = useFavorites();
+  const [continueWatching, setContinueWatching] = useState<any[]>([]);
+
+  const favoriteMovies = useMemo(() => {
+    return favorites
+      .filter(f => f.type === 'movie')
+      .map(f => allVodStreams.find(s => String(s.stream_id || s.id) === String(f.id)))
+      .filter(Boolean);
+  }, [favorites, allVodStreams]);
+
+  useEffect(() => {
+    if (allVodStreams.length === 0) return;
+
+    try {
+      const watchedMap = new Map();
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('nc_progress_')) {
+          const progressId = key.replace('nc_progress_', '');
+          const value = Number(localStorage.getItem(key));
+          
+          if (value > 30) {
+            const item = allVodStreams.find((c: any) => String(c.stream_id || c.id) === String(progressId));
+            
+            if (item) {
+              const itemId = item.stream_id || item.id;
+              const lastWatched = Number(localStorage.getItem('nc_last_watched_' + progressId)) || 0;
+
+              if (!watchedMap.has(itemId) || watchedMap.get(itemId).lastWatched < lastWatched) {
+                watchedMap.set(itemId, { item, lastWatched });
+              }
+            }
+          }
+        }
+      }
+
+      const sortedItems = Array.from(watchedMap.values())
+        .sort((a, b) => b.lastWatched - a.lastWatched)
+        .map(w => w.item);
+
+      setContinueWatching(sortedItems);
+    } catch (error) {
+      console.warn('Error reading from localStorage for continue watching movies:', error);
+    }
+  }, [allVodStreams]);
 
   // Default to first category
   React.useEffect(() => {
@@ -113,6 +161,28 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                   {filteredStreams.length} filmes encontrados
                 </p>
               </div>
+
+              {continueWatching.length > 0 && (
+                <div className="mb-12">
+                  <HorizontalRow 
+                     title="Assistidos Recentemente"
+                     items={continueWatching}
+                     type="vod"
+                     onItemClick={(item) => setSelectedMovie(item)}
+                  />
+                </div>
+              )}
+
+              {favoriteMovies.length > 0 && (
+                <div className="mb-12">
+                  <HorizontalRow 
+                     title="Filmes Favoritos"
+                     items={favoriteMovies}
+                     type="vod"
+                     onItemClick={(item) => setSelectedMovie(item)}
+                  />
+                </div>
+              )}
 
               {loadingVod && filteredStreams.length === 0 ? (
                  <div className="flex items-center justify-center h-64">
