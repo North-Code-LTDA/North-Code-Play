@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import muxjs from 'mux.js';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2, SkipForward, SkipBack } from 'lucide-react';
 import { motion } from 'motion/react';
 
 if (typeof window !== 'undefined') {
@@ -18,9 +18,11 @@ interface VideoPlayerProps {
   embedded?: boolean;
   startAt?: number;
   streamId?: string | number;
+  onNext?: () => void;
+  onPrevious?: () => void;
 }
 
-export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startAt, streamId }: VideoPlayerProps) {
+export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startAt, streamId, onNext, onPrevious }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +62,13 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       }
     };
     video.addEventListener('timeupdate', onTimeUpdate);
+
+    const onEnded = () => {
+      if (onNext) {
+        onNext();
+      }
+    };
+    video.addEventListener('ended', onEnded);
 
     const checkAndStartProgress = () => {
        if (!isLive && initialStartAt !== undefined) {
@@ -182,6 +191,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       video.removeEventListener('canplay', onCanPlay);
       video.removeEventListener('error', onErrorHandler);
       video.removeEventListener('timeupdate', onTimeUpdate);
+      video.removeEventListener('ended', onEnded);
       if (video) {
         video.pause();
         video.removeAttribute('src');
@@ -225,6 +235,27 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
               <ArrowLeft className="w-6 h-6" />
             </button>
             <h2 className="text-white text-xl font-medium truncate drop-shadow-md">{title}</h2>
+          </div>
+          
+          <div className="flex items-center gap-2">
+             {onPrevious && (
+                <button 
+                  onClick={(e) => { e.stopPropagation(); onPrevious(); }}
+                  className="px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors flex items-center gap-2 text-sm font-medium"
+                >
+                  <SkipBack className="w-4 h-4" />
+                  Anterior
+                </button>
+             )}
+             {onNext && (
+                <button 
+                  onClick={(e) => { e.stopPropagation(); onNext(); }}
+                  className="px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors flex items-center gap-2 text-sm font-medium"
+                >
+                  Próximo
+                  <SkipForward className="w-4 h-4" />
+                </button>
+             )}
           </div>
         </div>
       )}

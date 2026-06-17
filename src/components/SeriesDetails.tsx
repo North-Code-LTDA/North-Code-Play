@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
+import { VideoPlayer } from './VideoPlayer';
 
 interface SeriesDetailsProps {
   key?: React.Key;
@@ -24,6 +25,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [savedProgress, setSavedProgress] = useState(0);
   const [selectedEpisode, setSelectedEpisode] = useState<any>(null);
+  const [playingEpisodeData, setPlayingEpisodeData] = useState<{url: string, title: string, startAt: number, episode: any} | null>(null);
 
   useEffect(() => {
     async function fetchInfo() {
@@ -61,8 +63,32 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     if (!credentials) return;
     const ext = episode.container_extension || "mp4";
     const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/series/${credentials.username}/${credentials.password}/${episode.id}.${ext}`;
-    onPlay(rawUrl, `${seriesName} - S${selectedSeason}E${episode.episode_num || episode.id}`, startAt, episode.id);
+    
+    setPlayingEpisodeData({
+      url: rawUrl,
+      title: `${seriesInfo?.info?.name || seriesName} - S${selectedSeason}E${episode.episode_num || episode.id}`,
+      startAt,
+      episode
+    });
     setShowResumeModal(false);
+  };
+
+  const handleNextEpisode = () => {
+    if (!selectedSeason || !seriesInfo?.episodes || !playingEpisodeData) return;
+    const episodes = seriesInfo.episodes[selectedSeason];
+    const currentIndex = episodes.findIndex((e: any) => e.id === playingEpisodeData.episode.id);
+    if (currentIndex !== -1 && currentIndex < episodes.length - 1) {
+      executePlay(episodes[currentIndex + 1], 0);
+    }
+  };
+
+  const handlePreviousEpisode = () => {
+    if (!selectedSeason || !seriesInfo?.episodes || !playingEpisodeData) return;
+    const episodes = seriesInfo.episodes[selectedSeason];
+    const currentIndex = episodes.findIndex((e: any) => e.id === playingEpisodeData.episode.id);
+    if (currentIndex > 0) {
+      executePlay(episodes[currentIndex - 1], 0);
+    }
   };
 
   const handlePlayEpisodeClick = (episode: any) => {
@@ -280,6 +306,37 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
           </div>
         </div>
       )}
+
+      <AnimatePresence>
+        {playingEpisodeData && (() => {
+          let hasNext = false;
+          let hasPrev = false;
+          if (selectedSeason && seriesInfo?.episodes) {
+            const episodes = seriesInfo.episodes[selectedSeason];
+            const currIdx = episodes.findIndex((e: any) => e.id === playingEpisodeData.episode.id);
+            if (currIdx !== -1) {
+              if (currIdx < episodes.length - 1) hasNext = true;
+              if (currIdx > 0) hasPrev = true;
+            }
+          }
+          return (
+            <VideoPlayer
+              streamUrl={playingEpisodeData.url}
+              title={playingEpisodeData.title}
+              startAt={playingEpisodeData.startAt}
+              streamId={playingEpisodeData.episode.id}
+              onBack={() => {
+                if (document.fullscreenElement) {
+                  document.exitFullscreen().catch(err => console.log('Fullscreen exit error:', err));
+                }
+                setPlayingEpisodeData(null);
+              }}
+              onNext={hasNext ? handleNextEpisode : undefined}
+              onPrevious={hasPrev ? handlePreviousEpisode : undefined}
+            />
+          );
+        })()}
+      </AnimatePresence>
 
     </motion.div>
   );
