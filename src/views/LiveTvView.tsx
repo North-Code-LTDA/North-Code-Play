@@ -26,14 +26,67 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const [epgData, setEpgData] = useState<any[]>([]);
   const [loadingEpg, setLoadingEpg] = useState(false);
 
-  const { isFavorite, toggleFavorite } = useFavorites();
+  const { favorites, isFavorite, toggleFavorite } = useFavorites();
+  const [recentChannels, setRecentChannels] = useState<any[]>([]);
+
+  const favoriteChannels = useMemo(() => {
+    return favorites
+      .filter(f => f.type === 'live')
+      .map(f => allLiveStreams.find(s => String(s.stream_id || s.id) === String(f.id)))
+      .filter(Boolean);
+  }, [favorites, allLiveStreams]);
+
+  useEffect(() => {
+    if (allLiveStreams.length === 0) return;
+
+    try {
+      const watchedMap = new Map();
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('nc_live_history_')) {
+          const channelId = key.replace('nc_live_history_', '');
+          const lastWatched = Number(localStorage.getItem(key)) || 0;
+          
+          const item = allLiveStreams.find((c: any) => String(c.stream_id || c.id) === String(channelId));
+          
+          if (item) {
+            watchedMap.set(channelId, { item, lastWatched });
+          }
+        }
+      }
+
+      const sortedItems = Array.from(watchedMap.values())
+        .sort((a, b) => b.lastWatched - a.lastWatched)
+        .map(w => w.item);
+
+      setRecentChannels(sortedItems);
+    } catch (error) {
+      console.warn('Error reading from localStorage for continue watching live:', error);
+    }
+  }, [allLiveStreams]);
+
+  const extendedCategories = useMemo(() => {
+    const virtualCats = [
+      { category_id: 'nc_recent', category_name: 'Canais Recentes' },
+      { category_id: 'nc_fav', category_name: 'Canais Favoritos' }
+    ];
+    return [...virtualCats, ...liveCategories];
+  }, [liveCategories]);
+
+  // Default to first category
+  useEffect(() => {
+    if (extendedCategories.length > 0 && selectedCategoryId === undefined) {
+      setSelectedCategoryId(extendedCategories[0].category_id);
+    }
+  }, [extendedCategories, selectedCategoryId]);
 
   // Load streams when category is selected
   useEffect(() => {
-    if (selectedCategoryId) {
+    if (selectedCategoryId && selectedCategoryId !== 'nc_recent' && selectedCategoryId !== 'nc_fav') {
       fetchLiveStreams(selectedCategoryId);
-      setDisplayCount(100);
     }
+    setDisplayCount(100);
   }, [selectedCategoryId, fetchLiveStreams]);
 
   // Handle Search query override
@@ -67,12 +120,15 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     return () => { isMounted = false; };
   }, [selectedChannel, credentials]);
 
-  const sourceStreams = searchQuery ? allLiveStreams : liveStreams;
-  
   const filteredStreams = useMemo(() => {
-    if (!searchQuery) return sourceStreams;
-    return sourceStreams.filter(stream => stream.name.toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [sourceStreams, searchQuery]);
+    if (searchQuery) {
+      return allLiveStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+    }
+    if (selectedCategoryId === 'nc_recent') return recentChannels;
+    if (selectedCategoryId === 'nc_fav') return favoriteChannels;
+
+    return liveStreams;
+  }, [searchQuery, selectedCategoryId, recentChannels, favoriteChannels, liveStreams, allLiveStreams]);
 
   const displayedStreams = filteredStreams.slice(0, displayCount);
 
@@ -85,7 +141,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     }
   };
 
-  const activeCategory = liveCategories.find(c => c.category_id === selectedCategoryId);
+  const activeCategory = extendedCategories.find(c => c.category_id === selectedCategoryId);
 
   // Build stream URL strictly for embedded player wrapper
   const getStreamUrl = (stream: any) => {
@@ -107,12 +163,12 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
               <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de TV</h2>
             </div>
             <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar">
-              {loadingLive && liveCategories.length === 0 ? (
+              {loadingLive && extendedCategories.length === 2 ? (
                  <div className="flex items-center justify-center py-10">
                    <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
                  </div>
               ) : (
-                liveCategories.map((cat) => (
+                extendedCategories.map((cat) => (
                   <button
                     key={cat.category_id}
                     onClick={() => {
@@ -164,6 +220,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                       onClick={() => {
                         setSelectedChannel(stream);
                         setIsMobilePlayerOpen(true);
+                        localStorage.setItem('nc_live_history_' + stream.stream_id, Date.now().toString());
                       }}
                       className={`w-full flex items-center gap-3 p-2 rounded-xl transition-colors border ${
                         selectedChannel?.stream_id === stream.stream_id 
