@@ -18,7 +18,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const [leftPaneView, setLeftPaneView] = useState<'categories' | 'channels'>('categories');
   const [isMobilePlayerOpen, setIsMobilePlayerOpen] = useState(false);
 
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>('nc_recent');
   const [selectedChannel, setSelectedChannel] = useState<any | null>(null);
   const [displayCount, setDisplayCount] = useState(100);
   
@@ -68,7 +68,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
   const extendedCategories = useMemo(() => {
     const virtualCats = [
-      { category_id: 'nc_recent', category_name: 'Canais Recentes' },
+      { category_id: 'nc_recent', category_name: 'Assistidos Recentemente' },
       { category_id: 'nc_fav', category_name: 'Canais Favoritos' }
     ];
     return [...virtualCats, ...liveCategories];

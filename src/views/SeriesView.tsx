@@ -143,7 +143,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
       {/* Sidebar - Categories */}
       <aside className="hidden md:flex w-64 border-r border-nc-border/50 bg-nc-bg-card/30 flex-col h-full shrink-0">
         <div className="p-4 border-b border-nc-border/50">
-          <h2 className="text-xs font-semibold text-nc-text-secondary uppercase tracking-wider">Categorias de Séries</h2>
+          <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de Séries</h2>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
           {loadingSeries && extendedCategories.length === 2 ? (
