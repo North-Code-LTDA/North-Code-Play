@@ -5,7 +5,6 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
-import { HorizontalRow } from '../components/HorizontalRow';
 
 interface SeriesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -70,31 +69,42 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
     }
   }, [allSeriesStreams]);
 
+  const extendedCategories = useMemo(() => {
+    const virtualCats = [
+      { category_id: 'nc_recent', category_name: 'Assistidos Recentemente' },
+      { category_id: 'nc_fav', category_name: 'Séries Favoritas' }
+    ];
+    return [...virtualCats, ...seriesCategories];
+  }, [seriesCategories]);
+
   // Default to first category
   React.useEffect(() => {
-    if (seriesCategories.length > 0 && selectedCategoryId === undefined) {
-      setSelectedCategoryId(seriesCategories[0].category_id);
+    if (extendedCategories.length > 0 && selectedCategoryId === undefined) {
+      setSelectedCategoryId(extendedCategories[0].category_id);
     }
-  }, [seriesCategories, selectedCategoryId]);
+  }, [extendedCategories, selectedCategoryId]);
 
   // Fetch streams when category changes
   React.useEffect(() => {
-    if (selectedCategoryId) {
+    if (selectedCategoryId && selectedCategoryId !== 'nc_recent' && selectedCategoryId !== 'nc_fav') {
       fetchSeriesStreams(selectedCategoryId);
-      setDisplayCount(100); // Reset display count on category change
     }
+    setDisplayCount(100); // Reset display count on category change
   }, [selectedCategoryId, fetchSeriesStreams]);
 
   React.useEffect(() => {
     setDisplayCount(100); // Reset display count on search change
   }, [searchQuery]);
 
-  const sourceStreams = searchQuery && searchQuery.length > 0 ? allSeriesStreams : seriesStreams;
-  
   const filteredStreams = useMemo(() => {
-    if (!searchQuery) return sourceStreams;
-    return sourceStreams.filter(stream => stream.name?.toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [sourceStreams, searchQuery]);
+    if (searchQuery) {
+      return allSeriesStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+    }
+    if (selectedCategoryId === 'nc_recent') return continueWatching;
+    if (selectedCategoryId === 'nc_fav') return favoriteSeries;
+
+    return seriesStreams;
+  }, [searchQuery, selectedCategoryId, continueWatching, favoriteSeries, seriesStreams, allSeriesStreams]);
 
   const displayedStreams = filteredStreams.slice(0, displayCount);
 
@@ -136,13 +146,13 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
           <h2 className="text-xs font-semibold text-nc-text-secondary uppercase tracking-wider">Categorias de Séries</h2>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
-          {loadingSeries && seriesCategories.length === 0 ? (
+          {loadingSeries && extendedCategories.length === 2 ? (
              <div className="flex items-center justify-center py-10">
                <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
              </div>
           ) : (
             <>
-              {seriesCategories.map((cat) => (
+              {extendedCategories.map((cat) => (
                 <button
                   key={cat.category_id}
                   onClick={() => setSelectedCategoryId(cat.category_id)}
@@ -160,7 +170,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
       <main className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
         {/* Mobile Categories Navbar */}
         <div className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
-          {seriesCategories.map((cat) => (
+          {extendedCategories.map((cat) => (
             <button
               key={cat.category_id}
               onClick={() => setSelectedCategoryId(cat.category_id)}
@@ -180,35 +190,13 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
           <div className="mb-6">
             <h1 className="text-2xl font-semibold text-white">
               {selectedCategoryId 
-                 ? seriesCategories.find(c => c.category_id === selectedCategoryId)?.category_name 
+                 ? extendedCategories.find(c => c.category_id === selectedCategoryId)?.category_name 
                  : 'Carregando...'}
             </h1>
             <p className="text-nc-text-secondary text-sm mt-1">
               {filteredStreams.length} séries encontradas
             </p>
           </div>
-
-          {continueWatching.length > 0 && (
-            <div className="mb-12">
-              <HorizontalRow 
-                 title="Assistidos Recentemente"
-                 items={continueWatching}
-                 type="series"
-                 onItemClick={handleSeriesClick}
-              />
-            </div>
-          )}
-
-          {favoriteSeries.length > 0 && (
-            <div className="mb-12">
-              <HorizontalRow 
-                 title="Séries Favoritas"
-                 items={favoriteSeries}
-                 type="series"
-                 onItemClick={handleSeriesClick}
-              />
-            </div>
-          )}
 
           {loadingSeries && filteredStreams.length === 0 ? (
              <div className="flex items-center justify-center h-64">

@@ -4,7 +4,6 @@ import { motion } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { useFavorites } from '../hooks/useFavorites';
-import { HorizontalRow } from '../components/HorizontalRow';
 
 interface MoviesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -63,31 +62,42 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
     }
   }, [allVodStreams]);
 
+  const extendedCategories = useMemo(() => {
+    const virtualCats = [
+      { category_id: 'nc_recent', category_name: 'Assistidos Recentemente' },
+      { category_id: 'nc_fav', category_name: 'Filmes Favoritos' }
+    ];
+    return [...virtualCats, ...vodCategories];
+  }, [vodCategories]);
+
   // Default to first category
   React.useEffect(() => {
-    if (vodCategories.length > 0 && selectedCategoryId === undefined) {
-      setSelectedCategoryId(vodCategories[0].category_id);
+    if (extendedCategories.length > 0 && selectedCategoryId === undefined) {
+      setSelectedCategoryId(extendedCategories[0].category_id);
     }
-  }, [vodCategories, selectedCategoryId]);
+  }, [extendedCategories, selectedCategoryId]);
 
   // Fetch streams when category changes
   React.useEffect(() => {
-    if (selectedCategoryId) {
+    if (selectedCategoryId && selectedCategoryId !== 'nc_recent' && selectedCategoryId !== 'nc_fav') {
       fetchVodStreams(selectedCategoryId);
-      setDisplayCount(100); // Reset display count on category change
     }
+    setDisplayCount(100); // Reset display count on category change
   }, [selectedCategoryId, fetchVodStreams]);
 
   React.useEffect(() => {
     setDisplayCount(100); // Reset display count on search change
   }, [searchQuery]);
 
-  const sourceStreams = searchQuery && searchQuery.length > 0 ? allVodStreams : vodStreams;
-  
   const filteredStreams = useMemo(() => {
-    if (!searchQuery) return sourceStreams;
-    return sourceStreams.filter(stream => stream.name?.toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [sourceStreams, searchQuery]);
+    if (searchQuery) {
+      return allVodStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+    }
+    if (selectedCategoryId === 'nc_recent') return continueWatching;
+    if (selectedCategoryId === 'nc_fav') return favoriteMovies;
+    
+    return vodStreams;
+  }, [searchQuery, selectedCategoryId, continueWatching, favoriteMovies, vodStreams, allVodStreams]);
 
   const displayedStreams = filteredStreams.slice(0, displayCount);
 
@@ -109,13 +119,13 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
               <h2 className="text-xs font-semibold text-nc-text-secondary uppercase tracking-wider">Categorias de Filmes</h2>
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
-              {loadingVod && vodCategories.length === 0 ? (
+              {loadingVod && extendedCategories.length === 2 ? (
                  <div className="flex items-center justify-center py-10">
                    <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
                  </div>
               ) : (
                 <>
-                  {vodCategories.map((cat) => (
+                  {extendedCategories.map((cat) => (
                     <button
                       key={cat.category_id}
                       onClick={() => setSelectedCategoryId(cat.category_id)}
@@ -133,7 +143,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
           <main className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
             {/* Mobile Categories Navbar */}
             <div className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
-              {vodCategories.map((cat) => (
+              {extendedCategories.map((cat) => (
                 <button
                   key={cat.category_id}
                   onClick={() => setSelectedCategoryId(cat.category_id)}
@@ -154,35 +164,13 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
               <div className="mb-6">
                 <h1 className="text-2xl font-semibold text-white">
                   {selectedCategoryId 
-                     ? vodCategories.find(c => c.category_id === selectedCategoryId)?.category_name 
+                     ? extendedCategories.find(c => c.category_id === selectedCategoryId)?.category_name 
                      : 'Carregando...'}
                 </h1>
                 <p className="text-nc-text-secondary text-sm mt-1">
                   {filteredStreams.length} filmes encontrados
                 </p>
               </div>
-
-              {continueWatching.length > 0 && (
-                <div className="mb-12">
-                  <HorizontalRow 
-                     title="Assistidos Recentemente"
-                     items={continueWatching}
-                     type="vod"
-                     onItemClick={(item) => setSelectedMovie(item)}
-                  />
-                </div>
-              )}
-
-              {favoriteMovies.length > 0 && (
-                <div className="mb-12">
-                  <HorizontalRow 
-                     title="Filmes Favoritos"
-                     items={favoriteMovies}
-                     type="vod"
-                     onItemClick={(item) => setSelectedMovie(item)}
-                  />
-                </div>
-              )}
 
               {loadingVod && filteredStreams.length === 0 ? (
                  <div className="flex items-center justify-center h-64">
