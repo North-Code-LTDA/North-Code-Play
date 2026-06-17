@@ -56,6 +56,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   };
 
   const executePlay = (episode: any, startAt: number = 0) => {
+    localStorage.setItem('nc_parent_series_' + episode.id, String(seriesId));
     if (startAt === 0) {
       localStorage.removeItem('nc_progress_' + episode.id);
     }

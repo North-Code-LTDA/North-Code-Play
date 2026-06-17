@@ -38,11 +38,16 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key && key.startsWith('nc_progress_')) {
-          const id = key.replace('nc_progress_', '');
+          const progressId = key.replace('nc_progress_', '');
           const value = Number(localStorage.getItem(key));
           
           if (value > 30) {
-            const item = combined.find((c: any) => String(c.stream_id || c.series_id || c.id) === id);
+            // Verifica se é um episódio e resgata o ID da série pai
+            const parentSeriesId = localStorage.getItem('nc_parent_series_' + progressId);
+            const targetId = parentSeriesId ? parentSeriesId : progressId;
+
+            // Busca no catálogo pelo ID alvo (Filme ou Série)
+            const item = combined.find((c: any) => String(c.stream_id || c.series_id || c.id) === String(targetId));
             
             if (item && !addedIds.has(item.stream_id || item.series_id || item.id)) {
               watchedItems.push(item);
