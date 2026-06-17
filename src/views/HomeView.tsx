@@ -24,6 +24,38 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
   const [selectedMovie, setSelectedMovie] = useState<any | null>(null);
   const [displayCount, setDisplayCount] = useState({ live: 24, vod: 24, series: 24 });
+  const [continueWatching, setContinueWatching] = useState<any[]>([]);
+
+  // Continue Watching logic
+  useEffect(() => {
+    const combined = [...allVodStreams, ...allSeriesStreams];
+    if (combined.length === 0) return;
+
+    try {
+      const watchedItems: any[] = [];
+      const addedIds = new Set();
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('nc_progress_')) {
+          const id = key.replace('nc_progress_', '');
+          const value = Number(localStorage.getItem(key));
+          
+          if (value > 30) {
+            const item = combined.find((c: any) => String(c.stream_id || c.series_id || c.id) === id);
+            
+            if (item && !addedIds.has(item.stream_id || item.series_id || item.id)) {
+              watchedItems.push(item);
+              addedIds.add(item.stream_id || item.series_id || item.id);
+            }
+          }
+        }
+      }
+      setContinueWatching(watchedItems);
+    } catch (error) {
+      console.warn('Error reading from localStorage for continue watching:', error);
+    }
+  }, [allVodStreams, allSeriesStreams]);
 
   // Auto-Fetch data in background if empty when landing on Dashboard
   useEffect(() => {
@@ -192,6 +224,21 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
       />
 
       <div className="px-6 md:px-12 pb-12 gap-8 flex flex-col relative z-20 mt-4 md:mt-8 lg:mt-16 xl:mt-24 shrink-0">
+        {continueWatching.length > 0 && (
+          <HorizontalRow 
+             title="Continuar Assistindo"
+             items={continueWatching}
+             type="vod"
+             onItemClick={(item) => {
+               if (item.stream_type === 'movie' || item.stream_id) {
+                 setSelectedMovie(item);
+               } else {
+                 setSelectedSeries(item);
+               }
+             }}
+          />
+        )}
+        
         <HorizontalRow 
            title="Canais Ao Vivo"
            items={filteredLive.slice(0, displayCount.live)}
