@@ -16,7 +16,8 @@ const getValidYear = (item: any) => {
     const match = item.name.match(/(19|20)\d{2}/);
     if (match) yearStr = match[0];
   }
-  return parseInt(yearStr, 10) || 0;
+  const year = parseInt(yearStr, 10);
+  return year >= 1950 && year <= 2026 ? year : 0;
 };
 
 const getValidRating = (item: any) => parseFloat(item.rating) || 0;
@@ -29,15 +30,38 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   const heroItems = useMemo(() => {
     if (!items || items.length === 0) return [];
     
-    return [...items]
+    const normalize = (name: string) => {
+      if (!name) return '';
+      return name
+        .toLowerCase()
+        .replace(/\b(dublado|legendado|dub|leg|4k|fhd|hd|dual|áudio|audio)\b/g, '')
+        .replace(/[\[\]\(\)]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    const sortedItems = [...items]
       .filter((item) => item.stream_icon || item.cover || item.backdrop_path)
       .sort((a, b) => {
         const yearA = getValidYear(a);
         const yearB = getValidYear(b);
         if (yearB !== yearA) return yearB - yearA;
         return getValidRating(b) - getValidRating(a);
-      })
-      .slice(0, 10);
+      });
+
+    const deduped: any[] = [];
+    const seenNames = new Set<string>();
+
+    for (const item of sortedItems) {
+      const normalizedName = normalize(item.name);
+      if (!seenNames.has(normalizedName)) {
+        seenNames.add(normalizedName);
+        deduped.push(item);
+      }
+      if (deduped.length === 30) break;
+    }
+
+    return deduped;
   }, [items]);
 
   useEffect(() => {
