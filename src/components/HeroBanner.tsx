@@ -1,6 +1,8 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Play, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useXtreamContext } from '../context/XtreamContext';
+import { XtreamService } from '../services/xtreamService';
 
 interface HeroBannerProps {
   items: any[];
@@ -8,14 +10,34 @@ interface HeroBannerProps {
   onInfo: (item: any) => void;
 }
 
+const getValidYear = (item: any) => {
+  let yearStr = item.year || item.releasedate || '';
+  if (!yearStr && item.name) {
+    const match = item.name.match(/(19|20)\d{2}/);
+    if (match) yearStr = match[0];
+  }
+  return parseInt(yearStr, 10) || 0;
+};
+
+const getValidRating = (item: any) => parseFloat(item.rating) || 0;
+
 export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
+  const { credentials } = useXtreamContext();
+  const [activeDetails, setActiveDetails] = useState<any>(null);
 
   const heroItems = useMemo(() => {
     if (!items || items.length === 0) return [];
-    return items.filter(
-      (item) => item.stream_icon || item.cover || item.backdrop_path
-    ).slice(0, 10);
+    
+    return [...items]
+      .filter((item) => item.stream_icon || item.cover || item.backdrop_path)
+      .sort((a, b) => {
+        const yearA = getValidYear(a);
+        const yearB = getValidYear(b);
+        if (yearB !== yearA) return yearB - yearA;
+        return getValidRating(b) - getValidRating(a);
+      })
+      .slice(0, 10);
   }, [items]);
 
   useEffect(() => {
@@ -26,9 +48,42 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
     return () => clearInterval(timer);
   }, [heroItems.length]);
 
-  if (heroItems.length === 0) return null;
-
   const currentItem = heroItems[currentIndex];
+
+  useEffect(() => {
+    if (!currentItem || !credentials) return;
+    
+    let isMounted = true;
+    setActiveDetails(null);
+
+    const fetchDetails = async () => {
+      try {
+        const isMovie = currentItem.stream_type === 'movie' || (currentItem.stream_id && !currentItem.series_id);
+        if (isMovie) {
+          const res = await XtreamService.getVodInfo(credentials, currentItem.stream_id);
+          if (isMounted && res?.info) {
+            setActiveDetails(res.info);
+          }
+        } else {
+          const res = await XtreamService.getSeriesInfo(credentials, currentItem.series_id || currentItem.stream_id || currentItem.id);
+          if (isMounted && res?.info) {
+            setActiveDetails(res.info);
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to fetch details for hero item:', error);
+      }
+    };
+
+    fetchDetails();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentItem, credentials]);
+
+  if (heroItems.length === 0 || !currentItem) return null;
+
   const bgImage = currentItem.stream_icon || currentItem.cover || currentItem.backdrop_path;
 
   return (
@@ -64,19 +119,31 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.5 }}
           >
-            <h1 className="text-4xl md:text-5xl lg:text-7xl font-bold text-white tracking-tight mb-4 drop-shadow-lg break-words whitespace-normal text-wrap">
+            <h1 className="text-4xl md:text-5xl lg:text-7xl font-bold text-white tracking-tight drop-shadow-lg break-words whitespace-normal text-wrap">
               {currentItem.name}
             </h1>
-            {currentItem.rating && currentItem.rating !== "0" && (
-              <p className="text-yellow-500 font-medium mb-2 drop-shadow-md">
-                ★ {currentItem.rating}
-              </p>
-            )}
-            {currentItem.plot && (
-              <p className="text-white/80 line-clamp-3 md:line-clamp-5 mb-6">
-                {currentItem.plot}
-              </p>
-            )}
+            
+            <div className="flex flex-wrap items-center gap-3 text-sm text-gray-300 mb-4 mt-3">
+              {currentItem.rating && currentItem.rating !== "0" && (
+                <span className="text-yellow-500 font-medium drop-shadow-md">
+                  ★ {currentItem.rating}
+                </span>
+              )}
+              {(activeDetails?.releasedate || getValidYear(currentItem) > 0) && (
+                <span className="bg-white/10 px-2 py-0.5 rounded text-white/90">
+                  {activeDetails?.releasedate || getValidYear(currentItem) || ''}
+                </span>
+              )}
+              {(activeDetails?.genre || currentItem.category_name) && (
+                <span className="text-white/80">
+                  {activeDetails?.genre || currentItem.category_name}
+                </span>
+              )}
+            </div>
+
+            <p className="text-white/80 line-clamp-3 md:line-clamp-5 mb-6 text-sm md:text-base leading-relaxed">
+              {activeDetails?.plot || activeDetails?.overview || currentItem.plot || currentItem.overview || 'Carregando sinopse...'}
+            </p>
           </motion.div>
         </AnimatePresence>
 
