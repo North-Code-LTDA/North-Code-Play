@@ -3,7 +3,6 @@ import { Play, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
-import { useFocusable } from '@noriginmedia/norigin-spatial-navigation';
 
 interface HeroBannerProps {
   items: any[];
@@ -74,14 +73,6 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   }, [heroItems.length]);
 
   const currentItem = heroItems[currentIndex];
-  
-  const { ref: playRef, focused: playFocused } = useFocusable({
-    onEnterPress: () => onPlay(currentItem)
-  });
-  
-  const { ref: infoRef, focused: infoFocused } = useFocusable({
-    onEnterPress: () => onInfo(currentItem)
-  });
 
   useEffect(() => {
     if (!currentItem || !credentials) return;
@@ -182,17 +173,15 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
 
         <div className="flex items-center gap-4 relative z-30 mt-6">
           <button
-            ref={playRef as React.RefObject<HTMLButtonElement>}
             onClick={() => onPlay(currentItem)}
-            className={`flex-1 md:flex-none items-center justify-center flex gap-2 bg-nc-primary hover:bg-nc-primary-hover text-black px-6 py-3 rounded-lg font-semibold transition-all active:scale-95 shadow-lg ${playFocused ? 'ring-4 ring-white scale-105' : ''}`}
+            className="flex-1 md:flex-none items-center justify-center flex gap-2 bg-nc-primary hover:bg-nc-primary-hover text-black px-6 py-3 rounded-lg font-semibold transition-all active:scale-95 shadow-lg"
           >
             <Play className="w-5 h-5 fill-black" />
             Assistir
           </button>
           <button 
-            ref={infoRef as React.RefObject<HTMLButtonElement>}
              onClick={() => onInfo(currentItem)}
-             className={`flex-1 md:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-6 py-3 rounded-lg font-semibold transition-all active:scale-95 ${infoFocused ? 'ring-4 ring-white scale-105' : ''}`}
+             className="flex-1 md:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-6 py-3 rounded-lg font-semibold transition-all active:scale-95"
           >
             <Info className="w-5 h-5" />
             Mais Info

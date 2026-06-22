@@ -48,3 +48,16 @@
     height: 100%;
   }
 }
+
+/* Spatial Navigation Focus Styles */
+button:focus, 
+a:focus, 
+[tabindex="0"]:focus,
+input:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.8);
+  transform: scale(1.05);
+  transition: all 0.2s ease-in-out;
+  z-index: 50;
+  position: relative;
+}
