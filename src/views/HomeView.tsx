@@ -120,7 +120,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   };
 
   // -- Destaques Live (Deduplicated VIP Channels) --
-  const topKeywords = ['globo', 'telecine', 'premiere', 'espn', 'discovery', 'history', 'sportv', 'hbo'];
+  const topKeywords = ['globo sp', 'sbt sp', 'record sp', 'telecine', 'megapix', 'cinemax', 'discovery', 'history', 'animal', 'caze', 'sportv', 'premiere'];
   const topLiveStreams = useMemo(() => {
     const topChannels = [];
     const usedStreamIds = new Set();
