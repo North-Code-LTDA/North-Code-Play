@@ -4,6 +4,7 @@ import { Logo } from '../components/Logo';
 import { motion, AnimatePresence } from 'motion/react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { XtreamService } from '../services/xtreamService';
+import { useFocusable } from '@noriginmedia/norigin-spatial-navigation';
 
 const AVATAR_OPTIONS = [
   'https://api.dicebear.com/10.x/fun-emoji/svg?seed=Sophie',
@@ -51,8 +52,9 @@ export function Login() {
     }
   };
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitLogin = async () => {
+    if (isLoading || !serverUrl || !username || !password) return;
+    
     setIsLoading(true);
     setError(null);
 
@@ -77,6 +79,19 @@ export function Login() {
       setIsLoading(false);
     }
   };
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    submitLogin();
+  };
+
+  const { ref: playlistRef, focused: playlistFocused } = useFocusable();
+  const { ref: serverUrlRef, focused: serverUrlFocused } = useFocusable();
+  const { ref: usernameRef, focused: usernameFocused } = useFocusable();
+  const { ref: passwordRef, focused: passwordFocused } = useFocusable();
+  const { ref: submitRef, focused: submitFocused } = useFocusable({
+    onEnterPress: submitLogin
+  });
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 relative overflow-hidden bg-nc-bg">
@@ -113,12 +128,13 @@ export function Login() {
                   <img src={avatar} alt="Avatar" className="w-full h-full object-cover" />
                 </button>
                 <input
+                  ref={playlistRef as React.RefObject<HTMLInputElement>}
                   id="playlistName"
                   type="text"
                   placeholder="Ex: Minha TV"
                   value={playlistName}
                   onChange={(e) => setPlaylistName(e.target.value)}
-                  className="flex-1 min-w-0 bg-nc-bg-input border border-nc-border rounded-xl px-4 py-3 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-nc-primary focus:border-nc-primary transition-all duration-200"
+                  className={`flex-1 min-w-0 bg-nc-bg-input border rounded-xl px-4 py-3 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none transition-all duration-200 ${playlistFocused ? 'ring-4 ring-nc-primary border-transparent' : 'border-nc-border'}`}
                 />
               </div>
 
@@ -154,13 +170,14 @@ export function Login() {
                 URL do Servidor
               </label>
               <input
+                ref={serverUrlRef as React.RefObject<HTMLInputElement>}
                 id="serverUrl"
                 type="url"
                 required
                 placeholder="http://exemplo.com:8080 ou link M3U"
                 value={serverUrl}
                 onChange={handleServerUrlChange}
-                className="w-full bg-nc-bg-input border border-nc-border rounded-xl px-4 py-3 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-nc-primary focus:border-nc-primary transition-all duration-200"
+                className={`w-full bg-nc-bg-input border rounded-xl px-4 py-3 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none transition-all duration-200 ${serverUrlFocused ? 'ring-4 ring-nc-primary border-transparent' : 'border-nc-border'}`}
               />
             </div>
 
@@ -170,13 +187,14 @@ export function Login() {
                 Usuário
               </label>
               <input
+                ref={usernameRef as React.RefObject<HTMLInputElement>}
                 id="username"
                 type="text"
                 required
                 placeholder="Seu usuário"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full bg-nc-bg-input border border-nc-border rounded-xl px-4 py-3 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-nc-primary focus:border-nc-primary transition-all duration-200"
+                className={`w-full bg-nc-bg-input border rounded-xl px-4 py-3 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none transition-all duration-200 ${usernameFocused ? 'ring-4 ring-nc-primary border-transparent' : 'border-nc-border'}`}
               />
             </div>
 
@@ -187,13 +205,14 @@ export function Login() {
               </label>
               <div className="relative">
                 <input
+                  ref={passwordRef as React.RefObject<HTMLInputElement>}
                   id="password"
                   type={showPassword ? "text" : "password"}
                   required
                   placeholder="Sua senha"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-nc-bg-input border border-nc-border rounded-xl py-3 pl-4 pr-12 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none focus:ring-1 focus:ring-nc-primary focus:border-nc-primary transition-all duration-200"
+                  className={`w-full bg-nc-bg-input border rounded-xl py-3 pl-4 pr-12 text-nc-text-primary placeholder:text-nc-text-secondary/50 focus:outline-none transition-all duration-200 ${passwordFocused ? 'ring-4 ring-nc-primary border-transparent' : 'border-nc-border'}`}
                 />
                 <button
                   type="button"
@@ -212,9 +231,10 @@ export function Login() {
             )}
 
             <button
+              ref={submitRef as React.RefObject<HTMLButtonElement>}
               type="submit"
               disabled={isLoading || !serverUrl || !username || !password}
-              className="w-full bg-nc-primary text-black font-semibold rounded-xl py-3.5 mt-4 hover:bg-nc-primary-hover active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 transition-all duration-200 flex items-center justify-center"
+              className={`w-full bg-nc-primary text-black font-semibold rounded-xl py-3.5 mt-4 hover:bg-nc-primary-hover active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 transition-all duration-200 flex items-center justify-center ${submitFocused ? 'ring-4 ring-white' : ''}`}
             >
               {isLoading ? (
                 <Loader2 className="w-5 h-5 animate-spin text-black" />

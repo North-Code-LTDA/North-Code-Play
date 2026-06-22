@@ -1,12 +1,62 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Play, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useFocusable } from '@noriginmedia/norigin-spatial-navigation';
 
 interface HorizontalRowProps {
   title: string;
   items: any[];
   type: 'live' | 'vod' | 'series';
   onItemClick: (item: any) => void;
+}
+
+function HorizontalRowItem({ item, type, onItemClick }: { item: any; type: string; onItemClick: (item: any) => void }) {
+  const { ref, focused } = useFocusable({
+    onEnterPress: () => onItemClick(item)
+  });
+  
+  useEffect(() => {
+    if (focused && ref.current) {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+  }, [focused]);
+
+  return (
+    <motion.div
+      ref={ref as React.RefObject<HTMLDivElement>}
+      onClick={() => onItemClick(item)}
+      whileHover={{ scale: 1.05 }}
+      whileTap={{ scale: 0.95 }}
+      className={`shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border hover:border-nc-primary/50 transition-all ${
+        type === 'live' ? 'w-64 md:w-72 aspect-video' : 'w-36 md:w-44 aspect-[2/3]'
+      } ${focused ? 'ring-4 ring-white scale-105 z-50 border-transparent' : 'scale-100 opacity-80 border-transparent'}`}
+    >
+      <div className="relative w-full h-full">
+        {item.stream_icon || item.cover ? (
+           <img 
+             src={item.stream_icon || item.cover} 
+             alt={item.name}
+             className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'}`}
+             loading="lazy"
+             onError={(e) => {
+               (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4=';
+             }}
+           />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-nc-bg-input">
+            <span className="text-xs text-nc-text-secondary text-center px-1">{item.name}</span>
+          </div>
+        )}
+        
+        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">
+          <p className="text-white font-medium text-sm truncate w-full">{item.name}</p>
+          {type !== 'live' && item.rating && item.rating !== "0" && (
+             <p className="absolute top-2 right-2 text-xs text-yellow-500 bg-black/50 px-1 py-0.5 rounded">★ {item.rating}</p>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
 }
 
 export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRowProps) {
@@ -37,40 +87,12 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
         {items.map((item) => (
-          <motion.div
-            key={item.stream_id || item.series_id || item.id}
-            onClick={() => onItemClick(item)}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className={`shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
-              type === 'live' ? 'w-64 md:w-72 aspect-video' : 'w-36 md:w-44 aspect-[2/3]'
-            }`}
-          >
-            <div className="relative w-full h-full">
-              {item.stream_icon || item.cover ? (
-                 <img 
-                   src={item.stream_icon || item.cover} 
-                   alt={item.name}
-                   className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'}`}
-                   loading="lazy"
-                   onError={(e) => {
-                     (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4=';
-                   }}
-                 />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center bg-nc-bg-input">
-                  <span className="text-xs text-nc-text-secondary text-center px-1">{item.name}</span>
-                </div>
-              )}
-              
-              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">
-                <p className="text-white font-medium text-sm truncate w-full">{item.name}</p>
-                {type !== 'live' && item.rating && item.rating !== "0" && (
-                   <p className="absolute top-2 right-2 text-xs text-yellow-500 bg-black/50 px-1 py-0.5 rounded">★ {item.rating}</p>
-                )}
-              </div>
-            </div>
-          </motion.div>
+          <HorizontalRowItem 
+            key={item.stream_id || item.series_id || item.id} 
+            item={item} 
+            type={type} 
+            onItemClick={onItemClick} 
+          />
         ))}
         </div>
         

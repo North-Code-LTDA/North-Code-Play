@@ -4,6 +4,7 @@ import { Logo } from '../components/Logo';
 import { LogOut, Home as HomeIcon, Tv, Film, PlaySquare, Settings, Menu, X, Search, Heart } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { VideoPlayer } from '../components/VideoPlayer';
+import { useFocusable } from '@noriginmedia/norigin-spatial-navigation';
 
 import { HomeView } from '../views/HomeView';
 import { LiveTvView } from '../views/LiveTvView';
@@ -13,6 +14,23 @@ import { ConfigView } from '../views/ConfigView';
 import { FavoritesView } from '../views/FavoritesView';
 import { XtreamProvider } from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
+
+function NavItem({ icon: Icon, label, active, onClick }: { icon: any; label: string; active: boolean; onClick: () => void }) {
+  const { ref, focused } = useFocusable({
+    onEnterPress: onClick
+  });
+
+  return (
+    <button
+      ref={ref as React.RefObject<HTMLButtonElement>}
+      onClick={onClick}
+      className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-all ${active ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'} ${focused ? 'ring-4 ring-white scale-105 z-10' : ''}`}
+    >
+      <Icon className="w-5 h-5 flex-shrink-0" />
+      <span>{label}</span>
+    </button>
+  );
+}
 
 export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
 
@@ -43,33 +61,18 @@ export function Home() {
 
   const NavItems = () => (
     <>
-      <button onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'inicio' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <HomeIcon className="w-5 h-5" />
-        <span>Início</span>
-      </button>
-      <button onClick={() => { setCurrentView('live'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'live' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <Tv className="w-5 h-5" />
-        <span>TV ao Vivo</span>
-      </button>
-      <button onClick={() => { setCurrentView('movies'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'movies' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <Film className="w-5 h-5" />
-        <span>Filmes</span>
-      </button>
-      <button onClick={() => { setCurrentView('series'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'series' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <PlaySquare className="w-5 h-5" />
-        <span>Séries</span>
-      </button>
-      <button onClick={() => { setCurrentView('favorites'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'favorites' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <Heart className="w-5 h-5" />
-        <span>Meus Favoritos</span>
-      </button>
+      <NavItem icon={HomeIcon} label="Início" active={currentView === 'inicio'} onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); setSearchQuery(''); }} />
+      <NavItem icon={Tv} label="TV ao Vivo" active={currentView === 'live'} onClick={() => { setCurrentView('live'); setIsMobileMenuOpen(false); setSearchQuery(''); }} />
+      <NavItem icon={Film} label="Filmes" active={currentView === 'movies'} onClick={() => { setCurrentView('movies'); setIsMobileMenuOpen(false); setSearchQuery(''); }} />
+      <NavItem icon={PlaySquare} label="Séries" active={currentView === 'series'} onClick={() => { setCurrentView('series'); setIsMobileMenuOpen(false); setSearchQuery(''); }} />
+      <NavItem icon={Heart} label="Meus Favoritos" active={currentView === 'favorites'} onClick={() => { setCurrentView('favorites'); setIsMobileMenuOpen(false); setSearchQuery(''); }} />
       <div className="h-4" />
-      <button onClick={() => { setCurrentView('config'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <Settings className="w-5 h-5" />
-        <span>Configurações</span>
-      </button>
+      <NavItem icon={Settings} label="Configurações" active={currentView === 'config'} onClick={() => { setCurrentView('config'); setIsMobileMenuOpen(false); setSearchQuery(''); }} />
     </>
   );
+
+  const { ref: searchRef, focused: searchFocused } = useFocusable();
+  const { ref: logoutRef, focused: logoutFocused } = useFocusable({ onEnterPress: handleLogout });
 
   const renderView = () => {
     switch (currentView) {
@@ -130,8 +133,9 @@ export function Home() {
               </div>
             </div>
             <button 
+              ref={logoutRef as React.RefObject<HTMLButtonElement>}
               onClick={handleLogout}
-              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
+              className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors ${logoutFocused ? 'ring-4 ring-white' : ''}`}
             >
               <LogOut className="w-5 h-5" />
               <span>Sair</span>
@@ -212,11 +216,12 @@ export function Home() {
               <div className="relative w-full max-w-md">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-nc-text-secondary" />
                 <input 
+                  ref={searchRef as React.RefObject<HTMLInputElement>}
                   type="text" 
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Pesquisar..." 
-                  className="w-full pl-10 pr-4 py-2.5 bg-nc-bg-input border border-nc-border/50 focus:border-nc-primary rounded-xl text-white outline-none transition-colors"
+                  className={`w-full pl-10 pr-4 py-2.5 bg-nc-bg-input rounded-xl text-white outline-none transition-colors border ${searchFocused ? 'ring-4 ring-nc-primary border-transparent' : 'border-nc-border/50 focus:border-nc-primary'}`}
                 />
               </div>
             </div>
