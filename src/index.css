@@ -50,14 +50,16 @@
 }
 
 /* Spatial Navigation Focus Styles */
+.focusable-card:focus, 
 button:focus, 
-a:focus, 
-[tabindex="0"]:focus,
+[tabindex="0"]:focus {
+  outline: 3px solid #ffffff !important;
+  outline-offset: 2px;
+  transform: scale(1.03) !important;
+  z-index: 50 !important;
+  transition: transform 0.15s ease-in-out;
+}
+
 input:focus {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.8);
-  transform: scale(1.05);
-  transition: all 0.2s ease-in-out;
-  z-index: 50;
-  position: relative;
+  outline: 2px solid theme('colors.nc.primary') !important;
 }

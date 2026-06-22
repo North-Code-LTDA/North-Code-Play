@@ -40,9 +40,11 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
           <motion.div
             key={item.stream_id || item.series_id || item.id}
             onClick={() => onItemClick(item)}
+            onKeyDown={(e) => { if (e.key === 'Enter') onItemClick(item); }}
+            tabIndex={0}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            className={`shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
+            className={`focusable-card shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
               type === 'live' ? 'w-64 md:w-72 aspect-video' : 'w-36 md:w-44 aspect-[2/3]'
             }`}
           >
