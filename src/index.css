@@ -50,9 +50,9 @@
 }
 
 /* Spatial Navigation Focus Styles */
-.focusable-card:focus, 
-button:focus, 
-[tabindex="0"]:focus {
+.focusable-card:focus-visible, 
+button:focus-visible, 
+[tabindex="0"]:focus-visible {
   outline: 3px solid #ffffff !important;
   outline-offset: 2px;
   transform: scale(1.03) !important;
@@ -60,6 +60,6 @@ button:focus,
   transition: transform 0.15s ease-in-out;
 }
 
-input:focus {
+input:focus-visible {
   outline: 2px solid theme('colors.nc.primary') !important;
 }

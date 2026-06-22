@@ -36,20 +36,29 @@ function SpatialNavigationManager() {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
       
-      if ((e.key === 'Backspace' && !isInput) || e.key === 'Escape') {
-        const buttons = document.querySelectorAll('button');
-        const backBtn = Array.from(buttons).find(btn => {
-          const text = btn.textContent?.toLowerCase() || '';
-          return text.includes('voltar') || 
-                 btn.innerHTML.includes('lucide-arrow-left') || 
-                 btn.innerHTML.includes('lucide-chevron-left') || 
-                 btn.innerHTML.includes('lucide-x');
-        });
+      if (e.key === 'Enter') {
+        const active = document.activeElement as HTMLElement;
+        if (active && active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA') {
+          active.click();
+        }
+      }
 
+      if ((e.key === 'Backspace' && !isInput) || e.key === 'Escape') {
+        e.preventDefault();
+        const backBtn = document.querySelector('button[aria-label="Voltar"], .back-button, button:has(svg.lucide-arrow-left), button:has(svg.lucide-chevron-left), button:has(svg.lucide-x)') as HTMLElement;
         if (backBtn) {
-          (backBtn as HTMLElement).click();
+          backBtn.click();
         } else {
-          window.history.back();
+          const buttons = document.querySelectorAll('button');
+          const fallbackBackBtn = Array.from(buttons).find(btn => {
+            const text = btn.textContent?.toLowerCase() || '';
+            return text.includes('voltar');
+          });
+          if (fallbackBackBtn) {
+            (fallbackBackBtn as HTMLElement).click();
+          } else {
+            window.history.back();
+          }
         }
       }
     };

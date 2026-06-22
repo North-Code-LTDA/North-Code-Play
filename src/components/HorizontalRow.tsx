@@ -41,6 +41,7 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
             key={item.stream_id || item.series_id || item.id}
             onClick={() => onItemClick(item)}
             onKeyDown={(e) => { if (e.key === 'Enter') onItemClick(item); }}
+            onFocus={(e) => e.target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })}
             tabIndex={0}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
