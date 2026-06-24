@@ -48,18 +48,3 @@
     height: 100%;
   }
 }
-
-/* Spatial Navigation Focus Styles */
-.focusable-card:focus-visible, 
-button:focus-visible, 
-[tabindex="0"]:focus-visible {
-  outline: 3px solid #ffffff !important;
-  outline-offset: 2px;
-  transform: scale(1.03) !important;
-  z-index: 50 !important;
-  transition: transform 0.15s ease-in-out;
-}
-
-input:focus-visible {
-  outline: 2px solid theme('colors.nc.primary') !important;
-}

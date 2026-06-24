@@ -26,7 +26,6 @@
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "react-router-dom": "^7.15.1",
-    "spatial-navigation-js": "^1.0.0",
     "vite": "^6.2.3"
   },
   "devDependencies": {
