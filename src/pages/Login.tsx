@@ -225,7 +225,7 @@ export function Login() {
           </form>
 
           <p className="text-center text-nc-text-secondary text-sm mt-8">
-            Plataforma Desenvolvida por North Code
+            Plataforma Desenvolvida por North Code Play
           </p>
         </div>
       </motion.div>
