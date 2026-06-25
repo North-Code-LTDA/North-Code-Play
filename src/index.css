@@ -48,14 +48,3 @@
     height: 100%;
   }
 }
-
-/* Acessibilidade para Android TV / Teclado */
-.tv-focusable { outline: none; }
-.tv-focusable:focus-visible {
-  outline: 3px solid #ffffff !important;
-  outline-offset: 2px;
-  transform: scale(1.05) !important;
-  z-index: 50 !important;
-  transition: transform 0.2s ease, outline 0.1s ease;
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
-}

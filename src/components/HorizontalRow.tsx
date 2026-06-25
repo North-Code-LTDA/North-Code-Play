@@ -21,7 +21,7 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
   };
 
   return (
-    <div className="w-full group horizontal-row-container">
+    <div className="w-full group">
       <h2 className="text-xl md:text-2xl font-semibold text-white mb-4">{title}</h2>
       <div className="relative w-full">
         <button 
@@ -40,49 +40,9 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
           <motion.div
             key={item.stream_id || item.series_id || item.id}
             onClick={() => onItemClick(item)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                onItemClick(item);
-              } else if (e.key === 'ArrowRight') {
-                e.preventDefault();
-                const next = e.currentTarget.nextElementSibling as HTMLElement;
-                if (next) next.focus();
-              } else if (e.key === 'ArrowLeft') {
-                e.preventDefault();
-                const prev = e.currentTarget.previousElementSibling as HTMLElement;
-                if (prev) {
-                  prev.focus();
-                } else {
-                  // Se é o primeiro da linha, permite vazar para o menu lateral
-                  const sidebar = document.querySelector('.sidebar-nav-item') as HTMLElement;
-                  if (sidebar) sidebar.focus();
-                }
-              } else if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                const rows = Array.from(document.querySelectorAll('.horizontal-row-container'));
-                const currIdx = rows.indexOf(e.currentTarget.closest('.horizontal-row-container') as HTMLElement);
-                if (currIdx >= 0 && currIdx < rows.length - 1) {
-                  const nextRowItem = rows[currIdx + 1].querySelector('.row-item') as HTMLElement;
-                  if (nextRowItem) nextRowItem.focus();
-                }
-              } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                const rows = Array.from(document.querySelectorAll('.horizontal-row-container'));
-                const currIdx = rows.indexOf(e.currentTarget.closest('.horizontal-row-container') as HTMLElement);
-                if (currIdx > 0) {
-                  const prevRowItem = rows[currIdx - 1].querySelector('.row-item') as HTMLElement;
-                  if (prevRowItem) prevRowItem.focus();
-                } else {
-                  const banner = document.querySelector('.hero-btn') as HTMLElement;
-                  if (banner) banner.focus();
-                }
-              }
-            }}
-            onFocus={(e) => e.target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })}
-            tabIndex={0}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            className={`tv-focusable row-item shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
+            className={`shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
               type === 'live' ? 'w-64 md:w-72 aspect-video' : 'w-36 md:w-44 aspect-[2/3]'
             }`}
           >

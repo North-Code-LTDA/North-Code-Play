@@ -111,7 +111,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   const bgImage = currentItem.stream_icon || currentItem.cover || currentItem.backdrop_path;
 
   return (
-    <div className="relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden hero-banner-container">
+    <div className="relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden">
       <AnimatePresence mode="popLayout">
         <motion.div
           key={currentItem.stream_id || currentItem.name}
@@ -174,16 +174,14 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
         <div className="flex items-center gap-4 relative z-30 mt-6">
           <button
             onClick={() => onPlay(currentItem)}
-            onKeyDown={(e) => { if (e.key === 'Enter') onPlay(currentItem); else if (e.key === 'ArrowRight') { e.preventDefault(); (document.querySelector('.info-btn') as HTMLElement)?.focus(); } else if (e.key === 'ArrowLeft') { e.preventDefault(); (document.querySelector('.sidebar-nav-item') as HTMLElement)?.focus(); } else if (e.key === 'ArrowDown') { e.preventDefault(); (document.querySelector('.row-item') as HTMLElement)?.focus(); } }}
-            className="tv-focusable hero-btn flex-1 md:flex-none items-center justify-center flex gap-2 bg-nc-primary hover:bg-nc-primary-hover text-black px-6 py-3 rounded-lg font-semibold transition-all active:scale-95 shadow-lg"
+            className="flex-1 md:flex-none items-center justify-center flex gap-2 bg-nc-primary hover:bg-nc-primary-hover text-black px-6 py-3 rounded-lg font-semibold transition-all active:scale-95 shadow-lg"
           >
             <Play className="w-5 h-5 fill-black" />
             Assistir
           </button>
           <button 
              onClick={() => onInfo(currentItem)}
-             onKeyDown={(e) => { if (e.key === 'Enter') onInfo(currentItem); else if (e.key === 'ArrowLeft') { e.preventDefault(); (document.querySelector('.hero-btn') as HTMLElement)?.focus(); } else if (e.key === 'ArrowDown') { e.preventDefault(); (document.querySelector('.row-item') as HTMLElement)?.focus(); } }}
-             className="tv-focusable info-btn flex-1 md:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-6 py-3 rounded-lg font-semibold transition-all active:scale-95"
+             className="flex-1 md:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-6 py-3 rounded-lg font-semibold transition-all active:scale-95"
           >
             <Info className="w-5 h-5" />
             Mais Info
