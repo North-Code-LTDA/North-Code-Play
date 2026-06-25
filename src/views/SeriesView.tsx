@@ -141,7 +141,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
   return (
     <div className="flex flex-1 overflow-hidden h-full">
       {/* Sidebar - Categories */}
-      <aside className="hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
+      <aside data-tv-zone="sidebar" className="hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
         <div className="p-4 border-b border-nc-border/50">
           <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de Séries</h2>
         </div>
@@ -155,8 +155,9 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
               {extendedCategories.map((cat) => (
                 <button
                   key={cat.category_id}
+                  tabIndex={0}
                   onClick={() => setSelectedCategoryId(cat.category_id)}
-                  className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors truncate ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
+                  className={`tv-focus w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors truncate ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
                 >
                   {cat.category_name}
                 </button>
@@ -173,8 +174,10 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
           {extendedCategories.map((cat) => (
             <button
               key={cat.category_id}
+              tabIndex={0}
+              data-tv-zone="main"
               onClick={() => setSelectedCategoryId(cat.category_id)}
-              className={`shrink-0 snap-center px-4 py-2 rounded-full text-sm transition-colors whitespace-nowrap ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
+              className={`tv-focus shrink-0 snap-center px-4 py-2 rounded-full text-sm transition-colors whitespace-nowrap ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
             >
               {cat.category_name}
             </button>
@@ -213,10 +216,12 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
                {displayedStreams.map((stream) => (
                  <motion.div
                    key={stream.series_id}
+                   tabIndex={0}
+                   data-tv-zone="main"
                    whileHover={{ scale: 1.05 }}
                    whileTap={{ scale: 0.95 }}
                    onClick={() => handleSeriesClick(stream)}
-                   className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
+                   className="tv-focus group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
                  >
                    {stream.cover ? (
                      <img 
@@ -249,8 +254,10 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
               {displayCount < filteredStreams.length && (
                 <div className="mt-8 flex justify-center">
                   <button
+                    tabIndex={0}
+                    data-tv-zone="main"
                     onClick={() => setDisplayCount(prev => prev + 100)}
-                    className="px-6 py-3 bg-nc-bg-card hover:bg-nc-bg-input border border-nc-border/50 rounded-xl text-white font-medium transition-colors"
+                    className="tv-focus px-6 py-3 bg-nc-bg-card hover:bg-nc-bg-input border border-nc-border/50 rounded-xl text-white font-medium transition-colors"
                   >
                     Carregar Mais
                   </button>
