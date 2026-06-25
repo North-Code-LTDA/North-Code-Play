@@ -111,7 +111,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   const bgImage = currentItem.stream_icon || currentItem.cover || currentItem.backdrop_path;
 
   return (
-    <div className="relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden">
+    <div className="relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden hero-banner-container">
       <AnimatePresence mode="popLayout">
         <motion.div
           key={currentItem.stream_id || currentItem.name}

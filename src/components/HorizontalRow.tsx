@@ -21,7 +21,7 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
   };
 
   return (
-    <div className="w-full group">
+    <div className="w-full group horizontal-row-container">
       <h2 className="text-xl md:text-2xl font-semibold text-white mb-4">{title}</h2>
       <div className="relative w-full">
         <button 
@@ -51,6 +51,25 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
                 e.preventDefault();
                 const prev = e.currentTarget.previousElementSibling as HTMLElement;
                 if (prev) prev.focus();
+              } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                const currentRow = e.currentTarget.closest('.horizontal-row-container');
+                const nextRow = currentRow?.nextElementSibling;
+                const firstItemNextRow = nextRow?.querySelector('.tv-focusable') as HTMLElement;
+                if (firstItemNextRow) firstItemNextRow.focus();
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                const currentRow = e.currentTarget.closest('.horizontal-row-container');
+                const prevRow = currentRow?.previousElementSibling;
+                const firstItemPrevRow = prevRow?.querySelector('.tv-focusable') as HTMLElement;
+
+                if (firstItemPrevRow) {
+                  firstItemPrevRow.focus();
+                } else {
+                  // Se não tem linha acima, joga para os botões do HeroBanner
+                  const bannerBtn = document.querySelector('.hero-banner-container .tv-focusable') as HTMLElement;
+                  if (bannerBtn) bannerBtn.focus();
+                }
               }
             }}
             onFocus={(e) => e.target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })}
