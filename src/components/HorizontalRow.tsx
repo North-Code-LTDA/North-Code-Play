@@ -50,25 +50,31 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
               } else if (e.key === 'ArrowLeft') {
                 e.preventDefault();
                 const prev = e.currentTarget.previousElementSibling as HTMLElement;
-                if (prev) prev.focus();
+                if (prev) {
+                  prev.focus();
+                } else {
+                  // Se é o primeiro da linha, permite vazar para o menu lateral
+                  const sidebar = document.querySelector('.sidebar-nav-item') as HTMLElement;
+                  if (sidebar) sidebar.focus();
+                }
               } else if (e.key === 'ArrowDown') {
                 e.preventDefault();
-                const currentRow = e.currentTarget.closest('.horizontal-row-container');
-                const nextRow = currentRow?.nextElementSibling;
-                const firstItemNextRow = nextRow?.querySelector('.tv-focusable') as HTMLElement;
-                if (firstItemNextRow) firstItemNextRow.focus();
+                const rows = Array.from(document.querySelectorAll('.horizontal-row-container'));
+                const currIdx = rows.indexOf(e.currentTarget.closest('.horizontal-row-container') as HTMLElement);
+                if (currIdx >= 0 && currIdx < rows.length - 1) {
+                  const nextRowItem = rows[currIdx + 1].querySelector('.row-item') as HTMLElement;
+                  if (nextRowItem) nextRowItem.focus();
+                }
               } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
-                const currentRow = e.currentTarget.closest('.horizontal-row-container');
-                const prevRow = currentRow?.previousElementSibling;
-                const firstItemPrevRow = prevRow?.querySelector('.tv-focusable') as HTMLElement;
-
-                if (firstItemPrevRow) {
-                  firstItemPrevRow.focus();
+                const rows = Array.from(document.querySelectorAll('.horizontal-row-container'));
+                const currIdx = rows.indexOf(e.currentTarget.closest('.horizontal-row-container') as HTMLElement);
+                if (currIdx > 0) {
+                  const prevRowItem = rows[currIdx - 1].querySelector('.row-item') as HTMLElement;
+                  if (prevRowItem) prevRowItem.focus();
                 } else {
-                  // Se não tem linha acima, joga para os botões do HeroBanner
-                  const bannerBtn = document.querySelector('.hero-banner-container .tv-focusable') as HTMLElement;
-                  if (bannerBtn) bannerBtn.focus();
+                  const banner = document.querySelector('.hero-btn') as HTMLElement;
+                  if (banner) banner.focus();
                 }
               }
             }}
@@ -76,7 +82,7 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
             tabIndex={0}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            className={`tv-focusable shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
+            className={`tv-focusable row-item shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
               type === 'live' ? 'w-64 md:w-72 aspect-video' : 'w-36 md:w-44 aspect-[2/3]'
             }`}
           >

@@ -10,32 +10,28 @@ import { Home } from './pages/Home';
 
 export default function App() {
   useEffect(() => {
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+    // Auto-focus sem necessidade de TAB
+    setTimeout(() => {
+      const startNode = document.querySelector('.sidebar-nav-item') as HTMLElement;
+      if (startNode) startNode.focus();
+    }, 500);
+
+    const handleGlobalKey = (e: KeyboardEvent) => {
       if (e.key === 'Backspace' || e.key === 'Escape') {
         if (document.activeElement?.tagName === 'INPUT') return;
         e.preventDefault();
-
-        // 1. Tenta fechar modais/filmes abertos (Busca por textos ou ícones)
-        const buttons = Array.from(document.querySelectorAll('button'));
-        const backBtn = buttons.find(btn => 
-          btn.textContent?.toLowerCase().includes('voltar') || 
-          btn.innerHTML.includes('lucide-arrow-left') || 
-          btn.innerHTML.includes('lucide-chevron-left') || 
-          btn.innerHTML.includes('lucide-x')
-        ) as HTMLElement;
-
-        if (backBtn) {
-          backBtn.click();
+        const backBtn = document.querySelector('button[aria-label="Voltar"], .lucide-arrow-left, .lucide-chevron-left, .lucide-x') as HTMLElement;
+        const actualBtn = backBtn?.closest('button') || backBtn;
+        if (actualBtn) {
+          actualBtn.click();
         } else {
-          // 2. ZONA DE MENU: Se não há botão voltar, foca no menu lateral (Sidebar)
-          // Ajuste o seletor '.sidebar' para a classe correta do menu lateral do seu layout principal
-          const sidebarLink = document.querySelector('aside a, aside button, nav a, .sidebar a') as HTMLElement;
-          if (sidebarLink) sidebarLink.focus();
+          const sidebar = document.querySelector('.sidebar-nav-item') as HTMLElement;
+          if (sidebar) sidebar.focus();
         }
       }
     };
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+    window.addEventListener('keydown', handleGlobalKey);
+    return () => window.removeEventListener('keydown', handleGlobalKey);
   }, []);
 
   return (
