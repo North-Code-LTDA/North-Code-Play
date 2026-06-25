@@ -40,7 +40,19 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
           <motion.div
             key={item.stream_id || item.series_id || item.id}
             onClick={() => onItemClick(item)}
-            onKeyDown={(e) => { if (e.key === 'Enter') onItemClick(item); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onItemClick(item);
+              } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                const next = e.currentTarget.nextElementSibling as HTMLElement;
+                if (next) next.focus();
+              } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                const prev = e.currentTarget.previousElementSibling as HTMLElement;
+                if (prev) prev.focus();
+              }
+            }}
             onFocus={(e) => e.target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })}
             tabIndex={0}
             whileHover={{ scale: 1.05 }}
