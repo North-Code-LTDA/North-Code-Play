@@ -187,7 +187,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
              data-tv-zone="main"
              data-tv-id="hero-info"
              onClick={() => onInfo(currentItem)}
-             className="tv-focus hero-btn flex-1 md:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-6 py-3 rounded-lg font-semibold transition-all active:scale-95"
+             className="tv-focus info-btn flex-1 md:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-6 py-3 rounded-lg font-semibold transition-all active:scale-95"
           >
             <Info className="w-5 h-5" />
             Mais Info
