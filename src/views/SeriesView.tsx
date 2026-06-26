@@ -212,12 +212,13 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
              </div>
           ) : (
             <>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+              <div className="grid-container grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                {displayedStreams.map((stream) => (
                  <motion.div
                    key={stream.series_id}
                    tabIndex={0}
                    data-tv-zone="main"
+                   data-tv-id={stream.series_id}
                    whileHover={{ scale: 1.05 }}
                    whileTap={{ scale: 0.95 }}
                    onClick={() => handleSeriesClick(stream)}

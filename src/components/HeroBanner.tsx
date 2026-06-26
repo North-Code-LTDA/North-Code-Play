@@ -175,8 +175,9 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
           <button
             tabIndex={0}
             data-tv-zone="main"
+            data-tv-id="hero-play"
             onClick={() => onPlay(currentItem)}
-            className="tv-focus flex-1 md:flex-none items-center justify-center flex gap-2 bg-nc-primary hover:bg-nc-primary-hover text-black px-6 py-3 rounded-lg font-semibold transition-all active:scale-95 shadow-lg"
+            className="tv-focus hero-btn flex-1 md:flex-none items-center justify-center flex gap-2 bg-nc-primary hover:bg-nc-primary-hover text-black px-6 py-3 rounded-lg font-semibold transition-all active:scale-95 shadow-lg"
           >
             <Play className="w-5 h-5 fill-black" />
             Assistir
@@ -184,8 +185,9 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
           <button 
              tabIndex={0}
              data-tv-zone="main"
+             data-tv-id="hero-info"
              onClick={() => onInfo(currentItem)}
-             className="tv-focus flex-1 md:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-6 py-3 rounded-lg font-semibold transition-all active:scale-95"
+             className="tv-focus hero-btn flex-1 md:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-6 py-3 rounded-lg font-semibold transition-all active:scale-95"
           >
             <Info className="w-5 h-5" />
             Mais Info

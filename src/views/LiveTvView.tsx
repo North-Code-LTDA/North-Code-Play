@@ -215,12 +215,13 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                    <p className="text-sm">Nenhum canal encontrado.</p>
                  </div>
               ) : (
-                <div className="space-y-2">
+                <div className="grid-container space-y-2">
                   {displayedStreams.map((stream) => (
                     <button
                       key={stream.stream_id}
                       tabIndex={0}
                       data-tv-zone="main"
+                      data-tv-id={stream.stream_id}
                       onClick={() => {
                         setSelectedChannel(stream);
                         setIsMobilePlayerOpen(true);

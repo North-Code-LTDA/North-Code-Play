@@ -1,114 +1,124 @@
+export let lastFocusedItemId: string | null = null;
+
 export function initTvNavigation() {
   window.addEventListener('keydown', (e) => {
-    const activeEl = document.activeElement as HTMLElement;
-    
-    // Ignore if typing in input
-    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
-      return;
+    const active = document.activeElement as HTMLElement;
+
+    // 1. ARMADILHA DO INPUT (Pesquisa)
+    if (active.tagName === 'INPUT') {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        // Foge do input para o conteúdo principal
+        const mainFocus = document.querySelector('[data-tv-zone="main"] .tv-focus, .hero-btn') as HTMLElement;
+        if (mainFocus) mainFocus.focus();
+      }
+      if (e.key !== 'Enter' && e.key !== 'Escape') return; // Deixa digitar livremente
     }
 
+    // 2. GRAVAR MEMÓRIA (Enter)
     if (e.key === 'Enter') {
-      e.preventDefault();
-      activeEl?.click();
+      if (active.hasAttribute('data-tv-id')) {
+        lastFocusedItemId = active.getAttribute('data-tv-id');
+      }
+      active.click();
       return;
     }
 
+    // 3. BOTÃO VOLTAR (Backspace/Escape)
     if (e.key === 'Backspace' || e.key === 'Escape') {
       e.preventDefault();
-      const closeBtn = document.querySelector('.btn-close') as HTMLElement;
-      if (closeBtn) {
-        closeBtn.click();
+      const backBtn = document.querySelector('.btn-close, button[aria-label="Voltar"], .lucide-arrow-left') as HTMLElement;
+      const actualBtn = backBtn?.closest('button') || backBtn;
+
+      if (actualBtn) {
+        actualBtn.click();
+        // Tenta restaurar a memória após a tela remontar
+        setTimeout(() => {
+          if (lastFocusedItemId) {
+            const toFocus = document.querySelector(`[data-tv-id="${lastFocusedItemId}"]`) as HTMLElement;
+            if (toFocus) {
+              toFocus.focus();
+              toFocus.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              return;
+            }
+          }
+        }, 300);
       } else {
-        const sidebarItems = document.querySelectorAll('[data-tv-zone="sidebar"] .tv-focus');
-        if (sidebarItems.length > 0) {
-          (sidebarItems[0] as HTMLElement).focus();
+        // Vai para a Sidebar apenas se já estiver na página inicial/raiz
+        const sidebar = document.querySelector('[data-tv-zone="sidebar"] .tv-focus') as HTMLElement;
+        if (sidebar) sidebar.focus();
+      }
+      return;
+    }
+
+    // 4. NAVEGAÇÃO ESPACIAL
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+      e.preventDefault();
+      const currentZone = active.getAttribute('data-tv-zone') || active.closest('[data-tv-zone]')?.getAttribute('data-tv-zone');
+
+      // ISOLAMENTO ESTRITO (Não vaza do contêiner horizontal)
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        const rowContainer = active.closest('.horizontal-row-container, .grid-container');
+        if (rowContainer) {
+          const items = Array.from(rowContainer.querySelectorAll('.tv-focus')) as HTMLElement[];
+          const currentIndex = items.indexOf(active);
+          if (e.key === 'ArrowRight' && currentIndex < items.length - 1) {
+            items[currentIndex + 1].focus();
+            items[currentIndex + 1].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+          } else if (e.key === 'ArrowLeft' && currentIndex > 0) {
+            items[currentIndex - 1].focus();
+            items[currentIndex - 1].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+          }
+          return; // Interrompe para não vazar pra sidebar ou outra categoria
         }
       }
-      return;
-    }
 
-    const isArrow = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key);
-    if (!isArrow) return;
-    
-    e.preventDefault();
+      // GEOMETRIA PARA PULAR DE CATEGORIAS (Cima/Baixo)
+      const rect = active.getBoundingClientRect();
+      const allFocusable = Array.from(document.querySelectorAll('.tv-focus')).filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && el !== active;
+      }) as HTMLElement[];
 
-    const focusableEls = Array.from(document.querySelectorAll('.tv-focus')).filter((el): el is HTMLElement => {
-      const htmlEl = el as HTMLElement;
-      // Check if visible
-      return htmlEl.offsetWidth > 0 && htmlEl.offsetHeight > 0 && window.getComputedStyle(htmlEl).visibility !== 'hidden';
-    });
+      let bestMatch: HTMLElement | null = null;
+      let minDistance = Infinity;
 
-    if (focusableEls.length === 0) return;
-
-    if (!activeEl || !focusableEls.includes(activeEl)) {
-      focusableEls[0].focus();
-      return;
-    }
-
-    const activeRect = activeEl.getBoundingClientRect();
-    const activeZone = activeEl.getAttribute('data-tv-zone');
-
-    let bestMatch: HTMLElement | null = null;
-    let minDistance = Infinity;
-
-    for (const el of focusableEls) {
-      if (el === activeEl) continue;
-
-      const rect = el.getBoundingClientRect();
-      const elZone = el.getAttribute('data-tv-zone');
-
-      // Prevent ArrowLeft from main zone leaking to sidebar zone if requested
-      if (e.key === 'ArrowLeft' && activeZone === 'main' && elZone === 'sidebar') {
-        // We don't consider this element
-        continue;
-      }
-
-      let dx = 0;
-      let dy = 0;
-      let validDirection = false;
-
-      // Calculate centers
-      const activeCx = activeRect.left + activeRect.width / 2;
-      const activeCy = activeRect.top + activeRect.height / 2;
-      const elCx = rect.left + rect.width / 2;
-      const elCy = rect.top + rect.height / 2;
-
-      if (e.key === 'ArrowRight' && elCx > activeCx) {
-        dx = elCx - activeCx;
-        dy = elCy - activeCy;
-        validDirection = true;
-      } else if (e.key === 'ArrowLeft' && elCx < activeCx) {
-        dx = activeCx - elCx;
-        dy = elCy - activeCy;
-        validDirection = true;
-      } else if (e.key === 'ArrowDown' && elCy > activeCy) {
-        dx = elCx - activeCx;
-        dy = elCy - activeCy;
-        validDirection = true;
-      } else if (e.key === 'ArrowUp' && elCy < activeCy) {
-        dx = elCx - activeCx;
-        dy = activeCy - elCy;
-        validDirection = true;
-      }
-
-      if (validDirection) {
-        // Distance calculation with weight to prefer straight lines
-        const primaryDist = e.key === 'ArrowLeft' || e.key === 'ArrowRight' ? Math.abs(dx) : Math.abs(dy);
-        const secondaryDist = e.key === 'ArrowLeft' || e.key === 'ArrowRight' ? Math.abs(dy) : Math.abs(dx);
+      allFocusable.forEach(candidate => {
+        const cRect = candidate.getBoundingClientRect();
+        const candidateZone = candidate.getAttribute('data-tv-zone') || candidate.closest('[data-tv-zone]')?.getAttribute('data-tv-zone');
         
-        // Increase penalty for secondary distance to enforce straight lines
-        const distance = Math.sqrt(Math.pow(primaryDist, 2) + Math.pow(secondaryDist * 3, 2));
+        // Regras de Bloqueio
+        if (currentZone === 'main' && candidateZone === 'sidebar' && e.key !== 'ArrowLeft') return; // Só vai pra sidebar se não tiver na grid
+        if (candidate.tagName === 'INPUT' && e.key !== 'ArrowUp') return; // Só acha o Search se for pra cima
 
-        if (distance < minDistance) {
+        // Centro dos elementos
+        const cx1 = rect.left + rect.width / 2;
+        const cy1 = rect.top + rect.height / 2;
+        const cx2 = cRect.left + cRect.width / 2;
+        const cy2 = cRect.top + cRect.height / 2;
+        
+        const dx = Math.abs(cx1 - cx2);
+        const dy = Math.abs(cy1 - cy2);
+
+        let isValid = false;
+        let distance = 0;
+
+        // Multiplicadores pesados para impedir "Drift Diagonal"
+        if (e.key === 'ArrowRight') { isValid = cRect.left >= rect.right - 10; distance = dx + dy * 10; }
+        else if (e.key === 'ArrowLeft') { isValid = cRect.right <= rect.left + 10; distance = dx + dy * 10; }
+        else if (e.key === 'ArrowDown') { isValid = cRect.top >= rect.bottom - 10; distance = dy + dx * 10; }
+        else if (e.key === 'ArrowUp') { isValid = cRect.bottom <= rect.top + 10; distance = dy + dx * 10; }
+
+        if (isValid && distance < minDistance) {
           minDistance = distance;
-          bestMatch = el;
+          bestMatch = candidate;
         }
-      }
-    }
+      });
 
-    if (bestMatch) {
-      bestMatch.focus();
-      bestMatch.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      if (bestMatch) {
+        (bestMatch as HTMLElement).focus();
+        (bestMatch as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      }
     }
   });
 }
