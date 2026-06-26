@@ -15,7 +15,7 @@ export default function App() {
     
     // Attempt to focus the first sidebar item if it exists
     setTimeout(() => {
-      const firstFocusable = document.querySelector('.tv-focus') as HTMLElement;
+      const firstFocusable = document.querySelector('[data-tv-zone="sidebar"] .tv-focus') as HTMLElement;
       if (firstFocusable) {
         firstFocusable.focus();
       }
