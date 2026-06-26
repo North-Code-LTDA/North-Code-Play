@@ -62,12 +62,7 @@ export function initTvNavigation() {
           // Sai da Sidebar para o Banner ou Primeira Linha
           const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
           const firstRow = document.querySelector('.horizontal-row-container .tv-focus, .grid-container .tv-focus') as HTMLElement;
-          if (heroBtn) {
-             heroBtn.focus();
-             window.scrollTo({ top: 0, behavior: 'smooth' });
-          } else if (firstRow) {
-             firstRow.focus();
-          }
+          (heroBtn || firstRow)?.focus();
         } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           const items = Array.from(document.querySelectorAll('[data-tv-zone="sidebar"] .tv-focus')) as HTMLElement[];
           const idx = items.indexOf(active);
@@ -83,30 +78,16 @@ export function initTvNavigation() {
       // HERO BANNER
       if (isHero) {
         if (e.key === 'ArrowLeft') {
-          if (active.classList.contains('info-btn')) {
-            (document.querySelector('.hero-btn') as HTMLElement)?.focus();
-          } else {
-            (document.querySelector('[data-tv-zone="sidebar"] .tv-focus') as HTMLElement)?.focus();
-          }
+          if (active.classList.contains('info-btn')) (document.querySelector('.hero-btn') as HTMLElement)?.focus();
+          else (document.querySelector('[data-tv-zone="sidebar"] .tv-focus') as HTMLElement)?.focus();
         } else if (e.key === 'ArrowRight') {
-          // Garante que o Assistir vá para o Mais Info
-          if (active.classList.contains('hero-btn')) {
-            (document.querySelector('.info-btn') as HTMLElement)?.focus();
-          }
+          if (active.classList.contains('hero-btn')) (document.querySelector('.info-btn') as HTMLElement)?.focus();
         } else if (e.key === 'ArrowDown') {
-          const firstRowItem = document.querySelector('.horizontal-row-container .tv-focus') as HTMLElement;
-          if (firstRowItem) {
-            firstRowItem.focus();
-            // Scrolla para o centro ignorando o topo
-            firstRowItem.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-          }
+          const firstRowItem = document.querySelector('.horizontal-row-container .tv-focus, .grid-container .tv-focus') as HTMLElement;
+          if (firstRowItem) firstRowItem.focus();
         } else if (e.key === 'ArrowUp') {
-          // Só vai pra pesquisa se o usuário quiser MUITO subir mais
           const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
-          if (searchInput) {
-             searchInput.focus();
-             window.scrollTo({ top: 0, behavior: 'smooth' });
-          }
+          if (searchInput) searchInput.focus();
         }
         return;
       }
@@ -135,14 +116,14 @@ export function initTvNavigation() {
 
           let targetRow = null;
           if (e.key === 'ArrowUp') {
-            if (rowIdx > 0) {
-              targetRow = allRows[rowIdx - 1];
-            } else {
-              // NOVIDADE: Chegou na primeira prateleira e apertou pra cima. Vai pro banner e rola TUDO pro topo!
+            if (rowIdx > 0) targetRow = allRows[rowIdx - 1];
+            else {
               const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
               if (heroBtn) {
-                heroBtn.focus();
-                window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+                  heroBtn.focus();
+              } else {
+                  const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
+                  if (searchInput) searchInput.focus();
               }
               return;
             }
