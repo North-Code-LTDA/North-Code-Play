@@ -1,11 +1,7 @@
 export let lastFocusedItemId: string | null = null;
-let lastUpPressTime = 0; // Timer para a barra de pesquisa
+let lastSearchUpPress = 0; // Temporizador para o duplo clique da Pesquisa
 
 export function initTvNavigation() {
-  // Evita duplicar o listener
-  if ((window as any).__tvNavInitialized) return;
-  (window as any).__tvNavInitialized = true;
-
   window.addEventListener('keydown', (e) => {
     const active = document.activeElement as HTMLElement;
     if (!active) return;
@@ -15,22 +11,26 @@ export function initTvNavigation() {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
-        const firstRow = document.querySelector('.horizontal-row-container .tv-focus') as HTMLElement;
-        if (heroBtn) heroBtn.focus();
-        else if (firstRow) firstRow.focus();
+        if (heroBtn) {
+          heroBtn.focus();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
       }
-      if (e.key !== 'Enter' && e.key !== 'Escape') return; 
+      if (e.key !== 'Enter' && e.key !== 'Escape') return;
     }
 
     // 2. MEMÓRIA E CLIQUE
     if (e.key === 'Enter') {
-      if (active.hasAttribute('data-tv-id')) lastFocusedItemId = active.getAttribute('data-tv-id');
+      if (active.hasAttribute('data-tv-id')) {
+        lastFocusedItemId = active.getAttribute('data-tv-id');
+      }
       active.click();
       return;
     }
 
     // 3. BOTÃO VOLTAR
     if (e.key === 'Backspace' || e.key === 'Escape') {
+      if (active.tagName === 'INPUT') return; // Se estiver digitando, apenas apaga o texto
       e.preventDefault();
       const backBtn = document.querySelector('.btn-close, button[aria-label="Voltar"], .lucide-arrow-left') as HTMLElement;
       const actualBtn = backBtn?.closest('button') || backBtn;
@@ -53,24 +53,30 @@ export function initTvNavigation() {
       return;
     }
 
-    // 4. MOTOR DE ZONAS (O Segredo da Navegação)
+    // 4. MOTOR ESTRUTURAL
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
       const isSidebar = active.closest('[data-tv-zone="sidebar"]');
-      const isHero = active.classList.contains('hero-btn') || active.classList.contains('info-btn');
       const row = active.closest('.horizontal-row-container');
+      const isHero = active.classList.contains('hero-btn') || active.classList.contains('info-btn');
 
-      // --- ZONA 1: SIDEBAR ---
+      // --- ZONA: SIDEBAR ---
       if (isSidebar) {
         e.preventDefault();
         if (e.key === 'ArrowLeft') {
-          return; // TRAVA MÁXIMA: Não faz nada se apertar pra esquerda na Sidebar
+          return; // BLOQUEADO: Limite da esquerda atingido
         } else if (e.key === 'ArrowRight') {
+          // Foge para o botão Assistir e sobe a tela
           const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
           const firstRow = document.querySelector('.horizontal-row-container .tv-focus') as HTMLElement;
-          if (heroBtn) heroBtn.focus();
-          else if (firstRow) firstRow.focus();
+          if (heroBtn) {
+            heroBtn.focus();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          } else if (firstRow) {
+            firstRow.focus();
+          }
         } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-          const items = Array.from(document.querySelectorAll('[data-tv-zone="sidebar"] .tv-focus')) as HTMLElement[];
+          // Limita o sobe/desce ESTRITAMENTE aos elementos dentro da Sidebar
+          const items = Array.from(isSidebar.querySelectorAll('.tv-focus')) as HTMLElement[];
           const idx = items.indexOf(active);
           if (e.key === 'ArrowDown' && idx < items.length - 1) items[idx + 1].focus();
           if (e.key === 'ArrowUp' && idx > 0) items[idx - 1].focus();
@@ -78,9 +84,9 @@ export function initTvNavigation() {
         return;
       }
 
-      e.preventDefault(); // Impede o scroll padrão da web em outras zonas
+      e.preventDefault();
 
-      // --- ZONA 2: HERO BANNER ---
+      // --- ZONA: HERO BANNER ---
       if (isHero) {
         if (e.key === 'ArrowLeft') {
           if (active.classList.contains('info-btn')) {
@@ -96,25 +102,24 @@ export function initTvNavigation() {
           const firstRowItem = document.querySelector('.horizontal-row-container .tv-focus') as HTMLElement;
           if (firstRowItem) {
             firstRowItem.focus();
-            firstRowItem.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+            firstRowItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }
         } else if (e.key === 'ArrowUp') {
-          // RESISTÊNCIA DA PESQUISA (Duplo Clique)
+          // LÓGICA DE DUPLO CLIQUE PARA PESQUISA
           const now = Date.now();
-          if (now - lastUpPressTime < 500) {
+          if (now - lastSearchUpPress < 500) {
             const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
             if (searchInput) searchInput.focus();
           } else {
-            lastUpPressTime = now;
-            window.scrollTo({ top: 0, behavior: 'smooth' }); // Força subir se a página escondeu o banner
+            // Se foi só um clique, apenas garante que a arte do Banner subiu inteira na tela
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            lastSearchUpPress = now;
           }
         }
-        // Garante que o banner sempre apareça por completo quando tiver foco
-        setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 50);
         return;
       }
 
-      // --- ZONA 3: PRATELEIRAS ---
+      // --- ZONA: PRATELEIRAS HORIZONTAIS ---
       if (row) {
         if (e.key === 'ArrowLeft') {
           const items = Array.from(row.querySelectorAll('.tv-focus')) as HTMLElement[];
@@ -135,15 +140,17 @@ export function initTvNavigation() {
         } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           const allRows = Array.from(document.querySelectorAll('.horizontal-row-container'));
           const rowIdx = allRows.indexOf(row as HTMLElement);
-          
+
           let targetRow = null;
           if (e.key === 'ArrowUp') {
-            if (rowIdx > 0) targetRow = allRows[rowIdx - 1];
-            else {
+            if (rowIdx > 0) {
+              targetRow = allRows[rowIdx - 1];
+            } else {
+              // Da primeira prateleira vai para o Assistir e sobe a tela totalmente
               const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
               if (heroBtn) {
                 heroBtn.focus();
-                window.scrollTo({ top: 0, behavior: 'smooth' }); // Sobe a página pro Banner!
+                window.scrollTo({ top: 0, behavior: 'smooth' });
               }
               return;
             }
@@ -156,13 +163,13 @@ export function initTvNavigation() {
             const targetItems = Array.from(targetRow.querySelectorAll('.tv-focus')) as HTMLElement[];
             let closest = targetItems[0];
             let minDist = Infinity;
-            
+
             targetItems.forEach(item => {
               const r = item.getBoundingClientRect();
               const dist = Math.abs((r.left + r.width/2) - (activeRect.left + activeRect.width/2));
               if (dist < minDist) { minDist = dist; closest = item; }
             });
-            
+
             if (closest) {
               closest.focus();
               closest.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
@@ -171,6 +178,54 @@ export function initTvNavigation() {
         }
         return;
       }
+      
+      // FALLBACK PARA GRIDS
+      const rect = active.getBoundingClientRect();
+      const allFocusable = Array.from(document.querySelectorAll('.tv-focus')).filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && el !== active;
+      }) as HTMLElement[];
+
+      let bestMatch: HTMLElement | null = null;
+      let minDistance = Infinity;
+
+      allFocusable.forEach(candidate => {
+        const cRect = candidate.getBoundingClientRect();
+        const candidateZone = candidate.getAttribute('data-tv-zone') || candidate.closest('[data-tv-zone]')?.getAttribute('data-tv-zone');
+        const currentZone = active.getAttribute('data-tv-zone') || active.closest('[data-tv-zone]')?.getAttribute('data-tv-zone');
+        
+        // Regras de Bloqueio
+        if (currentZone === 'main' && candidateZone === 'sidebar' && e.key !== 'ArrowLeft') return; 
+        if (candidate.tagName === 'INPUT' && e.key !== 'ArrowUp') return; 
+
+        // Centro dos elementos
+        const cx1 = rect.left + rect.width / 2;
+        const cy1 = rect.top + rect.height / 2;
+        const cx2 = cRect.left + cRect.width / 2;
+        const cy2 = cRect.top + cRect.height / 2;
+        
+        const dx = Math.abs(cx1 - cx2);
+        const dy = Math.abs(cy1 - cy2);
+
+        let isValid = false;
+        let distance = 0;
+
+        if (e.key === 'ArrowRight') { isValid = cx2 >= cx1; distance = dx + dy * 5; }
+        else if (e.key === 'ArrowLeft') { isValid = cx2 <= cx1; distance = dx + dy * 5; }
+        else if (e.key === 'ArrowDown') { isValid = cy2 >= cy1; distance = dy + dx * 5; }
+        else if (e.key === 'ArrowUp') { isValid = cy2 <= cy1; distance = dy + dx * 5; }
+
+        if (isValid && distance < minDistance) {
+          minDistance = distance;
+          bestMatch = candidate;
+        }
+      });
+
+      if (bestMatch) {
+        (bestMatch as HTMLElement).focus();
+        (bestMatch as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      }
+
     }
   });
 }
