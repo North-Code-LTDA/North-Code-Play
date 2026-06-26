@@ -1,5 +1,4 @@
 export let lastFocusedItemId: string | null = null;
-let lastUpPressTime = 0;
 
 export function initTvNavigation() {
   window.addEventListener('keydown', (e) => {
@@ -11,12 +10,7 @@ export function initTvNavigation() {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         const firstContent = document.querySelector('.hero-btn, .horizontal-row-container .tv-focus, .grid-container .tv-focus') as HTMLElement;
-        if (firstContent) {
-          firstContent.focus();
-          if (firstContent.classList.contains('hero-btn') || firstContent.classList.contains('info-btn')) {
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }
-        }
+        if (firstContent) firstContent.focus();
       }
       if (e.key !== 'Enter' && e.key !== 'Escape') return; 
     }
@@ -68,19 +62,12 @@ export function initTvNavigation() {
           // Sai da Sidebar para o Banner ou Primeira Linha
           const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
           const firstRow = document.querySelector('.horizontal-row-container .tv-focus, .grid-container .tv-focus') as HTMLElement;
-          if (heroBtn) {
-            heroBtn.focus();
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          } else if (firstRow) {
-            firstRow.focus();
-          }
+          (heroBtn || firstRow)?.focus();
         } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           const items = Array.from(document.querySelectorAll('[data-tv-zone="sidebar"] .tv-focus')) as HTMLElement[];
           const idx = items.indexOf(active);
           if (e.key === 'ArrowDown' && idx < items.length - 1) items[idx + 1].focus();
           if (e.key === 'ArrowUp' && idx > 0) items[idx - 1].focus();
-        } else if (e.key === 'ArrowLeft') {
-          // Não faz nada, protege a sidebar de scroll ou focus out acidental
         }
         return;
       }
@@ -91,32 +78,16 @@ export function initTvNavigation() {
       // HERO BANNER
       if (isHero) {
         if (e.key === 'ArrowLeft') {
-          if (active.classList.contains('info-btn')) {
-            const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
-            if (heroBtn) {
-              heroBtn.focus();
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-          }
+          if (active.classList.contains('info-btn')) (document.querySelector('.hero-btn') as HTMLElement)?.focus();
           else (document.querySelector('[data-tv-zone="sidebar"] .tv-focus') as HTMLElement)?.focus();
         } else if (e.key === 'ArrowRight') {
-          if (active.classList.contains('hero-btn')) {
-            const infoBtn = document.querySelector('.info-btn') as HTMLElement;
-            if (infoBtn) {
-              infoBtn.focus();
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-          }
+          if (active.classList.contains('hero-btn')) (document.querySelector('.info-btn') as HTMLElement)?.focus();
         } else if (e.key === 'ArrowDown') {
           const firstRowItem = document.querySelector('.horizontal-row-container .tv-focus, .grid-container .tv-focus') as HTMLElement;
           if (firstRowItem) firstRowItem.focus();
         } else if (e.key === 'ArrowUp') {
-          const now = Date.now();
-          if (now - lastUpPressTime < 500) {
-            const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
-            if (searchInput) searchInput.focus();
-          }
-          lastUpPressTime = now;
+          const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
+          if (searchInput) searchInput.focus();
         }
         return;
       }
@@ -150,7 +121,6 @@ export function initTvNavigation() {
               const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
               if (heroBtn) {
                   heroBtn.focus();
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
               } else {
                   const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
                   if (searchInput) searchInput.focus();
