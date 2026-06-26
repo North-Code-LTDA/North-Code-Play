@@ -87,10 +87,7 @@ export function initTvNavigation() {
           if (firstRowItem) firstRowItem.focus();
         } else if (e.key === 'ArrowUp') {
           const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
-          if (searchInput) {
-            searchInput.focus();
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }
+          if (searchInput) searchInput.focus();
         }
         return;
       }
@@ -119,14 +116,14 @@ export function initTvNavigation() {
 
           let targetRow = null;
           if (e.key === 'ArrowUp') {
-            if (rowIdx > 0) {
-              targetRow = allRows[rowIdx - 1];
-            } else {
-              const bannerBtn = document.querySelector('.hero-btn') as HTMLElement;
-              if (bannerBtn) {
-                bannerBtn.focus();
-                // Força o scroll absoluto para o topo da página para exibir o banner completo
-                window.scrollTo({ top: 0, behavior: 'smooth' });
+            if (rowIdx > 0) targetRow = allRows[rowIdx - 1];
+            else {
+              const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
+              if (heroBtn) {
+                  heroBtn.focus();
+              } else {
+                  const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
+                  if (searchInput) searchInput.focus();
               }
               return;
             }
