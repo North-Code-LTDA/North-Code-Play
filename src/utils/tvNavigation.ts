@@ -3,28 +3,26 @@ export let lastFocusedItemId: string | null = null;
 export function initTvNavigation() {
   window.addEventListener('keydown', (e) => {
     const active = document.activeElement as HTMLElement;
+    if (!active) return;
 
-    // 1. ARMADILHA DO INPUT (Pesquisa)
+    // 1. ARMADILHA DA PESQUISA
     if (active.tagName === 'INPUT') {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        // Foge do input para o conteúdo principal
-        const mainFocus = document.querySelector('[data-tv-zone="main"] .tv-focus, .hero-btn') as HTMLElement;
-        if (mainFocus) mainFocus.focus();
+        const firstContent = document.querySelector('.hero-btn, .horizontal-row-container .tv-focus, .grid-container .tv-focus') as HTMLElement;
+        if (firstContent) firstContent.focus();
       }
-      if (e.key !== 'Enter' && e.key !== 'Escape') return; // Deixa digitar livremente
+      if (e.key !== 'Enter' && e.key !== 'Escape') return; 
     }
 
-    // 2. GRAVAR MEMÓRIA (Enter)
+    // 2. MEMÓRIA E CLIQUE
     if (e.key === 'Enter') {
-      if (active.hasAttribute('data-tv-id')) {
-        lastFocusedItemId = active.getAttribute('data-tv-id');
-      }
+      if (active.hasAttribute('data-tv-id')) lastFocusedItemId = active.getAttribute('data-tv-id');
       active.click();
       return;
     }
 
-    // 3. BOTÃO VOLTAR (Backspace/Escape)
+    // 3. BOTÃO VOLTAR
     if (e.key === 'Backspace' || e.key === 'Escape') {
       e.preventDefault();
       const backBtn = document.querySelector('.btn-close, button[aria-label="Voltar"], .lucide-arrow-left') as HTMLElement;
@@ -51,29 +49,111 @@ export function initTvNavigation() {
       return;
     }
 
-    // 4. NAVEGAÇÃO ESPACIAL
+    // 4. MOTOR ESTRUTURAL
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-      e.preventDefault();
-      const currentZone = active.getAttribute('data-tv-zone') || active.closest('[data-tv-zone]')?.getAttribute('data-tv-zone');
-
-      // ISOLAMENTO ESTRITO (Não vaza do contêiner horizontal)
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        const rowContainer = active.closest('.horizontal-row-container, .grid-container');
-        if (rowContainer) {
-          const items = Array.from(rowContainer.querySelectorAll('.tv-focus')) as HTMLElement[];
-          const currentIndex = items.indexOf(active);
-          if (e.key === 'ArrowRight' && currentIndex < items.length - 1) {
-            items[currentIndex + 1].focus();
-            items[currentIndex + 1].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-          } else if (e.key === 'ArrowLeft' && currentIndex > 0) {
-            items[currentIndex - 1].focus();
-            items[currentIndex - 1].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-          }
-          return; // Interrompe para não vazar pra sidebar ou outra categoria
+      const isSidebar = active.closest('[data-tv-zone="sidebar"]');
+      const row = active.closest('.horizontal-row-container');
+      const isHero = active.classList.contains('hero-btn') || active.classList.contains('info-btn');
+      
+      // --- ZONA: SIDEBAR (Início, Filmes, etc) ---
+      if (isSidebar) {
+        e.preventDefault();
+        if (e.key === 'ArrowRight') {
+          // Sai da Sidebar para o Banner ou Primeira Linha
+          const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
+          const firstRow = document.querySelector('.horizontal-row-container .tv-focus, .grid-container .tv-focus') as HTMLElement;
+          (heroBtn || firstRow)?.focus();
+        } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          const items = Array.from(document.querySelectorAll('[data-tv-zone="sidebar"] .tv-focus')) as HTMLElement[];
+          const idx = items.indexOf(active);
+          if (e.key === 'ArrowDown' && idx < items.length - 1) items[idx + 1].focus();
+          if (e.key === 'ArrowUp' && idx > 0) items[idx - 1].focus();
         }
+        return;
       }
 
-      // GEOMETRIA PARA PULAR DE CATEGORIAS (Cima/Baixo)
+      // --- ZONA: MAIN CONTENT ---
+      e.preventDefault();
+      
+      // HERO BANNER
+      if (isHero) {
+        if (e.key === 'ArrowLeft') {
+          if (active.classList.contains('info-btn')) (document.querySelector('.hero-btn') as HTMLElement)?.focus();
+          else (document.querySelector('[data-tv-zone="sidebar"] .tv-focus') as HTMLElement)?.focus();
+        } else if (e.key === 'ArrowRight') {
+          if (active.classList.contains('hero-btn')) (document.querySelector('.info-btn') as HTMLElement)?.focus();
+        } else if (e.key === 'ArrowDown') {
+          const firstRowItem = document.querySelector('.horizontal-row-container .tv-focus, .grid-container .tv-focus') as HTMLElement;
+          if (firstRowItem) firstRowItem.focus();
+        } else if (e.key === 'ArrowUp') {
+          const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
+          if (searchInput) searchInput.focus();
+        }
+        return;
+      }
+
+      // PRATELEIRAS HORIZONTAIS
+      if (row) {
+        if (e.key === 'ArrowLeft') {
+          const items = Array.from(row.querySelectorAll('.tv-focus')) as HTMLElement[];
+          const idx = items.indexOf(active);
+          if (idx > 0) {
+            items[idx - 1].focus();
+            items[idx - 1].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+          } else {
+            (document.querySelector('[data-tv-zone="sidebar"] .tv-focus') as HTMLElement)?.focus();
+          }
+        } else if (e.key === 'ArrowRight') {
+          const items = Array.from(row.querySelectorAll('.tv-focus')) as HTMLElement[];
+          const idx = items.indexOf(active);
+          if (idx < items.length - 1) {
+            items[idx + 1].focus();
+            items[idx + 1].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+          }
+        } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          const allRows = Array.from(document.querySelectorAll('.horizontal-row-container'));
+          const rowIdx = allRows.indexOf(row as HTMLElement);
+
+          let targetRow = null;
+          if (e.key === 'ArrowUp') {
+            if (rowIdx > 0) targetRow = allRows[rowIdx - 1];
+            else {
+              const heroBtn = document.querySelector('.hero-btn') as HTMLElement;
+              if (heroBtn) {
+                  heroBtn.focus();
+              } else {
+                  const searchInput = document.querySelector('input[type="text"]') as HTMLElement;
+                  if (searchInput) searchInput.focus();
+              }
+              return;
+            }
+          } else if (e.key === 'ArrowDown') {
+            if (rowIdx < allRows.length - 1) targetRow = allRows[rowIdx + 1];
+          }
+
+          if (targetRow) {
+            // Acha o filme na prateleira alvo que está mais próximo visualmente (Eixo X)
+            const activeRect = active.getBoundingClientRect();
+            const targetItems = Array.from(targetRow.querySelectorAll('.tv-focus')) as HTMLElement[];
+            let closest = targetItems[0];
+            let minDist = Infinity;
+            
+            targetItems.forEach(item => {
+              const r = item.getBoundingClientRect();
+              const dist = Math.abs((r.left + r.width/2) - (activeRect.left + activeRect.width/2));
+              if (dist < minDist) { minDist = dist; closest = item; }
+            });
+            
+            if (closest) {
+              closest.focus();
+              closest.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+            }
+          }
+        }
+        return;
+      }
+
+      // GRIDS E COMPONENTES GENÉRICOS (Fallback Geométrico Aperfeiçoado)
       const rect = active.getBoundingClientRect();
       const allFocusable = Array.from(document.querySelectorAll('.tv-focus')).filter(el => {
         const r = el.getBoundingClientRect();
@@ -86,10 +166,11 @@ export function initTvNavigation() {
       allFocusable.forEach(candidate => {
         const cRect = candidate.getBoundingClientRect();
         const candidateZone = candidate.getAttribute('data-tv-zone') || candidate.closest('[data-tv-zone]')?.getAttribute('data-tv-zone');
+        const currentZone = active.getAttribute('data-tv-zone') || active.closest('[data-tv-zone]')?.getAttribute('data-tv-zone');
         
         // Regras de Bloqueio
-        if (currentZone === 'main' && candidateZone === 'sidebar' && e.key !== 'ArrowLeft') return; // Só vai pra sidebar se não tiver na grid
-        if (candidate.tagName === 'INPUT' && e.key !== 'ArrowUp') return; // Só acha o Search se for pra cima
+        if (currentZone === 'main' && candidateZone === 'sidebar' && e.key !== 'ArrowLeft') return; 
+        if (candidate.tagName === 'INPUT' && e.key !== 'ArrowUp') return; 
 
         // Centro dos elementos
         const cx1 = rect.left + rect.width / 2;
@@ -103,11 +184,10 @@ export function initTvNavigation() {
         let isValid = false;
         let distance = 0;
 
-        // Multiplicadores pesados para impedir "Drift Diagonal"
-        if (e.key === 'ArrowRight') { isValid = cRect.left >= rect.right - 10; distance = dx + dy * 10; }
-        else if (e.key === 'ArrowLeft') { isValid = cRect.right <= rect.left + 10; distance = dx + dy * 10; }
-        else if (e.key === 'ArrowDown') { isValid = cRect.top >= rect.bottom - 10; distance = dy + dx * 10; }
-        else if (e.key === 'ArrowUp') { isValid = cRect.bottom <= rect.top + 10; distance = dy + dx * 10; }
+        if (e.key === 'ArrowRight') { isValid = cx2 >= cx1; distance = dx + dy * 5; }
+        else if (e.key === 'ArrowLeft') { isValid = cx2 <= cx1; distance = dx + dy * 5; }
+        else if (e.key === 'ArrowDown') { isValid = cy2 >= cy1; distance = dy + dx * 5; }
+        else if (e.key === 'ArrowUp') { isValid = cy2 <= cy1; distance = dy + dx * 5; }
 
         if (isValid && distance < minDistance) {
           minDistance = distance;
@@ -119,6 +199,7 @@ export function initTvNavigation() {
         (bestMatch as HTMLElement).focus();
         (bestMatch as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
       }
+
     }
   });
 }
