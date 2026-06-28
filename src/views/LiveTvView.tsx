@@ -154,7 +154,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   return (
     <div className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg">
       {/* Left Pane: Categories or Channels */}
-      <div data-tv-zone="sidebar" className={`w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/20 h-full shrink-0 flex ${isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/20 h-full shrink-0 flex ${isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
         
         {/* Categories View */}
         {leftPaneView === 'categories' && (
@@ -171,12 +171,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                 extendedCategories.map((cat) => (
                   <button
                     key={cat.category_id}
-                    tabIndex={0}
                     onClick={() => {
                       setSelectedCategoryId(cat.category_id);
                       setLeftPaneView('channels');
                     }}
-                    className="tv-focus w-full text-left px-4 py-3 rounded-xl text-sm transition-colors truncate text-nc-text-secondary hover:bg-nc-bg-input hover:text-white"
+                    className="w-full text-left px-4 py-3 rounded-xl text-sm transition-colors truncate text-nc-text-secondary hover:bg-nc-bg-input hover:text-white"
                   >
                     {cat.category_name}
                   </button>
@@ -192,9 +191,8 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
             <div className="p-4 border-b border-nc-border/50 bg-nc-bg shrink-0 flex flex-col gap-2">
               {!searchQuery && (
                 <button 
-                  tabIndex={0}
                   onClick={() => setLeftPaneView('categories')}
-                  className="tv-focus btn-close flex items-center gap-2 text-nc-text-secondary hover:text-white text-sm w-fit transition-colors"
+                  className="flex items-center gap-2 text-nc-text-secondary hover:text-white text-sm w-fit transition-colors"
                 >
                   <ArrowLeft className="w-4 h-4" /> Voltar às Categorias
                 </button>
@@ -215,19 +213,16 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                    <p className="text-sm">Nenhum canal encontrado.</p>
                  </div>
               ) : (
-                <div className="grid-container space-y-2">
+                <div className="space-y-2">
                   {displayedStreams.map((stream) => (
                     <button
                       key={stream.stream_id}
-                      tabIndex={0}
-                      data-tv-zone="main"
-                      data-tv-id={stream.stream_id}
                       onClick={() => {
                         setSelectedChannel(stream);
                         setIsMobilePlayerOpen(true);
                         localStorage.setItem('nc_live_history_' + stream.stream_id, Date.now().toString());
                       }}
-                      className={`tv-focus w-full flex items-center gap-3 p-2 rounded-xl transition-colors border ${
+                      className={`w-full flex items-center gap-3 p-2 rounded-xl transition-colors border ${
                         selectedChannel?.stream_id === stream.stream_id 
                           ? 'bg-nc-primary/10 border-nc-primary/30' 
                           : 'bg-transparent border-transparent hover:bg-nc-bg-input'
@@ -266,10 +261,8 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                   
                   {displayCount < filteredStreams.length && (
                     <button
-                      tabIndex={0}
-                      data-tv-zone="main"
                       onClick={() => setDisplayCount(prev => prev + 100)}
-                      className="tv-focus w-full py-3 mt-4 text-sm bg-nc-bg-input hover:bg-nc-bg-card rounded-xl text-nc-text-secondary transition-colors"
+                      className="w-full py-3 mt-4 text-sm bg-nc-bg-input hover:bg-nc-bg-card rounded-xl text-nc-text-secondary transition-colors"
                     >
                       Carregar Mais
                     </button>
@@ -288,9 +281,8 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
              {/* Mobile Back Button */}
              <div className="md:hidden p-4 shrink-0 border-b border-nc-border/50 flex items-center bg-nc-bg">
                <button 
-                 tabIndex={0}
                  onClick={() => setIsMobilePlayerOpen(false)}
-                 className="tv-focus btn-close flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors"
+                 className="flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors"
                >
                  <ArrowLeft className="w-5 h-5" /> Voltar aos Canais
                </button>

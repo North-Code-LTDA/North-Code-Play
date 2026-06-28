@@ -33,19 +33,16 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
 
         <div 
           ref={rowRef}
-          className="horizontal-row-container flex flex-row overflow-x-auto overflow-y-hidden scroll-smooth w-full gap-4 pb-8 pt-4 scrollbar-hide"
+          className="flex flex-row overflow-x-auto overflow-y-hidden scroll-smooth w-full gap-4 pb-8 pt-4 scrollbar-hide"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
         {items.map((item) => (
           <motion.div
             key={item.stream_id || item.series_id || item.id}
-            tabIndex={0}
-            data-tv-zone="main"
-            data-tv-id={item.stream_id || item.series_id || item.name}
             onClick={() => onItemClick(item)}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            className={`tv-focus shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
+            className={`shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
               type === 'live' ? 'w-64 md:w-72 aspect-video' : 'w-36 md:w-44 aspect-[2/3]'
             }`}
           >

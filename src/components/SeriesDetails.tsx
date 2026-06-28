@@ -115,9 +115,8 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-nc-border/50 bg-black/50 shrink-0">
         <button 
-          tabIndex={0}
           onClick={onClose}
-          className="tv-focus btn-close flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors"
+          className="flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors"
         >
           <ChevronLeft className="w-5 h-5" />
           <span>Voltar</span>
@@ -126,9 +125,8 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
           {seriesInfo?.info?.name || seriesName}
         </h2>
         <button 
-          tabIndex={0}
           onClick={onClose}
-          className="tv-focus p-2 hover:bg-white/10 rounded-full transition-colors"
+          className="p-2 hover:bg-white/10 rounded-full transition-colors"
         >
           <X className="w-5 h-5" />
         </button>
@@ -187,15 +185,13 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                        {seriesInfo.info?.plot || 'Sinopse não disponível.'}
                      </p>
                      <button 
-                       tabIndex={0}
-                       data-tv-zone="main"
                        onClick={() => toggleFavorite({
                          id: seriesId,
                          name: seriesInfo.info?.name || seriesName,
                          cover: seriesInfo.info?.cover || seriesCover || '',
                          type: 'series'
                        })}
-                       className="tv-focus flex items-center gap-2 px-6 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors w-fit font-medium text-white shadow-xl"
+                       className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors w-fit font-medium text-white shadow-xl"
                      >
                        <Heart className={`w-5 h-5 ${isFavorite(seriesId, 'series') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
                        {isFavorite(seriesId, 'series') ? 'Favoritado' : 'Adicionar aos Favoritos'}
@@ -231,10 +227,8 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                     {Object.keys(seriesInfo.episodes).map((seasonNum) => (
                       <button
                         key={seasonNum}
-                        tabIndex={0}
-                        data-tv-zone="main"
                         onClick={() => setSelectedSeason(seasonNum)}
-                        className={`tv-focus px-6 py-2.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${selectedSeason === seasonNum ? 'bg-nc-primary text-black' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
+                        className={`px-6 py-2.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${selectedSeason === seasonNum ? 'bg-nc-primary text-black' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
                       >
                         Temporada {seasonNum}
                       </button>
@@ -246,12 +240,10 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                     {selectedSeason && seriesInfo.episodes[selectedSeason]?.map((episode: any) => (
                       <motion.div
                         key={episode.id}
-                        tabIndex={0}
-                        data-tv-zone="main"
                         whileHover={{ scale: 1.01 }}
                         whileTap={{ scale: 0.99 }}
                         onClick={() => handlePlayEpisode(episode)}
-                        className="tv-focus w-full bg-nc-bg-card border border-nc-border/50 rounded-xl p-4 flex gap-4 items-center cursor-pointer hover:border-nc-primary/50 transition-colors group"
+                        className="w-full bg-nc-bg-card border border-nc-border/50 rounded-xl p-4 flex gap-4 items-center cursor-pointer hover:border-nc-primary/50 transition-colors group"
                       >
                         <div className="w-12 h-12 rounded-full bg-nc-bg-input flex items-center justify-center shrink-0 group-hover:bg-nc-primary group-hover:text-black transition-colors">
                           <Play className="w-5 h-5 ml-1" />
@@ -294,26 +286,20 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
             </p>
             <div className="flex flex-col gap-3 w-full">
               <button
-                tabIndex={0}
-                data-tv-zone="main"
                 onClick={() => executePlay(selectedEpisode, savedProgress)}
-                className="tv-focus w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
+                className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
               >
                 Retomar de {Math.floor(savedProgress / 60)} min
               </button>
               <button
-                tabIndex={0}
-                data-tv-zone="main"
                 onClick={() => executePlay(selectedEpisode, 0)}
-                className="tv-focus w-full py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/30"
+                className="w-full py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/30"
               >
                 Assistir do Início
               </button>
               <button
-                tabIndex={0}
-                data-tv-zone="main"
                 onClick={() => setShowResumeModal(false)}
-                className="tv-focus w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
+                className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
               >
                 Cancelar
               </button>

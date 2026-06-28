@@ -132,9 +132,8 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
           <div className="absolute inset-0 bg-gradient-to-r from-nc-bg via-nc-bg/60 to-transparent z-0" />
           
           <button 
-            tabIndex={0}
             onClick={onClose}
-            className="tv-focus btn-close absolute top-6 left-6 p-3 bg-black/40 hover:bg-black/60 backdrop-blur-md rounded-full text-white transition-colors z-[60] cursor-pointer"
+            className="absolute top-6 left-6 p-3 bg-black/40 hover:bg-black/60 backdrop-blur-md rounded-full text-white transition-colors z-[60] cursor-pointer"
           >
             <ArrowLeft className="w-6 h-6" />
           </button>
@@ -173,25 +172,21 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
 
             <div className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
               <button 
-                tabIndex={0}
-                data-tv-zone="main"
                 onClick={handlePlay}
-                className="tv-focus flex items-center gap-3 bg-nc-primary hover:bg-nc-primary/90 text-black px-8 py-3.5 rounded-xl font-semibold w-fit transition-transform active:scale-95"
+                className="flex items-center gap-3 bg-nc-primary hover:bg-nc-primary/90 text-black px-8 py-3.5 rounded-xl font-semibold w-fit transition-transform active:scale-95"
               >
                 <Play className="w-6 h-6 fill-black m-0 p-0" />
                 <span className="text-lg">Assistir</span>
               </button>
               
               <button 
-                tabIndex={0}
-                data-tv-zone="main"
                 onClick={() => toggleFavorite({
                   id: streamId,
                   name: info.name || streamName,
                   cover: coverImage || streamIcon || '',
                   type: 'movie'
                 })}
-                className="tv-focus flex items-center justify-center p-3.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors"
+                className="flex items-center justify-center p-3.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors"
                 title="Favoritar"
               >
                 <Heart className={`w-6 h-6 ${isFavorite(streamId, 'movie') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
@@ -238,26 +233,20 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
             </p>
             <div className="flex flex-col gap-3 w-full">
               <button
-                tabIndex={0}
-                data-tv-zone="main"
                 onClick={() => executePlay(savedProgress)}
-                className="tv-focus w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
+                className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
               >
                 Retomar de {Math.floor(savedProgress / 60)} min
               </button>
               <button
-                tabIndex={0}
-                data-tv-zone="main"
                 onClick={() => executePlay(0)}
-                className="tv-focus w-full py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/30"
+                className="w-full py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/30"
               >
                 Assistir do Início
               </button>
               <button
-                tabIndex={0}
-                data-tv-zone="main"
                 onClick={() => setShowResumeModal(false)}
-                className="tv-focus w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
+                className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
               >
                 Cancelar
               </button>

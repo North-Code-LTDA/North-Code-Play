@@ -47,15 +47,4 @@
     width: 100%;
     height: 100%;
   }
-
-  .tv-focus { outline: none; }
-  .tv-focus:focus-visible {
-    outline: 3px solid #ffffff !important;
-    outline-offset: 3px;
-    transform: scale(1.05) !important;
-    z-index: 50 !important;
-    border-radius: 0.75rem !important; /* Arredondamento suave corrigido */
-    box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);
-    transition: all 0.2s ease-in-out;
-  }
 }

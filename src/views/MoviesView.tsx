@@ -114,7 +114,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
       ) : (
         <>
           {/* Sidebar - Categories */}
-          <aside data-tv-zone="sidebar" className="hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
+          <aside className="hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
             <div className="p-4 border-b border-nc-border/50">
               <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de Filmes</h2>
             </div>
@@ -128,9 +128,8 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                   {extendedCategories.map((cat) => (
                     <button
                       key={cat.category_id}
-                      tabIndex={0}
                       onClick={() => setSelectedCategoryId(cat.category_id)}
-                      className={`tv-focus w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors truncate ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
+                      className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors truncate ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
                     >
                       {cat.category_name}
                     </button>
@@ -147,10 +146,8 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
               {extendedCategories.map((cat) => (
                 <button
                   key={cat.category_id}
-                  tabIndex={0}
-                  data-tv-zone="main"
                   onClick={() => setSelectedCategoryId(cat.category_id)}
-                  className={`tv-focus shrink-0 snap-center px-4 py-2 rounded-full text-sm transition-colors whitespace-nowrap ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
+                  className={`shrink-0 snap-center px-4 py-2 rounded-full text-sm transition-colors whitespace-nowrap ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
                 >
                   {cat.category_name}
                 </button>
@@ -186,19 +183,16 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                  </div>
               ) : (
                 <>
-                  <div className="grid-container grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                    {displayedStreams.map((stream) => (
                      <motion.div
                        key={stream.stream_id}
-                       tabIndex={0}
-                       data-tv-zone="main"
-                       data-tv-id={stream.stream_id}
                        whileHover={{ scale: 1.05 }}
                        whileTap={{ scale: 0.95 }}
                        onClick={() => {
                          setSelectedMovie(stream);
                        }}
-                       className="tv-focus group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
+                       className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
                      >
                        {stream.stream_icon ? (
                          <img 
@@ -234,10 +228,8 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                  {displayCount < filteredStreams.length && (
                     <div className="mt-8 flex justify-center">
                       <button
-                        tabIndex={0}
-                        data-tv-zone="main"
                         onClick={() => setDisplayCount(prev => prev + 100)}
-                        className="tv-focus px-6 py-3 bg-nc-bg-card hover:bg-nc-bg-input border border-nc-border/50 rounded-xl text-white font-medium transition-colors"
+                        className="px-6 py-3 bg-nc-bg-card hover:bg-nc-bg-input border border-nc-border/50 rounded-xl text-white font-medium transition-colors"
                       >
                         Carregar Mais
                       </button>

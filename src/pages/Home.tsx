@@ -43,28 +43,28 @@ export function Home() {
 
   const NavItems = () => (
     <>
-      <button tabIndex={0} onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`tv-focus flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'inicio' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'inicio' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <HomeIcon className="w-5 h-5" />
         <span>Início</span>
       </button>
-      <button tabIndex={0} onClick={() => { setCurrentView('live'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`tv-focus flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'live' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('live'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'live' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Tv className="w-5 h-5" />
         <span>TV ao Vivo</span>
       </button>
-      <button tabIndex={0} onClick={() => { setCurrentView('movies'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`tv-focus flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'movies' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('movies'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'movies' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Film className="w-5 h-5" />
         <span>Filmes</span>
       </button>
-      <button tabIndex={0} onClick={() => { setCurrentView('series'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`tv-focus flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'series' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('series'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'series' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <PlaySquare className="w-5 h-5" />
         <span>Séries</span>
       </button>
-      <button tabIndex={0} onClick={() => { setCurrentView('favorites'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`tv-focus flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'favorites' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('favorites'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'favorites' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Heart className="w-5 h-5" />
         <span>Meus Favoritos</span>
       </button>
       <div className="h-4" />
-      <button tabIndex={0} onClick={() => { setCurrentView('config'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`tv-focus flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button onClick={() => { setCurrentView('config'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Settings className="w-5 h-5" />
         <span>Configurações</span>
       </button>
@@ -106,7 +106,7 @@ export function Home() {
         </AnimatePresence>
 
         {/* Sidebar - Desktop */}
-        <aside data-tv-zone="sidebar" className="hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-[100dvh] sticky top-0 shrink-0">
+        <aside className="hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-[100dvh] sticky top-0 shrink-0">
           <div className="p-6">
             <Logo className="scale-90 origin-left" />
           </div>
@@ -130,9 +130,8 @@ export function Home() {
               </div>
             </div>
             <button 
-              tabIndex={0}
               onClick={handleLogout}
-              className="tv-focus flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
+              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
             >
               <LogOut className="w-5 h-5" />
               <span>Sair</span>
@@ -163,7 +162,6 @@ export function Home() {
                 className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-[60]"
               />
               <motion.aside 
-                data-tv-zone="sidebar"
                 initial={{ x: '-100%' }}
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
@@ -172,7 +170,7 @@ export function Home() {
               >
                 <div className="p-4 flex items-center justify-between border-b border-nc-border/50">
                   <Logo className="scale-75 origin-left" />
-                  <button tabIndex={0} onClick={() => setIsMobileMenuOpen(false)} className="tv-focus btn-close p-2 text-nc-text-secondary hover:text-white">
+                  <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 text-nc-text-secondary hover:text-white">
                     <X className="w-6 h-6" />
                   </button>
                 </div>
@@ -194,9 +192,8 @@ export function Home() {
                     </div>
                   </div>
                   <button 
-                    tabIndex={0}
                     onClick={handleLogout}
-                    className="tv-focus flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
+                    className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
                   >
                     <LogOut className="w-5 h-5" />
                     <span>Sair</span>
@@ -219,7 +216,7 @@ export function Home() {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Pesquisar..." 
-                  className="tv-focus w-full pl-10 pr-4 py-2.5 bg-nc-bg-input border border-nc-border/50 focus:border-nc-primary rounded-xl text-white outline-none transition-colors"
+                  className="w-full pl-10 pr-4 py-2.5 bg-nc-bg-input border border-nc-border/50 focus:border-nc-primary rounded-xl text-white outline-none transition-colors"
                 />
               </div>
             </div>
