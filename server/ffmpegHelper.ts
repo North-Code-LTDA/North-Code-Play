@@ -51,6 +51,7 @@ export interface MediaProbeInfo {
   size?: number;
   videoCodec?: string;
   audioCodec?: string;
+  isShortDuration?: boolean;
   isMaintenanceVideo?: boolean;
   maintenanceReason?: string;
   raw?: any;
@@ -112,17 +113,13 @@ export async function probeMediaStream(mediaUrl: string, timeoutMs: number = 800
         // Check if metadata or duration flags maintenance video
         let isMaintenanceVideo = false;
         let maintenanceReason: string | undefined;
-
-        if (duration !== undefined && duration > 0 && duration < 40) {
-          isMaintenanceVideo = true;
-          maintenanceReason = `Duração muito curta (${Math.round(duration)}s) detectada para filme ou episódio de VOD.`;
-        }
+        const isShortDuration = duration !== undefined && duration > 0 && duration < 40;
 
         const tags = { ...(format.tags || {}), ...(videoStream?.tags || {}) };
         const tagText = JSON.stringify(tags).toLowerCase();
-        if (tagText.includes("manuten") || tagText.includes("maintenance") || tagText.includes("aviso")) {
+        if (tagText.includes("manuten") || tagText.includes("maintenance") || tagText.includes("aviso") || tagText.includes("offline")) {
           isMaintenanceVideo = true;
-          maintenanceReason = "Tags do fluxo contêm indicação de manutenção do provedor.";
+          maintenanceReason = "Tags do fluxo contêm indicação explícita de manutenção do provedor.";
         }
 
         resolve({
@@ -131,6 +128,7 @@ export async function probeMediaStream(mediaUrl: string, timeoutMs: number = 800
           size,
           videoCodec,
           audioCodec,
+          isShortDuration,
           isMaintenanceVideo,
           maintenanceReason,
           raw: parsed,

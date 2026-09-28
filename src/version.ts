@@ -2,7 +2,7 @@
 export const APP_VERSION = "1.3.0";
 
 // Fallback commit from base specification if RENDER_GIT_COMMIT is not provided
-const DEFAULT_COMMIT = "0026038a2b1ba8c63ac95030bbc8cf8248c62231";
+const DEFAULT_COMMIT = "04a1df5d2e4aeab43562343c9f4a72bad4cc3c9e";
 
 function resolveCommit(): string {
   if (typeof __APP_COMMIT__ !== "undefined" && __APP_COMMIT__) {

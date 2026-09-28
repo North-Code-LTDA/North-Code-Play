@@ -5,6 +5,7 @@ import {
   handleHlsResourceRequest,
   handleImageProxyRequest,
   diagnoseMediaUpstream,
+  ticketStore,
 } from "./mediaProxy";
 import { XtreamError } from "./ssrf";
 import { checkFfmpegAvailable, checkFfprobeAvailable } from "./ffmpegHelper";
@@ -108,6 +109,51 @@ mediaRouter.post("/diagnose", async (req, res) => {
     res.status(500).json({
       error: "DIAGNOSTIC_FAILED",
       message: err?.message || "Falha ao executar diagnóstico da transmissão.",
+    });
+  }
+});
+
+// Switch extension endpoint: POST /api/media/switch-extension
+mediaRouter.post("/switch-extension", async (req, res) => {
+  try {
+    const { ticketId, newExt, allowPrivateForTest } = req.body || {};
+    if (!ticketId || !newExt) {
+      res.status(400).json({
+        error: "INVALID_REQUEST",
+        message: "ticketId e newExt são obrigatórios para alternar a extensão da mídia.",
+      });
+      return;
+    }
+
+    const ticket = ticketStore.get(ticketId);
+    if (!ticket) {
+      res.status(404).json({
+        error: "TICKET_NOT_FOUND",
+        message: "Sessão de transmissão expirada ou não encontrada.",
+      });
+      return;
+    }
+
+    const cleanExt = String(newExt).trim().toLowerCase().replace(/^\./, "");
+    const newTicket = await createMediaTicket({
+      serverUrl: ticket.cleanBaseUrl,
+      username: ticket.username,
+      password: ticket.password,
+      type: ticket.type,
+      streamId: ticket.streamId,
+      ext: cleanExt,
+      allowPrivateForTest: allowPrivateForTest || ticket.cleanBaseUrl.includes("127.0.0.1"),
+    });
+
+    res.status(200).json(newTicket);
+  } catch (err: any) {
+    if (err instanceof XtreamError) {
+      res.status(err.statusCode).json({ error: err.code, message: err.message });
+      return;
+    }
+    res.status(500).json({
+      error: "SWITCH_FAILED",
+      message: err?.message || "Falha ao alternar extensão da mídia.",
     });
   }
 });

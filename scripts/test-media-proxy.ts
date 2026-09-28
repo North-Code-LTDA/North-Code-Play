@@ -369,6 +369,7 @@ async function runMediaProxyTests() {
         "Content-Length": "512000",
         "Accept-Ranges": "none",
         "Content-Type": "video/mp4",
+        "X-Provider-Notice": "maintenance",
       });
       res.end(maintenanceBuf);
       return;
@@ -381,6 +382,7 @@ async function runMediaProxyTests() {
         "Content-Length": "300000",
         "Accept-Ranges": "none",
         "Content-Type": "video/mp4",
+        "X-Provider-Notice": "maintenance",
       });
       res.end(Buffer.alloc(300 * 1024, 0x66));
       return;
@@ -396,15 +398,52 @@ async function runMediaProxyTests() {
       return;
     }
 
+    // Case: Movie 777 - Legitimate short film (< 6 MB, duration ~25s, full Range support, NOT maintenance!)
+    if (url.pathname === "/movie/testuser/testpass/777.mp4") {
+      const shortFilmBuf = Buffer.alloc(3500000, 0x77); // 3.5 MB
+      const range = req.headers["range"];
+      if (range) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : shortFilmBuf.length - 1;
+        const chunk = shortFilmBuf.subarray(start, end + 1);
+        res.writeHead(206, {
+          "Content-Range": `bytes ${start}-${end}/${shortFilmBuf.length}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": chunk.length,
+          "Content-Type": "video/mp4",
+        });
+        res.end(chunk);
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Length": "3500000",
+        "Accept-Ranges": "bytes",
+        "Content-Type": "video/mp4",
+      });
+      res.end(shortFilmBuf);
+      return;
+    }
+
     // Image endpoints
     if (url.pathname === "/images/valid.jpg") {
       res.writeHead(200, { "Content-Type": "image/jpeg" });
       res.end(Buffer.from("FAKE_JPEG_BINARY_DATA"));
       return;
     }
+    if (url.pathname === "/images/redirect.jpg") {
+      res.writeHead(302, { Location: `http://127.0.0.1:${mockMediaPort}/images/valid.jpg` });
+      res.end();
+      return;
+    }
     if (url.pathname === "/images/missing.jpg") {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("Not Found");
+      return;
+    }
+    if (url.pathname === "/images/error500.jpg") {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Internal Server Error");
       return;
     }
 
@@ -511,23 +550,104 @@ async function runMediaProxyTests() {
     assert(rangeRes.buffer.length === 16, "Tamanho exato do trecho (slice) recebido");
 
     // -------------------------------------------------------------
-    // Test 6: Image Proxy and Fallback SVG
+    // Test 6: Image Proxy: Real images, Substitutes, Temporary Failures & Diagnostics
     // -------------------------------------------------------------
-    console.log("\n6. Testando proxy de imagens, capas e logos com imagem substituta:");
+    console.log("\n6. Testando proxy de imagens, capas, substitutos e diagnóstico:");
+
+    // 6.1 Real image
     const { req: reqImgValid, res: resImgValid, waitForResponse: waitImgValid } = createMockReqRes({
       query: { url: `${mockServerUrl}/images/valid.jpg` },
     });
     handleImageProxyRequest(reqImgValid, resImgValid, { allowPrivateForTest: true });
     const imgValidRes: any = await waitImgValid();
-    assert(imgValidRes.statusCode === 200 && imgValidRes.headers["content-type"].includes("image/jpeg"), "Imagem válida entregue com Content-Type image/jpeg");
+    assert(
+      imgValidRes.statusCode === 200 &&
+      imgValidRes.headers["content-type"].includes("image/jpeg") &&
+      imgValidRes.headers["x-northcode-image-real"] === "true",
+      "Imagem real válida entregue com HTTP 200 e X-NorthCode-Image-Real: true"
+    );
 
-    // Fallback on 404
+    // 6.2 Protocol-relative image URL (starting with //)
+    const { req: reqImgProtoRel, res: resImgProtoRel, waitForResponse: waitImgProtoRel } = createMockReqRes({
+      query: { url: `//127.0.0.1:${mockMediaPort}/images/valid.jpg`, serverUrl: mockServerUrl },
+    });
+    handleImageProxyRequest(reqImgProtoRel, resImgProtoRel, { allowPrivateForTest: true });
+    const imgProtoRelRes: any = await waitImgProtoRel();
+    assert(
+      imgProtoRelRes.statusCode === 200 && imgProtoRelRes.headers["content-type"].includes("image/jpeg"),
+      "URL de imagem com apenas // tratada e carregada com sucesso"
+    );
+
+    // 6.3 Image with redirect
+    const { req: reqImgRedirect, res: resImgRedirect, waitForResponse: waitImgRedirect } = createMockReqRes({
+      query: { url: `${mockServerUrl}/images/redirect.jpg` },
+    });
+    handleImageProxyRequest(reqImgRedirect, resImgRedirect, { allowPrivateForTest: true });
+    const imgRedirectRes: any = await waitImgRedirect();
+    assert(
+      imgRedirectRes.statusCode === 200 && imgRedirectRes.headers["content-type"].includes("image/jpeg"),
+      "Imagem com redirecionamento HTTP 302 resolvida e entregue com sucesso"
+    );
+
+    // 6.4 Missing image (404) returns 404 status with SVG substitute (permits diagnostic distinction)
     const { req: reqImg404, res: resImg404, waitForResponse: waitImg404 } = createMockReqRes({
       query: { url: `${mockServerUrl}/images/missing.jpg` },
     });
     handleImageProxyRequest(reqImg404, resImg404, { allowPrivateForTest: true });
     const img404Res: any = await waitImg404();
-    assert(img404Res.statusCode === 200 && img404Res.body.includes("NORTH CODE PLAY"), "Imagem inexistente (HTTP 404) retorna imagem substituta SVG da aplicação");
+    assert(
+      img404Res.statusCode === 404 &&
+      img404Res.headers["x-northcode-image-fallback"] === "true" &&
+      img404Res.body.includes("NORTH CODE PLAY"),
+      "Imagem inexistente (HTTP 404) retorna status 404 distintivo com imagem substituta visual SVG"
+    );
+
+    // 6.5 Temporary failure (500) returns no-cache (NOT cached for 1 hour)
+    const { req: reqImg500, res: resImg500, waitForResponse: waitImg500 } = createMockReqRes({
+      query: { url: `${mockServerUrl}/images/error500.jpg` },
+    });
+    handleImageProxyRequest(reqImg500, resImg500, { allowPrivateForTest: true });
+    const img500Res: any = await waitImg500();
+    assert(
+      (img500Res.statusCode === 500 || img500Res.statusCode === 502) &&
+      img500Res.headers["cache-control"]?.includes("no-cache") &&
+      img500Res.headers["x-northcode-image-fallback"] === "true",
+      "Falha temporária de imagem (HTTP 500) tratada sem guardar em cache por 1 hora (no-cache)"
+    );
+
+    // 6.6 Explicit fallback
+    const { req: reqImgFb, res: resImgFb, waitForResponse: waitImgFb } = createMockReqRes({
+      query: { fallback: "1" },
+    });
+    handleImageProxyRequest(reqImgFb, resImgFb, { allowPrivateForTest: true });
+    const imgFbRes: any = await waitImgFb();
+    assert(
+      imgFbRes.statusCode === 200 && imgFbRes.headers["x-northcode-image-fallback"] === "true",
+      "Fallback explícito de imagem retorna HTTP 200 com imagem substituta SVG"
+    );
+
+    // 6.7 Diagnostic mode distinguishes real vs substitute image
+    const { req: reqImgDiagReal, res: resImgDiagReal, waitForResponse: waitImgDiagReal } = createMockReqRes({
+      query: { url: `${mockServerUrl}/images/valid.jpg`, diagnose: "1" },
+    });
+    handleImageProxyRequest(reqImgDiagReal, resImgDiagReal, { allowPrivateForTest: true });
+    const imgDiagRealRes: any = await waitImgDiagReal();
+    const diagRealJson = JSON.parse(imgDiagRealRes.body);
+    assert(
+      diagRealJson.isRealImage === true && diagRealJson.isFallback === false,
+      "Diagnóstico de imagem real distingue imagem válida autêntica (isRealImage: true)"
+    );
+
+    const { req: reqImgDiagMiss, res: resImgDiagMiss, waitForResponse: waitImgDiagMiss } = createMockReqRes({
+      query: { url: `${mockServerUrl}/images/missing.jpg`, diagnose: "1" },
+    });
+    handleImageProxyRequest(reqImgDiagMiss, resImgDiagMiss, { allowPrivateForTest: true });
+    const imgDiagMissRes: any = await waitImgDiagMiss();
+    const diagMissJson = JSON.parse(imgDiagMissRes.body);
+    assert(
+      diagMissJson.isRealImage === false && diagMissJson.isFallback === true && diagMissJson.status === 404,
+      "Diagnóstico de imagem ausente distingue imagem substituta com status 404 da origem"
+    );
 
     // -------------------------------------------------------------
     // Test 7: Live Channel Switching Sequence A -> B -> A -> C
@@ -706,12 +826,29 @@ async function runMediaProxyTests() {
       "Extensão alternativa .mkv detectada com arquivo real (120 MB)"
     );
     assert(
-      report666.conclusion.category === "EXTENSION_MISMATCH",
+      report666.conclusion.category === "EXTENSION_MISMATCH" &&
+      report666.recommendedExtension === "mkv",
       "Diagnóstico identifica EXTENSION_MISMATCH e recomenda comutação para .mkv"
     );
     assert(
       report666.conclusion.transcodingWillFix === true,
       "Transcodificação/remux de .mkv para navegador é sinalizada como solução viável"
+    );
+
+    // Test switching extension applied to playback
+    console.log("\n11.1. Testando aplicação da extensão alternativa à reprodução (novo ticket gerado):");
+    const switchRes = await createMediaTicket({
+      serverUrl: mockServerUrl,
+      username: "testuser",
+      password: "testpass",
+      type: "movie",
+      streamId: "666",
+      ext: report666.recommendedExtension!,
+      allowPrivateForTest: true,
+    });
+    assert(
+      switchRes.ext === "mkv" && switchRes.streamUrl.endsWith(".mkv"),
+      "Nova extensão .mkv gera ticket atualizado e rota de reprodução correta"
     );
 
     // -------------------------------------------------------------
@@ -747,11 +884,47 @@ async function runMediaProxyTests() {
     );
 
     // -------------------------------------------------------------
+    // Test 12.1: Legitimate Short Film (< 6 MB, duration ~25s, NOT maintenance)
+    // -------------------------------------------------------------
+    console.log("\n12.1. Testando filme curto legítimo (< 6 MB, sem aviso de manutenção):");
+    const { ticketId: ticket777 } = await createMediaTicket({
+      serverUrl: mockServerUrl,
+      username: "testuser",
+      password: "testpass",
+      type: "movie",
+      streamId: "777",
+      ext: "mp4",
+      allowPrivateForTest: true,
+    });
+
+    const report777 = await diagnoseMediaUpstream({
+      ticketId: ticket777,
+      allowPrivateForTest: true,
+    });
+
+    assert(
+      report777.primaryProbe.isMaintenanceVideo === false,
+      "Filme curto legítimo (3.5 MB) NÃO é classificado como vídeo de manutenção"
+    );
+    assert(
+      report777.primaryProbe.isCorrectMedia === true,
+      "Mídia do filme curto identificada como autêntica e correta"
+    );
+    assert(
+      report777.conclusion.category === "READY_NATIVE",
+      "Diagnóstico confirma formato pronto para reprodução nativa sem falso positivo"
+    );
+    assert(
+      report777.primaryProbe.rangeSupported === true,
+      "Suporte a Range verificado e confirmado no filme curto legítimo"
+    );
+
+    // -------------------------------------------------------------
     // Test 13: Versioning & Commit Identification Reflection
     // -------------------------------------------------------------
     console.log("\n13. Testando identificação de versão e reflexão do commit real:");
     assert(
-      APP_COMMIT === "0026038a2b1ba8c63ac95030bbc8cf8248c62231" || Boolean(process.env.RENDER_GIT_COMMIT),
+      APP_COMMIT === "04a1df5d2e4aeab43562343c9f4a72bad4cc3c9e" || Boolean(process.env.RENDER_GIT_COMMIT),
       `Commit reflete o deploy real: ${APP_COMMIT}`
     );
     assert(Boolean(APP_VERSION), `Versão da aplicação definida: ${APP_VERSION}`);

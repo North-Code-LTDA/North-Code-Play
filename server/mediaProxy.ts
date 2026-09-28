@@ -536,17 +536,27 @@ async function streamMediaFromUrl(options: StreamMediaOptions): Promise<void> {
     const contentLengthNum = contentLengthHeader ? parseInt(contentLengthHeader, 10) : null;
     const finalUrlLower = currentUrlStr.toLowerCase();
 
-    // Check if provider delivered a substitute/maintenance video with HTTP 200
-    // Real VOD movies/episodes are almost always > 20 MB (usually 200MB - 3GB)
+    // Check if provider delivered a substitute/maintenance video with HTTP 200.
+    // Small size alone is an indicator (indício), NOT confirmation of maintenance.
+    // Confirmed maintenance requires keywords in URL/redirect, maintenance tags, or HTML content.
+    const hasMaintenanceKeyword =
+      finalUrlLower.includes("maintenance") ||
+      finalUrlLower.includes("manutencao") ||
+      finalUrlLower.includes("aviso") ||
+      finalUrlLower.includes("placeholder") ||
+      finalUrlLower.includes("offline") ||
+      finalUrlLower.includes("dummy");
+    const isHtmlSubstitute = contentType.includes("text/html");
+    const hasNoticeHeader = Boolean(
+      upstreamRes.headers.get("x-provider-notice") ||
+      upstreamRes.headers.get("x-notice") ||
+      upstreamRes.headers.get("x-video-notice")
+    );
+
     const isMaintenanceSubstitute =
       isVod &&
       upstreamRes.status === 200 &&
-      ((contentLengthNum !== null && contentLengthNum > 0 && contentLengthNum < 6 * 1024 * 1024) ||
-        finalUrlLower.includes("maintenance") ||
-        finalUrlLower.includes("manutencao") ||
-        finalUrlLower.includes("aviso") ||
-        finalUrlLower.includes("placeholder") ||
-        finalUrlLower.includes("offline"));
+      (hasMaintenanceKeyword || hasNoticeHeader || isHtmlSubstitute);
 
     if (isMaintenanceSubstitute) {
       res.setHeader("X-NorthCode-Substitute-Video", "true");
@@ -558,6 +568,14 @@ async function streamMediaFromUrl(options: StreamMediaOptions): Promise<void> {
 
     // If real VOD in MKV/unsupported container and FFmpeg is available, remux to fragmented MP4
     if (isVod && isMkvOrUnsupported && !isMaintenanceSubstitute && checkFfmpegAvailable()) {
+      // Safely close the initial inspection connection before opening a new one with FFmpeg
+      if (upstreamRes.body) {
+        try {
+          await upstreamRes.body.cancel();
+        } catch {}
+      }
+      controller.abort();
+
       const startSeconds = parseFloat(String(req.query.start || req.query.t || "0")) || 0;
       try {
         const remux = startVodRemuxStream({
@@ -567,7 +585,8 @@ async function streamMediaFromUrl(options: StreamMediaOptions): Promise<void> {
 
         res.status(200);
         res.setHeader("Content-Type", "video/mp4");
-        res.setHeader("Accept-Ranges", "bytes");
+        // Live piped remux does not satisfy random byte range requests; do not advertise Accept-Ranges: bytes
+        res.setHeader("Accept-Ranges", "none");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("X-NorthCode-Remux", "active");
@@ -575,7 +594,6 @@ async function streamMediaFromUrl(options: StreamMediaOptions): Promise<void> {
         remux.stream.pipe(res);
 
         req.on("close", () => {
-          controller.abort();
           remux.stop();
         });
         return;
@@ -652,6 +670,14 @@ export const FALLBACK_SVG_IMAGE = `<svg xmlns="http://www.w3.org/2000/svg" viewB
 /**
  * Handles GET /api/media/image?url=...
  * Proxies HTTP/HTTPS images safely, protects against SSRF, and serves SVG fallback on failures.
+ * Accurately supports:
+ * - Absolute URLs (http:// or https://)
+ * - Protocol-relative URLs (starting with //)
+ * - Schemeless domain URLs (e.g. images.tmdb.org/...)
+ * - Server-relative paths resolved against serverUrl
+ * - Accurate status codes (404, 502, 504) so diagnostics can distinguish real vs substitute images
+ * - Avoids caching temporary failures for 1 hour (uses no-cache for transient errors)
+ * - Maintains SVG visual substitute when image is unavailable
  */
 export async function handleImageProxyRequest(
   req: Request,
@@ -659,80 +685,227 @@ export async function handleImageProxyRequest(
   options: { allowPrivateForTest?: boolean } = {}
 ): Promise<void> {
   const rawUrl = String(req.query.url || "").trim();
+  const rawServerUrl = String(req.query.serverUrl || "").trim();
+  const isDiagnostic = req.query.diagnose === "1" || req.headers["accept"]?.includes("application/json");
 
   // If no URL or explicitly requesting fallback
   if (!rawUrl || req.query.fallback === "1") {
     res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=86400, s-maxage=86400");
+    res.setHeader("X-NorthCode-Image-Real", "false");
+    res.setHeader("X-NorthCode-Image-Fallback", "true");
     res.status(200).send(FALLBACK_SVG_IMAGE);
     return;
   }
 
-  // 1. SSRF Validation
-  let validatedUrl: URL;
-  try {
-    const result = await validateTargetUrl(rawUrl, {
-      allowPrivateForTest: options.allowPrivateForTest,
-    });
-    validatedUrl = result.validatedUrl;
-  } catch (err: any) {
-    console.warn(`[Image Proxy] Bloqueio SSRF para imagem: ${sanitizeForLogs(rawUrl)} - Causa: ${err?.message || "Endereço não permitido"}`);
+  // 1. Normalize URL schemes: //, schemeless domain, and relative paths
+  let targetUrl = rawUrl;
+  if (targetUrl.startsWith("//")) {
+    const protocol = rawServerUrl && rawServerUrl.startsWith("http://") ? "http:" : "https:";
+    targetUrl = `${protocol}${targetUrl}`;
+  } else if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+    if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/.*)?$/.test(targetUrl)) {
+      targetUrl = `https://${targetUrl}`;
+    } else if (rawServerUrl) {
+      try {
+        const cleanBase = rawServerUrl.endsWith("/") ? rawServerUrl : rawServerUrl + "/";
+        targetUrl = new URL(targetUrl.replace(/^\/+/, ""), cleanBase).toString();
+      } catch {
+        // keep targetUrl as is
+      }
+    }
+  }
+
+  // Helper for diagnostic response
+  const sendFailure = (
+    statusCode: number,
+    errorCode: string,
+    message: string,
+    isTemporary: boolean,
+    redirectChain: any[] = []
+  ) => {
+    if (res.headersSent) return;
+
+    if (isDiagnostic) {
+      res.status(statusCode).json({
+        isRealImage: false,
+        isFallback: true,
+        status: statusCode,
+        error: errorCode,
+        message,
+        targetUrl,
+        redirectChain,
+      });
+      return;
+    }
+
     res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
-    res.setHeader("Cache-Control", "public, max-age=3600");
-    res.status(200).send(FALLBACK_SVG_IMAGE);
-    return;
-  }
+    res.setHeader("X-NorthCode-Image-Real", "false");
+    res.setHeader("X-NorthCode-Image-Fallback", "true");
+    res.setHeader("X-NorthCode-Image-Status", String(statusCode));
+    res.setHeader("X-NorthCode-Image-Error", errorCode);
 
-  // 2. Fetch Upstream with timeout
+    if (isTemporary) {
+      // Avoid caching temporary network/server glitches for 1 hour!
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    } else {
+      // Short cache for missing images
+      res.setHeader("Cache-Control", "public, max-age=300");
+    }
+
+    res.status(statusCode).send(FALLBACK_SVG_IMAGE);
+  };
+
+  // 2. Fetch Upstream with manual redirect handling and SSRF re-validation at each hop
+  let currentUrl = targetUrl;
+  let redirectsCount = 0;
+  const maxRedirects = 5;
+  const redirectChain: Array<{ status: number; location: string; fromUrl: string }> = [];
+
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
 
   try {
-    const upstream = await fetch(validatedUrl.toString(), {
-      method: "GET",
-      headers: {
-        "User-Agent": "NorthCodePlay/1.0",
-        Accept: "image/*,*/*;q=0.8",
-      },
-      signal: controller.signal,
-    });
+    let upstreamRes: globalThis.Response | null = null;
+
+    while (redirectsCount <= maxRedirects) {
+      // SSRF validation at every step
+      let validatedUrl: URL;
+      try {
+        const result = await validateTargetUrl(currentUrl, {
+          allowPrivateForTest: options.allowPrivateForTest,
+        });
+        validatedUrl = result.validatedUrl;
+      } catch (err: any) {
+        clearTimeout(timeoutId);
+        console.warn(`[Image Proxy] Bloqueio SSRF para imagem: ${sanitizeForLogs(currentUrl)} - Causa: ${err?.message || "Endereço não permitido"}`);
+        sendFailure(403, "FORBIDDEN_HOST", err?.message || "Endereço de imagem bloqueado por segurança.", false, redirectChain);
+        return;
+      }
+
+      // Browser-realistic headers that avoid 403 Forbidden on CDNs (Cloudflare, TMDB, Akamai, etc.)
+      const headers: Record<string, string> = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Sec-Fetch-Dest": "image",
+        "Sec-Fetch-Mode": "no-cors",
+      };
+
+      try {
+        upstreamRes = await fetch(validatedUrl.toString(), {
+          method: "GET",
+          headers,
+          redirect: "manual",
+          signal: controller.signal,
+        });
+      } catch (err: any) {
+        clearTimeout(timeoutId);
+        const isTimeout = err?.name === "AbortError" || controller.signal.aborted;
+        sendFailure(
+          isTimeout ? 504 : 502,
+          isTimeout ? "GATEWAY_TIMEOUT" : "CONNECTION_FAILED",
+          isTimeout ? "Tempo limite esgotado ao buscar imagem." : "Falha de conexão com o servidor da imagem.",
+          true,
+          redirectChain
+        );
+        return;
+      }
+
+      // Handle 3xx Redirects
+      if ([301, 302, 303, 307, 308].includes(upstreamRes.status)) {
+        redirectsCount++;
+        const location = upstreamRes.headers.get("location");
+        redirectChain.push({
+          status: upstreamRes.status,
+          location: location || "",
+          fromUrl: currentUrl,
+        });
+
+        if (!location) {
+          clearTimeout(timeoutId);
+          sendFailure(502, "INVALID_REDIRECT", "Redirecionamento sem cabeçalho Location.", false, redirectChain);
+          return;
+        }
+
+        try {
+          currentUrl = new URL(location, currentUrl).toString();
+          continue;
+        } catch {
+          clearTimeout(timeoutId);
+          sendFailure(502, "INVALID_REDIRECT_URL", "URL de redirecionamento inválida.", false, redirectChain);
+          return;
+        }
+      }
+
+      break;
+    }
 
     clearTimeout(timeoutId);
 
-    if (!upstream.ok) {
-      console.warn(`[Image Proxy] Erro HTTP ${upstream.status} ao buscar imagem: ${sanitizeForLogs(rawUrl)}`);
-      res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
-      res.setHeader("Cache-Control", "public, max-age=3600");
-      res.status(200).send(FALLBACK_SVG_IMAGE);
+    if (!upstreamRes) {
+      sendFailure(502, "NO_RESPONSE", "Sem resposta do servidor de imagem.", true, redirectChain);
       return;
     }
 
-    const contentType = upstream.headers.get("content-type") || "image/jpeg";
+    if (!upstreamRes.ok) {
+      const isTemporary = upstreamRes.status >= 500 || upstreamRes.status === 429;
+      sendFailure(
+        upstreamRes.status,
+        upstreamRes.status === 404 ? "NOT_FOUND" : "UPSTREAM_ERROR",
+        `Servidor de origem retornou HTTP ${upstreamRes.status}.`,
+        isTemporary,
+        redirectChain
+      );
+      return;
+    }
+
+    // Determine content type
+    let contentType = (upstreamRes.headers.get("content-type") || "").toLowerCase().split(";")[0].trim();
+    if (!contentType || contentType === "application/octet-stream") {
+      const lower = currentUrl.toLowerCase();
+      if (lower.endsWith(".png")) contentType = "image/png";
+      else if (lower.endsWith(".webp")) contentType = "image/webp";
+      else if (lower.endsWith(".gif")) contentType = "image/gif";
+      else if (lower.endsWith(".svg")) contentType = "image/svg+xml";
+      else if (lower.endsWith(".avif")) contentType = "image/avif";
+      else contentType = "image/jpeg";
+    }
+
     if (!contentType.startsWith("image/") && !contentType.includes("octet-stream")) {
-      console.warn(`[Image Proxy] Conteúdo não é imagem (${contentType}): ${sanitizeForLogs(rawUrl)}`);
-      res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
-      res.setHeader("Cache-Control", "public, max-age=3600");
-      res.status(200).send(FALLBACK_SVG_IMAGE);
+      sendFailure(502, "INVALID_CONTENT_TYPE", `Conteúdo retornado não é imagem (${contentType}).`, false, redirectChain);
       return;
     }
 
+    if (isDiagnostic) {
+      res.status(200).json({
+        isRealImage: true,
+        isFallback: false,
+        status: 200,
+        contentType,
+        finalUrl: currentUrl,
+        redirectChain,
+      });
+      return;
+    }
+
+    res.status(200);
     res.setHeader("Content-Type", contentType);
     res.setHeader("Cache-Control", "public, max-age=86400, s-maxage=86400");
     res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("X-NorthCode-Image-Real", "true");
+    res.setHeader("X-NorthCode-Image-Fallback", "false");
 
-    if (!upstream.body) {
+    if (!upstreamRes.body) {
       res.end();
       return;
     }
 
-    const stream = Readable.fromWeb(upstream.body as any);
+    const stream = Readable.fromWeb(upstreamRes.body as any);
     stream.pipe(res);
   } catch (err: any) {
     clearTimeout(timeoutId);
-    console.warn(`[Image Proxy] Falha de conexão/DNS na imagem: ${sanitizeForLogs(rawUrl)} - Causa: ${err?.message || "Erro de rede"}`);
-    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
-    res.setHeader("Cache-Control", "public, max-age=3600");
-    res.status(200).send(FALLBACK_SVG_IMAGE);
+    sendFailure(502, "UNEXPECTED_ERROR", err?.message || "Erro inesperado ao buscar imagem.", true, redirectChain);
   }
 }
 
@@ -753,6 +926,7 @@ export interface UpstreamProbeDetail {
   isMaintenanceVideo: boolean;
   maintenanceReason?: string;
   isCorrectMedia: boolean;
+  isLowSize?: boolean;
   ffprobe?: {
     duration?: number;
     formatName?: string;
@@ -767,6 +941,7 @@ export interface MediaDiagnosticReport {
   mediaType: "live" | "movie" | "series";
   streamId: string;
   requestedFormat: string;
+  recommendedExtension?: string;
   primaryProbe: UpstreamProbeDetail;
   alternativeProbe?: UpstreamProbeDetail;
   conclusion: {
@@ -859,21 +1034,29 @@ async function probeSingleUpstreamUrl(
   // Maintenance video heuristics
   let isMaintenanceVideo = false;
   let maintenanceReason: string | undefined;
+  const isLowSize = contentLength !== null && contentLength > 0 && contentLength < 6 * 1024 * 1024;
 
-  if (isVod && httpStatus === 200 || httpStatus === 206) {
-    if (contentLength !== null && contentLength > 0 && contentLength < 6 * 1024 * 1024) {
+  const hasMaintenanceKeyword =
+    finalUrlLower.includes("maintenance") ||
+    finalUrlLower.includes("manutencao") ||
+    finalUrlLower.includes("aviso") ||
+    finalUrlLower.includes("placeholder") ||
+    finalUrlLower.includes("offline") ||
+    finalUrlLower.includes("dummy");
+
+  const hasNoticeHeader = Boolean(
+    finalRes?.headers.get("x-provider-notice") ||
+    finalRes?.headers.get("x-notice") ||
+    finalRes?.headers.get("x-video-notice")
+  );
+
+  if (isVod && (httpStatus === 200 || httpStatus === 206)) {
+    if (hasMaintenanceKeyword || hasNoticeHeader) {
       isMaintenanceVideo = true;
-      maintenanceReason = `Tamanho total recebido (${Math.round(contentLength / 1024)} KB) é diminuto para ${mediaType === "movie" ? "um filme" : "um episódio"}, característico de vídeo de manutenção do provedor.`;
-    } else if (
-      finalUrlLower.includes("maintenance") ||
-      finalUrlLower.includes("manutencao") ||
-      finalUrlLower.includes("aviso") ||
-      finalUrlLower.includes("placeholder") ||
-      finalUrlLower.includes("offline") ||
-      finalUrlLower.includes("dummy")
-    ) {
+      maintenanceReason = "URL final, redirecionamento ou cabeçalhos do provedor indicam vídeo de manutenção.";
+    } else if (contentType.includes("text/html")) {
       isMaintenanceVideo = true;
-      maintenanceReason = "URL final ou de redirecionamento contém palavras-chave indicando vídeo de manutenção do provedor.";
+      maintenanceReason = "Origem retornou resposta HTML (página de manutenção/aviso) em vez de vídeo.";
     }
   }
 
@@ -890,7 +1073,7 @@ async function probeSingleUpstreamUrl(
       };
       if (probeResult.isMaintenanceVideo && !isMaintenanceVideo) {
         isMaintenanceVideo = true;
-        maintenanceReason = probeResult.maintenanceReason || "Duração muito curta (< 40s) detectada pelo ffprobe.";
+        maintenanceReason = probeResult.maintenanceReason || "Tags de metadados indicam aviso de manutenção.";
       }
     } catch {}
   }
@@ -921,6 +1104,7 @@ async function probeSingleUpstreamUrl(
     isMaintenanceVideo,
     maintenanceReason,
     isCorrectMedia,
+    isLowSize,
     ffprobe: probeDetails,
     recommendation,
   };
@@ -1003,11 +1187,13 @@ export async function diagnoseMediaUpstream(options: DiagnoseMediaOptions): Prom
   let category: MediaDiagnosticReport["conclusion"]["category"] = "READY_NATIVE";
   let message = "";
   let transcodingWillFix = false;
+  let recommendedExtension: string | undefined = undefined;
 
   if (primaryProbe.isMaintenanceVideo) {
     if (alternativeProbe && alternativeProbe.isCorrectMedia) {
       category = "EXTENSION_MISMATCH";
       transcodingWillFix = true;
+      recommendedExtension = alternativeProbe.requestedExt;
       message = `Causa confirmada: A extensão solicitada (.${primaryProbe.requestedExt}) entregou o vídeo de manutenção do provedor, mas a extensão alternativa (.${alternativeProbe.requestedExt}) contém o arquivo real (${Math.round((alternativeProbe.contentLength || 0) / (1024 * 1024))} MB). O sistema selecionará automaticamente .${alternativeProbe.requestedExt} com remux.`;
     } else {
       category = "MAINTENANCE_VIDEO";
@@ -1018,6 +1204,7 @@ export async function diagnoseMediaUpstream(options: DiagnoseMediaOptions): Prom
     if (alternativeProbe && alternativeProbe.isCorrectMedia) {
       category = "EXTENSION_MISMATCH";
       transcodingWillFix = true;
+      recommendedExtension = alternativeProbe.requestedExt;
       message = `Causa confirmada: A extensão .${primaryProbe.requestedExt} retornou HTTP ${primaryProbe.httpStatus}, mas o arquivo existe no formato alternativo .${alternativeProbe.requestedExt}.`;
     } else {
       category = "ORIGIN_ERROR";
@@ -1039,6 +1226,7 @@ export async function diagnoseMediaUpstream(options: DiagnoseMediaOptions): Prom
     mediaType: type,
     streamId,
     requestedFormat: requestedExt,
+    recommendedExtension,
     primaryProbe,
     alternativeProbe,
     conclusion: {

@@ -445,6 +445,46 @@ export function VideoPlayer({
     }
   };
 
+  // Switch to alternative extension found by diagnostic and issue a new ticket
+  const handleSwitchExtension = async (newExt: string) => {
+    setDiagnosticLoading(true);
+    try {
+      const match = resolvedStreamUrl.match(/\/api\/media\/stream\/([^/]+)/);
+      const ticketId = match ? match[1] : undefined;
+
+      if (!ticketId) {
+        setInternalError('Não foi possível identificar a sessão de mídia atual para alternar extensão.');
+        setShowDiagnosticModal(false);
+        return;
+      }
+
+      const res = await fetch('/api/media/switch-extension', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticketId, newExt }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Erro ao trocar extensão (${res.status})`);
+      }
+
+      const data = await res.json();
+      if (data.streamUrl) {
+        cleanupMedia();
+        setShowDiagnosticModal(false);
+        setDiagnosticReport(null);
+        setInternalError(null);
+        setInternalLoading(true);
+        setResolvedStreamUrl(data.streamUrl);
+      }
+    } catch (err: any) {
+      alert(err?.message || 'Falha ao comutar extensão.');
+    } finally {
+      setDiagnosticLoading(false);
+    }
+  };
+
   const playerContent = (
     <motion.div
       initial={{ opacity: 0 }}
@@ -457,7 +497,7 @@ export function VideoPlayer({
           : 'fixed inset-0 z-50 bg-black flex flex-col items-center justify-center'
       }`}
     >
-      {/* Top Header Controls (Full-Screen Mode) */}
+      {/* Top Header Controls (Full-Screen Mode) - Always display diagnostic button during playback */}
       {!embedded && (
         <div
           className={`absolute top-0 left-0 right-0 p-6 z-20 flex items-center justify-between bg-gradient-to-b from-black/80 via-black/40 to-transparent transition-opacity duration-300 ${
@@ -475,6 +515,18 @@ export function VideoPlayer({
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleRunDiagnostic();
+              }}
+              className="px-3.5 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors flex items-center gap-1.5 text-sm font-medium cursor-pointer"
+              title="Diagnóstico de reprodução e origem"
+            >
+              <Wrench className="w-4 h-4 text-nc-primary" />
+              <span>Diagnóstico</span>
+            </button>
+
             {onPrevious && (
               <button
                 onClick={(e) => {
@@ -505,14 +557,27 @@ export function VideoPlayer({
 
       {/* Embedded Mode Top Bar Header */}
       {embedded && (
-        <div className="absolute top-0 left-0 right-0 p-2 px-3 z-20 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent pointer-events-none">
-          <span className="text-xs font-semibold text-white/90 truncate max-w-[80%] drop-shadow">
+        <div className="absolute top-0 left-0 right-0 p-2 px-3 z-20 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent">
+          <span className="text-xs font-semibold text-white/90 truncate max-w-[70%] drop-shadow">
             {title}
           </span>
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[10px] font-semibold border border-red-500/30">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
-            AO VIVO
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleRunDiagnostic();
+              }}
+              className="p-1 bg-black/40 hover:bg-black/70 rounded text-gray-300 hover:text-white transition-colors flex items-center gap-1 text-[10px] cursor-pointer"
+              title="Diagnóstico da transmissão"
+            >
+              <Wrench className="w-3 h-3 text-nc-primary" />
+              <span className="hidden sm:inline">Diagnóstico</span>
+            </button>
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[10px] font-semibold border border-red-500/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
+              AO VIVO
+            </span>
+          </div>
         </div>
       )}
 
@@ -629,11 +694,52 @@ export function VideoPlayer({
                     </p>
                   </div>
                 )}
+                {diagnosticReport.alternativeProbe && (
+                  <div className="p-3 bg-nc-bg rounded-xl border border-nc-border/40 space-y-1 font-mono text-[11px] text-gray-300">
+                    <p className="text-nc-primary font-bold">
+                      Extensão alternativa avaliada: .{diagnosticReport.alternativeProbe.requestedExt}
+                    </p>
+                    <p>
+                      <span className="text-gray-400">Status HTTP:</span> {diagnosticReport.alternativeProbe.httpStatus}
+                    </p>
+                    <p>
+                      <span className="text-gray-400">Content-Type:</span> {diagnosticReport.alternativeProbe.contentType}
+                    </p>
+                    <p>
+                      <span className="text-gray-400">Tamanho:</span>{' '}
+                      {diagnosticReport.alternativeProbe.contentLength
+                        ? `${Math.round(diagnosticReport.alternativeProbe.contentLength / (1024 * 1024))} MB (${Math.round(diagnosticReport.alternativeProbe.contentLength / 1024)} KB)`
+                        : 'Não informado'}
+                    </p>
+                    <p>
+                      <span className="text-gray-400">Mídia real válida:</span>{' '}
+                      {diagnosticReport.alternativeProbe.isCorrectMedia ? 'Sim (Arquivo autêntico)' : 'Não'}
+                    </p>
+                  </div>
+                )}
+
+                {/* If alternative extension is recommended, allow immediate switch and playback */}
+                {diagnosticReport.conclusion?.category === 'EXTENSION_MISMATCH' && diagnosticReport.recommendedExtension && (
+                  <div className="pt-1">
+                    <button
+                      onClick={() => handleSwitchExtension(diagnosticReport.recommendedExtension!)}
+                      disabled={diagnosticLoading}
+                      className="w-full py-2.5 px-4 bg-nc-primary hover:bg-nc-primary-hover text-black font-semibold rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
+                    >
+                      {diagnosticLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4" />
+                      )}
+                      <span>Alternar para .{diagnosticReport.recommendedExtension} e Reproduzir Agora</span>
+                    </button>
+                  </div>
+                )}
 
                 <div className="flex justify-end pt-2">
                   <button
                     onClick={() => setShowDiagnosticModal(false)}
-                    className="px-4 py-2 bg-nc-bg-input hover:bg-nc-border text-white rounded-lg text-xs font-medium"
+                    className="px-4 py-2 bg-nc-bg-input hover:bg-nc-border text-white rounded-lg text-xs font-medium cursor-pointer"
                   >
                     Fechar
                   </button>

@@ -33,16 +33,21 @@ export function normalizeServerUrl(rawUrl: string): string {
 }
 
 /**
- * Transforms HTTP/HTTPS image URLs (covers, channel logos, backdrops) into
+ * Transforms image URLs (covers, channel logos, backdrops) into
  * same-origin HTTPS URLs via /api/media/image to prevent Mixed Content blocking.
- * If the image is empty, DNS is unavailable, or the URL is invalid, returns the fallback image.
+ * Accurately handles:
+ * - Absolute URLs (http:// or https://)
+ * - Protocol-relative URLs (starting with //)
+ * - Schemeless domain URLs (e.g. images.tmdb.org/...)
+ * - Path-relative or root-relative URLs resolved against serverUrl (e.g. /images/123.jpg or images/123.jpg)
+ * If the image is empty or invalid, returns the fallback image.
  */
-export function getProxiedImageUrl(rawUrl?: string | null): string {
+export function getProxiedImageUrl(rawUrl?: string | null, serverUrl?: string | null): string {
   if (!rawUrl || typeof rawUrl !== "string") {
     return "/api/media/image?fallback=1";
   }
 
-  const trimmed = rawUrl.trim();
+  let trimmed = rawUrl.trim();
   if (!trimmed) {
     return "/api/media/image?fallback=1";
   }
@@ -57,7 +62,50 @@ export function getProxiedImageUrl(rawUrl?: string | null): string {
     return trimmed;
   }
 
+  // Auto-detect serverUrl from localStorage if not explicitly passed
+  let effectiveServerUrl = serverUrl;
+  if (!effectiveServerUrl && typeof window !== "undefined" && window.localStorage) {
+    try {
+      const saved = window.localStorage.getItem("northcode_tv_credentials");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.serverUrl) {
+          effectiveServerUrl = parsed.serverUrl;
+        }
+      }
+    } catch {}
+  }
+
+  // 1. Protocol-relative URL: //domain.com/path
+  if (trimmed.startsWith("//")) {
+    const protocol = effectiveServerUrl && effectiveServerUrl.startsWith("http://") ? "http:" : "https:";
+    trimmed = `${protocol}${trimmed}`;
+  }
+  // 2. Schemeless domain URL (e.g. images.tmdb.org/..., m.media-amazon.com/...)
+  else if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+    if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/.*)?$/.test(trimmed)) {
+      trimmed = `https://${trimmed}`;
+    } else if (effectiveServerUrl) {
+      // Relative path: resolve against effectiveServerUrl
+      try {
+        const cleanBase = normalizeServerUrl(effectiveServerUrl);
+        const resolved = new URL(trimmed.replace(/^\/+/, ""), cleanBase + "/");
+        trimmed = resolved.toString();
+      } catch {
+        // keep trimmed
+      }
+    }
+  }
+
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    const query = effectiveServerUrl
+      ? `url=${encodeURIComponent(trimmed)}&serverUrl=${encodeURIComponent(effectiveServerUrl)}`
+      : `url=${encodeURIComponent(trimmed)}`;
+    return `/api/media/image?${query}`;
+  }
+
+  // If path is still relative without serverUrl, pass to image proxy anyway with serverUrl hint
+  if (trimmed.startsWith("/") || trimmed.includes("/")) {
     return `/api/media/image?url=${encodeURIComponent(trimmed)}`;
   }
 

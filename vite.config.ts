@@ -4,7 +4,7 @@ import path from 'path';
 import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
-  const commit = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '0026038a2b1ba8c63ac95030bbc8cf8248c62231';
+  const commit = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '04a1df5d2e4aeab43562343c9f4a72bad4cc3c9e';
   const buildTime = new Date().toISOString();
 
   return {
