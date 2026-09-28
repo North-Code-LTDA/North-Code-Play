@@ -5,6 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites } from '../hooks/useFavorites';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { XtreamService } from '../services/xtreamService';
+import { getMediaStreamUrl } from '../utils/mediaUtils';
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -143,13 +144,35 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
   const activeCategory = extendedCategories.find(c => c.category_id === selectedCategoryId);
 
-  // Build stream URL strictly for embedded player wrapper
-  const getStreamUrl = (stream: any) => {
-    if (!credentials) return '';
-    const baseUrl = credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl;
-    let rawUrl = `${baseUrl}/${credentials.username}/${credentials.password}/${stream.stream_id}.ts`;
-    return rawUrl.replace('.ts', '.m3u8');
-  };
+  // Obtain safe same-origin stream URL for the mini-player
+  const [miniPlayerUrl, setMiniPlayerUrl] = useState<string>('');
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!selectedChannel || !credentials) {
+      setMiniPlayerUrl('');
+      return;
+    }
+
+    getMediaStreamUrl(credentials, {
+      type: 'live',
+      streamId: selectedChannel.stream_id,
+      allowedOutputFormats: (credentials as any).allowed_output_formats,
+    })
+      .then((url) => {
+        if (isMounted) setMiniPlayerUrl(url);
+      })
+      .catch((err) => {
+        if (isMounted) {
+          console.error('Erro ao preparar stream ao vivo:', err.message);
+          setMiniPlayerUrl('');
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedChannel, credentials]);
 
   return (
     <div className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg">
@@ -332,12 +355,18 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
                {/* Right child: Mini-Player */}
                <div className="w-full lg:w-[45%] lg:max-w-md md:max-h-[50vh] lg:max-h-[60vh] xl:max-h-none shrink-0 order-1 lg:order-2 shadow-2xl">
-                 <VideoPlayer 
-                   streamUrl={getStreamUrl(selectedChannel)} 
-                   title={selectedChannel.name} 
-                   onBack={() => setIsMobilePlayerOpen(false)}
-                   embedded={true}
-                 />
+                 {miniPlayerUrl ? (
+                   <VideoPlayer 
+                     streamUrl={miniPlayerUrl} 
+                     title={selectedChannel.name} 
+                     onBack={() => setIsMobilePlayerOpen(false)}
+                     embedded={true}
+                   />
+                 ) : (
+                   <div className="w-full aspect-video rounded-xl bg-black flex items-center justify-center">
+                     <Loader2 className="w-8 h-8 animate-spin text-nc-primary" />
+                   </div>
+                 )}
                </div>
              </div>
 

@@ -5,6 +5,7 @@ import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
+import { getMediaStreamUrl } from '../utils/mediaUtils';
 
 interface FavoritesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -34,17 +35,24 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
 
   const displayedFavorites = filteredFavorites.slice(0, displayCount);
 
-  const handlePlayClick = (fav: FavoriteItem) => {
+  const handlePlayClick = async (fav: FavoriteItem) => {
     if (!credentials) return;
 
     if (fav.type === 'live') {
-       // Live TV URLs
-       const url = fav.extraData?.url || `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/${credentials.username}/${credentials.password}/${fav.id}.m3u8`;
-       onPlay(url, fav.name);
+      try {
+        const url = await getMediaStreamUrl(credentials, {
+          type: 'live',
+          streamId: fav.id,
+          allowedOutputFormats: (credentials as any).allowed_output_formats,
+        });
+        onPlay(url, fav.name, 0, fav.id);
+      } catch (err: any) {
+        console.error('Erro ao iniciar canal favorito:', err.message);
+      }
     } else if (fav.type === 'movie') {
-       setSelectedMovie(fav);
+      setSelectedMovie(fav);
     } else if (fav.type === 'series') {
-       setSelectedSeries(fav);
+      setSelectedSeries(fav);
     }
   };
 

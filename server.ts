@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { xtreamRouter } from "./server/xtreamRouter";
+import { mediaRouter } from "./server/mediaRouter";
 
 async function startServer() {
   const app = express();
@@ -12,6 +13,9 @@ async function startServer() {
 
   // Xtream same-origin API proxy route
   app.use("/api/xtream", xtreamRouter);
+
+  // Same-origin media streaming route (HLS & MP4)
+  app.use("/api/media", mediaRouter);
 
   // Vite middleware for development vs static build for production
   if (process.env.NODE_ENV !== "production") {

@@ -5,6 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { VideoPlayer } from './VideoPlayer';
+import { getMediaStreamUrl } from '../utils/mediaUtils';
 
 interface SeriesDetailsProps {
   key?: React.Key;
@@ -55,23 +56,31 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     }
   };
 
-  const executePlay = (episode: any, startAt: number = 0) => {
+  const executePlay = async (episode: any, startAt: number = 0) => {
     localStorage.setItem('nc_parent_series_' + episode.id, String(seriesId));
     if (startAt === 0) {
       localStorage.removeItem('nc_progress_' + episode.id);
     }
     requestFullscreen();
     if (!credentials) return;
-    const ext = episode.container_extension || "mp4";
-    const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/series/${credentials.username}/${credentials.password}/${episode.id}.${ext}`;
-    
-    setPlayingEpisodeData({
-      url: rawUrl,
-      title: `${seriesInfo?.info?.name || seriesName} - S${selectedSeason}E${episode.episode_num || episode.id}`,
-      startAt,
-      episode
-    });
-    setShowResumeModal(false);
+    try {
+      const ext = episode.container_extension || "mp4";
+      const mediaUrl = await getMediaStreamUrl(credentials, {
+        type: 'series',
+        streamId: episode.id,
+        containerExtension: ext,
+      });
+
+      setPlayingEpisodeData({
+        url: mediaUrl,
+        title: `${seriesInfo?.info?.name || seriesName} - S${selectedSeason}E${episode.episode_num || episode.id}`,
+        startAt,
+        episode,
+      });
+      setShowResumeModal(false);
+    } catch (err: any) {
+      console.error('Erro ao iniciar episódio:', err);
+    }
   };
 
   const handleNextEpisode = () => {

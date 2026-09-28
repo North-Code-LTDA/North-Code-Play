@@ -6,6 +6,7 @@ import { HeroBanner } from '../components/HeroBanner';
 import { HorizontalRow } from '../components/HorizontalRow';
 import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
+import { getMediaStreamUrl } from '../utils/mediaUtils';
 
 interface HomeViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -190,19 +191,32 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     return allSeriesStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
   }, [recentSeries, allSeriesStreams, searchQuery]);
 
-  const handlePlayLive = (stream: any) => {
+  const handlePlayLive = async (stream: any) => {
     if (!credentials) return;
-    const baseUrl = credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl;
-    let rawUrl = `${baseUrl}/${credentials.username}/${credentials.password}/${stream.stream_id}.ts`;
-    rawUrl = rawUrl.replace('.ts', '.m3u8');
-    onPlay(rawUrl, stream.name);
+    try {
+      const url = await getMediaStreamUrl(credentials, {
+        type: 'live',
+        streamId: stream.stream_id,
+        allowedOutputFormats: (credentials as any).allowed_output_formats,
+      });
+      onPlay(url, stream.name, 0, stream.stream_id);
+    } catch (err: any) {
+      console.error('Erro ao iniciar canal ao vivo:', err.message);
+    }
   };
 
-  const handlePlayVod = (stream: any) => {
+  const handlePlayVod = async (stream: any) => {
     if (!credentials) return;
-    const ext = stream.container_extension || "mp4";
-    const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/movie/${credentials.username}/${credentials.password}/${stream.stream_id}.${ext}`;
-    onPlay(rawUrl, stream.name);
+    try {
+      const url = await getMediaStreamUrl(credentials, {
+        type: 'movie',
+        streamId: stream.stream_id,
+        containerExtension: stream.container_extension || "mp4",
+      });
+      onPlay(url, stream.name, 0, stream.stream_id);
+    } catch (err: any) {
+      console.error('Erro ao iniciar filme:', err.message);
+    }
   };
 
   if (isLoading && allVodStreams.length === 0 && allSeriesStreams.length === 0) {

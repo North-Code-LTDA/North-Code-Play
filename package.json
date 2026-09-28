@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit",
-    "test": "tsx scripts/test-xtream-proxy.ts"
+    "test": "tsx scripts/test-xtream-proxy.ts && tsx scripts/test-media-proxy.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

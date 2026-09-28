@@ -13,6 +13,7 @@ import { ConfigView } from '../views/ConfigView';
 import { FavoritesView } from '../views/FavoritesView';
 import { XtreamProvider } from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
+import { normalizeServerUrl } from '../utils/mediaUtils';
 
 export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
 
@@ -30,7 +31,17 @@ export function Home() {
     if (!saved) {
       navigate('/');
     } else {
-      setCredentials(JSON.parse(saved));
+      try {
+        const parsed = JSON.parse(saved);
+        const normalized = normalizeServerUrl(parsed.serverUrl);
+        if (normalized && normalized !== parsed.serverUrl) {
+          parsed.serverUrl = normalized;
+          localStorage.setItem('northcode_tv_credentials', JSON.stringify(parsed));
+        }
+        setCredentials(parsed);
+      } catch {
+        navigate('/');
+      }
     }
   }, [navigate]);
 

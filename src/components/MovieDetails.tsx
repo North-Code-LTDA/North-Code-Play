@@ -3,6 +3,7 @@ import { Play, ArrowLeft, Loader2, Star, Calendar, Clock, Info, Heart } from 'lu
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
+import { getMediaStreamUrl } from '../utils/mediaUtils';
 
 interface MovieDetailsProps {
   key?: React.Key;
@@ -45,16 +46,24 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     }
   };
 
-  const executePlay = (startAt: number = 0) => {
+  const executePlay = async (startAt: number = 0) => {
     if (startAt === 0) {
       localStorage.removeItem('nc_progress_' + streamId);
     }
     requestFullscreen();
     if (!credentials) return;
-    const ext = info?.movie_data?.container_extension || "mp4";
-    const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/movie/${credentials.username}/${credentials.password}/${streamId}.${ext}`;
-    onPlay(rawUrl, streamName, startAt, streamId);
-    setShowResumeModal(false);
+    try {
+      const ext = info?.movie_data?.container_extension || "mp4";
+      const mediaUrl = await getMediaStreamUrl(credentials, {
+        type: 'movie',
+        streamId,
+        containerExtension: ext,
+      });
+      onPlay(mediaUrl, streamName, startAt, streamId);
+      setShowResumeModal(false);
+    } catch (err: any) {
+      setError(err.message || 'Erro ao preparar vídeo.');
+    }
   };
 
   const handlePlayClick = () => {

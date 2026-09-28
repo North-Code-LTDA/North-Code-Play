@@ -6,6 +6,7 @@ import 'plyr/dist/plyr.css';
 import muxjs from 'mux.js';
 import { ArrowLeft, Loader2, SkipForward, SkipBack } from 'lucide-react';
 import { motion } from 'motion/react';
+import { normalizeServerUrl } from '../utils/mediaUtils';
 
 if (typeof window !== 'undefined') {
   // @ts-ignore
@@ -29,6 +30,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
   const [error, setError] = useState<string | null>(null);
   const [isIdle, setIsIdle] = useState(false);
   const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [resolvedStreamUrl, setResolvedStreamUrl] = useState<string>('');
 
   const handleMouseMove = () => {
     setIsIdle(false);
@@ -47,9 +49,93 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     };
   }, []);
 
+  // Ensure streamUrl is routed via same-origin HTTPS proxy if it came as a direct legacy URL
+  useEffect(() => {
+    let isMounted = true;
+    if (!streamUrl) {
+      setResolvedStreamUrl('');
+      return;
+    }
+
+    if (streamUrl.startsWith('/api/media/')) {
+      setResolvedStreamUrl(streamUrl);
+      return;
+    }
+
+    // If a legacy direct URL with credentials was passed, convert it via /api/media/ticket
+    if (streamUrl.startsWith('http://') || streamUrl.startsWith('https://')) {
+      try {
+        const parsed = new URL(streamUrl);
+        const segments = parsed.pathname.split('/').filter(Boolean);
+
+        // Pattern: /live/user/pass/id.ext or /movie/user/pass/id.ext or /series/user/pass/id.ext
+        // or /user/pass/id.ext
+        let type: 'live' | 'movie' | 'series' = 'live';
+        let username = '';
+        let password = '';
+        let file = '';
+
+        if (segments.length >= 4 && ['live', 'movie', 'series'].includes(segments[0])) {
+          type = segments[0] as any;
+          username = segments[1];
+          password = segments[2];
+          file = segments[3];
+        } else if (segments.length >= 3) {
+          username = segments[0];
+          password = segments[1];
+          file = segments[2];
+          if (file.endsWith('.mp4') || file.endsWith('.mkv')) {
+            type = 'movie';
+          }
+        }
+
+        const lastDot = file.lastIndexOf('.');
+        const id = lastDot !== -1 ? file.slice(0, lastDot) : file;
+        const ext = lastDot !== -1 ? file.slice(lastDot + 1) : (type === 'live' ? 'm3u8' : 'mp4');
+
+        if (username && password && id) {
+          const cleanServer = normalizeServerUrl(`${parsed.protocol}//${parsed.host}`);
+          fetch('/api/media/ticket', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              serverUrl: cleanServer,
+              username,
+              password,
+              type,
+              streamId: id,
+              ext,
+            }),
+          })
+            .then(res => res.json())
+            .then(data => {
+              if (isMounted) {
+                if (data.streamUrl) {
+                  setResolvedStreamUrl(data.streamUrl);
+                } else {
+                  setResolvedStreamUrl(streamUrl);
+                }
+              }
+            })
+            .catch(() => {
+              if (isMounted) setResolvedStreamUrl(streamUrl);
+            });
+          return;
+        }
+      } catch {
+        // Use streamUrl as fallback
+      }
+    }
+
+    setResolvedStreamUrl(streamUrl);
+    return () => {
+      isMounted = false;
+    };
+  }, [streamUrl]);
+
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !streamUrl) return;
+    if (!video || !resolvedStreamUrl) return;
 
     let hls: Hls | null = null;
     let plyr: Plyr | null = null;
@@ -58,9 +144,8 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     setError(null);
 
     const onCanPlay = () => setLoading(false);
-    const onErrorHandler = (e: any) => {
-      console.error('Video error:', e);
-      setError('Erro ao carregar o vídeo. O formato pode não ser suportado nivamente ou houve bloqueio de CORS.');
+    const onErrorHandler = () => {
+      setError('Erro ao carregar o vídeo. O formato pode não ser compatível com o navegador.');
       setLoading(false);
     };
 
@@ -68,8 +153,8 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     video.addEventListener('error', onErrorHandler);
 
     // Progress Tracking Logic
-    const isLive = streamUrl.includes('/live/') || streamUrl.includes('.m3u8') || streamUrl.endsWith('.ts');
-    const match = streamUrl.match(/\/([^/]+)\.[a-zA-Z0-9]+(\?|$)/);
+    const isLive = resolvedStreamUrl.includes('/live') || resolvedStreamUrl.includes('.m3u8') || resolvedStreamUrl.endsWith('.ts');
+    const match = resolvedStreamUrl.match(/\/([^/]+)\.[a-zA-Z0-9]+(\?|$)/);
     const derivedStreamId = streamId || match?.[1] || title;
     const initialStartAt = startAt ?? (derivedStreamId ? (Number(localStorage.getItem('nc_progress_' + derivedStreamId)) || 0) : 0);
 
@@ -98,10 +183,6 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     };
 
     try {
-      // Direct Play: We use the streamUrl directly without proxies
-      // Live vs VOD detection
-      const isLive = streamUrl.includes('/live/') || streamUrl.includes('.m3u8') || streamUrl.endsWith('.ts');
-
       const defaultPlyrOptions: Plyr.Options = {
           controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
           settings: ['captions', 'quality', 'speed'],
@@ -109,28 +190,23 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       };
 
       if (isLive) {
-        // Force m3u8 extension for HLS playback Native vs Hls.js
-        const finalUrl = streamUrl.endsWith('.ts') ? streamUrl.replace('.ts', '.m3u8') : streamUrl;
-
-        console.log("Direct Play URL:", finalUrl);
-
         if (Hls.isSupported()) {
           hls = new Hls({
             enableWorker: true,
             lowLatencyMode: true,
-            maxBufferSize: 60 * 1000 * 1000, // 60MB de buffer na memória RAM
-            maxBufferLength: 60, // 60 segundos de vídeo carregados para frente
-            liveSyncDurationCount: 3, // Tolerância de sincronia no ao vivo
-            liveMaxLatencyDurationCount: 10, // Latência máxima antes de forçar o pulo
-            startLevel: -1, // Deixa começar na melhor qualidade inicial viável
-            fragLoadingTimeOut: 20000, // 20 segundos de paciência antes de dar erro de rede
+            maxBufferSize: 60 * 1000 * 1000,
+            maxBufferLength: 60,
+            liveSyncDurationCount: 3,
+            liveMaxLatencyDurationCount: 10,
+            startLevel: -1,
+            fragLoadingTimeOut: 20000,
             manifestLoadingTimeOut: 20000,
           });
 
-          hls.loadSource(finalUrl);
+          hls.loadSource(resolvedStreamUrl);
           hls.attachMedia(video);
 
-          hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
             setLoading(false);
             checkAndStartProgress();
             const availableQualities = hls!.levels.map((l: any) => l.height);
@@ -151,60 +227,56 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
                }
             });
             
-            video.play().catch(console.error);
+            video.play().catch(() => {});
           });
 
           let errorRecoveryAttempts = 0;
           hls.on(Hls.Events.ERROR, (_event, data) => {
             if (data.fatal) {
-              if (errorRecoveryAttempts >= 5) {
+              if (errorRecoveryAttempts >= 3) {
                 hls?.destroy();
-                setError('A transmissão falhou repetidas vezes e não pôde ser recuperada.');
+                setError('Não foi possível carregar a transmissão. O servidor de origem pode estar offline ou o formato não é suportado.');
                 setLoading(false);
                 return;
               }
               switch (data.type) {
                 case Hls.ErrorTypes.NETWORK_ERROR:
-                  console.error('Erro de rede fatal. Tentando recuperar... ', errorRecoveryAttempts);
                   errorRecoveryAttempts++;
                   hls?.startLoad();
                   break;
                 case Hls.ErrorTypes.MEDIA_ERROR:
-                  console.error('Erro de mídia fatal. Tentando recuperar... ', errorRecoveryAttempts);
                   errorRecoveryAttempts++;
                   hls?.recoverMediaError();
                   break;
                 default:
                   hls?.destroy();
-                  setError('Erro fatal ao carregar a transmissão. O formato pode não ser suportado.');
+                  setError('Erro fatal ao carregar a transmissão.');
                   setLoading(false);
                   break;
               }
             }
           });
         } else {
-          // Native HLS fallback (Safari / Apple devices)
-          video.src = finalUrl;
+          // Native HLS fallback (Safari / iOS)
+          video.src = resolvedStreamUrl;
           plyr = new Plyr(video, defaultPlyrOptions);
           video.addEventListener('loadedmetadata', () => {
             setLoading(false);
             checkAndStartProgress();
-            video.play().catch(console.error);
+            video.play().catch(() => {});
           });
         }
       } else {
-        console.log("Direct Play VOD URL:", streamUrl);
-        // It's VOD (Movie / Series) - load directly into the HTML5 <video> tag handled by Plyr
-        video.src = streamUrl;
+        // VOD (Movie / Series) - load directly into HTML5 <video> tag handled by Plyr
+        video.src = resolvedStreamUrl;
         plyr = new Plyr(video, defaultPlyrOptions);
-          video.addEventListener('loadedmetadata', () => {
+        video.addEventListener('loadedmetadata', () => {
           setLoading(false);
           checkAndStartProgress();
-          video.play().catch(console.error);
+          video.play().catch(() => {});
         });
       }
     } catch (err: any) {
-      console.error("Player setup error:", err);
       setError("Erro ao inicializar o player: " + err.message);
     }
 
@@ -225,18 +297,18 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
         plyr.destroy();
       }
     };
-  }, [streamUrl]);
+  }, [resolvedStreamUrl]);
 
   const handleBack = () => {
     if (document.fullscreenElement) {
-      document.exitFullscreen().catch(err => console.log('Fullscreen exit error:', err));
+      document.exitFullscreen().catch(() => {});
     }
     onBack();
   };
 
   const playerContent = (
     <motion.div 
-      key={streamUrl}
+      key={resolvedStreamUrl || title}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -297,7 +369,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
           </div>
           <p className="text-red-400 text-lg md:text-xl font-medium max-w-lg mb-4">{error}</p>
           <p className="text-gray-400 text-sm max-w-lg mb-6">
-            Se o vídeo não formatar ou tiver apenas áudio, certifique-se de que o formato seja compatível com seu dispositivo Web/Celular/TV.
+            Certifique-se de que o provedor oferece transmissões em formatos compatíveis com a Web (HLS .m3u8 para TV e MP4 para vídeos).
           </p>
           <button 
             onClick={handleBack}
@@ -308,14 +380,13 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
         </div>
       )}
 
-      {/* Wrapping the video in a full size container. Global CSS might also need .plyr { width: 100%; height: 100%; } */}
+      {/* Video Container: crossOrigin removed for reliable native playback */}
       <div className={`w-full h-full flex flex-col justify-center bg-black ${error ? 'hidden' : 'flex'} plyr-wrapper-override`}>
          <video
            ref={videoRef}
            className="w-full h-full max-h-screen object-contain"
            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
            playsInline
-           crossOrigin="anonymous"
          />
       </div>
     </motion.div>
