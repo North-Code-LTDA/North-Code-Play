@@ -103,9 +103,9 @@ export function validatePlayableFormat(
         }
         return {
           isPlayable: true,
-          format: "m3u8", // In web browsers, request HLS; server remuxes live TS to HLS via FFmpeg
+          format: "ts", // Direct .ts selection: creates ticket with ext: "ts" and routes directly to FFmpeg live remux
           warning:
-            "O provedor transmite em formato MPEG-TS (.ts). A reprodução no navegador requer remuxing em tempo real para HLS pelo servidor (FFmpeg).",
+            "O provedor transmite em formato MPEG-TS (.ts). A reprodução no navegador utiliza remuxing em tempo real para HLS pelo servidor (FFmpeg).",
         };
       }
     }

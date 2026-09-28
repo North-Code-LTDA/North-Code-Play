@@ -5,7 +5,14 @@ import { Readable } from "node:stream";
 import { Request, Response } from "express";
 import { validateTargetUrl, XtreamError } from "./ssrf";
 import { sanitizeForLogs } from "./xtreamProxy";
-import { checkFfmpegAvailable, getOrStartLiveRemux, getRemuxSession } from "./ffmpegHelper";
+import {
+  checkFfmpegAvailable,
+  checkFfprobeAvailable,
+  getOrStartLiveRemux,
+  getRemuxSession,
+  probeMediaStream,
+  startVodRemuxStream,
+} from "./ffmpegHelper";
 
 export interface MediaTicket {
   id: string;
@@ -450,7 +457,7 @@ async function streamMediaFromUrl(options: StreamMediaOptions): Promise<void> {
           });
 
           if (tsProbe.ok || tsProbe.status === 206) {
-            // Provedor only offers .ts!
+            // Provider only offers .ts!
             if (checkFfmpegAvailable()) {
               // Start FFmpeg remux session to convert live TS into HLS
               const { m3u8Path } = await getOrStartLiveRemux(ticket.id, tsUrl);
@@ -515,7 +522,68 @@ async function streamMediaFromUrl(options: StreamMediaOptions): Promise<void> {
       }
     }
 
-    // Binary Media Stream (MP4, TS, AAC, etc.)
+    // Binary Media Stream (MP4, MKV, TS, AAC, etc.)
+    const isVod = ticket.type === "movie" || ticket.type === "series";
+    const isMkvOrUnsupported =
+      ticket.ext === "mkv" ||
+      ticket.ext === "avi" ||
+      ticket.ext === "flv" ||
+      finalUrlObj.pathname.endsWith(".mkv") ||
+      finalUrlObj.pathname.endsWith(".avi") ||
+      req.query.remux === "1";
+
+    const contentLengthHeader = upstreamRes.headers.get("content-length");
+    const contentLengthNum = contentLengthHeader ? parseInt(contentLengthHeader, 10) : null;
+    const finalUrlLower = currentUrlStr.toLowerCase();
+
+    // Check if provider delivered a substitute/maintenance video with HTTP 200
+    // Real VOD movies/episodes are almost always > 20 MB (usually 200MB - 3GB)
+    const isMaintenanceSubstitute =
+      isVod &&
+      upstreamRes.status === 200 &&
+      ((contentLengthNum !== null && contentLengthNum > 0 && contentLengthNum < 6 * 1024 * 1024) ||
+        finalUrlLower.includes("maintenance") ||
+        finalUrlLower.includes("manutencao") ||
+        finalUrlLower.includes("aviso") ||
+        finalUrlLower.includes("placeholder") ||
+        finalUrlLower.includes("offline"));
+
+    if (isMaintenanceSubstitute) {
+      res.setHeader("X-NorthCode-Substitute-Video", "true");
+      res.setHeader(
+        "X-NorthCode-Maintenance-Notice",
+        "O provedor entregou um video substituto de manutencao (HTTP 200). A midia real nao esta disponivel na origem."
+      );
+    }
+
+    // If real VOD in MKV/unsupported container and FFmpeg is available, remux to fragmented MP4
+    if (isVod && isMkvOrUnsupported && !isMaintenanceSubstitute && checkFfmpegAvailable()) {
+      const startSeconds = parseFloat(String(req.query.start || req.query.t || "0")) || 0;
+      try {
+        const remux = startVodRemuxStream({
+          inputUrl: currentUrlStr,
+          startSeconds,
+        });
+
+        res.status(200);
+        res.setHeader("Content-Type", "video/mp4");
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("X-NorthCode-Remux", "active");
+
+        remux.stream.pipe(res);
+
+        req.on("close", () => {
+          controller.abort();
+          remux.stop();
+        });
+        return;
+      } catch (err: any) {
+        console.warn(`[VOD Remux] Falha ao iniciar remux, transmitindo binário direto:`, err?.message);
+      }
+    }
+
     res.status(upstreamRes.status);
 
     // Set appropriate Content-Type
@@ -666,4 +734,318 @@ export async function handleImageProxyRequest(
     res.setHeader("Cache-Control", "public, max-age=3600");
     res.status(200).send(FALLBACK_SVG_IMAGE);
   }
+}
+
+export interface UpstreamProbeDetail {
+  requestedExt: string;
+  initialUrl: string;
+  redirectChain: Array<{
+    status: number;
+    location: string;
+    fromUrl: string;
+  }>;
+  finalUrl: string;
+  httpStatus: number;
+  contentType: string;
+  contentLength: number | null;
+  acceptRangesHeader: string | null;
+  rangeSupported: boolean;
+  isMaintenanceVideo: boolean;
+  maintenanceReason?: string;
+  isCorrectMedia: boolean;
+  ffprobe?: {
+    duration?: number;
+    formatName?: string;
+    videoCodec?: string;
+    audioCodec?: string;
+  };
+  recommendation?: string;
+}
+
+export interface MediaDiagnosticReport {
+  ticketId?: string;
+  mediaType: "live" | "movie" | "series";
+  streamId: string;
+  requestedFormat: string;
+  primaryProbe: UpstreamProbeDetail;
+  alternativeProbe?: UpstreamProbeDetail;
+  conclusion: {
+    causeConfirmed: boolean;
+    category:
+      | "MAINTENANCE_VIDEO"
+      | "FORMAT_INCOMPATIBLE"
+      | "EXTENSION_MISMATCH"
+      | "ORIGIN_ERROR"
+      | "READY_NATIVE";
+    message: string;
+    transcodingWillFix: boolean;
+  };
+}
+
+/**
+ * Probes a single upstream media URL to inspect redirects, status, Range support, and maintenance videos.
+ */
+async function probeSingleUpstreamUrl(
+  urlStr: string,
+  ext: string,
+  mediaType: "live" | "movie" | "series",
+  options: { allowPrivateForTest?: boolean } = {}
+): Promise<UpstreamProbeDetail> {
+  let currentUrl = urlStr;
+  let redirectsCount = 0;
+  const maxRedirects = 5;
+  const redirectChain: Array<{ status: number; location: string; fromUrl: string }> = [];
+
+  let finalRes: globalThis.Response | null = null;
+
+  while (redirectsCount <= maxRedirects) {
+    const { validatedUrl } = await validateTargetUrl(currentUrl, {
+      allowPrivateForTest: options.allowPrivateForTest,
+    });
+
+    const res = await fetch(validatedUrl.toString(), {
+      method: "GET",
+      headers: {
+        "User-Agent": "NorthCodePlay/1.0",
+        Range: "bytes=0-1023", // Test Range support and grab headers
+      },
+      redirect: "manual",
+    });
+
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      redirectsCount++;
+      const location = res.headers.get("location") || "";
+      redirectChain.push({
+        status: res.status,
+        location,
+        fromUrl: currentUrl,
+      });
+
+      if (!location) {
+        finalRes = res;
+        break;
+      }
+
+      currentUrl = new URL(location, currentUrl).toString();
+      continue;
+    }
+
+    finalRes = res;
+    break;
+  }
+
+  const httpStatus = finalRes ? finalRes.status : 0;
+  const contentType = finalRes?.headers.get("content-type") || "unknown";
+  const acceptRangesHeader = finalRes?.headers.get("accept-ranges") || null;
+  const contentRange = finalRes?.headers.get("content-range") || "";
+
+  // Content length: if partial content 206, content-range has format "bytes 0-1023/total"
+  let contentLength: number | null = null;
+  if (contentRange && contentRange.includes("/")) {
+    const total = contentRange.split("/")[1];
+    if (total && total !== "*") {
+      contentLength = parseInt(total, 10);
+    }
+  }
+  if (contentLength === null && finalRes?.headers.get("content-length")) {
+    contentLength = parseInt(finalRes.headers.get("content-length")!, 10);
+  }
+
+  const rangeSupported = httpStatus === 206 || (acceptRangesHeader?.toLowerCase() === "bytes");
+
+  const finalUrlLower = currentUrl.toLowerCase();
+  const isVod = mediaType === "movie" || mediaType === "series";
+
+  // Maintenance video heuristics
+  let isMaintenanceVideo = false;
+  let maintenanceReason: string | undefined;
+
+  if (isVod && httpStatus === 200 || httpStatus === 206) {
+    if (contentLength !== null && contentLength > 0 && contentLength < 6 * 1024 * 1024) {
+      isMaintenanceVideo = true;
+      maintenanceReason = `Tamanho total recebido (${Math.round(contentLength / 1024)} KB) é diminuto para ${mediaType === "movie" ? "um filme" : "um episódio"}, característico de vídeo de manutenção do provedor.`;
+    } else if (
+      finalUrlLower.includes("maintenance") ||
+      finalUrlLower.includes("manutencao") ||
+      finalUrlLower.includes("aviso") ||
+      finalUrlLower.includes("placeholder") ||
+      finalUrlLower.includes("offline") ||
+      finalUrlLower.includes("dummy")
+    ) {
+      isMaintenanceVideo = true;
+      maintenanceReason = "URL final ou de redirecionamento contém palavras-chave indicando vídeo de manutenção do provedor.";
+    }
+  }
+
+  // Run ffprobe if available
+  let probeDetails: any = undefined;
+  if (checkFfprobeAvailable() && (httpStatus === 200 || httpStatus === 206)) {
+    try {
+      const probeResult = await probeMediaStream(currentUrl, 5000);
+      probeDetails = {
+        duration: probeResult.duration,
+        formatName: probeResult.formatName,
+        videoCodec: probeResult.videoCodec,
+        audioCodec: probeResult.audioCodec,
+      };
+      if (probeResult.isMaintenanceVideo && !isMaintenanceVideo) {
+        isMaintenanceVideo = true;
+        maintenanceReason = probeResult.maintenanceReason || "Duração muito curta (< 40s) detectada pelo ffprobe.";
+      }
+    } catch {}
+  }
+
+  const isCorrectMedia = !isMaintenanceVideo && (httpStatus === 200 || httpStatus === 206);
+
+  let recommendation = "";
+  if (isMaintenanceVideo) {
+    recommendation = "O servidor entregou um vídeo substituto de manutenção. Transcodificação não corrigirá um conteúdo que a origem não forneceu.";
+  } else if (!isCorrectMedia) {
+    recommendation = `Servidor de origem retornou status HTTP ${httpStatus}. Verifique se o conteúdo está ativo no provedor.`;
+  } else if (ext === "mkv" || contentType.includes("matroska")) {
+    recommendation = "Mídia real entregue pela origem em MKV. Remux para MP4/AAC habilitará reprodução web com avanço e retrocesso.";
+  } else {
+    recommendation = "Mídia real entregue pela origem pronta para reprodução.";
+  }
+
+  return {
+    requestedExt: ext,
+    initialUrl: urlStr,
+    redirectChain,
+    finalUrl: currentUrl,
+    httpStatus,
+    contentType,
+    contentLength,
+    acceptRangesHeader,
+    rangeSupported,
+    isMaintenanceVideo,
+    maintenanceReason,
+    isCorrectMedia,
+    ffprobe: probeDetails,
+    recommendation,
+  };
+}
+
+export interface DiagnoseMediaOptions {
+  ticketId?: string;
+  serverUrl?: string;
+  username?: string;
+  password?: string;
+  type?: "live" | "movie" | "series";
+  streamId?: string | number;
+  ext?: string;
+  allowPrivateForTest?: boolean;
+}
+
+/**
+ * Comprehensive upstream media diagnostic:
+ * - Traces requested extension and alternative extension (e.g. mp4 vs mkv)
+ * - Records HTTP status, redirect chain, Content-Type, Content-Length, Range support
+ * - Determines whether origin delivered the real media or a substitute maintenance video
+ * - Declares confirmed cause and forbids claiming transcoding fixes unavailable content
+ */
+export async function diagnoseMediaUpstream(options: DiagnoseMediaOptions): Promise<MediaDiagnosticReport> {
+  let cleanBaseUrl = "";
+  let username = "";
+  let password = "";
+  let type: "live" | "movie" | "series" = "movie";
+  let streamId = "";
+  let requestedExt = "mp4";
+  let ticketId: string | undefined = options.ticketId;
+
+  if (ticketId) {
+    const ticket = ticketStore.get(ticketId);
+    if (!ticket) {
+      throw new XtreamError("TICKET_NOT_FOUND", "Ticket não encontrado para diagnóstico.", 404);
+    }
+    cleanBaseUrl = ticket.cleanBaseUrl;
+    username = ticket.username;
+    password = ticket.password;
+    type = ticket.type;
+    streamId = ticket.streamId;
+    requestedExt = ticket.ext;
+  } else {
+    if (!options.serverUrl || !options.username || !options.password || !options.streamId) {
+      throw new XtreamError("INVALID_REQUEST", "Parâmetros insuficientes para diagnóstico de mídia.", 400);
+    }
+    const { cleanBaseUrl: validatedBase } = await validateTargetUrl(options.serverUrl, {
+      allowPrivateForTest: options.allowPrivateForTest,
+    });
+    cleanBaseUrl = validatedBase;
+    username = options.username;
+    password = options.password;
+    type = options.type || "movie";
+    streamId = String(options.streamId);
+    requestedExt = (options.ext || (type === "live" ? "m3u8" : "mp4")).toLowerCase().replace(/^\./, "");
+  }
+
+  // Build target URL for primary requested extension
+  const primaryUrl = `${cleanBaseUrl}/${type}/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.${requestedExt}`;
+
+  const primaryProbe = await probeSingleUpstreamUrl(primaryUrl, requestedExt, type, {
+    allowPrivateForTest: options.allowPrivateForTest,
+  });
+
+  let alternativeProbe: UpstreamProbeDetail | undefined = undefined;
+
+  // For VOD, probe alternate extension to compare cases
+  if (type !== "live") {
+    const altExt = requestedExt === "mp4" ? "mkv" : "mp4";
+    const altUrl = `${cleanBaseUrl}/${type}/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.${altExt}`;
+    try {
+      alternativeProbe = await probeSingleUpstreamUrl(altUrl, altExt, type, {
+        allowPrivateForTest: options.allowPrivateForTest,
+      });
+    } catch {}
+  }
+
+  // Derive final diagnosis conclusion
+  let category: MediaDiagnosticReport["conclusion"]["category"] = "READY_NATIVE";
+  let message = "";
+  let transcodingWillFix = false;
+
+  if (primaryProbe.isMaintenanceVideo) {
+    if (alternativeProbe && alternativeProbe.isCorrectMedia) {
+      category = "EXTENSION_MISMATCH";
+      transcodingWillFix = true;
+      message = `Causa confirmada: A extensão solicitada (.${primaryProbe.requestedExt}) entregou o vídeo de manutenção do provedor, mas a extensão alternativa (.${alternativeProbe.requestedExt}) contém o arquivo real (${Math.round((alternativeProbe.contentLength || 0) / (1024 * 1024))} MB). O sistema selecionará automaticamente .${alternativeProbe.requestedExt} com remux.`;
+    } else {
+      category = "MAINTENANCE_VIDEO";
+      transcodingWillFix = false;
+      message = `Causa confirmada: O servidor de origem (provedor) entregou um vídeo substituto de manutenção com HTTP ${primaryProbe.httpStatus}. O conteúdo solicitado não está disponível no catálogo do provedor. A transcodificação NÃO corrigirá este problema porque a origem não forneceu o arquivo real.`;
+    }
+  } else if (primaryProbe.httpStatus >= 400) {
+    if (alternativeProbe && alternativeProbe.isCorrectMedia) {
+      category = "EXTENSION_MISMATCH";
+      transcodingWillFix = true;
+      message = `Causa confirmada: A extensão .${primaryProbe.requestedExt} retornou HTTP ${primaryProbe.httpStatus}, mas o arquivo existe no formato alternativo .${alternativeProbe.requestedExt}.`;
+    } else {
+      category = "ORIGIN_ERROR";
+      transcodingWillFix = false;
+      message = `Causa confirmada: O servidor do provedor retornou código de erro HTTP ${primaryProbe.httpStatus}.`;
+    }
+  } else if (primaryProbe.isCorrectMedia && (primaryProbe.requestedExt === "mkv" || primaryProbe.contentType.includes("matroska"))) {
+    category = "FORMAT_INCOMPATIBLE";
+    transcodingWillFix = true;
+    message = `Causa confirmada: A origem forneceu o conteúdo correto (${Math.round((primaryProbe.contentLength || 0) / (1024 * 1024))} MB), mas o formato (.mkv) ou codec de áudio não é reproduzível nativamente no navegador. O remux sob demanda via FFmpeg no servidor habilita a reprodução com suporte a avanço e retrocesso.`;
+  } else if (primaryProbe.isCorrectMedia) {
+    category = "READY_NATIVE";
+    transcodingWillFix = false;
+    message = "A mídia foi entregue corretamente pela origem em formato nativo compatível com o navegador.";
+  }
+
+  return {
+    ticketId,
+    mediaType: type,
+    streamId,
+    requestedFormat: requestedExt,
+    primaryProbe,
+    alternativeProbe,
+    conclusion: {
+      causeConfirmed: true,
+      category,
+      message,
+      transcodingWillFix,
+    },
+  };
 }

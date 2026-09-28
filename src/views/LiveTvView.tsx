@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { TvMinimalPlay, Loader2, Play, Heart, ArrowLeft, Calendar, AlertCircle, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
@@ -150,8 +150,10 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const [miniPlayerLoading, setMiniPlayerLoading] = useState(false);
   const [miniPlayerRetry, setMiniPlayerRetry] = useState(0);
 
+  // Active channel request sequencer to reject out-of-order responses
+  const activeRequestIdRef = useRef<number>(0);
+
   useEffect(() => {
-    let isMounted = true;
     if (!selectedChannel || !credentials) {
       setMiniPlayerUrl('');
       setMiniPlayerError(null);
@@ -159,8 +161,10 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       return;
     }
 
+    const currentReqId = ++activeRequestIdRef.current;
     setMiniPlayerLoading(true);
     setMiniPlayerError(null);
+    setMiniPlayerUrl(''); // Clear previous stream URL immediately so old channel stops
 
     getMediaStreamUrl(credentials, {
       type: 'live',
@@ -168,13 +172,14 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       allowedOutputFormats: (credentials as any).allowed_output_formats,
     })
       .then((url) => {
-        if (isMounted) {
+        // Discard if user switched channels before this ticket arrived
+        if (activeRequestIdRef.current === currentReqId) {
           setMiniPlayerUrl(url);
           setMiniPlayerLoading(false);
         }
       })
       .catch((err) => {
-        if (isMounted) {
+        if (activeRequestIdRef.current === currentReqId) {
           console.error('Erro ao preparar stream ao vivo:', err.message);
           setMiniPlayerUrl('');
           setMiniPlayerError(err.message || 'Falha ao conectar à transmissão do canal via HTTPS.');
@@ -183,9 +188,10 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       });
 
     return () => {
-      isMounted = false;
+      // Invalidate current in-flight request when channel changes or component unmounts
+      activeRequestIdRef.current++;
     };
-  }, [selectedChannel, credentials, miniPlayerRetry]);
+  }, [selectedChannel?.stream_id, credentials, miniPlayerRetry]);
 
   return (
     <div className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg">
@@ -371,29 +377,17 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
                {/* Right child: Mini-Player */}
                <div className="w-full lg:w-[45%] lg:max-w-md md:max-h-[50vh] lg:max-h-[60vh] xl:max-h-none shrink-0 order-1 lg:order-2 shadow-2xl">
-                 {miniPlayerUrl ? (
-                   <VideoPlayer 
-                     streamUrl={miniPlayerUrl} 
-                     title={selectedChannel.name} 
-                     onBack={() => setIsMobilePlayerOpen(false)}
-                     embedded={true}
-                   />
-                 ) : miniPlayerError ? (
-                   <div className="w-full aspect-video rounded-xl bg-black border border-red-500/30 flex flex-col items-center justify-center p-4 text-center">
-                     <AlertCircle className="w-8 h-8 text-red-500 mb-2" />
-                     <p className="text-red-400 text-sm font-medium mb-3">{miniPlayerError}</p>
-                     <button
-                       onClick={() => setMiniPlayerRetry(p => p + 1)}
-                       className="px-4 py-2 bg-nc-primary text-black rounded-lg text-xs font-semibold flex items-center gap-1.5 hover:brightness-110"
-                     >
-                       <RefreshCw className="w-3.5 h-3.5" /> Tentar Novamente
-                     </button>
-                   </div>
-                 ) : (
-                   <div className="w-full aspect-video rounded-xl bg-black flex items-center justify-center">
-                     <Loader2 className="w-8 h-8 animate-spin text-nc-primary" />
-                   </div>
-                 )}
+                 <VideoPlayer
+                   key={selectedChannel.stream_id}
+                   streamUrl={miniPlayerUrl}
+                   title={selectedChannel.name}
+                   streamId={selectedChannel.stream_id}
+                   onBack={() => setIsMobilePlayerOpen(false)}
+                   embedded={true}
+                   isLoading={miniPlayerLoading}
+                   errorMessage={miniPlayerError}
+                   onRetry={() => setMiniPlayerRetry(p => p + 1)}
+                 />
                </div>
              </div>
 

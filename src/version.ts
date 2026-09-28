@@ -1,6 +1,33 @@
-export const APP_VERSION = "1.2.0";
-export const APP_COMMIT = "ab98f4cdfac3a41b3d993867ecbe99e3bc1e874c";
-export const APP_BUILD_TIME = "2026-09-28T06:15:00Z";
+// North Code Play versioning - dynamically reflects deployed commit
+export const APP_VERSION = "1.3.0";
+
+// Fallback commit from base specification if RENDER_GIT_COMMIT is not provided
+const DEFAULT_COMMIT = "0026038a2b1ba8c63ac95030bbc8cf8248c62231";
+
+function resolveCommit(): string {
+  if (typeof __APP_COMMIT__ !== "undefined" && __APP_COMMIT__) {
+    return __APP_COMMIT__;
+  }
+  if (typeof process !== "undefined" && process.env) {
+    if (process.env.RENDER_GIT_COMMIT) {
+      return process.env.RENDER_GIT_COMMIT;
+    }
+    if (process.env.GIT_COMMIT) {
+      return process.env.GIT_COMMIT;
+    }
+  }
+  return DEFAULT_COMMIT;
+}
+
+function resolveBuildTime(): string {
+  if (typeof __APP_BUILD_TIME__ !== "undefined" && __APP_BUILD_TIME__) {
+    return __APP_BUILD_TIME__;
+  }
+  return new Date().toISOString();
+}
+
+export const APP_COMMIT = resolveCommit();
+export const APP_BUILD_TIME = resolveBuildTime();
 
 if (typeof window !== "undefined") {
   (window as any).__NORTHCODE_BUILD__ = {

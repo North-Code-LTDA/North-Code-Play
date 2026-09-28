@@ -4,21 +4,24 @@ import {
   handleStreamRequest,
   handleHlsResourceRequest,
   handleImageProxyRequest,
+  diagnoseMediaUpstream,
 } from "./mediaProxy";
 import { XtreamError } from "./ssrf";
-import { checkFfmpegAvailable } from "./ffmpegHelper";
+import { checkFfmpegAvailable, checkFfprobeAvailable } from "./ffmpegHelper";
 import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME } from "../src/version";
 
 export const mediaRouter = Router();
 
 // Version endpoint to easily identify published commit in browser
 mediaRouter.get("/version", (_req, res) => {
+  const commit = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || APP_COMMIT;
   res.json({
     name: "North Code Play",
     version: APP_VERSION,
-    commit: APP_COMMIT,
+    commit,
     buildTime: APP_BUILD_TIME,
     ffmpegAvailable: checkFfmpegAvailable(),
+    ffprobeAvailable: checkFfprobeAvailable(),
     environment: process.env.NODE_ENV || "development",
   });
 });
@@ -63,4 +66,48 @@ mediaRouter.get("/stream/:ticket/:filename", async (req, res) => {
 // HLS sub-resource proxy (sub-playlists, segments, encryption keys)
 mediaRouter.get("/hls-resource", async (req, res) => {
   await handleHlsResourceRequest(req, res);
+});
+
+// Diagnostic endpoint: GET /api/media/diagnose/:ticket
+mediaRouter.get("/diagnose/:ticket", async (req, res) => {
+  try {
+    const { ticket: ticketId } = req.params;
+    const report = await diagnoseMediaUpstream({ ticketId });
+    res.status(200).json(report);
+  } catch (err: any) {
+    if (err instanceof XtreamError) {
+      res.status(err.statusCode).json({ error: err.code, message: err.message });
+      return;
+    }
+    res.status(500).json({
+      error: "DIAGNOSTIC_FAILED",
+      message: err?.message || "Falha ao executar diagnóstico da transmissão.",
+    });
+  }
+});
+
+// Diagnostic endpoint: POST /api/media/diagnose
+mediaRouter.post("/diagnose", async (req, res) => {
+  try {
+    const { ticketId, serverUrl, username, password, type, streamId, ext } = req.body || {};
+    const report = await diagnoseMediaUpstream({
+      ticketId,
+      serverUrl,
+      username,
+      password,
+      type,
+      streamId,
+      ext,
+    });
+    res.status(200).json(report);
+  } catch (err: any) {
+    if (err instanceof XtreamError) {
+      res.status(err.statusCode).json({ error: err.code, message: err.message });
+      return;
+    }
+    res.status(500).json({
+      error: "DIAGNOSTIC_FAILED",
+      message: err?.message || "Falha ao executar diagnóstico da transmissão.",
+    });
+  }
 });
