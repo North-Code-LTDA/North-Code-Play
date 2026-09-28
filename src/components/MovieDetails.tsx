@@ -3,7 +3,7 @@ import { Play, ArrowLeft, Loader2, Star, Calendar, Clock, Info, Heart } from 'lu
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
-import { getMediaStreamUrl } from '../utils/mediaUtils';
+import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
 
 interface MovieDetailsProps {
   key?: React.Key;
@@ -19,6 +19,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const { isFavorite, toggleFavorite } = useFavorites();
   const [loading, setLoading] = useState(true);
   const [info, setInfo] = useState<any>(null);
+  const [movieData, setMovieData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [savedProgress, setSavedProgress] = useState(0);
@@ -30,7 +31,9 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
         setLoading(true);
         setError(null);
         const data = await XtreamService.getVodInfo(credentials, streamId);
-        setInfo(data.info || data.movie_data || {});
+        // Explicitly preserve both info and movie_data
+        setInfo(data.info || {});
+        setMovieData(data.movie_data || {});
       } catch (err: any) {
         setError(err.message || 'Erro ao carregar os detalhes do filme.');
       } finally {
@@ -53,7 +56,9 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     requestFullscreen();
     if (!credentials) return;
     try {
-      const ext = info?.movie_data?.container_extension || "mp4";
+      // Use real container_extension from movie_data or info
+      const rawExt = movieData?.container_extension || info?.container_extension || "mp4";
+      const ext = String(rawExt).trim().replace(/^\./, "");
       const mediaUrl = await getMediaStreamUrl(credentials, {
         type: 'movie',
         streamId,
@@ -103,9 +108,10 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     );
   }
 
-  const coverImage = info.backdrop_path && info.backdrop_path.length > 0 
+  const rawCover = info.backdrop_path && info.backdrop_path.length > 0 
       ? (info.backdrop_path[0] || info.cover_big || info.movie_image)
       : (info.cover_big || info.movie_image || streamIcon);
+  const coverImage = getProxiedImageUrl(rawCover);
 
   const durationMin = info.duration ? info.duration.split(':')[0] + 'm' : null;
 

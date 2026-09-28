@@ -3,6 +3,7 @@ import { Play, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
+import { getProxiedImageUrl } from '../utils/mediaUtils';
 
 interface HeroBannerProps {
   items: any[];
@@ -122,11 +123,11 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
           className="absolute inset-0 z-0"
         >
           <img
-            src={bgImage}
+            src={getProxiedImageUrl(bgImage)}
             alt={currentItem.name}
             className="w-full h-full object-cover object-top opacity-80"
             onError={(e) => {
-              (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?q=80&w=2070&auto=format&fit=crop';
+              (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
             }}
           />
           <div className="absolute inset-0 bg-gradient-to-t from-nc-bg via-nc-bg/80 to-transparent" />

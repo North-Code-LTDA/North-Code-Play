@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import { motion } from 'motion/react';
 import { Play, ChevronLeft, ChevronRight } from 'lucide-react';
+import { getProxiedImageUrl } from '../utils/mediaUtils';
 
 interface HorizontalRowProps {
   title: string;
@@ -49,12 +50,12 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
             <div className="relative w-full h-full">
               {item.stream_icon || item.cover ? (
                  <img 
-                   src={item.stream_icon || item.cover} 
+                   src={getProxiedImageUrl(item.stream_icon || item.cover)} 
                    alt={item.name}
                    className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'}`}
                    loading="lazy"
                    onError={(e) => {
-                     (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4=';
+                     (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
                    }}
                  />
               ) : (

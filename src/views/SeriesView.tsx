@@ -5,6 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
+import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
 
 interface SeriesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -131,11 +132,19 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
     }
   };
 
-  const handlePlayEpisode = (episode: any) => {
+  const handlePlayEpisode = async (episode: any) => {
     if (!credentials) return;
-    const ext = episode.container_extension || "mp4";
-    const rawUrl = `${credentials.serverUrl.endsWith('/') ? credentials.serverUrl.slice(0, -1) : credentials.serverUrl}/series/${credentials.username}/${credentials.password}/${episode.id}.${ext}`;
-    onPlay(rawUrl, `${selectedSeries?.name} - S${selectedSeason}E${episode.episode_num || episode.id}`);
+    try {
+      const ext = episode.container_extension || "mp4";
+      const mediaUrl = await getMediaStreamUrl(credentials, {
+        type: 'series',
+        streamId: episode.id,
+        containerExtension: ext,
+      });
+      onPlay(mediaUrl, `${selectedSeries?.name} - S${selectedSeason}E${episode.episode_num || episode.id}`, 0, episode.id);
+    } catch (err: any) {
+      console.error('Erro ao iniciar episódio via /api/media:', err);
+    }
   };
 
   return (
@@ -220,12 +229,12 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
                  >
                    {stream.cover ? (
                      <img 
-                       src={stream.cover} 
+                       src={getProxiedImageUrl(stream.cover)} 
                        alt={stream.name}
                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                        loading="lazy"
                        onError={(e) => {
-                         (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4='; // fallback transparent
+                         (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
                        }}
                      />
                    ) : (

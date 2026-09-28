@@ -4,7 +4,7 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import muxjs from 'mux.js';
-import { ArrowLeft, Loader2, SkipForward, SkipBack } from 'lucide-react';
+import { ArrowLeft, Loader2, SkipForward, SkipBack, RefreshCw, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { normalizeServerUrl } from '../utils/mediaUtils';
 
@@ -31,6 +31,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
   const [isIdle, setIsIdle] = useState(false);
   const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [resolvedStreamUrl, setResolvedStreamUrl] = useState<string>('');
+  const [retryTrigger, setRetryTrigger] = useState(0);
 
   const handleMouseMove = () => {
     setIsIdle(false);
@@ -49,27 +50,32 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     };
   }, []);
 
-  // Ensure streamUrl is routed via same-origin HTTPS proxy if it came as a direct legacy URL
+  // Ensure streamUrl is strictly routed via same-origin HTTPS proxy (/api/media)
+  // NEVER fallback silently to direct HTTP/HTTPS URLs.
   useEffect(() => {
     let isMounted = true;
+    setError(null);
+    setLoading(true);
+
     if (!streamUrl) {
       setResolvedStreamUrl('');
+      setError('Nenhuma URL de transmissão informada.');
+      setLoading(false);
       return;
     }
 
+    // Directly uses /api/media proxy route
     if (streamUrl.startsWith('/api/media/')) {
       setResolvedStreamUrl(streamUrl);
       return;
     }
 
-    // If a legacy direct URL with credentials was passed, convert it via /api/media/ticket
+    // If a legacy direct URL with credentials was passed, convert it strictly via /api/media/ticket
     if (streamUrl.startsWith('http://') || streamUrl.startsWith('https://')) {
       try {
         const parsed = new URL(streamUrl);
         const segments = parsed.pathname.split('/').filter(Boolean);
 
-        // Pattern: /live/user/pass/id.ext or /movie/user/pass/id.ext or /series/user/pass/id.ext
-        // or /user/pass/id.ext
         let type: 'live' | 'movie' | 'series' = 'live';
         let username = '';
         let password = '';
@@ -107,31 +113,48 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
               ext,
             }),
           })
-            .then(res => res.json())
+            .then(async (res) => {
+              if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.message || `Erro no servidor de mídia (${res.status})`);
+              }
+              return res.json();
+            })
             .then(data => {
               if (isMounted) {
                 if (data.streamUrl) {
                   setResolvedStreamUrl(data.streamUrl);
                 } else {
-                  setResolvedStreamUrl(streamUrl);
+                  setError('O servidor não forneceu uma rota de mídia segura válida.');
+                  setLoading(false);
                 }
               }
             })
-            .catch(() => {
-              if (isMounted) setResolvedStreamUrl(streamUrl);
+            .catch((err: any) => {
+              if (isMounted) {
+                setError(err.message || 'Falha ao preparar a reprodução da mídia via HTTPS.');
+                setLoading(false);
+              }
             });
           return;
         }
-      } catch {
-        // Use streamUrl as fallback
+      } catch (err: any) {
+        if (isMounted) {
+          setError('URL de mídia com formato inválido.');
+          setLoading(false);
+        }
+        return;
       }
     }
 
-    setResolvedStreamUrl(streamUrl);
+    // If it's an unrecognized format without /api/media, do not allow silent HTTP fallback
+    setError('A URL de reprodução precisa ser processada pela rota segura /api/media.');
+    setLoading(false);
+
     return () => {
       isMounted = false;
     };
-  }, [streamUrl]);
+  }, [streamUrl, retryTrigger]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -139,157 +162,138 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
 
     let hls: Hls | null = null;
     let plyr: Plyr | null = null;
+    let recoveryAttempts = 0;
+    const MAX_RECOVERIES = 3;
     
     setLoading(true);
     setError(null);
 
-    const onCanPlay = () => setLoading(false);
-    const onErrorHandler = () => {
-      setError('Erro ao carregar o vídeo. O formato pode não ser compatível com o navegador.');
-      setLoading(false);
-    };
-
-    video.addEventListener('canplay', onCanPlay);
-    video.addEventListener('error', onErrorHandler);
-
-    // Progress Tracking Logic
-    const isLive = resolvedStreamUrl.includes('/live') || resolvedStreamUrl.includes('.m3u8') || resolvedStreamUrl.endsWith('.ts');
-    const match = resolvedStreamUrl.match(/\/([^/]+)\.[a-zA-Z0-9]+(\?|$)/);
-    const derivedStreamId = streamId || match?.[1] || title;
-    const initialStartAt = startAt ?? (derivedStreamId ? (Number(localStorage.getItem('nc_progress_' + derivedStreamId)) || 0) : 0);
-
-    const onTimeUpdate = () => {
-      if (!isLive && derivedStreamId) {
-        // Save progress every ~5 seconds
-        if (Math.floor(video.currentTime) % 5 === 0 && video.currentTime > 0) {
-          localStorage.setItem('nc_progress_' + derivedStreamId, video.currentTime.toString());
-          localStorage.setItem('nc_last_watched_' + derivedStreamId, Date.now().toString());
-        }
-      }
-    };
-    video.addEventListener('timeupdate', onTimeUpdate);
-
-    const onEnded = () => {
-      if (onNext) {
-        onNext();
-      }
-    };
-    video.addEventListener('ended', onEnded);
-
-    const checkAndStartProgress = () => {
-       if (!isLive && initialStartAt !== undefined) {
-         video.currentTime = initialStartAt;
-       }
-    };
-
-    try {
-      const defaultPlyrOptions: Plyr.Options = {
-          controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
-          settings: ['captions', 'quality', 'speed'],
-          autoplay: true
-      };
-
-      if (isLive) {
-        if (Hls.isSupported()) {
-          hls = new Hls({
-            enableWorker: true,
-            lowLatencyMode: true,
-            maxBufferSize: 60 * 1000 * 1000,
-            maxBufferLength: 60,
-            liveSyncDurationCount: 3,
-            liveMaxLatencyDurationCount: 10,
-            startLevel: -1,
-            fragLoadingTimeOut: 20000,
-            manifestLoadingTimeOut: 20000,
-          });
-
-          hls.loadSource(resolvedStreamUrl);
-          hls.attachMedia(video);
-
-          hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            setLoading(false);
-            checkAndStartProgress();
-            const availableQualities = hls!.levels.map((l: any) => l.height);
-            
-            plyr = new Plyr(video, {
-               ...defaultPlyrOptions,
-               quality: {
-                  default: availableQualities[0] || 0,
-                  options: availableQualities,
-                  forced: true,
-                  onChange: (e: number) => {
-                      hls!.levels.forEach((level: any, levelIndex: number) => {
-                          if (level.height === e) {
-                              hls!.currentLevel = levelIndex;
-                          }
-                      });
-                  }
-               }
-            });
-            
-            video.play().catch(() => {});
-          });
-
-          let errorRecoveryAttempts = 0;
-          hls.on(Hls.Events.ERROR, (_event, data) => {
-            if (data.fatal) {
-              if (errorRecoveryAttempts >= 3) {
-                hls?.destroy();
-                setError('Não foi possível carregar a transmissão. O servidor de origem pode estar offline ou o formato não é suportado.');
-                setLoading(false);
-                return;
-              }
-              switch (data.type) {
-                case Hls.ErrorTypes.NETWORK_ERROR:
-                  errorRecoveryAttempts++;
-                  hls?.startLoad();
-                  break;
-                case Hls.ErrorTypes.MEDIA_ERROR:
-                  errorRecoveryAttempts++;
-                  hls?.recoverMediaError();
-                  break;
-                default:
-                  hls?.destroy();
-                  setError('Erro fatal ao carregar a transmissão.');
-                  setLoading(false);
-                  break;
-              }
-            }
-          });
-        } else {
-          // Native HLS fallback (Safari / iOS)
-          video.src = resolvedStreamUrl;
-          plyr = new Plyr(video, defaultPlyrOptions);
-          video.addEventListener('loadedmetadata', () => {
-            setLoading(false);
-            checkAndStartProgress();
-            video.play().catch(() => {});
-          });
-        }
-      } else {
-        // VOD (Movie / Series) - load directly into HTML5 <video> tag handled by Plyr
-        video.src = resolvedStreamUrl;
-        plyr = new Plyr(video, defaultPlyrOptions);
-        video.addEventListener('loadedmetadata', () => {
-          setLoading(false);
-          checkAndStartProgress();
-          video.play().catch(() => {});
+    const initPlyr = () => {
+      if (plyr) return;
+      try {
+        plyr = new Plyr(video, {
+          controls: [
+            'play-large',
+            'play',
+            'progress',
+            'current-time',
+            'duration',
+            'mute',
+            'volume',
+            'settings',
+            'pip',
+            'fullscreen'
+          ],
+          autoplay: true,
+          hideControls: true,
+          resetOnEnd: true,
+          seekTime: 10,
+          keyboard: { focused: true, global: true },
+          tooltips: { controls: true, seek: true },
         });
+
+        plyr.on('ready', () => {
+          if (startAt && startAt > 0) {
+            video.currentTime = startAt;
+          }
+          video.play().catch(() => {
+            // Autoplay policy: can be resumed on click
+          });
+        });
+      } catch (e) {
+        // Fallback to standard HTML5 controls if Plyr initialization fails
+        video.controls = true;
       }
-    } catch (err: any) {
-      setError("Erro ao inicializar o player: " + err.message);
+    };
+
+    const isHlsUrl = resolvedStreamUrl.includes('.m3u8') || resolvedStreamUrl.includes('/hls');
+
+    if (isHlsUrl && Hls.isSupported()) {
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        backBufferLength: 60,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 600,
+        maxBufferSize: 60 * 1000 * 1000,
+        // Forward credentials if needed
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = false;
+        }
+      });
+
+      hls.loadSource(resolvedStreamUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setLoading(false);
+        initPlyr();
+      });
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          recoveryAttempts++;
+          if (recoveryAttempts <= MAX_RECOVERIES) {
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                hls?.startLoad();
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                hls?.recoverMediaError();
+                break;
+              default:
+                hls?.destroy();
+                setError('Erro irrecuperável na transmissão do canal.');
+                setLoading(false);
+                break;
+            }
+          } else {
+            // Stop infinite loop and present clear message
+            hls?.destroy();
+            setError('Não foi possível reproduzir a transmissão após múltiplas tentativas. Verifique a estabilidade da sua lista ou se o canal está offline no provedor.');
+            setLoading(false);
+          }
+        }
+      });
+    } else if (isHlsUrl && video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native Apple HLS support (Safari iOS / macOS)
+      video.src = resolvedStreamUrl;
+      video.addEventListener('loadedmetadata', () => {
+        setLoading(false);
+        initPlyr();
+      });
+      video.addEventListener('error', () => {
+        setError('Falha ao reproduzir fluxo HLS neste dispositivo.');
+        setLoading(false);
+      });
+    } else {
+      // Direct video file (MP4, WebM)
+      video.src = resolvedStreamUrl;
+      video.addEventListener('loadedmetadata', () => {
+        setLoading(false);
+        initPlyr();
+      });
+      video.addEventListener('canplay', () => {
+        setLoading(false);
+      });
+      video.addEventListener('error', () => {
+        setError('Falha ao carregar o arquivo de vídeo. O contêiner ou codec pode ser incompatível com o navegador.');
+        setLoading(false);
+      });
     }
 
-    return () => {
-      video.removeEventListener('canplay', onCanPlay);
-      video.removeEventListener('error', onErrorHandler);
-      video.removeEventListener('timeupdate', onTimeUpdate);
-      video.removeEventListener('ended', onEnded);
-      if (video) {
-        video.pause();
-        video.removeAttribute('src');
-        video.load();
+    // Save playback progress for resume functionality
+    const handleTimeUpdate = () => {
+      if (video && video.currentTime > 5 && streamId) {
+        localStorage.setItem('nc_progress_' + streamId, Math.floor(video.currentTime).toString());
+        localStorage.setItem('nc_last_watched_' + streamId, Date.now().toString());
       }
+    };
+
+    video.addEventListener('timeupdate', handleTimeUpdate);
+
+    return () => {
+      video.removeEventListener('timeupdate', handleTimeUpdate);
       if (hls) {
         hls.destroy();
       }
@@ -297,7 +301,7 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
         plyr.destroy();
       }
     };
-  }, [resolvedStreamUrl]);
+  }, [resolvedStreamUrl, startAt, streamId, retryTrigger]);
 
   const handleBack = () => {
     if (document.fullscreenElement) {
@@ -306,22 +310,23 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
     onBack();
   };
 
+  const handleRetry = () => {
+    setError(null);
+    setLoading(true);
+    setRetryTrigger((prev) => prev + 1);
+  };
+
   const playerContent = (
     <motion.div 
-      key={resolvedStreamUrl || title}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       onMouseMove={handleMouseMove}
-      onTouchStart={handleMouseMove}
-      className={embedded 
-        ? `relative w-full aspect-video rounded-xl overflow-hidden shadow-lg bg-black flex flex-col items-center justify-center shrink-0 ${isIdle ? 'cursor-none' : 'cursor-auto'}` 
-        : `fixed inset-0 z-[9999] bg-black flex flex-col items-center justify-center ${isIdle ? 'cursor-none' : 'cursor-auto'}`
-      }
+      className={`${embedded ? 'relative w-full aspect-video rounded-2xl overflow-hidden' : 'fixed inset-0 z-50 bg-black flex flex-col items-center justify-center'}`}
     >
-      {/* Top Bar with Back Button Overlay */}
+      {/* Top Header Controls */}
       {!embedded && (
-        <div className={`absolute top-0 left-0 w-full p-6 bg-gradient-to-b from-black/80 to-transparent z-10 flex items-start justify-between gap-4 transition-opacity duration-300 ${isIdle ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+        <div className={`absolute top-0 left-0 right-0 p-6 z-20 flex items-center justify-between bg-gradient-to-b from-black/80 via-black/40 to-transparent transition-opacity duration-300 ${isIdle ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <div className="flex items-center gap-4">
             <button 
               onClick={handleBack}
@@ -358,25 +363,34 @@ export function VideoPlayer({ streamUrl, title, onBack, embedded = false, startA
       {loading && !error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-black/60 backdrop-blur-sm">
           <Loader2 className="w-12 h-12 text-nc-primary animate-spin mb-4" />
-          <p className="text-white text-lg font-medium">Carregando transmissão...</p>
+          <p className="text-white text-lg font-medium">Carregando transmissão segura...</p>
         </div>
       )}
 
       {error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-black p-6 text-center">
           <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
-            <ArrowLeft className="w-8 h-8 text-red-500" />
+            <AlertCircle className="w-8 h-8 text-red-500" />
           </div>
           <p className="text-red-400 text-lg md:text-xl font-medium max-w-lg mb-4">{error}</p>
           <p className="text-gray-400 text-sm max-w-lg mb-6">
-            Certifique-se de que o provedor oferece transmissões em formatos compatíveis com a Web (HLS .m3u8 para TV e MP4 para vídeos).
+            Todas as transmissões são processadas pela mesma origem HTTPS (/api/media) para garantir compatibilidade no navegador e evitar bloqueios de conteúdo misto.
           </p>
-          <button 
-            onClick={handleBack}
-            className="px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors font-medium"
-          >
-            Voltar para o menu
-          </button>
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={handleRetry}
+              className="px-6 py-3 bg-nc-primary hover:bg-nc-primary-hover text-black rounded-xl transition-colors font-semibold flex items-center gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Tentar Novamente
+            </button>
+            <button 
+              onClick={handleBack}
+              className="px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors font-medium"
+            >
+              Voltar
+            </button>
+          </div>
         </div>
       )}
 

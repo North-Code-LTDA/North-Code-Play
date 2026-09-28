@@ -1,11 +1,11 @@
 import React, { useState, useMemo } from 'react';
-import { Play, Tv, Film, PlaySquare, Heart } from 'lucide-react';
+import { Play, Tv, Film, PlaySquare, Heart, AlertCircle, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
-import { getMediaStreamUrl } from '../utils/mediaUtils';
+import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
 
 interface FavoritesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -20,6 +20,8 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
   const [selectedMovie, setSelectedMovie] = useState<FavoriteItem | null>(null);
   const [selectedSeries, setSelectedSeries] = useState<FavoriteItem | null>(null);
   const [displayCount, setDisplayCount] = useState(100);
+  const [favPlayError, setFavPlayError] = useState<string | null>(null);
+  const [failedFav, setFailedFav] = useState<FavoriteItem | null>(null);
 
   React.useEffect(() => {
     setDisplayCount(100);
@@ -40,6 +42,8 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
 
     if (fav.type === 'live') {
       try {
+        setFavPlayError(null);
+        setFailedFav(null);
         const url = await getMediaStreamUrl(credentials, {
           type: 'live',
           streamId: fav.id,
@@ -48,6 +52,8 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
         onPlay(url, fav.name, 0, fav.id);
       } catch (err: any) {
         console.error('Erro ao iniciar canal favorito:', err.message);
+        setFavPlayError(err?.message || 'Falha ao iniciar canal favorito via rota segura.');
+        setFailedFav(fav);
       }
     } else if (fav.type === 'movie') {
       setSelectedMovie(fav);
@@ -81,6 +87,34 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
           />
         )}
       </AnimatePresence>
+
+      {favPlayError && (
+        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-nc-bg border border-red-500/40 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
+            <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
+              <AlertCircle className="w-7 h-7 text-red-500" />
+            </div>
+            <h3 className="text-xl font-bold text-white mb-2">Erro ao Iniciar Canal</h3>
+            <p className="text-red-400 text-sm mb-4 leading-relaxed">{favPlayError}</p>
+            <div className="flex gap-3 w-full">
+              {failedFav && (
+                <button
+                  onClick={() => handlePlayClick(failedFav)}
+                  className="flex-1 py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center justify-center gap-2"
+                >
+                  <RefreshCw className="w-4 h-4" /> Tentar Novamente
+                </button>
+              )}
+              <button
+                onClick={() => setFavPlayError(null)}
+                className="flex-1 py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/50"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="p-6 md:p-8 shrink-0">
         <h1 className="text-3xl font-bold text-white mb-6 flex items-center gap-2">
@@ -118,9 +152,12 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                 >
                    {fav.cover ? (
                      <img 
-                       src={fav.cover} 
+                       src={getProxiedImageUrl(fav.cover)} 
                        alt={fav.name}
                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                       onError={(e) => {
+                         (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                       }}
                      />
                    ) : (
                      <div className="w-full h-full bg-nc-bg-input flex items-center justify-center">

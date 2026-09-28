@@ -13,7 +13,8 @@ import { ConfigView } from '../views/ConfigView';
 import { FavoritesView } from '../views/FavoritesView';
 import { XtreamProvider } from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
-import { normalizeServerUrl } from '../utils/mediaUtils';
+import { normalizeServerUrl, getProxiedImageUrl } from '../utils/mediaUtils';
+import { APP_VERSION, APP_COMMIT } from '../version';
 
 export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
 
@@ -130,7 +131,14 @@ export function Home() {
             <div className="flex items-center gap-3 px-4 py-3 mb-2">
               <div className="w-9 h-9 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0 overflow-hidden border border-nc-border">
                 {credentials.avatar ? (
-                  <img src={credentials.avatar} alt="Avatar" className="w-full h-full object-cover" />
+                  <img 
+                    src={getProxiedImageUrl(credentials.avatar)} 
+                    alt="Avatar" 
+                    className="w-full h-full object-cover" 
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                    }}
+                  />
                 ) : (
                   (credentials.playlistName || 'M').charAt(0).toUpperCase()
                 )}
@@ -147,6 +155,11 @@ export function Home() {
               <LogOut className="w-5 h-5" />
               <span>Sair</span>
             </button>
+            <div className="mt-3 pt-2 border-t border-nc-border/30 text-center">
+              <span className="text-[10px] font-mono text-nc-text-secondary/60">
+                v{APP_VERSION} ({APP_COMMIT.slice(0, 7)})
+              </span>
+            </div>
           </div>
         </aside>
 
@@ -192,7 +205,14 @@ export function Home() {
                   <div className="flex items-center gap-3 px-4 py-3 mb-2">
                     <div className="w-9 h-9 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0 overflow-hidden border border-nc-border">
                       {credentials.avatar ? (
-                        <img src={credentials.avatar} alt="Avatar" className="w-full h-full object-cover" />
+                        <img 
+                          src={getProxiedImageUrl(credentials.avatar)} 
+                          alt="Avatar" 
+                          className="w-full h-full object-cover" 
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                          }}
+                        />
                       ) : (
                         (credentials.playlistName || 'M').charAt(0).toUpperCase()
                       )}
@@ -209,6 +229,11 @@ export function Home() {
                     <LogOut className="w-5 h-5" />
                     <span>Sair</span>
                   </button>
+                  <div className="mt-3 pt-2 border-t border-nc-border/30 text-center">
+                    <span className="text-[10px] font-mono text-nc-text-secondary/60">
+                      v{APP_VERSION} ({APP_COMMIT.slice(0, 7)})
+                    </span>
+                  </div>
                 </div>
               </motion.aside>
             </>

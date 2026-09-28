@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { Request, Response } from "express";
 import { validateTargetUrl, XtreamError } from "./ssrf";
+import { sanitizeForLogs } from "./xtreamProxy";
+import { checkFfmpegAvailable, getOrStartLiveRemux, getRemuxSession } from "./ffmpegHelper";
 
 export interface MediaTicket {
   id: string;
@@ -45,7 +49,7 @@ export interface CreateMediaTicketOptions {
  */
 export async function createMediaTicket(
   options: CreateMediaTicketOptions
-): Promise<{ ticketId: string; streamUrl: string }> {
+): Promise<{ ticketId: string; streamUrl: string; ext: string }> {
   const { serverUrl, username, password, type, streamId, ext = "mp4", allowPrivateForTest = false } = options;
 
   if (!serverUrl || typeof serverUrl !== "string") {
@@ -93,9 +97,12 @@ export async function createMediaTicket(
 
   ticketStore.set(ticketId, ticket);
 
+  const clientExt = type === "live" ? "m3u8" : cleanExt;
+
   return {
     ticketId,
-    streamUrl: `/api/media/stream/${ticketId}/${strStreamId}.${cleanExt}`,
+    streamUrl: `/api/media/stream/${ticketId}/${strStreamId}.${clientExt}`,
+    ext: cleanExt,
   };
 }
 
@@ -140,7 +147,12 @@ export function rewriteHlsPlaylist(manifestText: string, playlistBaseUrl: URL, t
     }
 
     // Check tags with URI attributes
-    if (trimmed.startsWith("#EXT-X-KEY:") || trimmed.startsWith("#EXT-X-MAP:") || trimmed.startsWith("#EXT-X-MEDIA:") || trimmed.startsWith("#EXT-X-I-FRAME-STREAM-INF:")) {
+    if (
+      trimmed.startsWith("#EXT-X-KEY:") ||
+      trimmed.startsWith("#EXT-X-MAP:") ||
+      trimmed.startsWith("#EXT-X-MEDIA:") ||
+      trimmed.startsWith("#EXT-X-I-FRAME-STREAM-INF:")
+    ) {
       const replaced = line.replace(/URI=["']([^"']+)["']/g, (_match, uri) => {
         const rewritten = rewriteHlsUri(uri, playlistBaseUrl, ticketId);
         return `URI="${rewritten}"`;
@@ -164,7 +176,7 @@ export async function handleStreamRequest(
   options: { allowPrivateForTest?: boolean } = {}
 ): Promise<void> {
   try {
-    const { ticket: ticketId } = req.params;
+    const { ticket: ticketId, filename } = req.params;
     const ticket = ticketStore.get(ticketId);
 
     if (!ticket || Date.now() > ticket.expiresAt) {
@@ -175,7 +187,42 @@ export async function handleStreamRequest(
       return;
     }
 
+    // Check if this request is for an active FFmpeg remux segment
+    const activeRemux = getRemuxSession(ticketId);
+    if (activeRemux && filename && filename.endsWith(".ts")) {
+      const segmentFile = path.join(activeRemux.tempDir, path.basename(filename));
+      if (fs.existsSync(segmentFile)) {
+        res.setHeader("Content-Type", "video/MP2T");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        fs.createReadStream(segmentFile).pipe(res);
+        return;
+      }
+    }
+
     const { cleanBaseUrl, username, password, type, streamId, ext } = ticket;
+
+    // If channel is live and provider exclusively offers .ts, remux to HLS for browser playback
+    if (type === "live" && ext === "ts") {
+      const tsTargetUrlStr = `${cleanBaseUrl}/live/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(streamId)}.ts`;
+      if (checkFfmpegAvailable()) {
+        const { m3u8Path } = await getOrStartLiveRemux(ticket.id, tsTargetUrlStr);
+        const m3u8Content = fs.readFileSync(m3u8Path, "utf-8");
+        const rewritten = m3u8Content.replace(/^(seg_\d+\.ts)$/gm, `/api/media/stream/${ticket.id}/$1`);
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.status(200).send(rewritten);
+        return;
+      } else {
+        res.status(501).json({
+          error: "FFMPEG_REQUIRED",
+          message:
+            "O canal transmite exclusivamente em MPEG-TS (.ts) sem HLS (.m3u8). É necessário FFmpeg no servidor para remux em HLS no navegador.",
+        });
+        return;
+      }
+    }
 
     // Build target URL
     let targetUrlStr = "";
@@ -202,7 +249,10 @@ export async function handleStreamRequest(
       res.status(err.statusCode).json({ error: err.code, message: err.message });
       return;
     }
-    res.status(502).json({ error: "STREAM_ERROR", message: "Erro ao iniciar o fluxo de transmissão." });
+    res.status(502).json({
+      error: "STREAM_ERROR",
+      message: err?.message || "Erro ao iniciar o fluxo de transmissão.",
+    });
   }
 }
 
@@ -267,7 +317,10 @@ export async function handleHlsResourceRequest(
       res.status(err.statusCode).json({ error: err.code, message: err.message });
       return;
     }
-    res.status(502).json({ error: "RESOURCE_ERROR", message: "Erro ao carregar recurso da transmissão." });
+    res.status(502).json({
+      error: "RESOURCE_ERROR",
+      message: err?.message || "Erro ao carregar recurso da transmissão.",
+    });
   }
 }
 
@@ -363,23 +416,66 @@ async function streamMediaFromUrl(options: StreamMediaOptions): Promise<void> {
       }
     }
 
-    // If live returned 404, try alternative URL without /live/
-    if (upstreamRes.status === 404 && allowLiveFallback && currentUrlStr.includes("/live/")) {
-      const fallbackUrlStr = currentUrlStr.replace("/live/", "/");
-      try {
-        const fallbackRes = await fetch(fallbackUrlStr, {
-          method: "GET",
-          headers: requestHeaders,
-          redirect: "manual",
-          signal: controller.signal,
-        });
+    // If live .m3u8 returned 404 or error, check if provider only offers .ts
+    if (upstreamRes.status === 404 && allowLiveFallback && ticket.type === "live") {
+      // 1. Try alternative without /live/ if applicable
+      if (currentUrlStr.includes("/live/")) {
+        const fallbackUrlStr = currentUrlStr.replace("/live/", "/");
+        try {
+          const fallbackRes = await fetch(fallbackUrlStr, {
+            method: "GET",
+            headers: requestHeaders,
+            redirect: "manual",
+            signal: controller.signal,
+          });
 
-        if (fallbackRes.ok || fallbackRes.status === 206) {
-          upstreamRes = fallbackRes;
-          currentUrlStr = fallbackUrlStr;
+          if (fallbackRes.ok || fallbackRes.status === 206) {
+            upstreamRes = fallbackRes;
+            currentUrlStr = fallbackUrlStr;
+          }
+        } catch {
+          // continue
         }
-      } catch {
-        // keep original 404
+      }
+
+      // 2. If .m3u8 still failed, probe for .ts stream
+      if (!upstreamRes.ok && (currentUrlStr.endsWith(".m3u8") || ticket.ext === "m3u8")) {
+        const tsUrl = currentUrlStr.replace(/\.m3u8(\?.*)?$/, ".ts$1");
+        try {
+          const tsProbe = await fetch(tsUrl, {
+            method: "HEAD",
+            headers: requestHeaders,
+            redirect: "manual",
+            signal: controller.signal,
+          });
+
+          if (tsProbe.ok || tsProbe.status === 206) {
+            // Provedor only offers .ts!
+            if (checkFfmpegAvailable()) {
+              // Start FFmpeg remux session to convert live TS into HLS
+              const { m3u8Path } = await getOrStartLiveRemux(ticket.id, tsUrl);
+              const m3u8Content = fs.readFileSync(m3u8Path, "utf-8");
+
+              // Rewrite segment lines in generated HLS to route via /api/media/stream/:ticket/:segment
+              const rewritten = m3u8Content.replace(/^(seg_\d+\.ts)$/gm, `/api/media/stream/${ticket.id}/$1`);
+
+              res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
+              res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+              res.setHeader("Access-Control-Allow-Origin", "*");
+              res.status(200).send(rewritten);
+              return;
+            } else {
+              res.status(501).json({
+                error: "FFMPEG_REQUIRED",
+                message:
+                  "O canal transmite exclusivamente em MPEG-TS (.ts) sem HLS (.m3u8). É necessário FFmpeg no servidor para remux em HLS no navegador.",
+              });
+              return;
+            }
+          }
+        } catch {
+          // Probe failed
+        }
       }
     }
 
@@ -464,5 +560,110 @@ async function streamMediaFromUrl(options: StreamMediaOptions): Promise<void> {
     });
 
     return;
+  }
+}
+
+/**
+ * Standard sleek SVG fallback image when remote images fail, DNS fails, or URL is invalid.
+ */
+export const FALLBACK_SVG_IMAGE = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="100%" height="100%">
+  <rect width="400" height="300" fill="#141418"/>
+  <defs>
+    <linearGradient id="ncg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1f1f28"/>
+      <stop offset="100%" stop-color="#111116"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="300" fill="url(#ncg)"/>
+  <circle cx="200" cy="125" r="36" fill="#22c55e" opacity="0.12"/>
+  <polygon points="192,112 216,125 192,138" fill="#22c55e"/>
+  <text x="200" y="195" text-anchor="middle" fill="#a1a1aa" font-family="system-ui, sans-serif" font-size="13" font-weight="600" letter-spacing="1">NORTH CODE PLAY</text>
+  <text x="200" y="215" text-anchor="middle" fill="#71717a" font-family="system-ui, sans-serif" font-size="11">Imagem Indisponível</text>
+</svg>`;
+
+/**
+ * Handles GET /api/media/image?url=...
+ * Proxies HTTP/HTTPS images safely, protects against SSRF, and serves SVG fallback on failures.
+ */
+export async function handleImageProxyRequest(
+  req: Request,
+  res: Response,
+  options: { allowPrivateForTest?: boolean } = {}
+): Promise<void> {
+  const rawUrl = String(req.query.url || "").trim();
+
+  // If no URL or explicitly requesting fallback
+  if (!rawUrl || req.query.fallback === "1") {
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=86400, s-maxage=86400");
+    res.status(200).send(FALLBACK_SVG_IMAGE);
+    return;
+  }
+
+  // 1. SSRF Validation
+  let validatedUrl: URL;
+  try {
+    const result = await validateTargetUrl(rawUrl, {
+      allowPrivateForTest: options.allowPrivateForTest,
+    });
+    validatedUrl = result.validatedUrl;
+  } catch (err: any) {
+    console.warn(`[Image Proxy] Bloqueio SSRF para imagem: ${sanitizeForLogs(rawUrl)} - Causa: ${err?.message || "Endereço não permitido"}`);
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.status(200).send(FALLBACK_SVG_IMAGE);
+    return;
+  }
+
+  // 2. Fetch Upstream with timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+  try {
+    const upstream = await fetch(validatedUrl.toString(), {
+      method: "GET",
+      headers: {
+        "User-Agent": "NorthCodePlay/1.0",
+        Accept: "image/*,*/*;q=0.8",
+      },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!upstream.ok) {
+      console.warn(`[Image Proxy] Erro HTTP ${upstream.status} ao buscar imagem: ${sanitizeForLogs(rawUrl)}`);
+      res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.status(200).send(FALLBACK_SVG_IMAGE);
+      return;
+    }
+
+    const contentType = upstream.headers.get("content-type") || "image/jpeg";
+    if (!contentType.startsWith("image/") && !contentType.includes("octet-stream")) {
+      console.warn(`[Image Proxy] Conteúdo não é imagem (${contentType}): ${sanitizeForLogs(rawUrl)}`);
+      res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.status(200).send(FALLBACK_SVG_IMAGE);
+      return;
+    }
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "public, max-age=86400, s-maxage=86400");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+
+    if (!upstream.body) {
+      res.end();
+      return;
+    }
+
+    const stream = Readable.fromWeb(upstream.body as any);
+    stream.pipe(res);
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    console.warn(`[Image Proxy] Falha de conexão/DNS na imagem: ${sanitizeForLogs(rawUrl)} - Causa: ${err?.message || "Erro de rede"}`);
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.status(200).send(FALLBACK_SVG_IMAGE);
   }
 }

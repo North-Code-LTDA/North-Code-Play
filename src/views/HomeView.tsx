@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { HeroBanner } from '../components/HeroBanner';
 import { HorizontalRow } from '../components/HorizontalRow';
@@ -26,6 +26,8 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const [selectedMovie, setSelectedMovie] = useState<any | null>(null);
   const [displayCount, setDisplayCount] = useState({ live: 24, vod: 24, series: 24 });
   const [continueWatching, setContinueWatching] = useState<any[]>([]);
+  const [homePlayError, setHomePlayError] = useState<string | null>(null);
+  const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
 
   // Continue Watching logic
   useEffect(() => {
@@ -194,6 +196,8 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const handlePlayLive = async (stream: any) => {
     if (!credentials) return;
     try {
+      setHomePlayError(null);
+      setRetryAction(null);
       const url = await getMediaStreamUrl(credentials, {
         type: 'live',
         streamId: stream.stream_id,
@@ -202,12 +206,16 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
       onPlay(url, stream.name, 0, stream.stream_id);
     } catch (err: any) {
       console.error('Erro ao iniciar canal ao vivo:', err.message);
+      setHomePlayError(err?.message || 'Falha ao iniciar transmissão ao vivo via rota segura.');
+      setRetryAction(() => () => handlePlayLive(stream));
     }
   };
 
   const handlePlayVod = async (stream: any) => {
     if (!credentials) return;
     try {
+      setHomePlayError(null);
+      setRetryAction(null);
       const url = await getMediaStreamUrl(credentials, {
         type: 'movie',
         streamId: stream.stream_id,
@@ -216,6 +224,8 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
       onPlay(url, stream.name, 0, stream.stream_id);
     } catch (err: any) {
       console.error('Erro ao iniciar filme:', err.message);
+      setHomePlayError(err?.message || 'Falha ao iniciar filme via rota segura.');
+      setRetryAction(() => () => handlePlayVod(stream));
     }
   };
 
@@ -335,6 +345,40 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
             onClose={() => setSelectedSeries(null)}
             onPlay={onPlay}
           />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {homePlayError && (
+          <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-nc-bg border border-red-500/40 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
+              <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
+                <AlertCircle className="w-7 h-7 text-red-500" />
+              </div>
+              <h3 className="text-xl font-bold text-white mb-2">Erro de Reprodução</h3>
+              <p className="text-red-400 text-sm mb-4 leading-relaxed">{homePlayError}</p>
+              <div className="flex gap-3 w-full">
+                {retryAction && (
+                  <button
+                    onClick={() => {
+                      const act = retryAction;
+                      setHomePlayError(null);
+                      act();
+                    }}
+                    className="flex-1 py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center justify-center gap-2"
+                  >
+                    <RefreshCw className="w-4 h-4" /> Tentar Novamente
+                  </button>
+                )}
+                <button
+                  onClick={() => setHomePlayError(null)}
+                  className="flex-1 py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/50"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </AnimatePresence>
     </div>

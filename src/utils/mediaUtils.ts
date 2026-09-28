@@ -32,6 +32,38 @@ export function normalizeServerUrl(rawUrl: string): string {
   }
 }
 
+/**
+ * Transforms HTTP/HTTPS image URLs (covers, channel logos, backdrops) into
+ * same-origin HTTPS URLs via /api/media/image to prevent Mixed Content blocking.
+ * If the image is empty, DNS is unavailable, or the URL is invalid, returns the fallback image.
+ */
+export function getProxiedImageUrl(rawUrl?: string | null): string {
+  if (!rawUrl || typeof rawUrl !== "string") {
+    return "/api/media/image?fallback=1";
+  }
+
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return "/api/media/image?fallback=1";
+  }
+
+  // Preserve data URLs and blob URLs
+  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
+    return trimmed;
+  }
+
+  // Already proxied
+  if (trimmed.startsWith("/api/media/image")) {
+    return trimmed;
+  }
+
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return `/api/media/image?url=${encodeURIComponent(trimmed)}`;
+  }
+
+  return "/api/media/image?fallback=1";
+}
+
 export interface FormatValidationResult {
   isPlayable: boolean;
   format: string;
@@ -41,31 +73,39 @@ export interface FormatValidationResult {
 
 /**
  * Validates whether a requested format is playable in standard web browsers.
- * - Live: requires HLS (.m3u8). If provider only offers raw .ts or rtmp, warns/fails with clear message.
- * - VOD / Series: MP4 is natively supported. MKV/AVI/FLV lack native browser codec support.
+ * - Live: natively prefers HLS (.m3u8). If only raw .ts is offered, flags it so the server can remux via FFmpeg.
+ * - VOD / Series: MP4/WebM are natively supported in web browsers. MKV/AVI/FLV lack native codec support in browsers without remux.
  */
 export function validatePlayableFormat(
   type: "live" | "movie" | "series",
   options: {
     containerExtension?: string;
     allowedOutputFormats?: string[];
+    requireNative?: boolean;
   } = {}
 ): FormatValidationResult {
-  const { containerExtension, allowedOutputFormats } = options;
+  const { containerExtension, allowedOutputFormats, requireNative = false } = options;
 
   if (type === "live") {
-    // If provider explicitly specifies allowed output formats
     if (allowedOutputFormats && Array.isArray(allowedOutputFormats) && allowedOutputFormats.length > 0) {
       const lowerFormats = allowedOutputFormats.map((f) => String(f).toLowerCase());
       const hasM3u8 = lowerFormats.includes("m3u8");
       const hasOnlyTs = lowerFormats.includes("ts") && !hasM3u8;
 
       if (hasOnlyTs) {
+        if (requireNative) {
+          return {
+            isPlayable: false,
+            format: "ts",
+            error:
+              "O provedor oferece exclusivamente o formato MPEG-TS (.ts) para canais ao vivo, sem lista HLS (.m3u8). Navegadores não reproduzem .ts diretamente sem remux no servidor.",
+          };
+        }
         return {
-          isPlayable: false,
-          format: "ts",
-          error:
-            "O provedor oferece apenas transmissão em formato de fluxo bruto (.ts) sem playlist HLS (.m3u8). Este formato não é suportado diretamente em navegadores web sem conversão.",
+          isPlayable: true,
+          format: "m3u8", // In web browsers, request HLS; server remuxes live TS to HLS via FFmpeg
+          warning:
+            "O provedor transmite em formato MPEG-TS (.ts). A reprodução no navegador requer remuxing em tempo real para HLS pelo servidor (FFmpeg).",
         };
       }
     }
@@ -82,9 +122,9 @@ export function validatePlayableFormat(
 
   if (!nativeBrowserFormats.includes(ext)) {
     return {
-      isPlayable: true, // Still allow attempting via proxy
+      isPlayable: true,
       format: ext,
-      warning: `O contêiner (.${ext}) pode não ser reproduzível nativamente no navegador. Formato recomendado: MP4.`,
+      warning: `O contêiner (.${ext}) pode não ser reproduzível nativamente neste navegador. O formato nativo padrão é MP4.`,
     };
   }
 
@@ -106,7 +146,8 @@ export interface RequestMediaUrlOptions {
 
 /**
  * Requests a same-origin HTTPS media URL from Express.
- * Avoids any direct browser HTTP calls and Mixed Content blocks.
+ * CRITICAL: NEVER silently falls back to direct raw HTTP/HTTPS URLs.
+ * If ticket creation fails, throws the real error message so the UI can display it with a retry option.
  */
 export async function getMediaStreamUrl(
   credentials: XtreamCredentials,
@@ -116,9 +157,6 @@ export async function getMediaStreamUrl(
   const cleanServerUrl = normalizeServerUrl(credentials.serverUrl);
 
   const formatCheck = validatePlayableFormat(type, { containerExtension, allowedOutputFormats });
-  if (!formatCheck.isPlayable && formatCheck.error) {
-    throw new Error(formatCheck.error);
-  }
 
   const ext = formatCheck.format;
   const cacheKey = `${cleanServerUrl}:${type}:${streamId}:${ext}`;
@@ -129,23 +167,30 @@ export async function getMediaStreamUrl(
     return cached.streamUrl;
   }
 
-  const response = await fetch("/api/media/ticket", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      serverUrl: cleanServerUrl,
-      username: credentials.username,
-      password: credentials.password,
-      type,
-      streamId: String(streamId),
-      ext,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch("/api/media/ticket", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        serverUrl: cleanServerUrl,
+        username: credentials.username,
+        password: credentials.password,
+        type,
+        streamId: String(streamId),
+        ext,
+      }),
+    });
+  } catch (err: any) {
+    throw new Error(
+      `Falha ao conectar com o serviço de mídia: ${err?.message || "Sem resposta do servidor"}`
+    );
+  }
 
   if (!response.ok) {
-    let message = "Falha ao preparar a reprodução da mídia.";
+    let message = `Erro no serviço de mídia (${response.status})`;
     try {
       const errData = await response.json();
       if (errData && errData.message) {
@@ -160,10 +205,14 @@ export async function getMediaStreamUrl(
   const data = await response.json();
   const streamUrl: string = data.streamUrl;
 
-  // Cache ticket for 1 hour
+  if (!streamUrl || !streamUrl.startsWith("/api/media/")) {
+    throw new Error("O servidor retornou uma rota de mídia inválida.");
+  }
+
+  // Cache ticket for 30 minutes
   mediaTicketCache.set(cacheKey, {
     streamUrl,
-    expiresAt: now + 3600 * 1000,
+    expiresAt: now + 1800 * 1000,
   });
 
   return streamUrl;

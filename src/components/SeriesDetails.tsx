@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Play, X, ChevronLeft, Loader2, Heart } from 'lucide-react';
+import { Play, X, ChevronLeft, Loader2, Heart, AlertCircle, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { VideoPlayer } from './VideoPlayer';
-import { getMediaStreamUrl } from '../utils/mediaUtils';
+import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
 
 interface SeriesDetailsProps {
   key?: React.Key;
@@ -27,6 +27,8 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   const [savedProgress, setSavedProgress] = useState(0);
   const [selectedEpisode, setSelectedEpisode] = useState<any>(null);
   const [playingEpisodeData, setPlayingEpisodeData] = useState<{url: string, title: string, startAt: number, episode: any} | null>(null);
+  const [playError, setPlayError] = useState<string | null>(null);
+  const [failedEpisode, setFailedEpisode] = useState<{ episode: any; startAt: number } | null>(null);
 
   useEffect(() => {
     async function fetchInfo() {
@@ -64,6 +66,8 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     requestFullscreen();
     if (!credentials) return;
     try {
+      setPlayError(null);
+      setFailedEpisode(null);
       const ext = episode.container_extension || "mp4";
       const mediaUrl = await getMediaStreamUrl(credentials, {
         type: 'series',
@@ -80,6 +84,8 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       setShowResumeModal(false);
     } catch (err: any) {
       console.error('Erro ao iniciar episódio:', err);
+      setPlayError(err?.message || 'Falha ao preparar a reprodução do episódio via HTTPS.');
+      setFailedEpisode({ episode, startAt });
     }
   };
 
@@ -155,13 +161,13 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                <div className="absolute inset-0 bg-black z-0">
                  {seriesInfo.info?.backdrop_path?.[0] ? (
                     <img 
-                      src={seriesInfo.info.backdrop_path[0]}
+                      src={getProxiedImageUrl(seriesInfo.info.backdrop_path[0])}
                       alt="Backdrop"
                       className="w-full h-full object-cover opacity-50 object-top"
                     />
-                 ) : seriesInfo.info?.cover ? (
+                 ) : (seriesInfo.info?.cover || seriesCover) ? (
                     <img 
-                      src={seriesInfo.info.cover}
+                      src={getProxiedImageUrl(seriesInfo.info?.cover || seriesCover)}
                       alt="Cover fallback"
                       className="w-full h-full object-cover opacity-30 object-top"
                     />
@@ -311,6 +317,37 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                 className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
               >
                 Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {playError && (
+        <div className="absolute inset-0 z-[110] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-nc-bg border border-red-500/40 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
+            <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
+              <AlertCircle className="w-7 h-7 text-red-500" />
+            </div>
+            <h3 className="text-xl font-bold text-white mb-2">Erro ao Iniciar Episódio</h3>
+            <p className="text-red-400 text-sm mb-4 leading-relaxed">{playError}</p>
+            <p className="text-gray-400 text-xs mb-6">
+              A transmissão foi solicitada através da rota segura da aplicação (/api/media). O provedor pode estar inacessível ou o formato requerer recursos específicos no servidor.
+            </p>
+            <div className="flex gap-3 w-full">
+              {failedEpisode && (
+                <button
+                  onClick={() => executePlay(failedEpisode.episode, failedEpisode.startAt)}
+                  className="flex-1 py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center justify-center gap-2"
+                >
+                  <RefreshCw className="w-4 h-4" /> Tentar Novamente
+                </button>
+              )}
+              <button
+                onClick={() => setPlayError(null)}
+                className="flex-1 py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/50"
+              >
+                Fechar
               </button>
             </div>
           </div>

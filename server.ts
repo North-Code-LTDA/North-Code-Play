@@ -17,6 +17,11 @@ async function startServer() {
   // Same-origin media streaming route (HLS & MP4)
   app.use("/api/media", mediaRouter);
 
+  // Direct version endpoint to verify published commit
+  app.get("/api/version", (_req, res) => {
+    res.redirect("/api/media/version");
+  });
+
   // Vite middleware for development vs static build for production
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

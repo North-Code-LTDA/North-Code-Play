@@ -1,11 +1,11 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { TvMinimalPlay, Loader2, Play, Heart, ArrowLeft, Calendar } from 'lucide-react';
+import { TvMinimalPlay, Loader2, Play, Heart, ArrowLeft, Calendar, AlertCircle, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites } from '../hooks/useFavorites';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { XtreamService } from '../services/xtreamService';
-import { getMediaStreamUrl } from '../utils/mediaUtils';
+import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -146,13 +146,21 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
   // Obtain safe same-origin stream URL for the mini-player
   const [miniPlayerUrl, setMiniPlayerUrl] = useState<string>('');
+  const [miniPlayerError, setMiniPlayerError] = useState<string | null>(null);
+  const [miniPlayerLoading, setMiniPlayerLoading] = useState(false);
+  const [miniPlayerRetry, setMiniPlayerRetry] = useState(0);
 
   useEffect(() => {
     let isMounted = true;
     if (!selectedChannel || !credentials) {
       setMiniPlayerUrl('');
+      setMiniPlayerError(null);
+      setMiniPlayerLoading(false);
       return;
     }
+
+    setMiniPlayerLoading(true);
+    setMiniPlayerError(null);
 
     getMediaStreamUrl(credentials, {
       type: 'live',
@@ -160,19 +168,24 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       allowedOutputFormats: (credentials as any).allowed_output_formats,
     })
       .then((url) => {
-        if (isMounted) setMiniPlayerUrl(url);
+        if (isMounted) {
+          setMiniPlayerUrl(url);
+          setMiniPlayerLoading(false);
+        }
       })
       .catch((err) => {
         if (isMounted) {
           console.error('Erro ao preparar stream ao vivo:', err.message);
           setMiniPlayerUrl('');
+          setMiniPlayerError(err.message || 'Falha ao conectar à transmissão do canal via HTTPS.');
+          setMiniPlayerLoading(false);
         }
       });
 
     return () => {
       isMounted = false;
     };
-  }, [selectedChannel, credentials]);
+  }, [selectedChannel, credentials, miniPlayerRetry]);
 
   return (
     <div className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg">
@@ -254,11 +267,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                       <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden">
                         {stream.stream_icon ? (
                            <img 
-                             src={stream.stream_icon} 
+                             src={getProxiedImageUrl(stream.stream_icon)} 
                              alt={stream.name}
                              className="w-full h-full object-contain p-1"
                              onError={(e) => {
-                               (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4='; 
+                               (e.target as HTMLImageElement).src = '/api/media/image?fallback=1'; 
                              }}
                            />
                         ) : (
@@ -319,9 +332,12 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                     <div className="w-20 h-20 bg-nc-bg-card rounded-2xl flex items-center justify-center overflow-hidden shrink-0 border border-nc-border/50 p-2">
                       {selectedChannel.stream_icon ? (
                         <img 
-                          src={selectedChannel.stream_icon} 
+                          src={getProxiedImageUrl(selectedChannel.stream_icon)} 
                           alt={selectedChannel.name}
                           className="w-full h-full object-contain"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                          }}
                         />
                       ) : (
                         <TvMinimalPlay className="w-8 h-8 text-nc-text-secondary/50" />
@@ -362,6 +378,17 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                      onBack={() => setIsMobilePlayerOpen(false)}
                      embedded={true}
                    />
+                 ) : miniPlayerError ? (
+                   <div className="w-full aspect-video rounded-xl bg-black border border-red-500/30 flex flex-col items-center justify-center p-4 text-center">
+                     <AlertCircle className="w-8 h-8 text-red-500 mb-2" />
+                     <p className="text-red-400 text-sm font-medium mb-3">{miniPlayerError}</p>
+                     <button
+                       onClick={() => setMiniPlayerRetry(p => p + 1)}
+                       className="px-4 py-2 bg-nc-primary text-black rounded-lg text-xs font-semibold flex items-center gap-1.5 hover:brightness-110"
+                     >
+                       <RefreshCw className="w-3.5 h-3.5" /> Tentar Novamente
+                     </button>
+                   </div>
                  ) : (
                    <div className="w-full aspect-video rounded-xl bg-black flex items-center justify-center">
                      <Loader2 className="w-8 h-8 animate-spin text-nc-primary" />

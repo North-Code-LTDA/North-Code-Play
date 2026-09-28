@@ -4,6 +4,7 @@ import { motion } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { useFavorites } from '../hooks/useFavorites';
+import { getProxiedImageUrl } from '../utils/mediaUtils';
 
 interface MoviesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -196,12 +197,12 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                      >
                        {stream.stream_icon ? (
                          <img 
-                           src={stream.stream_icon} 
+                           src={getProxiedImageUrl(stream.stream_icon)} 
                            alt={stream.name}
                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                            loading="lazy"
                            onError={(e) => {
-                             (e.target as HTMLImageElement).src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdib3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzMzMyIgZD0iTTAgMGgwWjI0IDBoMloiLz48L3N2Zz4='; // fallback transparent
+                             (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
                            }}
                          />
                        ) : (

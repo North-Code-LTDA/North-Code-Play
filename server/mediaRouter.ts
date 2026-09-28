@@ -1,19 +1,39 @@
-import { Router, Request, Response } from "express";
+import { Router } from "express";
 import {
   createMediaTicket,
   handleStreamRequest,
   handleHlsResourceRequest,
+  handleImageProxyRequest,
 } from "./mediaProxy";
 import { XtreamError } from "./ssrf";
+import { checkFfmpegAvailable } from "./ffmpegHelper";
+import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME } from "../src/version";
 
 export const mediaRouter = Router();
 
-// Endpoint to generate a playback ticket
-mediaRouter.post("/ticket", async (req: Request, res: Response) => {
+// Version endpoint to easily identify published commit in browser
+mediaRouter.get("/version", (_req, res) => {
+  res.json({
+    name: "North Code Play",
+    version: APP_VERSION,
+    commit: APP_COMMIT,
+    buildTime: APP_BUILD_TIME,
+    ffmpegAvailable: checkFfmpegAvailable(),
+    environment: process.env.NODE_ENV || "development",
+  });
+});
+
+// Image Proxy route
+mediaRouter.get("/image", async (req, res) => {
+  await handleImageProxyRequest(req, res);
+});
+
+// Create media playback ticket
+mediaRouter.post("/ticket", async (req, res) => {
   try {
     const { serverUrl, username, password, type, streamId, ext } = req.body || {};
 
-    const result = await createMediaTicket({
+    const ticketResult = await createMediaTicket({
       serverUrl,
       username,
       password,
@@ -22,47 +42,25 @@ mediaRouter.post("/ticket", async (req: Request, res: Response) => {
       ext,
     });
 
-    res.status(200).json(result);
+    res.status(200).json(ticketResult);
   } catch (err: any) {
     if (err instanceof XtreamError) {
-      res.status(err.statusCode).json({
-        error: err.code,
-        message: err.message,
-      });
+      res.status(err.statusCode).json({ error: err.code, message: err.message });
       return;
     }
-
-    res.status(502).json({
+    res.status(500).json({
       error: "TICKET_CREATION_FAILED",
-      message: "Falha ao criar sessão de reprodução segura.",
+      message: err?.message || "Falha ao criar ticket de reprodução de mídia.",
     });
   }
 });
 
-// Endpoint for streaming initial media file (HLS playlist or MP4)
-mediaRouter.get("/stream/:ticket/:filename", async (req: Request, res: Response) => {
-  try {
-    await handleStreamRequest(req, res);
-  } catch (err: any) {
-    if (!res.headersSent) {
-      res.status(502).json({
-        error: "STREAM_ERROR",
-        message: "Erro durante a transmissão do fluxo de mídia.",
-      });
-    }
-  }
+// Stream endpoint (HLS playlists, video segments, MP4 files)
+mediaRouter.get("/stream/:ticket/:filename", async (req, res) => {
+  await handleStreamRequest(req, res);
 });
 
-// Endpoint for HLS sub-resources (segments, keys, sub-playlists, maps)
-mediaRouter.get("/hls-resource", async (req: Request, res: Response) => {
-  try {
-    await handleHlsResourceRequest(req, res);
-  } catch (err: any) {
-    if (!res.headersSent) {
-      res.status(502).json({
-        error: "RESOURCE_ERROR",
-        message: "Erro ao carregar o segmento da transmissão.",
-      });
-    }
-  }
+// HLS sub-resource proxy (sub-playlists, segments, encryption keys)
+mediaRouter.get("/hls-resource", async (req, res) => {
+  await handleHlsResourceRequest(req, res);
 });

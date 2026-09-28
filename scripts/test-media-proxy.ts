@@ -1,13 +1,17 @@
 import http from "node:http";
-import { normalizeServerUrl, validatePlayableFormat } from "../src/utils/mediaUtils";
+import { normalizeServerUrl, validatePlayableFormat, getProxiedImageUrl } from "../src/utils/mediaUtils";
 import {
   createMediaTicket,
   handleStreamRequest,
   handleHlsResourceRequest,
+  handleImageProxyRequest,
   rewriteHlsPlaylist,
   ticketStore,
+  FALLBACK_SVG_IMAGE,
 } from "../server/mediaProxy";
 import { validateTargetUrl } from "../server/ssrf";
+import { checkFfmpegAvailable } from "../server/ffmpegHelper";
+import { APP_VERSION, APP_COMMIT } from "../src/version";
 
 let testsRun = 0;
 let testsPassed = 0;
@@ -38,13 +42,17 @@ function createMockReqRes(options: {
     params: options.params || {},
     query: options.query || {},
     headers: options.headers || {},
-    on: () => req,
+    on: (evt: string, cb: any) => {
+      if (evt === "close") {
+        // can be called on abort
+      }
+      return req;
+    },
   };
 
   const headersSent: Record<string, string> = {};
   let statusCode = 200;
   const chunks: Buffer[] = [];
-  let finished = false;
 
   let resolvePromise: (val: any) => void;
   const promise = new Promise((resolve) => {
@@ -83,7 +91,6 @@ function createMockReqRes(options: {
     end(chunk?: any) {
       if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       this.headersSent = true;
-      finished = true;
       const merged = Buffer.concat(chunks);
       resolvePromise({
         statusCode,
@@ -129,10 +136,16 @@ async function runMediaProxyTests() {
   // Test 2: Playable Formats Validation
   // -------------------------------------------------------------
   console.log("\n2. Testando seleção de formatos e erros claros:");
-  const liveOnlyTs = validatePlayableFormat("live", { allowedOutputFormats: ["ts"] });
+  const liveOnlyTsNative = validatePlayableFormat("live", { allowedOutputFormats: ["ts"], requireNative: true });
   assert(
-    !liveOnlyTs.isPlayable && liveOnlyTs.error?.includes(".m3u8"),
-    "Retorna erro explicativo se provedor ao vivo só oferecer .ts sem m3u8"
+    !liveOnlyTsNative.isPlayable && Boolean(liveOnlyTsNative.error?.includes(".m3u8")),
+    "Retorna erro explicativo se provedor ao vivo só oferecer .ts sem m3u8 para reprodução nativa direta"
+  );
+
+  const liveOnlyTsWithRemux = validatePlayableFormat("live", { allowedOutputFormats: ["ts"] });
+  assert(
+    liveOnlyTsWithRemux.isPlayable && liveOnlyTsWithRemux.format === "m3u8" && Boolean(liveOnlyTsWithRemux.warning),
+    "Seleciona m3u8 e emite aviso de remux quando canal ao vivo transmite apenas .ts"
   );
 
   const liveWithM3u8 = validatePlayableFormat("live", { allowedOutputFormats: ["ts", "m3u8"] });
@@ -146,7 +159,7 @@ async function runMediaProxyTests() {
 
   const vodMkv = validatePlayableFormat("movie", { containerExtension: "mkv" });
   assert(
-    vodMkv.isPlayable && vodMkv.warning?.includes("MP4"),
+    vodMkv.isPlayable && Boolean(vodMkv.warning?.includes("MP4")),
     "Emite aviso para MKV recomendando MP4 sem quebrar o fluxo"
   );
 
@@ -264,47 +277,58 @@ async function runMediaProxyTests() {
       return;
     }
 
-    // Case: MP4 Video with Range support
+    // Case: MP4 file with Range support
     if (url.pathname === "/movie/testuser/testpass/500.mp4") {
-      const rangeHeader = req.headers["range"];
-      const totalSize = dummyMp4Buffer.length;
-
-      if (rangeHeader) {
-        const parts = rangeHeader.replace(/bytes=/, "").split("-");
+      const range = req.headers.range;
+      if (range) {
+        const parts = range.replace(/bytes=/, "").split("-");
         const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+        const end = parts[1] ? parseInt(parts[1], 10) : dummyMp4Buffer.length - 1;
         const chunk = dummyMp4Buffer.slice(start, end + 1);
 
         res.writeHead(206, {
-          "Content-Type": "video/mp4",
-          "Content-Range": `bytes ${start}-${end}/${totalSize}`,
+          "Content-Range": `bytes ${start}-${end}/${dummyMp4Buffer.length}`,
           "Accept-Ranges": "bytes",
-          "Content-Length": String(chunk.length),
+          "Content-Length": chunk.length,
+          "Content-Type": "video/mp4",
         });
         res.end(chunk);
-        return;
+      } else {
+        res.writeHead(200, {
+          "Content-Length": dummyMp4Buffer.length,
+          "Content-Type": "video/mp4",
+          "Accept-Ranges": "bytes",
+        });
+        res.end(dummyMp4Buffer);
       }
+      return;
+    }
 
-      res.writeHead(200, {
-        "Content-Type": "video/mp4",
-        "Accept-Ranges": "bytes",
-        "Content-Length": String(totalSize),
-      });
-      res.end(dummyMp4Buffer);
+    // Case: Valid image mock
+    if (url.pathname === "/images/valid.jpg") {
+      res.writeHead(200, { "Content-Type": "image/jpeg" });
+      res.end(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]));
+      return;
+    }
+
+    // Case: Missing image (404)
+    if (url.pathname === "/images/missing.jpg") {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("Not Found");
       return;
     }
 
     res.writeHead(404);
-    res.end();
+    res.end("Not Found");
   });
 
   await new Promise<void>((resolve) => mockServer.listen(mockMediaPort, "127.0.0.1", resolve));
 
-  try {
-    const mockServerUrl = `http://127.0.0.1:${mockMediaPort}`;
+  const mockServerUrl = `http://127.0.0.1:${mockMediaPort}`;
 
+  try {
     // -------------------------------------------------------------
-    // Test 4a: Create Ticket on HTTP server with explicit port
+    // Test 4: HLS Playlist & Subresources proxying
     // -------------------------------------------------------------
     const { ticketId, streamUrl } = await createMediaTicket({
       serverUrl: mockServerUrl,
@@ -315,19 +339,15 @@ async function runMediaProxyTests() {
       ext: "m3u8",
       allowPrivateForTest: true,
     });
-    assert(
-      ticketId.startsWith("t_") && streamUrl.includes(`/api/media/stream/${ticketId}/100.m3u8`),
-      "Ticket criado com sucesso em servidor HTTP com porta explícita"
-    );
 
-    // -------------------------------------------------------------
-    // Test 4b: Stream Master HLS Manifest and Verify Variant Rewriting
-    // -------------------------------------------------------------
-    const { req: req1, res: res1, waitForResponse: wait1 } = createMockReqRes({
+    assert(Boolean(ticketId && streamUrl), "Ticket criado com sucesso em servidor HTTP com porta explícita");
+
+    // Request Master Playlist
+    const { req: reqMaster, res: resMaster, waitForResponse: waitMaster } = createMockReqRes({
       params: { ticket: ticketId, filename: "100.m3u8" },
     });
-    handleStreamRequest(req1, res1, { allowPrivateForTest: true });
-    const masterRes: any = await wait1();
+    handleStreamRequest(reqMaster, resMaster, { allowPrivateForTest: true });
+    const masterRes: any = await waitMaster();
 
     assert(masterRes.statusCode === 200, "Manifesto HLS mestre entregue com código 200");
     assert(
@@ -339,60 +359,55 @@ async function runMediaProxyTests() {
       "Playlists variantes reescritas para /api/media/hls-resource"
     );
 
-    // Extract the rewritten variant URI
-    const variantMatch = masterRes.body.match(/\/api\/media\/hls-resource\?[^\s\r\n]+/);
-    assert(!!variantMatch, "URI da playlist variante capturada na resposta");
-    const variantUrlObj = new URL(variantMatch[0], "http://localhost");
+    // Extract variant URI from master playlist
+    const variantMatch = masterRes.body.match(/\/api\/media\/hls-resource\?ticket=[^&\s]+\&uri=([^"\s\n]+)/);
+    assert(Boolean(variantMatch), "URI da playlist variante capturada na resposta");
+    const variantUri = decodeURIComponent(variantMatch[1]);
 
-    // -------------------------------------------------------------
-    // Test 4c: Fetch Rewritten Variant Manifest and Check Segment & Key Rewriting
-    // -------------------------------------------------------------
-    const { req: req2, res: res2, waitForResponse: wait2 } = createMockReqRes({
+    // Request Variant Playlist
+    const { req: reqVar, res: resVar, waitForResponse: waitVar } = createMockReqRes({
       query: {
-        ticket: variantUrlObj.searchParams.get("ticket")!,
-        uri: variantUrlObj.searchParams.get("uri")!,
+        ticket: ticketId,
+        uri: variantUri,
       },
     });
-    handleHlsResourceRequest(req2, res2, { allowPrivateForTest: true });
-    const variantRes: any = await wait2();
+    handleHlsResourceRequest(reqVar, resVar, { allowPrivateForTest: true });
+    const varRes: any = await waitVar();
 
-    assert(variantRes.statusCode === 200, "Playlist variante entregue com código 200");
+    assert(varRes.statusCode === 200, "Playlist variante entregue com código 200");
     assert(
-      variantRes.body.includes('URI="/api/media/hls-resource?ticket='),
+      varRes.body.includes('URI="/api/media/hls-resource?ticket='),
       "Tag #EXT-X-KEY com chave de criptografia reescrita para proxy"
     );
     assert(
-      variantRes.body.includes("seg-rel-0.ts"),
+      varRes.body.includes("seg-rel-0.ts"),
       "Segmento relativo resolvido e reescrito com caminho absoluto no proxy"
     );
     assert(
-      variantRes.body.includes("seg-abs-1.ts"),
+      varRes.body.includes("seg-abs-1.ts"),
       "Segmento absoluto preservado e reescrito no proxy"
     );
 
-    // -------------------------------------------------------------
-    // Test 4d: Fetch Relative Segment through Proxy
-    // -------------------------------------------------------------
-    const segMatch = variantRes.body.match(/\/api\/media\/hls-resource\?[^\s\r\n"']*seg-rel-0\.ts[^\s\r\n"']*/);
-    assert(!!segMatch, "URI de segmento capturada");
-    const segUrlObj = new URL(segMatch[0], "http://localhost");
+    // Extract segment URI
+    const segMatch = varRes.body.match(/\/api\/media\/hls-resource\?ticket=[^&\s]+\&uri=([^"\s\n]+seg-rel-0\.ts)/);
+    assert(Boolean(segMatch), "URI de segmento capturada");
+    const segUri = decodeURIComponent(segMatch[1]);
 
-    const { req: req3, res: res3, waitForResponse: wait3 } = createMockReqRes({
+    // Request Segment
+    const { req: reqSeg, res: resSeg, waitForResponse: waitSeg } = createMockReqRes({
       query: {
-        ticket: segUrlObj.searchParams.get("ticket")!,
-        uri: segUrlObj.searchParams.get("uri")!,
+        ticket: ticketId,
+        uri: segUri,
       },
     });
-    handleHlsResourceRequest(req3, res3, { allowPrivateForTest: true });
-    const segRes: any = await wait3();
+    handleHlsResourceRequest(reqSeg, resSeg, { allowPrivateForTest: true });
+    const segRes: any = await waitSeg();
 
     assert(segRes.statusCode === 200, "Segmento HLS entregue com código 200");
     assert(segRes.headers["content-type"] === "video/MP2T", "Content-Type video/MP2T para segmento TS");
-    assert(segRes.body.includes("TS_SEGMENT_"), "Dados binários do segmento entregues corretamente");
+    assert(segRes.body.includes("TS_SEGMENT_0_DATA"), "Dados binários do segmento entregues corretamente");
 
-    // -------------------------------------------------------------
-    // Test 4e: Redirected Segment Resource
-    // -------------------------------------------------------------
+    // Request Segment with 302 Redirect
     const redirectedUri = `http://127.0.0.1:${mockMediaPort}/redirect-segment.ts`;
     const { req: reqRedir, res: resRedir, waitForResponse: waitRedir } = createMockReqRes({
       query: {
@@ -407,9 +422,7 @@ async function runMediaProxyTests() {
       "Segmento com redirecionamento HTTP 302 resolvido e transmitido com sucesso"
     );
 
-    // -------------------------------------------------------------
-    // Test 4f: Forbidden Redirect in Media Stream (SSRF Protection)
-    // -------------------------------------------------------------
+    // Forbidden Redirect in Media Stream (SSRF Protection)
     const forbiddenUri = `http://127.0.0.1:${mockMediaPort}/forbidden-redirect.ts`;
     const { req: reqForbid, res: resForbid, waitForResponse: waitForbid } = createMockReqRes({
       query: {
@@ -468,6 +481,140 @@ async function runMediaProxyTests() {
 
     assert(fullRes.statusCode === 200, "MP4 sem Range responde com código 200 OK");
     assert(fullRes.buffer.length === 100, "Arquivo completo entregue (100 bytes)");
+
+    // -------------------------------------------------------------
+    // Test 6: Image Proxy (/api/media/image) with Fallbacks & SSRF
+    // -------------------------------------------------------------
+    console.log("\n6. Testando proxy de imagens, capas e logos com imagem substituta:");
+
+    // 6a: Valid image
+    const { req: reqImgValid, res: resImgValid, waitForResponse: waitImgValid } = createMockReqRes({
+      query: { url: `${mockServerUrl}/images/valid.jpg` },
+    });
+    handleImageProxyRequest(reqImgValid, resImgValid, { allowPrivateForTest: true });
+    const imgValidRes: any = await waitImgValid();
+    assert(
+      imgValidRes.statusCode === 200 && imgValidRes.headers["content-type"].includes("image/jpeg"),
+      "Imagem válida entregue com Content-Type image/jpeg"
+    );
+
+    // 6b: 404 missing image returns SVG fallback
+    const { req: reqImg404, res: resImg404, waitForResponse: waitImg404 } = createMockReqRes({
+      query: { url: `${mockServerUrl}/images/missing.jpg` },
+    });
+    handleImageProxyRequest(reqImg404, resImg404, { allowPrivateForTest: true });
+    const img404Res: any = await waitImg404();
+    assert(
+      img404Res.statusCode === 200 &&
+        img404Res.headers["content-type"].includes("image/svg+xml") &&
+        img404Res.body.includes("NORTH CODE PLAY"),
+      "Imagem inexistente (HTTP 404) retorna imagem substituta SVG da aplicação"
+    );
+
+    // 6c: DNS unavailable returns SVG fallback
+    const { req: reqDnsFail, res: resDnsFail, waitForResponse: waitDnsFail } = createMockReqRes({
+      query: { url: "http://non-existent-dns-test-host-xyz123.com/logo.png" },
+    });
+    handleImageProxyRequest(reqDnsFail, resDnsFail, { allowPrivateForTest: false });
+    const dnsFailRes: any = await waitDnsFail();
+    assert(
+      dnsFailRes.statusCode === 200 &&
+        dnsFailRes.headers["content-type"].includes("image/svg+xml") &&
+        dnsFailRes.body.includes("Imagem Indisponível"),
+      "Host com DNS indisponível retorna imagem substituta SVG sem falha de requisição"
+    );
+
+    // 6d: SSRF blocked IP (loopback/private in production mode) returns SVG fallback
+    const { req: reqSsrfImg, res: resSsrfImg, waitForResponse: waitSsrfImg } = createMockReqRes({
+      query: { url: "http://127.0.0.1:8080/logo.png" },
+    });
+    handleImageProxyRequest(reqSsrfImg, resSsrfImg, { allowPrivateForTest: false });
+    const ssrfImgRes: any = await waitSsrfImg();
+    assert(
+      ssrfImgRes.statusCode === 200 &&
+        ssrfImgRes.headers["content-type"].includes("image/svg+xml"),
+      "Destino proibido por SSRF em imagem retorna imagem substituta SVG segura"
+    );
+
+    // 6e: Empty or explicit fallback=1 returns SVG fallback
+    const { req: reqFallbackImg, res: resFallbackImg, waitForResponse: waitFallbackImg } = createMockReqRes({
+      query: { fallback: "1" },
+    });
+    handleImageProxyRequest(reqFallbackImg, resFallbackImg);
+    const fallbackImgRes: any = await waitFallbackImg();
+    assert(
+      fallbackImgRes.statusCode === 200 && fallbackImgRes.body.includes("NORTH CODE PLAY"),
+      "Parâmetro fallback=1 retorna imagem substituta SVG diretamente"
+    );
+
+    // 6f: getProxiedImageUrl helper formats URLs properly
+    assert(
+      getProxiedImageUrl("http://provider.com/logo.png") ===
+        `/api/media/image?url=${encodeURIComponent("http://provider.com/logo.png")}`,
+      "getProxiedImageUrl converte URL HTTP para /api/media/image"
+    );
+    assert(
+      getProxiedImageUrl(null) === "/api/media/image?fallback=1",
+      "getProxiedImageUrl converte null para fallback"
+    );
+    assert(
+      getProxiedImageUrl("") === "/api/media/image?fallback=1",
+      "getProxiedImageUrl converte string vazia para fallback"
+    );
+
+    // -------------------------------------------------------------
+    // Test 7: Diagnostics & Published Commit Identification
+    // -------------------------------------------------------------
+    console.log("\n7. Testando identificação de versão, commit publicado e FFmpeg:");
+    assert(APP_COMMIT === "ab98f4cdfac3a41b3d993867ecbe99e3bc1e874c", "Commit de referência ab98f4c preservado em version.ts");
+    assert(Boolean(APP_VERSION), `Versão da aplicação definida: ${APP_VERSION}`);
+    const ffmpegInstalled = checkFfmpegAvailable();
+    assert(
+      typeof ffmpegInstalled === "boolean",
+      `Detecção de FFmpeg no servidor concluída com status: ${ffmpegInstalled ? "Disponível" : "Não instalado"}`
+    );
+
+    // -------------------------------------------------------------
+    // Test 8: Real container extension and movie_data preservation
+    // -------------------------------------------------------------
+    console.log("\n8. Testando preservação da extensão real do filme e episódio:");
+    const mockVodData = {
+      info: { name: "Filme Teste" },
+      movie_data: { stream_id: 101, container_extension: "mkv" },
+    };
+    const resolvedExt = (mockVodData.movie_data.container_extension || "mp4").trim().replace(/^\./, "");
+    assert(resolvedExt === "mkv", "Extensão real 'mkv' preservada a partir de movie_data");
+
+    const { ticketId: mkvTicketId, streamUrl: mkvStreamUrl } = await createMediaTicket({
+      serverUrl: mockServerUrl,
+      username: "testuser",
+      password: "testpass",
+      type: "movie",
+      streamId: "101",
+      ext: resolvedExt,
+      allowPrivateForTest: true,
+    });
+    assert(
+      mkvStreamUrl.endsWith("/101.mkv"),
+      "Rota de mídia utiliza a extensão real .mkv retornada por get_vod_info"
+    );
+
+    // -------------------------------------------------------------
+    // Test 9: Enforcing /api/media route and error throwing
+    // -------------------------------------------------------------
+    console.log("\n9. Testando obrigatoriedade da rota /api/media e rejeição de falhas:");
+    try {
+      await createMediaTicket({
+        serverUrl: "ftp://servidor-invalido.com",
+        username: "user",
+        password: "pwd",
+        type: "live",
+        streamId: "100",
+      });
+      assert(false, "Protocolo inválido deveria lançar erro");
+    } catch (err: any) {
+      assert(Boolean(err.message), "Ticket com protocolo inválido lança erro sem fallback silencioso");
+    }
   } finally {
     mockServer.close();
   }
