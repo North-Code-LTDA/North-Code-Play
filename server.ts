@@ -1,12 +1,19 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import { xtreamRouter } from "./server/xtreamRouter";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
-  // Vite middleware for development
+  // Middleware to parse JSON bodies for proxy requests
+  app.use(express.json({ limit: "1mb" }));
+
+  // Xtream same-origin API proxy route
+  app.use("/api/xtream", xtreamRouter);
+
+  // Vite middleware for development vs static build for production
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },

@@ -37,17 +37,18 @@ export function Login() {
     // Try to parse an M3U link automatically
     try {
       if (value.includes('username=') && value.includes('password=')) {
-        const urlObj = new URL(value);
+        const urlObj = new URL(value.trim());
         const urlUser = urlObj.searchParams.get("username");
         const urlPass = urlObj.searchParams.get("password");
         if (urlUser && urlPass) {
           setUsername(urlUser);
           setPassword(urlPass);
-          setServerUrl(`${urlObj.protocol}//${urlObj.host}${urlObj.port ? `:${urlObj.port}` : ''}`);
+          // urlObj.host already includes the port if present (e.g. "domain.com:8080")
+          setServerUrl(`${urlObj.protocol}//${urlObj.host}`);
         }
       }
-    } catch (err) {
-      // Ignore invalid URLs
+    } catch {
+      // Ignore invalid URLs while typing
     }
   };
 
@@ -58,7 +59,7 @@ export function Login() {
 
     const credentials = {
       playlistName: playlistName.trim() || 'Minha Lista',
-      serverUrl: serverUrl.trim(),
+      serverUrl: serverUrl.trim().replace(/\/+$/, ''),
       username: username.trim(),
       password,
       avatar,

@@ -23,7 +23,7 @@ export interface XtreamUserInfo {
   username: string;
   password: string;
   message: string;
-  auth: number;
+  auth: number | string;
   status: string;
   exp_date: string;
   is_trial: string;

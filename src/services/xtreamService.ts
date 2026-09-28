@@ -2,59 +2,77 @@ import { Category, LiveStream, VodStream, SeriesStream, XtreamAuthResponse, Xtre
 
 export class XtreamService {
   /**
-   * Helper function to build the proxied URL for the Xtream API
+   * Helper function to perform same-origin calls to the Express Xtream proxy
    */
-  private static buildUrl(credentials: XtreamCredentials, action?: string, extraParams: Record<string, string> = {}): string {
-    // Ensure no trailing slash
-    const baseUrl = credentials.serverUrl.endsWith("/")
-      ? credentials.serverUrl.slice(0, -1)
-      : credentials.serverUrl;
+  private static async request<T = any>(
+    credentials: XtreamCredentials,
+    action: string,
+    params: Record<string, string | number> = {}
+  ): Promise<T> {
+    const cleanServerUrl = (credentials.serverUrl || "").trim().replace(/\/+$/, "");
 
-    const url = new URL(`${baseUrl}/player_api.php`);
-    url.searchParams.append("username", credentials.username);
-    url.searchParams.append("password", credentials.password);
+    const response = await fetch("/api/xtream", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        serverUrl: cleanServerUrl,
+        username: credentials.username,
+        password: credentials.password,
+        action,
+        params,
+      }),
+    });
 
-    if (action) {
-      url.searchParams.append("action", action);
+    if (!response.ok) {
+      let errorMessage = `Erro de conexão (${response.status})`;
+      try {
+        const errJson = await response.json();
+        if (errJson && errJson.message) {
+          errorMessage = errJson.message;
+        }
+      } catch {
+        // Fallback message
+      }
+      throw new Error(errorMessage);
     }
 
-    // Append any extra params required
-    for (const [key, value] of Object.entries(extraParams)) {
-      url.searchParams.append(key, value);
-    }
-
-    // Direct play avoids CORS when running inside WebView
-    return url.toString();
+    const data = await response.json();
+    return data as T;
   }
 
   /**
    * 1. Authenticate user and retrieve general account/server properties.
    */
   static async authenticate(credentials: XtreamCredentials): Promise<XtreamAuthResponse> {
-    const proxyUrl = this.buildUrl(credentials);
-    const response = await fetch(proxyUrl);
-    
-    if (!response.ok) {
-      throw new Error(`Failed to connect. Server responded with status ${response.status}`);
+    const data = await this.request<XtreamAuthResponse>(credentials, "auth");
+
+    if (!data || !data.user_info) {
+      throw new Error("Usuário ou senha inválidos.");
     }
 
-    const data = await response.json();
-    
-    if (!data.user_info || data.user_info.auth === 0) {
-      throw new Error("Authentication failed: Invalid username or password, or server is unreachable.");
+    const auth = data.user_info.auth;
+    // Validate auth: must not be 0, "0", or false
+    if (auth === 0 || auth === "0" || String(auth) === "0") {
+      throw new Error("Usuário ou senha inválidos ou conta desativada.");
     }
-    
-    return data as XtreamAuthResponse;
+
+    if (
+      data.user_info.status &&
+      ["disabled", "expired", "banned"].includes(data.user_info.status.toLowerCase())
+    ) {
+      throw new Error("Conta de usuário desativada ou expirada.");
+    }
+
+    return data;
   }
 
   /**
    * Fetch Live Categories
    */
   static async getLiveCategories(credentials: XtreamCredentials): Promise<Category[]> {
-    const proxyUrl = this.buildUrl(credentials, "get_live_categories");
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error("Failed to fetch live categories");
-    const data = await response.json();
+    const data = await this.request<Category[]>(credentials, "get_live_categories");
     return Array.isArray(data) ? data : [];
   }
 
@@ -62,11 +80,8 @@ export class XtreamService {
    * Fetch Live Streams
    */
   static async getLiveStreams(credentials: XtreamCredentials, categoryId?: string): Promise<LiveStream[]> {
-    const extraParams = categoryId ? { category_id: categoryId } : {};
-    const proxyUrl = this.buildUrl(credentials, "get_live_streams", extraParams);
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error("Failed to fetch live streams");
-    const data = await response.json();
+    const params = categoryId ? { category_id: categoryId } : {};
+    const data = await this.request<LiveStream[]>(credentials, "get_live_streams", params);
     return Array.isArray(data) ? data : [];
   }
 
@@ -74,10 +89,7 @@ export class XtreamService {
    * Fetch VOD Categories
    */
   static async getVodCategories(credentials: XtreamCredentials): Promise<Category[]> {
-    const proxyUrl = this.buildUrl(credentials, "get_vod_categories");
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error("Failed to fetch VOD categories");
-    const data = await response.json();
+    const data = await this.request<Category[]>(credentials, "get_vod_categories");
     return Array.isArray(data) ? data : [];
   }
 
@@ -85,11 +97,8 @@ export class XtreamService {
    * Fetch VOD Streams
    */
   static async getVodStreams(credentials: XtreamCredentials, categoryId?: string): Promise<VodStream[]> {
-    const extraParams = categoryId ? { category_id: categoryId } : {};
-    const proxyUrl = this.buildUrl(credentials, "get_vod_streams", extraParams);
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error("Failed to fetch VOD streams");
-    const data = await response.json();
+    const params = categoryId ? { category_id: categoryId } : {};
+    const data = await this.request<VodStream[]>(credentials, "get_vod_streams", params);
     return Array.isArray(data) ? data : [];
   }
 
@@ -97,10 +106,7 @@ export class XtreamService {
    * Fetch VOD Info
    */
   static async getVodInfo(credentials: XtreamCredentials, vodId: string | number): Promise<any> {
-    const proxyUrl = this.buildUrl(credentials, "get_vod_info", { vod_id: String(vodId) });
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error("Failed to fetch VOD Info");
-    const data = await response.json();
+    const data = await this.request<any>(credentials, "get_vod_info", { vod_id: String(vodId) });
     return data;
   }
 
@@ -108,10 +114,7 @@ export class XtreamService {
    * Fetch Series Categories
    */
   static async getSeriesCategories(credentials: XtreamCredentials): Promise<Category[]> {
-    const proxyUrl = this.buildUrl(credentials, "get_series_categories");
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error("Failed to fetch Series categories");
-    const data = await response.json();
+    const data = await this.request<Category[]>(credentials, "get_series_categories");
     return Array.isArray(data) ? data : [];
   }
 
@@ -119,11 +122,8 @@ export class XtreamService {
    * Fetch Series
    */
   static async getSeries(credentials: XtreamCredentials, categoryId?: string): Promise<SeriesStream[]> {
-    const extraParams = categoryId ? { category_id: categoryId } : {};
-    const proxyUrl = this.buildUrl(credentials, "get_series", extraParams);
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error("Failed to fetch Series");
-    const data = await response.json();
+    const params = categoryId ? { category_id: categoryId } : {};
+    const data = await this.request<SeriesStream[]>(credentials, "get_series", params);
     return Array.isArray(data) ? data : [];
   }
 
@@ -131,11 +131,7 @@ export class XtreamService {
    * Fetch Series Info (Episodes, Seasons, Details)
    */
   static async getSeriesInfo(credentials: XtreamCredentials, seriesId: string | number): Promise<any> {
-    const proxyUrl = this.buildUrl(credentials, "get_series_info", { series_id: String(seriesId) });
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error("Failed to fetch Series Info");
-    // Some endpoints return direct object, sometimes wrapped
-    const data = await response.json();
+    const data = await this.request<any>(credentials, "get_series_info", { series_id: String(seriesId) });
     return data;
   }
 
@@ -143,10 +139,10 @@ export class XtreamService {
    * Fetch Short EPG for a stream
    */
   static async getShortEpg(credentials: XtreamCredentials, streamId: string | number, limit: number = 10): Promise<any> {
-    const proxyUrl = this.buildUrl(credentials, "get_short_epg", { stream_id: String(streamId), limit: String(limit) });
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error("Failed to fetch EPG");
-    const data = await response.json();
+    const data = await this.request<any>(credentials, "get_short_epg", {
+      stream_id: String(streamId),
+      limit: String(limit),
+    });
     return data;
   }
 }
