@@ -123,7 +123,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
           className="absolute inset-0 z-0"
         >
           <img
-            src={buildDirectImageUrl(bgImage)}
+            src={buildDirectImageUrl(bgImage, credentials?.serverUrl)}
             alt={currentItem.name}
             className="w-full h-full object-cover object-top opacity-80"
             onError={(e) => {

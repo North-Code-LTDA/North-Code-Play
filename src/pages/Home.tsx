@@ -23,7 +23,17 @@ export function Home() {
   const [credentials, setCredentials] = useState<any>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [currentView, setCurrentView] = useState<ViewType>('inicio');
-  const [activeVideo, setActiveVideo] = useState<{ url: string; title: string, startAt?: number, streamId?: string | number } | null>(null);
+  const [activeVideo, setActiveVideo] = useState<{
+    url: string;
+    title: string;
+    startAt?: number;
+    streamId?: string | number;
+    contentType?: 'live' | 'movie' | 'episode';
+    channelName?: string;
+    programTitle?: string;
+    onNext?: () => void;
+    onPrevious?: () => void;
+  } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const debouncedSearchQuery = useDebounce(searchQuery, 500);
 
@@ -52,6 +62,30 @@ export function Home() {
   };
 
   if (!credentials) return null;
+
+  const handlePlay = (
+    url: string,
+    title: string,
+    startAt?: number,
+    streamId?: string | number,
+    contentType?: 'live' | 'movie' | 'episode',
+    channelName?: string,
+    programTitle?: string,
+    onNext?: () => void,
+    onPrevious?: () => void
+  ) => {
+    setActiveVideo({
+      url,
+      title,
+      startAt,
+      streamId,
+      contentType,
+      channelName,
+      programTitle,
+      onNext,
+      onPrevious,
+    });
+  };
 
   const NavItems = () => (
     <>
@@ -86,19 +120,19 @@ export function Home() {
   const renderView = () => {
     switch (currentView) {
       case 'inicio':
-        return <HomeView onPlay={(url, title, startAt, streamId) => setActiveVideo({ url, title, startAt, streamId })} searchQuery={debouncedSearchQuery} />;
+        return <HomeView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
       case 'live':
-        return <LiveTvView onPlay={(url, title, startAt, streamId) => setActiveVideo({ url, title, startAt, streamId })} searchQuery={debouncedSearchQuery} />;
+        return <LiveTvView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
       case 'movies':
-        return <MoviesView onPlay={(url, title, startAt, streamId) => setActiveVideo({ url, title, startAt, streamId })} searchQuery={debouncedSearchQuery} />;
+        return <MoviesView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
       case 'series':
-        return <SeriesView onPlay={(url, title, startAt, streamId) => setActiveVideo({ url, title, startAt, streamId })} searchQuery={debouncedSearchQuery} />;
+        return <SeriesView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
       case 'favorites':
-        return <FavoritesView onPlay={(url, title, startAt, streamId) => setActiveVideo({ url, title, startAt, streamId })} searchQuery={debouncedSearchQuery} />;
+        return <FavoritesView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
       case 'config':
         return <ConfigView />;
       default:
-        return <HomeView onPlay={(url, title, startAt, streamId) => setActiveVideo({ url, title, startAt, streamId })} searchQuery={debouncedSearchQuery} />;
+        return <HomeView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
     }
   };
 
@@ -110,9 +144,14 @@ export function Home() {
             <VideoPlayer 
               streamUrl={activeVideo.url} 
               title={activeVideo.title} 
+              contentType={activeVideo.contentType}
+              channelName={activeVideo.channelName}
+              programTitle={activeVideo.programTitle}
               onBack={() => setActiveVideo(null)}
               startAt={activeVideo.startAt}
               streamId={activeVideo.streamId}
+              onNext={activeVideo.onNext}
+              onPrevious={activeVideo.onPrevious}
             />
           )}
         </AnimatePresence>

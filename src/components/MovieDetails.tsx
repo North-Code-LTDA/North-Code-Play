@@ -11,7 +11,17 @@ interface MovieDetailsProps {
   streamName: string;
   streamIcon?: string;
   onClose: () => void;
-  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
+  onPlay: (
+    url: string,
+    title: string,
+    startAt?: number,
+    streamId?: string | number,
+    contentType?: 'live' | 'movie' | 'episode',
+    channelName?: string,
+    programTitle?: string,
+    onNext?: () => void,
+    onPrevious?: () => void
+  ) => void;
 }
 
 export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay }: MovieDetailsProps) {
@@ -64,7 +74,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
         streamId,
         containerExtension: ext,
       });
-      onPlay(mediaUrl, streamName, startAt, streamId);
+      onPlay(mediaUrl, streamName, startAt, streamId, 'movie');
       setShowResumeModal(false);
     } catch (err: any) {
       setError(err.message || 'Erro ao preparar vídeo.');
@@ -111,7 +121,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const rawCover = info.backdrop_path && info.backdrop_path.length > 0 
       ? (info.backdrop_path[0] || info.cover_big || info.movie_image)
       : (info.cover_big || info.movie_image || streamIcon);
-  const coverImage = buildDirectImageUrl(rawCover);
+  const coverImage = buildDirectImageUrl(rawCover, credentials?.serverUrl);
 
   const durationMin = info.duration ? info.duration.split(':')[0] + 'm' : null;
 

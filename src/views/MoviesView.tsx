@@ -4,10 +4,21 @@ import { motion } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { useFavorites } from '../hooks/useFavorites';
+import { MediaImage } from '../components/MediaImage';
 import { buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface MoviesViewProps {
-  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
+  onPlay: (
+    url: string,
+    title: string,
+    startAt?: number,
+    streamId?: string | number,
+    contentType?: 'live' | 'movie' | 'episode',
+    channelName?: string,
+    programTitle?: string,
+    onNext?: () => void,
+    onPrevious?: () => void
+  ) => void;
   searchQuery?: string;
 }
 
@@ -196,14 +207,12 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                        className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
                      >
                        {stream.stream_icon ? (
-                         <img 
-                           src={buildDirectImageUrl(stream.stream_icon)} 
+                         <MediaImage
+                           src={stream.stream_icon}
+                           serverUrl={credentials?.serverUrl}
                            alt={stream.name}
                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                            loading="lazy"
-                           onError={(e) => {
-                             (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
-                           }}
                          />
                        ) : (
                          <div className="w-full h-full flex flex-col items-center justify-center bg-nc-bg-input">

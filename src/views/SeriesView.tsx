@@ -5,10 +5,21 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
+import { MediaImage } from '../components/MediaImage';
 import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface SeriesViewProps {
-  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
+  onPlay: (
+    url: string,
+    title: string,
+    startAt?: number,
+    streamId?: string | number,
+    contentType?: 'live' | 'movie' | 'episode',
+    channelName?: string,
+    programTitle?: string,
+    onNext?: () => void,
+    onPrevious?: () => void
+  ) => void;
   searchQuery?: string;
 }
 
@@ -228,14 +239,12 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
                    className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
                  >
                    {stream.cover ? (
-                     <img 
-                       src={buildDirectImageUrl(stream.cover)} 
+                     <MediaImage
+                       src={stream.cover}
+                       serverUrl={credentials?.serverUrl}
                        alt={stream.name}
                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                        loading="lazy"
-                       onError={(e) => {
-                         (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
-                       }}
                      />
                    ) : (
                      <div className="w-full h-full flex flex-col items-center justify-center bg-nc-bg-input">

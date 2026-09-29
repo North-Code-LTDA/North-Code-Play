@@ -58,16 +58,86 @@ export function normalizeServerUrl(rawUrl: string): string {
   }
 }
 
+const COMMON_IMAGE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "svg",
+  "ico",
+  "bmp",
+  "tiff",
+  "avif",
+]);
+
+const KNOWN_HTTPS_CDNS = [
+  "tmdb.org",
+  "themoviedb.org",
+  "media-amazon.com",
+  "imdb.com",
+  "metahub.space",
+  "thetvdb.com",
+  "fanart.tv",
+  "cloudinary.com",
+  "imgur.com",
+];
+
 /**
- * Builds direct image URLs for covers, channel logos, backdrops, and avatars.
- * Directly requests the origin without any server proxy:
- * - Absolute URLs (http:// or https://) returned as-is
- * - Protocol-relative URLs (starting with //) resolved with provider or page scheme
- * - Schemeless domain URLs prepended with scheme
- * - Path-relative or root-relative URLs resolved against serverUrl
- * - Invalid/empty URLs return the inline SVG fallback
+ * Checks whether a string represents a schemeless domain with path
+ * (e.g. "image.tmdb.org/t/p/w500/..." or "m.media-amazon.com/images/...")
+ * as opposed to a relative filename/path (e.g. "logo.png", "covers/123.jpg", "./img.png").
  */
-export function buildDirectImageUrl(rawUrl?: string | null, serverUrl?: string | null): string {
+function isSchemelessDomain(str: string): boolean {
+  // If it starts with a slash or dot-slash, it is a local/relative path
+  if (
+    str.startsWith("/") ||
+    str.startsWith("./") ||
+    str.startsWith("../") ||
+    !str.includes(".")
+  ) {
+    return false;
+  }
+
+  // Extract host part before first slash or query string
+  const firstSlash = str.indexOf("/");
+  const firstQuestion = str.indexOf("?");
+  let endOfHost = str.length;
+  if (firstSlash !== -1) endOfHost = firstSlash;
+  if (firstQuestion !== -1 && firstQuestion < endOfHost) endOfHost = firstQuestion;
+
+  const hostPart = str.slice(0, endOfHost).trim();
+  const hostWithoutPort = hostPart.split(":")[0].toLowerCase();
+
+  // If hostWithoutPort ends with a known image extension (e.g. "logo.png", "ch1.jpg"),
+  // it is definitely a relative file name, NOT a domain!
+  const lastDot = hostWithoutPort.lastIndexOf(".");
+  if (lastDot !== -1) {
+    const ext = hostWithoutPort.slice(lastDot + 1);
+    if (COMMON_IMAGE_EXTENSIONS.has(ext)) {
+      return false;
+    }
+  }
+
+  // Must follow domain naming structure: [sub.]domain.tld where tld has >= 2 alphabetic chars
+  const hostRegex = /^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}(:\d+)?$/;
+  return hostRegex.test(hostPart);
+}
+
+/**
+ * Resolves direct image URLs for channel logos, covers, backdrops, and avatars.
+ * Directly targets the origin without server proxying, with comprehensive edge-case handling:
+ * 1. Recovers original URLs embedded in legacy query strings (e.g. /api/media/image?url=...)
+ * 2. Preserves data: and blob: URLs
+ * 3. Preserves valid absolute HTTP/HTTPS URLs (including query parameters without double encoding)
+ * 4. Resolves protocol-relative URLs (//domain/...) with secure CDN or origin scheme
+ * 5. Distinguishes schemeless domain URLs from relative filenames (e.g. "image.tmdb.org/..." vs "logo.png")
+ * 6. Resolves relative paths (including ./, ../, and root /) correctly against serverUrl
+ */
+export function buildDirectImageUrl(
+  rawUrl?: string | null,
+  serverUrl?: string | null
+): string {
   if (!rawUrl || typeof rawUrl !== "string") {
     return FALLBACK_IMAGE_DATA_URI;
   }
@@ -77,65 +147,83 @@ export function buildDirectImageUrl(rawUrl?: string | null, serverUrl?: string |
     return FALLBACK_IMAGE_DATA_URI;
   }
 
-  // Preserve data URLs and blob URLs
-  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
-    return trimmed;
-  }
-
-  // Auto-detect serverUrl from localStorage if not explicitly passed
-  let effectiveServerUrl = serverUrl;
-  if (!effectiveServerUrl && typeof window !== "undefined" && window.localStorage) {
+  // 1. Recover original URL from legacy proxy endpoints (e.g. /api/media/image?url=...)
+  if (trimmed.includes("url=")) {
     try {
-      const saved = window.localStorage.getItem("northcode_tv_credentials");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.serverUrl) {
-          effectiveServerUrl = parsed.serverUrl;
+      const match = trimmed.match(/[?&]url=([^&]+)/);
+      if (match && match[1]) {
+        const decoded = decodeURIComponent(match[1]).trim();
+        if (decoded && decoded !== trimmed) {
+          trimmed = decoded;
         }
       }
     } catch {}
   }
 
-  // 1. Protocol-relative URL: //domain.com/path
-  if (trimmed.startsWith("//")) {
-    const protocol =
-      effectiveServerUrl && effectiveServerUrl.startsWith("https://")
-        ? "https:"
-        : effectiveServerUrl && effectiveServerUrl.startsWith("http://")
-        ? "http:"
-        : typeof window !== "undefined" && window.location.protocol.startsWith("http")
-        ? window.location.protocol
-        : "http:";
-    return `${protocol}${trimmed}`;
-  }
-
-  // 2. Direct absolute URLs
-  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+  // 2. Preserve data and blob URIs directly
+  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
     return trimmed;
   }
 
-  // 3. Schemeless domain URL (e.g. images.tmdb.org/..., m.media-amazon.com/...)
-  if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/.*)?$/.test(trimmed)) {
+  // 3. Preserve valid absolute HTTP/HTTPS URLs as-is (preserves query params, CDN tokens)
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
+  // Resolve base server URL (explicit param preferred, fallback to localStorage)
+  let effectiveBase = serverUrl ? serverUrl.trim() : "";
+  if (!effectiveBase && typeof window !== "undefined" && window.localStorage) {
+    try {
+      const saved = window.localStorage.getItem("northcode_tv_credentials");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.serverUrl) {
+          effectiveBase = parsed.serverUrl.trim();
+        }
+      }
+    } catch {}
+  }
+
+  // 4. Protocol-relative URL: //domain.com/path
+  if (trimmed.startsWith("//")) {
+    const isKnownHttps = KNOWN_HTTPS_CDNS.some((cdn) => trimmed.includes(cdn));
     const scheme =
-      effectiveServerUrl && effectiveServerUrl.startsWith("http://") ? "http://" : "https://";
+      isKnownHttps ||
+      (typeof window !== "undefined" && window.location.protocol === "https:")
+        ? "https:"
+        : effectiveBase && effectiveBase.startsWith("https://")
+        ? "https:"
+        : "http:";
     return `${scheme}${trimmed}`;
   }
 
-  // 4. Relative path resolved against serverUrl
-  if (effectiveServerUrl) {
+  // 5. Schemeless domain URL (e.g. image.tmdb.org/..., m.media-amazon.com/...)
+  if (isSchemelessDomain(trimmed)) {
+    const isKnownHttps = KNOWN_HTTPS_CDNS.some((cdn) => trimmed.includes(cdn));
+    const scheme = isKnownHttps ? "https://" : effectiveBase?.startsWith("https://") ? "https://" : "https://";
+    return `${scheme}${trimmed}`;
+  }
+
+  // 6. Relative path (e.g. "logo.png", "covers/123.jpg", "/images/logo.png", "./logo.png", "../logo.png")
+  if (effectiveBase) {
     try {
-      const cleanBase = normalizeServerUrl(effectiveServerUrl);
+      const cleanBase = normalizeServerUrl(effectiveBase);
+      // Ensure cleanBase ends with '/' for directory-relative URL resolution
+      const baseWithSlash = cleanBase.endsWith("/") ? cleanBase : `${cleanBase}/`;
+      const resolved = new URL(trimmed, baseWithSlash);
+      return resolved.href;
+    } catch {
+      // Fallback manual resolution if URL constructor fails
+      const cleanBase = normalizeServerUrl(effectiveBase);
       const relativePart = trimmed.replace(/^\/+/, "");
       return `${cleanBase}/${relativePart}`;
-    } catch {
-      // ignore
     }
   }
 
   return FALLBACK_IMAGE_DATA_URI;
 }
 
-// Alias for backwards compatibility across existing components
+// Backwards-compatible alias
 export const getProxiedImageUrl = buildDirectImageUrl;
 
 export interface BuildDirectMediaUrlOptions {

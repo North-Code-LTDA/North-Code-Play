@@ -161,13 +161,13 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                <div className="absolute inset-0 bg-black z-0">
                  {seriesInfo.info?.backdrop_path?.[0] ? (
                     <img 
-                      src={buildDirectImageUrl(seriesInfo.info.backdrop_path[0])}
+                      src={buildDirectImageUrl(seriesInfo.info.backdrop_path[0], credentials?.serverUrl)}
                       alt="Backdrop"
                       className="w-full h-full object-cover opacity-50 object-top"
                     />
                  ) : (seriesInfo.info?.cover || seriesCover) ? (
                     <img 
-                      src={buildDirectImageUrl(seriesInfo.info?.cover || seriesCover)}
+                      src={buildDirectImageUrl(seriesInfo.info?.cover || seriesCover, credentials?.serverUrl)}
                       alt="Cover fallback"
                       className="w-full h-full object-cover opacity-30 object-top"
                     />
@@ -370,6 +370,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
             <VideoPlayer
               streamUrl={playingEpisodeData.url}
               title={playingEpisodeData.title}
+              contentType="episode"
               startAt={playingEpisodeData.startAt}
               streamId={playingEpisodeData.episode.id}
               onBack={() => {

@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites } from '../hooks/useFavorites';
 import { VideoPlayer } from '../components/VideoPlayer';
+import { MediaImage } from '../components/MediaImage';
 import { XtreamService } from '../services/xtreamService';
 import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
@@ -271,14 +272,12 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                     >
                       <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden">
                         {stream.stream_icon ? (
-                           <img 
-                             src={buildDirectImageUrl(stream.stream_icon)} 
-                             alt={stream.name}
-                             className="w-full h-full object-contain p-1"
-                             onError={(e) => {
-                               (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI; 
-                             }}
-                           />
+                          <MediaImage
+                            src={stream.stream_icon}
+                            serverUrl={credentials?.serverUrl}
+                            alt={stream.name}
+                            className="w-full h-full object-contain p-1"
+                          />
                         ) : (
                           <TvMinimalPlay className="w-5 h-5 text-nc-text-secondary/50" />
                         )}
@@ -336,13 +335,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                  <div className="flex items-center gap-4 w-full">
                     <div className="w-20 h-20 bg-nc-bg-card rounded-2xl flex items-center justify-center overflow-hidden shrink-0 border border-nc-border/50 p-2">
                       {selectedChannel.stream_icon ? (
-                        <img 
-                          src={buildDirectImageUrl(selectedChannel.stream_icon)} 
+                        <MediaImage
+                          src={selectedChannel.stream_icon}
+                          serverUrl={credentials?.serverUrl}
                           alt={selectedChannel.name}
                           className="w-full h-full object-contain"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
-                          }}
                         />
                       ) : (
                         <TvMinimalPlay className="w-8 h-8 text-nc-text-secondary/50" />
@@ -380,6 +377,9 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                    key={selectedChannel.stream_id}
                    streamUrl={miniPlayerUrl}
                    title={selectedChannel.name}
+                   channelName={selectedChannel.name}
+                   programTitle={epgData && epgData.length > 0 && epgData[0] ? decodeBase64(epgData[0].title) : undefined}
+                   contentType="live"
                    streamId={selectedChannel.stream_id}
                    onBack={() => setIsMobilePlayerOpen(false)}
                    embedded={true}

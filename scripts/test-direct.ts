@@ -126,13 +126,30 @@ function runTests() {
   // 3.3 Protocol-relative URL
   assert.strictEqual(
     buildDirectImageUrl('//images.tmdb.org/poster.png', 'http://provider.tv:8080'),
-    'http://images.tmdb.org/poster.png'
+    'https://images.tmdb.org/poster.png'
+  );
+  assert.strictEqual(
+    buildDirectImageUrl('//custom-iptv.net/logo.png', 'http://provider.tv:8080'),
+    'http://custom-iptv.net/logo.png'
   );
 
-  // 3.4 Schemeless domain
+  // 3.4 Schemeless domain vs relative filename
   assert.strictEqual(
     buildDirectImageUrl('images.tmdb.org/t/p/original/backdrop.jpg'),
     'https://images.tmdb.org/t/p/original/backdrop.jpg'
+  );
+  // Defect fix: logo.png must NOT become http://logo.png, but resolve against serverUrl!
+  assert.strictEqual(
+    buildDirectImageUrl('logo.png', 'http://iptv.server:8080'),
+    'http://iptv.server:8080/logo.png'
+  );
+  assert.strictEqual(
+    buildDirectImageUrl('./channel_logo.png', 'http://iptv.server:8080/base/'),
+    'http://iptv.server:8080/base/channel_logo.png'
+  );
+  assert.strictEqual(
+    buildDirectImageUrl('../logos/ch1.png', 'http://iptv.server:8080/base/sub/'),
+    'http://iptv.server:8080/base/logos/ch1.png'
   );
 
   // 3.5 Relative URL resolved against serverUrl
@@ -141,7 +158,13 @@ function runTests() {
     'http://iptv.server:8080/images/movie_123.jpg'
   );
 
-  // 3.6 Invalid / empty URL returns SVG fallback
+  // 3.6 Recover legacy query params
+  assert.strictEqual(
+    buildDirectImageUrl('/api/media/image?url=https%3A%2F%2Fimage.tmdb.org%2Fpic.jpg'),
+    'https://image.tmdb.org/pic.jpg'
+  );
+
+  // 3.7 Invalid / empty URL returns SVG fallback
   assert.strictEqual(buildDirectImageUrl(''), FALLBACK_IMAGE_DATA_URI);
   assert.strictEqual(buildDirectImageUrl(null), FALLBACK_IMAGE_DATA_URI);
   assert.strictEqual(buildDirectImageUrl(undefined), FALLBACK_IMAGE_DATA_URI);

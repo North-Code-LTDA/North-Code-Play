@@ -1,6 +1,8 @@
 import React, { useRef } from 'react';
 import { motion } from 'motion/react';
 import { Play, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useXtreamContext } from '../context/XtreamContext';
+import { MediaImage } from './MediaImage';
 import { buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface HorizontalRowProps {
@@ -12,6 +14,7 @@ interface HorizontalRowProps {
 
 export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRowProps) {
   const rowRef = useRef<HTMLDivElement>(null);
+  const { credentials } = useXtreamContext();
 
   if (items.length === 0) return null;
 
@@ -49,14 +52,12 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
           >
             <div className="relative w-full h-full">
               {item.stream_icon || item.cover ? (
-                 <img 
-                   src={buildDirectImageUrl(item.stream_icon || item.cover)} 
+                 <MediaImage
+                   src={item.stream_icon || item.cover}
+                   serverUrl={credentials?.serverUrl}
                    alt={item.name}
                    className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'}`}
                    loading="lazy"
-                   onError={(e) => {
-                     (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
-                   }}
                  />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-nc-bg-input">

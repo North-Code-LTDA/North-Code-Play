@@ -1,431 +1,408 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import Hls from 'hls.js';
-import Plyr from 'plyr';
-import 'plyr/dist/plyr.css';
-import muxjs from 'mux.js';
-import { ArrowLeft, Loader2, SkipForward, SkipBack, RefreshCw, AlertCircle, Wrench, Copy, Check } from 'lucide-react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
+import { AlertCircle, RefreshCw, Wrench, ArrowLeft } from 'lucide-react';
+import { VideoPlayerProps, PlayerContentType } from './player/types';
+import { usePlaybackSession } from './player/usePlaybackSession';
+import { PlayerControls } from './player/PlayerControls';
+import { PlayerSettingsMenu } from './player/PlayerSettingsMenu';
+import { PlayerDiagnosticsModal } from './player/PlayerDiagnosticsModal';
 
-if (typeof window !== 'undefined') {
-  // @ts-ignore
-  window.muxjs = muxjs;
-}
-
-export interface VideoPlayerProps {
-  key?: React.Key;
-  streamUrl?: string;
-  title: string;
-  onBack: () => void;
-  embedded?: boolean;
-  startAt?: number;
-  streamId?: string | number;
-  onNext?: () => void;
-  onPrevious?: () => void;
-  isLoading?: boolean;
-  errorMessage?: string | null;
-  onRetry?: () => void;
-}
+export type { VideoPlayerProps };
 
 export function VideoPlayer({
   streamUrl = '',
   title,
+  contentType,
+  channelName,
+  programTitle,
   onBack,
   embedded = false,
   startAt,
   streamId,
   onNext,
   onPrevious,
-  isLoading = false,
-  errorMessage = null,
+  isLoading: externalLoading = false,
+  errorMessage: externalError = null,
   onRetry,
 }: VideoPlayerProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
-  const plyrRef = useRef<Plyr | null>(null);
 
-  const [internalLoading, setInternalLoading] = useState(true);
-  const [internalError, setInternalError] = useState<string | null>(null);
-  const [isIdle, setIsIdle] = useState(false);
-  const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Modals state
+  const [showSettings, setShowSettings] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  // Fullscreen & PiP states
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isVisuallyExpanded, setIsVisuallyExpanded] = useState(false);
+  const [hasPiP, setHasPiP] = useState(false);
+
+  // Retry trigger for internal engine re-attachment
   const [retryTrigger, setRetryTrigger] = useState(0);
 
-  // Diagnostic state
-  const [showDiagnosticModal, setShowDiagnosticModal] = useState(false);
-  const [copiedUrl, setCopiedUrl] = useState(false);
-  const [videoStats, setVideoStats] = useState<{
-    width?: number;
-    height?: number;
-    duration?: number;
-    currentTime?: number;
-    networkState?: number;
-    readyState?: number;
-  }>({});
+  // Inactivity controls visibility
+  const [isControlsVisible, setIsControlsVisible] = useState(true);
+  const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const isPlayerLoading = isLoading || (internalLoading && !errorMessage && !internalError);
-  const activeError = errorMessage || internalError;
+  // Playback session hook manages HLS.js vs native HTML5, tracks, audio, qualities, buffer
+  const session = usePlaybackSession({
+    videoRef,
+    streamUrl,
+    contentType,
+    startAt,
+    streamId,
+    onRetry,
+    retryTrigger,
+  });
 
-  const handleMouseMove = () => {
-    setIsIdle(false);
-    if (idleTimeoutRef.current) {
-      clearTimeout(idleTimeoutRef.current);
-    }
-    idleTimeoutRef.current = setTimeout(() => {
-      setIsIdle(true);
-    }, 3000);
-  };
+  const activeError = externalError || session.error;
+  const isCurrentlyLoading =
+    externalLoading || (session.isLoading && !activeError);
 
+  // Detect PiP capability
   useEffect(() => {
-    handleMouseMove();
+    if (typeof document !== 'undefined' && 'pictureInPictureEnabled' in document) {
+      setHasPiP(document.pictureInPictureEnabled);
+    }
+  }, []);
+
+  // Sync fullscreen state with document events
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isFs = Boolean(
+        document.fullscreenElement ||
+          (document as any).webkitFullscreenElement ||
+          (document as any).mozFullScreenElement ||
+          (document as any).msFullscreenElement
+      );
+      setIsFullscreen(isFs);
+      if (!isFs) {
+        setIsVisuallyExpanded(false);
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
     return () => {
-      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
     };
   }, []);
 
-  // Cleanup helper to thoroughly release video element, decoder, MediaSource, and origin sockets
-  const cleanupMedia = () => {
-    if (hlsRef.current) {
-      try {
-        hlsRef.current.stopLoad();
-        hlsRef.current.detachMedia();
-        hlsRef.current.destroy();
-      } catch {
-        // ignore
-      }
-      hlsRef.current = null;
+  // Inactivity timer: hide controls after 3 seconds of playing
+  const resetInactivityTimer = useCallback(() => {
+    setIsControlsVisible(true);
+    if (idleTimeoutRef.current) {
+      clearTimeout(idleTimeoutRef.current);
     }
-
-    if (plyrRef.current) {
-      try {
-        plyrRef.current.destroy();
-      } catch {
-        // ignore
-      }
-      plyrRef.current = null;
+    // Only auto-hide if playing and no modal is open
+    if (
+      session.isPlaying &&
+      !showSettings &&
+      !showDiagnostics &&
+      !activeError &&
+      !isCurrentlyLoading &&
+      !session.isBuffering
+    ) {
+      idleTimeoutRef.current = setTimeout(() => {
+        setIsControlsVisible(false);
+      }, 3000);
     }
+  }, [
+    session.isPlaying,
+    session.isBuffering,
+    showSettings,
+    showDiagnostics,
+    activeError,
+    isCurrentlyLoading,
+  ]);
 
-    if (videoRef.current) {
-      try {
-        videoRef.current.pause();
-        videoRef.current.removeAttribute('src');
-        videoRef.current.load(); // Reset media element pipeline
-      } catch {
-        // ignore
-      }
-    }
-  };
-
-  // Direct playback setup on the <video> element
   useEffect(() => {
+    resetInactivityTimer();
+    return () => {
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+    };
+  }, [resetInactivityTimer]);
+
+  // Fullscreen toggle: container requestFullscreen or visual expansion fallback
+  const toggleFullscreen = useCallback(async () => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const isFs = Boolean(
+      document.fullscreenElement || (document as any).webkitFullscreenElement
+    );
+
+    if (isFs || isVisuallyExpanded) {
+      try {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if ((document as any).webkitExitFullscreen) {
+          await (document as any).webkitExitFullscreen();
+        }
+      } catch (err) {
+        console.warn('Exit fullscreen failed:', err);
+      }
+      setIsFullscreen(false);
+      setIsVisuallyExpanded(false);
+    } else {
+      try {
+        if (container.requestFullscreen) {
+          await container.requestFullscreen();
+          setIsFullscreen(true);
+        } else if ((container as any).webkitRequestFullscreen) {
+          await (container as any).webkitRequestFullscreen();
+          setIsFullscreen(true);
+        } else if (
+          videoRef.current &&
+          (videoRef.current as any).webkitEnterFullscreen
+        ) {
+          // iOS Safari native video fullscreen
+          (videoRef.current as any).webkitEnterFullscreen();
+        } else {
+          // Fallback visual expansion
+          setIsVisuallyExpanded(true);
+        }
+      } catch (err) {
+        console.warn('Fullscreen request failed, applying visual expansion:', err);
+        setIsVisuallyExpanded(true);
+      }
+    }
+  }, [isVisuallyExpanded]);
+
+  // PiP toggle
+  const togglePiP = useCallback(async () => {
     const video = videoRef.current;
-    if (!video || !streamUrl) {
-      cleanupMedia();
-      setInternalLoading(false);
+    if (!video) return;
+
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled && !video.disablePictureInPicture) {
+        await video.requestPictureInPicture();
+      }
+    } catch (err) {
+      console.warn('PiP toggle error:', err);
+    }
+  }, []);
+
+  // Keyboard shortcuts active only for active player
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is typing in form inputs
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          (activeEl as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+
+      resetInactivityTimer();
+
+      switch (e.key) {
+        case ' ':
+        case 'k':
+        case 'K':
+          e.preventDefault();
+          session.togglePlay();
+          break;
+        case 'f':
+        case 'F':
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+        case 'm':
+        case 'M':
+          e.preventDefault();
+          session.toggleMute();
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          session.seekBy(-10);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          session.seekBy(10);
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          session.setVolume(session.volume + 0.1);
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          session.setVolume(session.volume - 0.1);
+          break;
+        case 'Escape':
+          if (showSettings) {
+            setShowSettings(false);
+          } else if (showDiagnostics) {
+            setShowDiagnostics(false);
+          } else if (isFullscreen || isVisuallyExpanded) {
+            toggleFullscreen();
+          } else if (!embedded) {
+            onBack();
+          }
+          break;
+        default:
+          // Numeric keys 0-9 seek to % of duration (for VOD/Series)
+          if (!session.isLive && /^[0-9]$/.test(e.key) && session.duration > 0) {
+            e.preventDefault();
+            const pct = parseInt(e.key, 10) * 0.1;
+            session.seek(session.duration * pct);
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [
+    session,
+    resetInactivityTimer,
+    toggleFullscreen,
+    showSettings,
+    showDiagnostics,
+    isFullscreen,
+    isVisuallyExpanded,
+    embedded,
+    onBack,
+  ]);
+
+  const handleContainerClick = () => {
+    // If settings or diagnostics open, close them
+    if (showSettings) {
+      setShowSettings(false);
+      return;
+    }
+    if (showDiagnostics) {
+      setShowDiagnostics(false);
       return;
     }
 
-    cleanupMedia();
-
-    setInternalLoading(true);
-    setInternalError(null);
-
-    const initPlyrIfNeeded = () => {
-      if (embedded) return;
-      if (plyrRef.current) return;
-      try {
-        plyrRef.current = new Plyr(video, {
-          controls: [
-            'play-large',
-            'play',
-            'progress',
-            'current-time',
-            'duration',
-            'mute',
-            'volume',
-            'settings',
-            'pip',
-            'fullscreen',
-          ],
-          settings: ['quality', 'speed'],
-          speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] },
-          autoplay: true,
-          hideControls: true,
-          resetOnEnd: false,
-          keyboard: { focused: true, global: true },
-        });
-
-        plyrRef.current.on('enterfullscreen', () => {
-          if (videoRef.current) {
-            // @ts-ignore
-            if (videoRef.current.webkitEnterFullscreen) {
-              // @ts-ignore
-              videoRef.current.webkitEnterFullscreen();
-            }
-          }
-        });
-      } catch {
-        // fallback to standard controls if Plyr fails
-        video.controls = true;
-      }
-    };
-
-    const isHls =
-      streamUrl.includes('.m3u8') ||
-      streamUrl.includes('/live/') ||
-      streamUrl.toLowerCase().endsWith('.m3u8');
-
-    let isHandled = false;
-
-    // Direct HLS via Hls.js
-    if (isHls && Hls.isSupported()) {
-      isHandled = true;
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 60,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
-        xhrSetup: (xhr) => {
-          // Direct browser request to provider
-          xhr.withCredentials = false;
-        },
-      });
-      hlsRef.current = hls;
-
-      hls.loadSource(streamUrl);
-      hls.attachMedia(video);
-
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setInternalLoading(false);
-        setInternalError(null);
-        initPlyrIfNeeded();
-        video.play().catch(() => {});
-
-        if (startAt && startAt > 0) {
-          video.currentTime = startAt;
-        }
-      });
-
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              setInternalError(
-                'Falha de rede ou CORS ao carregar manifesto HLS diretamente do provedor. ' +
-                  'Verifique se o provedor permite acesso cross-origin da sua rede.'
-              );
-              setInternalLoading(false);
-              hls.destroy();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              hls.recoverMediaError();
-              break;
-            default:
-              setInternalError('Erro fatal na decodificação do fluxo HLS.');
-              setInternalLoading(false);
-              hls.destroy();
-              break;
-          }
-        }
-      });
-    } else if (isHls && video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Native Safari HLS
-      isHandled = true;
-      video.src = streamUrl;
-      video.addEventListener('loadedmetadata', () => {
-        setInternalLoading(false);
-        initPlyrIfNeeded();
-        video.play().catch(() => {});
-        if (startAt && startAt > 0) {
-          video.currentTime = startAt;
-        }
-      });
+    // Toggle play/pause or show controls
+    if (!isControlsVisible) {
+      setIsControlsVisible(true);
+      resetInactivityTimer();
+    } else {
+      session.togglePlay();
     }
-
-    // Direct Progressive MP4 / WebM / container file
-    if (!isHandled) {
-      video.src = streamUrl;
-      video.addEventListener('loadedmetadata', () => {
-        setInternalLoading(false);
-        setInternalError(null);
-        initPlyrIfNeeded();
-        video.play().catch(() => {});
-        if (startAt && startAt > 0) {
-          video.currentTime = startAt;
-        }
-      });
-    }
-
-    const onPlaying = () => {
-      setInternalLoading(false);
-      setInternalError(null);
-    };
-
-    const onWaiting = () => {
-      setInternalLoading(true);
-    };
-
-    const onError = () => {
-      const err = video.error;
-      let msg = 'Falha ao reproduzir o vídeo diretamente do provedor.';
-      if (err) {
-        if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
-          msg =
-            'Formato não suportado nativamente pelo navegador ou bloqueio de CORS / Mixed Content pelo provedor.';
-        } else if (err.code === MediaError.MEDIA_ERR_NETWORK) {
-          msg = 'Erro de rede ao conectar à transmissão do provedor.';
-        } else if (err.code === MediaError.MEDIA_ERR_DECODE) {
-          msg = 'Erro na decodificação do fluxo de vídeo.';
-        }
-      }
-      setInternalError(msg);
-      setInternalLoading(false);
-    };
-
-    const onTimeUpdate = () => {
-      if (streamId && video.currentTime > 5) {
-        localStorage.setItem(`nc_progress_${streamId}`, String(Math.floor(video.currentTime)));
-      }
-    };
-
-    video.addEventListener('playing', onPlaying);
-    video.addEventListener('waiting', onWaiting);
-    video.addEventListener('error', onError);
-    video.addEventListener('timeupdate', onTimeUpdate);
-
-    return () => {
-      video.removeEventListener('playing', onPlaying);
-      video.removeEventListener('waiting', onWaiting);
-      video.removeEventListener('error', onError);
-      video.removeEventListener('timeupdate', onTimeUpdate);
-      cleanupMedia();
-    };
-  }, [streamUrl, retryTrigger, embedded]);
+  };
 
   const handleRetry = () => {
     if (onRetry) {
       onRetry();
     } else {
-      setRetryTrigger((prev) => prev + 1);
-    }
-  };
-
-  const handleBack = () => {
-    cleanupMedia();
-    onBack();
-  };
-
-  const handleRunDiagnostic = () => {
-    if (videoRef.current) {
-      setVideoStats({
-        width: videoRef.current.videoWidth,
-        height: videoRef.current.videoHeight,
-        duration: videoRef.current.duration,
-        currentTime: videoRef.current.currentTime,
-        networkState: videoRef.current.networkState,
-        readyState: videoRef.current.readyState,
-      });
-    }
-    setShowDiagnosticModal(true);
-  };
-
-  const copyDirectUrl = () => {
-    if (streamUrl) {
-      navigator.clipboard.writeText(streamUrl).then(() => {
-        setCopiedUrl(true);
-        setTimeout(() => setCopiedUrl(false), 2000);
-      });
+      setRetryTrigger((p) => p + 1);
     }
   };
 
   const playerContent = (
     <motion.div
+      ref={containerRef}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      onMouseMove={handleMouseMove}
+      onMouseMove={resetInactivityTimer}
+      onTouchStart={resetInactivityTimer}
+      onClick={handleContainerClick}
       className={`${
-        embedded
-          ? 'relative w-full aspect-video rounded-2xl overflow-hidden bg-black border border-nc-border/40 shadow-xl'
-          : 'fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center'
+        embedded && !isVisuallyExpanded
+          ? 'relative w-full aspect-video rounded-2xl overflow-hidden bg-black border border-nc-border/40 shadow-2xl select-none group'
+          : 'fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center select-none overflow-hidden'
       }`}
     >
-      {/* Top Header Controls (Full-Screen Mode) */}
-      {!embedded && (
-        <div
-          className={`absolute top-0 left-0 right-0 p-6 z-20 flex items-center justify-between bg-gradient-to-b from-black/80 via-black/40 to-transparent transition-opacity duration-300 ${
-            isIdle ? 'opacity-0 pointer-events-none' : 'opacity-100'
-          }`}
-        >
-          <div className="flex items-center gap-4">
-            <button
-              onClick={handleBack}
-              className="p-3 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-full text-white transition-colors cursor-pointer"
-            >
-              <ArrowLeft className="w-6 h-6" />
-            </button>
-            <h2 className="text-white text-xl font-medium truncate drop-shadow-md">{title}</h2>
-          </div>
+      {/* Video Element: custom React UI controls native/HLS playback, no Plyr */}
+      <video
+        ref={videoRef}
+        className="w-full h-full object-contain pointer-events-none"
+        playsInline
+        controls={false}
+      />
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleRunDiagnostic();
-              }}
-              className="px-3.5 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors flex items-center gap-1.5 text-sm font-medium cursor-pointer"
-              title="Diagnóstico de reprodução direta"
-            >
-              <Wrench className="w-4 h-4 text-nc-primary" />
-              <span>Diagnóstico</span>
-            </button>
+      {/* Unified React Player Controls */}
+      <PlayerControls
+        embedded={embedded && !isVisuallyExpanded}
+        isVisible={isControlsVisible || !session.isPlaying || Boolean(activeError) || isCurrentlyLoading}
+        title={title}
+        channelName={channelName}
+        programTitle={programTitle}
+        isLive={session.isLive}
+        isPlaying={session.isPlaying}
+        isLoading={isCurrentlyLoading}
+        isBuffering={session.isBuffering}
+        currentTime={session.currentTime}
+        duration={session.duration}
+        bufferedRanges={session.bufferedRanges}
+        volume={session.volume}
+        isMuted={session.isMuted}
+        isFullscreen={isFullscreen || isVisuallyExpanded}
+        isAtLiveEdge={session.isAtLiveEdge}
+        liveEdgeDistance={session.liveEdgeDistance}
+        onTogglePlay={session.togglePlay}
+        onSeek={session.seek}
+        onSeekBy={session.seekBy}
+        onSeekToLive={session.seekToLive}
+        onVolumeChange={session.setVolume}
+        onToggleMute={session.toggleMute}
+        onToggleFullscreen={toggleFullscreen}
+        onTogglePiP={togglePiP}
+        onOpenSettings={() => setShowSettings((p) => !p)}
+        onOpenDiagnostics={() => setShowDiagnostics((p) => !p)}
+        onBack={onBack}
+        onNext={onNext}
+        onPrevious={onPrevious}
+        hasPiP={hasPiP}
+      />
 
-            {onPrevious && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onPrevious();
-                }}
-                className="px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors flex items-center gap-2 text-sm font-medium"
-              >
-                <SkipBack className="w-4 h-4" />
-                Anterior
-              </button>
-            )}
-            {onNext && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onNext();
-                }}
-                className="px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors flex items-center gap-2 text-sm font-medium"
-              >
-                <SkipForward className="w-4 h-4" />
-                Próximo
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Settings Menu Overlay */}
+      <PlayerSettingsMenu
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        isLive={session.isLive}
+        qualities={session.qualities}
+        currentQuality={session.currentQuality}
+        onSelectQuality={session.setQuality}
+        audioTracks={session.audioTracks}
+        currentAudioTrack={session.currentAudioTrack}
+        onSelectAudioTrack={session.setAudioTrack}
+        subtitleTracks={session.subtitleTracks}
+        currentSubtitleTrack={session.currentSubtitleTrack}
+        onSelectSubtitleTrack={session.setSubtitleTrack}
+        playbackRate={session.playbackRate}
+        onSelectPlaybackRate={session.setPlaybackRate}
+        bufferProfile={session.bufferProfile}
+        onSelectBufferProfile={session.setProfile}
+      />
 
-      {/* Loading Overlay */}
-      {isPlayerLoading && (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/75 backdrop-blur-sm pointer-events-none">
-          <Loader2 className="w-12 h-12 animate-spin text-nc-primary mb-3" />
-          <p className="text-white text-sm font-medium tracking-wide">
-            Carregando transmissão direta...
-          </p>
-        </div>
-      )}
+      {/* Diagnostics Modal Overlay */}
+      <PlayerDiagnosticsModal
+        isOpen={showDiagnostics}
+        onClose={() => setShowDiagnostics(false)}
+        streamUrl={streamUrl}
+        contentType={session.isLive ? 'live' : contentType || 'movie'}
+        transport={session.inferredTransport}
+        stats={session.stats}
+      />
 
       {/* Error Overlay */}
-      {activeError && !isPlayerLoading && (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center">
+      {activeError && !isCurrentlyLoading && (
+        <div
+          className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
             <AlertCircle className="w-7 h-7 text-red-500" />
           </div>
           <h3 className="text-lg font-bold text-white mb-2">Erro de Reprodução Direta</h3>
-          <p className="text-red-400 text-sm max-w-lg mb-6 leading-relaxed">{activeError}</p>
+          <p className="text-red-400 text-sm max-w-lg mb-6 leading-relaxed">
+            {activeError}
+          </p>
 
           <div className="flex flex-wrap gap-3 justify-center">
             <button
@@ -435,136 +412,26 @@ export function VideoPlayer({
               <RefreshCw className="w-4 h-4" /> Tentar Novamente
             </button>
             <button
-              onClick={handleRunDiagnostic}
+              onClick={() => setShowDiagnostics(true)}
               className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white font-medium rounded-xl transition-colors border border-nc-border/40 flex items-center gap-2 text-sm cursor-pointer"
             >
               <Wrench className="w-4 h-4 text-nc-primary" /> Diagnóstico
             </button>
-            {!embedded && (
+            {onBack && (
               <button
-                onClick={handleBack}
-                className="px-5 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary hover:text-white font-medium rounded-xl transition-colors border border-nc-border/50 text-sm cursor-pointer"
+                onClick={onBack}
+                className="px-5 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary hover:text-white font-medium rounded-xl transition-colors border border-nc-border/50 text-sm cursor-pointer flex items-center gap-1.5"
               >
-                Voltar
+                <ArrowLeft className="w-4 h-4" /> Voltar
               </button>
             )}
           </div>
         </div>
       )}
-
-      {/* Direct Connection Diagnostic Modal */}
-      {showDiagnosticModal && (
-        <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-nc-bg border border-nc-border rounded-2xl p-6 max-w-lg w-full shadow-2xl flex flex-col gap-4 text-left max-h-[90vh] overflow-y-auto custom-scrollbar">
-            <div className="flex items-center justify-between border-b border-nc-border/50 pb-3">
-              <div className="flex items-center gap-2">
-                <Wrench className="w-5 h-5 text-nc-primary" />
-                <h3 className="text-lg font-bold text-white">Diagnóstico de Reprodução Direta</h3>
-              </div>
-              <button
-                onClick={() => setShowDiagnosticModal(false)}
-                className="text-nc-text-secondary hover:text-white text-xl font-bold px-2 py-1 cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs text-nc-text-secondary">
-              <div>
-                <span className="font-semibold text-white block mb-1">URL Direta da Transmissão:</span>
-                <div className="flex items-center gap-2 bg-nc-bg-card p-2 rounded border border-nc-border/40 font-mono text-[11px] text-gray-300 break-all select-all">
-                  <span className="flex-1">{streamUrl || 'Nenhuma URL ativa'}</span>
-                  {streamUrl && (
-                    <button
-                      onClick={copyDirectUrl}
-                      className="p-1.5 bg-white/10 hover:bg-white/20 rounded text-white shrink-0 cursor-pointer"
-                      title="Copiar URL"
-                    >
-                      {copiedUrl ? (
-                        <Check className="w-3.5 h-3.5 text-green-400" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div className="bg-nc-bg-card p-2.5 rounded border border-nc-border/40">
-                  <span className="block text-gray-400">Motor de Vídeo:</span>
-                  <span className="text-white font-medium">
-                    {hlsRef.current ? 'HLS.js (MediaSource)' : 'HTML5 Nativo'}
-                  </span>
-                </div>
-                <div className="bg-nc-bg-card p-2.5 rounded border border-nc-border/40">
-                  <span className="block text-gray-400">Resolução Ativa:</span>
-                  <span className="text-white font-medium">
-                    {videoStats.width && videoStats.height
-                      ? `${videoStats.width}x${videoStats.height}`
-                      : 'Indisponível'}
-                  </span>
-                </div>
-                <div className="bg-nc-bg-card p-2.5 rounded border border-nc-border/40">
-                  <span className="block text-gray-400">ReadyState / Network:</span>
-                  <span className="text-white font-medium">
-                    {videoStats.readyState ?? '-'} / {videoStats.networkState ?? '-'}
-                  </span>
-                </div>
-                <div className="bg-nc-bg-card p-2.5 rounded border border-nc-border/40">
-                  <span className="block text-gray-400">Posição / Duração:</span>
-                  <span className="text-white font-medium">
-                    {Math.floor(videoStats.currentTime || 0)}s /{' '}
-                    {videoStats.duration && isFinite(videoStats.duration)
-                      ? `${Math.floor(videoStats.duration)}s`
-                      : 'Ao vivo'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="p-3 bg-nc-bg-card rounded-xl border border-nc-border/40 space-y-1.5">
-                <span className="font-semibold text-white block">Informações de Conectividade:</span>
-                <p className="leading-relaxed">
-                  • <strong>Sem Proxy Intermediário:</strong> O navegador conecta-se diretamente ao IP ou domínio do provedor.
-                </p>
-                <p className="leading-relaxed">
-                  • <strong>Políticas de Origem (CORS):</strong> Para transmissões HLS (.m3u8), o servidor do provedor precisa permitir cabeçalhos CORS (<code>Access-Control-Allow-Origin</code>).
-                </p>
-                <p className="leading-relaxed">
-                  • <strong>Conteúdo Misto:</strong> Se o aplicativo estiver em HTTPS e o provedor em HTTP puro, navegadores modernos bloqueiam o fluxo. Recomenda-se hospedar o aplicativo em HTTP na VPS para provedores HTTP.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex justify-end pt-2">
-              <button
-                onClick={() => setShowDiagnosticModal(false)}
-                className="px-4 py-2 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-xl border border-nc-border/50 text-xs font-medium cursor-pointer"
-              >
-                Fechar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Video Container: clean HTML5 video in embedded mode; wrapped in Plyr in full mode */}
-      <div
-        className={`w-full h-full flex flex-col justify-center items-center bg-black ${
-          activeError ? 'hidden' : 'flex'
-        }`}
-      >
-        <video
-          ref={videoRef}
-          className="w-full h-full max-h-screen object-contain"
-          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-          playsInline
-          controls={embedded}
-        />
-      </div>
     </motion.div>
   );
 
+  // If in full mode (not embedded and not visually expanded into embedded container), portal to document.body
   if (!embedded && typeof document !== 'undefined') {
     return createPortal(playerContent, document.body);
   }

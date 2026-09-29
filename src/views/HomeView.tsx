@@ -9,7 +9,17 @@ import { SeriesDetails } from '../components/SeriesDetails';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
 
 interface HomeViewProps {
-  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
+  onPlay: (
+    url: string,
+    title: string,
+    startAt?: number,
+    streamId?: string | number,
+    contentType?: 'live' | 'movie' | 'episode',
+    channelName?: string,
+    programTitle?: string,
+    onNext?: () => void,
+    onPrevious?: () => void
+  ) => void;
   searchQuery?: string;
 }
 
@@ -203,7 +213,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         streamId: stream.stream_id,
         allowedOutputFormats: credentials.allowed_output_formats,
       });
-      onPlay(url, stream.name, 0, stream.stream_id);
+      onPlay(url, stream.name, 0, stream.stream_id, 'live', stream.name);
     } catch (err: any) {
       console.error('Erro ao iniciar canal ao vivo:', err.message);
       setHomePlayError(err?.message || 'Falha ao iniciar transmissão ao vivo.');
@@ -221,7 +231,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         streamId: stream.stream_id,
         containerExtension: stream.container_extension || "mp4",
       });
-      onPlay(url, stream.name, 0, stream.stream_id);
+      onPlay(url, stream.name, 0, stream.stream_id, 'movie');
     } catch (err: any) {
       console.error('Erro ao iniciar filme:', err.message);
       setHomePlayError(err?.message || 'Falha ao iniciar filme.');

@@ -5,10 +5,21 @@ import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
+import { MediaImage } from '../components/MediaImage';
 import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface FavoritesViewProps {
-  onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
+  onPlay: (
+    url: string,
+    title: string,
+    startAt?: number,
+    streamId?: string | number,
+    contentType?: 'live' | 'movie' | 'episode',
+    channelName?: string,
+    programTitle?: string,
+    onNext?: () => void,
+    onPrevious?: () => void
+  ) => void;
   searchQuery?: string;
 }
 
@@ -49,7 +60,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
           streamId: fav.id,
           allowedOutputFormats: credentials.allowed_output_formats,
         });
-        onPlay(url, fav.name, 0, fav.id);
+        onPlay(url, fav.name, 0, fav.id, 'live', fav.name);
       } catch (err: any) {
         console.error('Erro ao iniciar canal favorito:', err.message);
         setFavPlayError(err?.message || 'Falha ao iniciar canal favorito.');
@@ -151,13 +162,11 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                   className={`relative ${fav.type === 'live' ? 'aspect-video' : 'aspect-[2/3]'}`}
                 >
                    {fav.cover ? (
-                     <img 
-                       src={buildDirectImageUrl(fav.cover)} 
+                     <MediaImage
+                       src={fav.cover}
+                       serverUrl={credentials?.serverUrl}
                        alt={fav.name}
                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                       onError={(e) => {
-                         (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
-                       }}
                      />
                    ) : (
                      <div className="w-full h-full bg-nc-bg-input flex items-center justify-center">
