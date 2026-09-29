@@ -1,78 +1,138 @@
-import { Category, LiveStream, VodStream, SeriesStream, XtreamAuthResponse, XtreamCredentials } from "../types";
+import {
+  Category,
+  LiveStream,
+  VodStream,
+  SeriesStream,
+  XtreamAuthResponse,
+  XtreamCredentials,
+} from "../types";
+import { normalizeServerUrl } from "../utils/mediaUtils";
 
 export class XtreamService {
   /**
-   * Helper function to perform same-origin calls to the Express Xtream proxy
+   * Performs direct HTTP/HTTPS GET requests from the user's browser directly to the Xtream provider.
+   * Uses URL and URLSearchParams to construct the query string.
    */
   private static async request<T = any>(
     credentials: XtreamCredentials,
-    action: string,
-    params: Record<string, string | number> = {}
+    action?: string,
+    params: Record<string, string | number> = {},
+    timeoutMs: number = 25000
   ): Promise<T> {
-    const cleanServerUrl = (credentials.serverUrl || "").trim().replace(/\/+$/, "");
-
-    const response = await fetch("/api/xtream", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        serverUrl: cleanServerUrl,
-        username: credentials.username,
-        password: credentials.password,
-        action,
-        params,
-      }),
-    });
-
-    if (!response.ok) {
-      let errorMessage = `Erro de conexão (${response.status})`;
-      try {
-        const errJson = await response.json();
-        if (errJson && errJson.message) {
-          errorMessage = errJson.message;
-        }
-      } catch {
-        // Fallback message
-      }
-      throw new Error(errorMessage);
+    const cleanServerUrl = normalizeServerUrl(credentials.serverUrl);
+    if (!cleanServerUrl) {
+      throw new Error("URL do servidor Xtream não fornecida ou inválida.");
     }
 
-    const data = await response.json();
-    return data as T;
+    let targetUrl: URL;
+    try {
+      targetUrl = new URL(
+        `${cleanServerUrl.replace(/\/+$/, "")}/player_api.php`
+      );
+    } catch {
+      throw new Error(`Endereço de servidor inválido: ${cleanServerUrl}`);
+    }
+
+    targetUrl.searchParams.set("username", credentials.username);
+    targetUrl.searchParams.set("password", credentials.password);
+
+    if (action) {
+      targetUrl.searchParams.set("action", action);
+    }
+
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== "") {
+        targetUrl.searchParams.set(key, String(value));
+      }
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(targetUrl.toString(), {
+        method: "GET",
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err.name === "AbortError") {
+        throw new Error(
+          "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
+        );
+      }
+      // Standard browser network error (often caused by CORS restrictions on the provider or mixed content)
+      throw new Error(
+        "Falha de rede ou bloqueio de CORS ao comunicar diretamente com o provedor. " +
+          "Verifique se o servidor está online e se permite requisições da web."
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `O servidor do provedor retornou HTTP ${response.status} (${response.statusText || "Erro"}).`
+      );
+    }
+
+    let textData: string;
+    try {
+      textData = await response.text();
+    } catch {
+      throw new Error("Falha ao ler os dados da resposta do provedor.");
+    }
+
+    if (!textData || !textData.trim()) {
+      return [] as unknown as T;
+    }
+
+    try {
+      return JSON.parse(textData) as T;
+    } catch {
+      throw new Error(
+        "O provedor retornou uma resposta em formato inválido (não é um JSON válido)."
+      );
+    }
   }
 
   /**
    * 1. Authenticate user and retrieve general account/server properties.
+   * Calls player_api.php?username=...&password=... without action.
    */
   static async authenticate(credentials: XtreamCredentials): Promise<XtreamAuthResponse> {
-    const data = await this.request<XtreamAuthResponse>(credentials, "auth");
+    const data = await this.request<any>(credentials);
 
-    if (!data || !data.user_info) {
-      throw new Error("Usuário ou senha inválidos.");
+    if (!data || typeof data !== "object") {
+      throw new Error("Resposta inválida recebida do servidor do provedor.");
+    }
+
+    if (!data.user_info) {
+      throw new Error("Usuário ou senha incorretos ou resposta inesperada do provedor.");
     }
 
     const auth = data.user_info.auth;
     // Validate auth: must not be 0, "0", or false
-    if (auth === 0 || auth === "0" || String(auth) === "0") {
+    if (auth === 0 || auth === "0" || auth === false || String(auth) === "0") {
       throw new Error("Usuário ou senha inválidos ou conta desativada.");
     }
 
     if (
       data.user_info.status &&
-      ["disabled", "expired", "banned"].includes(data.user_info.status.toLowerCase())
+      ["disabled", "expired", "banned"].includes(String(data.user_info.status).toLowerCase())
     ) {
       throw new Error("Conta de usuário desativada ou expirada.");
     }
 
-    return data;
+    return data as XtreamAuthResponse;
   }
 
   /**
    * Fetch Live Categories
    */
   static async getLiveCategories(credentials: XtreamCredentials): Promise<Category[]> {
-    const data = await this.request<Category[]>(credentials, "get_live_categories");
+    const data = await this.request<any>(credentials, "get_live_categories");
     return Array.isArray(data) ? data : [];
   }
 
@@ -81,7 +141,7 @@ export class XtreamService {
    */
   static async getLiveStreams(credentials: XtreamCredentials, categoryId?: string): Promise<LiveStream[]> {
     const params = categoryId ? { category_id: categoryId } : {};
-    const data = await this.request<LiveStream[]>(credentials, "get_live_streams", params);
+    const data = await this.request<any>(credentials, "get_live_streams", params);
     return Array.isArray(data) ? data : [];
   }
 
@@ -89,7 +149,7 @@ export class XtreamService {
    * Fetch VOD Categories
    */
   static async getVodCategories(credentials: XtreamCredentials): Promise<Category[]> {
-    const data = await this.request<Category[]>(credentials, "get_vod_categories");
+    const data = await this.request<any>(credentials, "get_vod_categories");
     return Array.isArray(data) ? data : [];
   }
 
@@ -98,7 +158,7 @@ export class XtreamService {
    */
   static async getVodStreams(credentials: XtreamCredentials, categoryId?: string): Promise<VodStream[]> {
     const params = categoryId ? { category_id: categoryId } : {};
-    const data = await this.request<VodStream[]>(credentials, "get_vod_streams", params);
+    const data = await this.request<any>(credentials, "get_vod_streams", params);
     return Array.isArray(data) ? data : [];
   }
 
@@ -114,7 +174,7 @@ export class XtreamService {
    * Fetch Series Categories
    */
   static async getSeriesCategories(credentials: XtreamCredentials): Promise<Category[]> {
-    const data = await this.request<Category[]>(credentials, "get_series_categories");
+    const data = await this.request<any>(credentials, "get_series_categories");
     return Array.isArray(data) ? data : [];
   }
 
@@ -123,7 +183,7 @@ export class XtreamService {
    */
   static async getSeries(credentials: XtreamCredentials, categoryId?: string): Promise<SeriesStream[]> {
     const params = categoryId ? { category_id: categoryId } : {};
-    const data = await this.request<SeriesStream[]>(credentials, "get_series", params);
+    const data = await this.request<any>(credentials, "get_series", params);
     return Array.isArray(data) ? data : [];
   }
 

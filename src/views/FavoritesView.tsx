@@ -5,7 +5,7 @@ import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
-import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
+import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface FavoritesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -37,22 +37,22 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
 
   const displayedFavorites = filteredFavorites.slice(0, displayCount);
 
-  const handlePlayClick = async (fav: FavoriteItem) => {
+  const handlePlayClick = (fav: FavoriteItem) => {
     if (!credentials) return;
 
     if (fav.type === 'live') {
       try {
         setFavPlayError(null);
         setFailedFav(null);
-        const url = await getMediaStreamUrl(credentials, {
+        const url = buildDirectMediaUrl(credentials, {
           type: 'live',
           streamId: fav.id,
-          allowedOutputFormats: (credentials as any).allowed_output_formats,
+          allowedOutputFormats: credentials.allowed_output_formats,
         });
         onPlay(url, fav.name, 0, fav.id);
       } catch (err: any) {
         console.error('Erro ao iniciar canal favorito:', err.message);
-        setFavPlayError(err?.message || 'Falha ao iniciar canal favorito via rota segura.');
+        setFavPlayError(err?.message || 'Falha ao iniciar canal favorito.');
         setFailedFav(fav);
       }
     } else if (fav.type === 'movie') {
@@ -152,11 +152,11 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                 >
                    {fav.cover ? (
                      <img 
-                       src={getProxiedImageUrl(fav.cover)} 
+                       src={buildDirectImageUrl(fav.cover)} 
                        alt={fav.name}
                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                        onError={(e) => {
-                         (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                         (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
                        }}
                      />
                    ) : (

@@ -1,12 +1,38 @@
 import { XtreamCredentials } from "../types";
 
 /**
+ * Fallback SVG image data URI used when a cover, logo or backdrop fails to load
+ * or is missing, eliminating any need for backend proxy fallback endpoints.
+ */
+export const FALLBACK_IMAGE_DATA_URI =
+  "data:image/svg+xml;charset=utf-8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" width="100%" height="100%">
+      <defs>
+        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#141923"/>
+          <stop offset="100%" stop-color="#0b0e14"/>
+        </linearGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#bg)"/>
+      <g fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" transform="translate(170, 270)">
+        <rect x="0" y="0" width="60" height="48" rx="6" stroke="#475569" stroke-width="3"/>
+        <polygon points="24,14 42,24 24,34" fill="#00df81" stroke="#00df81" stroke-width="2"/>
+      </g>
+      <text x="200" y="360" fill="#64748b" font-family="system-ui, sans-serif" font-size="14" font-weight="500" text-anchor="middle">
+        Sem Imagem
+      </text>
+    </svg>`
+  );
+
+/**
  * Normalizes an Xtream server URL:
  * - Fixes single slash protocols (e.g. "http:/example.com" -> "http://example.com")
  * - Prepends http:// if protocol is missing
  * - Preserves explicit ports (e.g. "example.com:8080")
+ * - Preserves user-supplied base paths (e.g. "http://example.com:8080/iptv")
  * - Strips trailing slashes
- * - Returns canonical "http(s)://host(:port)"
+ * - Returns canonical "http(s)://host(:port)(/basePath)"
  */
 export function normalizeServerUrl(rawUrl: string): string {
   if (!rawUrl || typeof rawUrl !== "string") return "";
@@ -25,40 +51,34 @@ export function normalizeServerUrl(rawUrl: string): string {
 
   try {
     const parsed = new URL(trimmed);
-    // parsed.host includes port if specified (e.g. "example.com:8080")
-    return `${parsed.protocol}//${parsed.host}`;
+    const basePath = parsed.pathname.replace(/\/+$/, "");
+    return `${parsed.protocol}//${parsed.host}${basePath}`;
   } catch {
     return trimmed;
   }
 }
 
 /**
- * Transforms image URLs (covers, channel logos, backdrops) into
- * same-origin HTTPS URLs via /api/media/image to prevent Mixed Content blocking.
- * Accurately handles:
- * - Absolute URLs (http:// or https://)
- * - Protocol-relative URLs (starting with //)
- * - Schemeless domain URLs (e.g. images.tmdb.org/...)
- * - Path-relative or root-relative URLs resolved against serverUrl (e.g. /images/123.jpg or images/123.jpg)
- * If the image is empty or invalid, returns the fallback image.
+ * Builds direct image URLs for covers, channel logos, backdrops, and avatars.
+ * Directly requests the origin without any server proxy:
+ * - Absolute URLs (http:// or https://) returned as-is
+ * - Protocol-relative URLs (starting with //) resolved with provider or page scheme
+ * - Schemeless domain URLs prepended with scheme
+ * - Path-relative or root-relative URLs resolved against serverUrl
+ * - Invalid/empty URLs return the inline SVG fallback
  */
-export function getProxiedImageUrl(rawUrl?: string | null, serverUrl?: string | null): string {
+export function buildDirectImageUrl(rawUrl?: string | null, serverUrl?: string | null): string {
   if (!rawUrl || typeof rawUrl !== "string") {
-    return "/api/media/image?fallback=1";
+    return FALLBACK_IMAGE_DATA_URI;
   }
 
   let trimmed = rawUrl.trim();
   if (!trimmed) {
-    return "/api/media/image?fallback=1";
+    return FALLBACK_IMAGE_DATA_URI;
   }
 
   // Preserve data URLs and blob URLs
   if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
-    return trimmed;
-  }
-
-  // Already proxied
-  if (trimmed.startsWith("/api/media/image")) {
     return trimmed;
   }
 
@@ -78,190 +98,130 @@ export function getProxiedImageUrl(rawUrl?: string | null, serverUrl?: string | 
 
   // 1. Protocol-relative URL: //domain.com/path
   if (trimmed.startsWith("//")) {
-    const protocol = effectiveServerUrl && effectiveServerUrl.startsWith("http://") ? "http:" : "https:";
-    trimmed = `${protocol}${trimmed}`;
-  }
-  // 2. Schemeless domain URL (e.g. images.tmdb.org/..., m.media-amazon.com/...)
-  else if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-    if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/.*)?$/.test(trimmed)) {
-      trimmed = `https://${trimmed}`;
-    } else if (effectiveServerUrl) {
-      // Relative path: resolve against effectiveServerUrl
-      try {
-        const cleanBase = normalizeServerUrl(effectiveServerUrl);
-        const resolved = new URL(trimmed.replace(/^\/+/, ""), cleanBase + "/");
-        trimmed = resolved.toString();
-      } catch {
-        // keep trimmed
-      }
-    }
+    const protocol =
+      effectiveServerUrl && effectiveServerUrl.startsWith("https://")
+        ? "https:"
+        : effectiveServerUrl && effectiveServerUrl.startsWith("http://")
+        ? "http:"
+        : typeof window !== "undefined" && window.location.protocol.startsWith("http")
+        ? window.location.protocol
+        : "http:";
+    return `${protocol}${trimmed}`;
   }
 
+  // 2. Direct absolute URLs
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-    const query = effectiveServerUrl
-      ? `url=${encodeURIComponent(trimmed)}&serverUrl=${encodeURIComponent(effectiveServerUrl)}`
-      : `url=${encodeURIComponent(trimmed)}`;
-    return `/api/media/image?${query}`;
+    return trimmed;
   }
 
-  // If path is still relative without serverUrl, pass to image proxy anyway with serverUrl hint
-  if (trimmed.startsWith("/") || trimmed.includes("/")) {
-    return `/api/media/image?url=${encodeURIComponent(trimmed)}`;
+  // 3. Schemeless domain URL (e.g. images.tmdb.org/..., m.media-amazon.com/...)
+  if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/.*)?$/.test(trimmed)) {
+    const scheme =
+      effectiveServerUrl && effectiveServerUrl.startsWith("http://") ? "http://" : "https://";
+    return `${scheme}${trimmed}`;
   }
 
-  return "/api/media/image?fallback=1";
-}
-
-export interface FormatValidationResult {
-  isPlayable: boolean;
-  format: string;
-  warning?: string;
-  error?: string;
-}
-
-/**
- * Validates whether a requested format is playable in standard web browsers.
- * - Live: natively prefers HLS (.m3u8). If only raw .ts is offered, flags it so the server can remux via FFmpeg.
- * - VOD / Series: MP4/WebM are natively supported in web browsers. MKV/AVI/FLV lack native codec support in browsers without remux.
- */
-export function validatePlayableFormat(
-  type: "live" | "movie" | "series",
-  options: {
-    containerExtension?: string;
-    allowedOutputFormats?: string[];
-    requireNative?: boolean;
-  } = {}
-): FormatValidationResult {
-  const { containerExtension, allowedOutputFormats, requireNative = false } = options;
-
-  if (type === "live") {
-    if (allowedOutputFormats && Array.isArray(allowedOutputFormats) && allowedOutputFormats.length > 0) {
-      const lowerFormats = allowedOutputFormats.map((f) => String(f).toLowerCase());
-      const hasM3u8 = lowerFormats.includes("m3u8");
-      const hasOnlyTs = lowerFormats.includes("ts") && !hasM3u8;
-
-      if (hasOnlyTs) {
-        if (requireNative) {
-          return {
-            isPlayable: false,
-            format: "ts",
-            error:
-              "O provedor oferece exclusivamente o formato MPEG-TS (.ts) para canais ao vivo, sem lista HLS (.m3u8). Navegadores não reproduzem .ts diretamente sem remux no servidor.",
-          };
-        }
-        return {
-          isPlayable: true,
-          format: "ts", // Direct .ts selection: creates ticket with ext: "ts" and routes directly to FFmpeg live remux
-          warning:
-            "O provedor transmite em formato MPEG-TS (.ts). A reprodução no navegador utiliza remuxing em tempo real para HLS pelo servidor (FFmpeg).",
-        };
-      }
+  // 4. Relative path resolved against serverUrl
+  if (effectiveServerUrl) {
+    try {
+      const cleanBase = normalizeServerUrl(effectiveServerUrl);
+      const relativePart = trimmed.replace(/^\/+/, "");
+      return `${cleanBase}/${relativePart}`;
+    } catch {
+      // ignore
     }
-
-    return {
-      isPlayable: true,
-      format: "m3u8",
-    };
   }
 
-  // VOD / Series
-  const ext = (containerExtension || "mp4").toLowerCase().replace(/^\./, "");
-  const nativeBrowserFormats = ["mp4", "m4v", "webm"];
-
-  if (!nativeBrowserFormats.includes(ext)) {
-    return {
-      isPlayable: true,
-      format: ext,
-      warning: `O contêiner (.${ext}) pode não ser reproduzível nativamente neste navegador. O formato nativo padrão é MP4.`,
-    };
-  }
-
-  return {
-    isPlayable: true,
-    format: ext,
-  };
+  return FALLBACK_IMAGE_DATA_URI;
 }
 
-// In-memory cache for media tickets on the client to avoid repeated POST requests
-const mediaTicketCache = new Map<string, { streamUrl: string; expiresAt: number }>();
+// Alias for backwards compatibility across existing components
+export const getProxiedImageUrl = buildDirectImageUrl;
 
-export interface RequestMediaUrlOptions {
+export interface BuildDirectMediaUrlOptions {
   type: "live" | "movie" | "series";
   streamId: string | number;
   containerExtension?: string;
   allowedOutputFormats?: string[];
+  directSource?: string;
 }
 
 /**
- * Requests a same-origin HTTPS media URL from Express.
- * CRITICAL: NEVER silently falls back to direct raw HTTP/HTTPS URLs.
- * If ticket creation fails, throws the real error message so the UI can display it with a retry option.
+ * Builds DIRECT media stream URLs from browser to the IPTV Xtream provider.
+ * Follows standard Xtream Codes routing conventions:
+ * - Live:   /live/{username}/{password}/{stream_id}.{format}
+ * - Movies: /movie/{username}/{password}/{stream_id}.{container_extension}
+ * - Series: /series/{username}/{password}/{episode_id}.{container_extension}
+ *
+ * Encodes individual path segments with encodeURIComponent while preserving slashes.
+ * Preserves the provider's scheme, host, and explicit port.
  */
+export function buildDirectMediaUrl(
+  credentials: Pick<XtreamCredentials, "serverUrl" | "username" | "password">,
+  options: BuildDirectMediaUrlOptions
+): string {
+  const { type, streamId, containerExtension, allowedOutputFormats, directSource } = options;
+
+  // If a valid direct_source is provided and is a full URL, consider it
+  if (directSource && typeof directSource === "string") {
+    const trimmedSource = directSource.trim();
+    if (/^https?:\/\//i.test(trimmedSource)) {
+      return trimmedSource;
+    }
+  }
+
+  const cleanBase = normalizeServerUrl(credentials.serverUrl);
+  const user = encodeURIComponent(credentials.username);
+  const pass = encodeURIComponent(credentials.password);
+  const id = encodeURIComponent(String(streamId).trim());
+
+  if (type === "live") {
+    let format = "m3u8";
+
+    if (containerExtension) {
+      const cleaned = containerExtension.trim().replace(/^\./, "").toLowerCase();
+      if (cleaned) format = cleaned;
+    } else if (allowedOutputFormats && Array.isArray(allowedOutputFormats) && allowedOutputFormats.length > 0) {
+      const lowerFormats = allowedOutputFormats.map((f) => String(f).toLowerCase());
+      if (lowerFormats.includes("m3u8")) {
+        format = "m3u8";
+      } else if (lowerFormats.includes("ts")) {
+        format = "ts";
+      }
+    }
+
+    return `${cleanBase}/live/${user}/${pass}/${id}.${format}`;
+  }
+
+  if (type === "movie") {
+    const rawExt = containerExtension || "mp4";
+    const ext = encodeURIComponent(rawExt.trim().replace(/^\./, "").toLowerCase() || "mp4");
+    return `${cleanBase}/movie/${user}/${pass}/${id}.${ext}`;
+  }
+
+  if (type === "series") {
+    const rawExt = containerExtension || "mp4";
+    const ext = encodeURIComponent(rawExt.trim().replace(/^\./, "").toLowerCase() || "mp4");
+    return `${cleanBase}/series/${user}/${pass}/${id}.${ext}`;
+  }
+
+  return `${cleanBase}/live/${user}/${pass}/${id}.m3u8`;
+}
+
+// Backwards-compatible alias returning direct URL synchronously or as resolved promise
 export async function getMediaStreamUrl(
   credentials: XtreamCredentials,
-  options: RequestMediaUrlOptions
+  options: {
+    type: "live" | "movie" | "series";
+    streamId: string | number;
+    containerExtension?: string;
+    allowedOutputFormats?: string[];
+  }
 ): Promise<string> {
-  const { type, streamId, containerExtension, allowedOutputFormats } = options;
-  const cleanServerUrl = normalizeServerUrl(credentials.serverUrl);
-
-  const formatCheck = validatePlayableFormat(type, { containerExtension, allowedOutputFormats });
-
-  const ext = formatCheck.format;
-  const cacheKey = `${cleanServerUrl}:${type}:${streamId}:${ext}`;
-  const now = Date.now();
-
-  const cached = mediaTicketCache.get(cacheKey);
-  if (cached && now < cached.expiresAt) {
-    return cached.streamUrl;
-  }
-
-  let response: Response;
-  try {
-    response = await fetch("/api/media/ticket", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        serverUrl: cleanServerUrl,
-        username: credentials.username,
-        password: credentials.password,
-        type,
-        streamId: String(streamId),
-        ext,
-      }),
-    });
-  } catch (err: any) {
-    throw new Error(
-      `Falha ao conectar com o serviço de mídia: ${err?.message || "Sem resposta do servidor"}`
-    );
-  }
-
-  if (!response.ok) {
-    let message = `Erro no serviço de mídia (${response.status})`;
-    try {
-      const errData = await response.json();
-      if (errData && errData.message) {
-        message = errData.message;
-      }
-    } catch {
-      // Fallback
-    }
-    throw new Error(message);
-  }
-
-  const data = await response.json();
-  const streamUrl: string = data.streamUrl;
-
-  if (!streamUrl || !streamUrl.startsWith("/api/media/")) {
-    throw new Error("O servidor retornou uma rota de mídia inválida.");
-  }
-
-  // Cache ticket for 30 minutes
-  mediaTicketCache.set(cacheKey, {
-    streamUrl,
-    expiresAt: now + 1800 * 1000,
+  return buildDirectMediaUrl(credentials, {
+    type: options.type,
+    streamId: options.streamId,
+    containerExtension: options.containerExtension,
+    allowedOutputFormats: options.allowedOutputFormats,
   });
-
-  return streamUrl;
 }

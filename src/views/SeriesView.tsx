@@ -5,7 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
-import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
+import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface SeriesViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -132,18 +132,18 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
     }
   };
 
-  const handlePlayEpisode = async (episode: any) => {
+  const handlePlayEpisode = (episode: any) => {
     if (!credentials) return;
     try {
       const ext = episode.container_extension || "mp4";
-      const mediaUrl = await getMediaStreamUrl(credentials, {
+      const mediaUrl = buildDirectMediaUrl(credentials, {
         type: 'series',
         streamId: episode.id,
         containerExtension: ext,
       });
       onPlay(mediaUrl, `${selectedSeries?.name} - S${selectedSeason}E${episode.episode_num || episode.id}`, 0, episode.id);
     } catch (err: any) {
-      console.error('Erro ao iniciar episódio via /api/media:', err);
+      console.error('Erro ao iniciar episódio:', err);
     }
   };
 
@@ -229,12 +229,12 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
                  >
                    {stream.cover ? (
                      <img 
-                       src={getProxiedImageUrl(stream.cover)} 
+                       src={buildDirectImageUrl(stream.cover)} 
                        alt={stream.name}
                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                        loading="lazy"
                        onError={(e) => {
-                         (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                         (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
                        }}
                      />
                    ) : (

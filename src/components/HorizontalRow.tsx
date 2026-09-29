@@ -1,7 +1,7 @@
 import React, { useRef } from 'react';
 import { motion } from 'motion/react';
 import { Play, ChevronLeft, ChevronRight } from 'lucide-react';
-import { getProxiedImageUrl } from '../utils/mediaUtils';
+import { buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface HorizontalRowProps {
   title: string;
@@ -50,12 +50,12 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
             <div className="relative w-full h-full">
               {item.stream_icon || item.cover ? (
                  <img 
-                   src={getProxiedImageUrl(item.stream_icon || item.cover)} 
+                   src={buildDirectImageUrl(item.stream_icon || item.cover)} 
                    alt={item.name}
                    className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'}`}
                    loading="lazy"
                    onError={(e) => {
-                     (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                     (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
                    }}
                  />
               ) : (

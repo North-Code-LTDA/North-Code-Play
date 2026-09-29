@@ -5,7 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites } from '../hooks/useFavorites';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { XtreamService } from '../services/xtreamService';
-import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
+import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -166,26 +166,25 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     setMiniPlayerError(null);
     setMiniPlayerUrl(''); // Clear previous stream URL immediately so old channel stops
 
-    getMediaStreamUrl(credentials, {
-      type: 'live',
-      streamId: selectedChannel.stream_id,
-      allowedOutputFormats: (credentials as any).allowed_output_formats,
-    })
-      .then((url) => {
-        // Discard if user switched channels before this ticket arrived
-        if (activeRequestIdRef.current === currentReqId) {
-          setMiniPlayerUrl(url);
-          setMiniPlayerLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (activeRequestIdRef.current === currentReqId) {
-          console.error('Erro ao preparar stream ao vivo:', err.message);
-          setMiniPlayerUrl('');
-          setMiniPlayerError(err.message || 'Falha ao conectar à transmissão do canal via HTTPS.');
-          setMiniPlayerLoading(false);
-        }
+    try {
+      const url = buildDirectMediaUrl(credentials, {
+        type: 'live',
+        streamId: selectedChannel.stream_id,
+        allowedOutputFormats: credentials.allowed_output_formats,
       });
+
+      if (activeRequestIdRef.current === currentReqId) {
+        setMiniPlayerUrl(url);
+        setMiniPlayerLoading(false);
+      }
+    } catch (err: any) {
+      if (activeRequestIdRef.current === currentReqId) {
+        console.error('Erro ao preparar stream ao vivo:', err.message);
+        setMiniPlayerUrl('');
+        setMiniPlayerError(err.message || 'Falha ao conectar à transmissão do canal.');
+        setMiniPlayerLoading(false);
+      }
+    }
 
     return () => {
       // Invalidate current in-flight request when channel changes or component unmounts
@@ -273,11 +272,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                       <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden">
                         {stream.stream_icon ? (
                            <img 
-                             src={getProxiedImageUrl(stream.stream_icon)} 
+                             src={buildDirectImageUrl(stream.stream_icon)} 
                              alt={stream.name}
                              className="w-full h-full object-contain p-1"
                              onError={(e) => {
-                               (e.target as HTMLImageElement).src = '/api/media/image?fallback=1'; 
+                               (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI; 
                              }}
                            />
                         ) : (
@@ -338,11 +337,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                     <div className="w-20 h-20 bg-nc-bg-card rounded-2xl flex items-center justify-center overflow-hidden shrink-0 border border-nc-border/50 p-2">
                       {selectedChannel.stream_icon ? (
                         <img 
-                          src={getProxiedImageUrl(selectedChannel.stream_icon)} 
+                          src={buildDirectImageUrl(selectedChannel.stream_icon)} 
                           alt={selectedChannel.name}
                           className="w-full h-full object-contain"
                           onError={(e) => {
-                            (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                            (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
                           }}
                         />
                       ) : (

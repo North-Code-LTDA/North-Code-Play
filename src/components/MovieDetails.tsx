@@ -3,7 +3,7 @@ import { Play, ArrowLeft, Loader2, Star, Calendar, Clock, Info, Heart } from 'lu
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
-import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
+import { buildDirectMediaUrl, buildDirectImageUrl } from '../utils/mediaUtils';
 
 interface MovieDetailsProps {
   key?: React.Key;
@@ -49,7 +49,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     }
   };
 
-  const executePlay = async (startAt: number = 0) => {
+  const executePlay = (startAt: number = 0) => {
     if (startAt === 0) {
       localStorage.removeItem('nc_progress_' + streamId);
     }
@@ -59,7 +59,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
       // Use real container_extension from movie_data or info
       const rawExt = movieData?.container_extension || info?.container_extension || "mp4";
       const ext = String(rawExt).trim().replace(/^\./, "");
-      const mediaUrl = await getMediaStreamUrl(credentials, {
+      const mediaUrl = buildDirectMediaUrl(credentials, {
         type: 'movie',
         streamId,
         containerExtension: ext,
@@ -111,7 +111,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const rawCover = info.backdrop_path && info.backdrop_path.length > 0 
       ? (info.backdrop_path[0] || info.cover_big || info.movie_image)
       : (info.cover_big || info.movie_image || streamIcon);
-  const coverImage = getProxiedImageUrl(rawCover);
+  const coverImage = buildDirectImageUrl(rawCover);
 
   const durationMin = info.duration ? info.duration.split(':')[0] + 'm' : null;
 

@@ -4,9 +4,8 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import muxjs from 'mux.js';
-import { ArrowLeft, Loader2, SkipForward, SkipBack, RefreshCw, AlertCircle, Wrench, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Loader2, SkipForward, SkipBack, RefreshCw, AlertCircle, Wrench, Copy, Check } from 'lucide-react';
 import { motion } from 'motion/react';
-import { normalizeServerUrl } from '../utils/mediaUtils';
 
 if (typeof window !== 'undefined') {
   // @ts-ignore
@@ -49,13 +48,19 @@ export function VideoPlayer({
   const [internalError, setInternalError] = useState<string | null>(null);
   const [isIdle, setIsIdle] = useState(false);
   const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const [resolvedStreamUrl, setResolvedStreamUrl] = useState<string>('');
   const [retryTrigger, setRetryTrigger] = useState(0);
 
   // Diagnostic state
-  const [diagnosticLoading, setDiagnosticLoading] = useState(false);
-  const [diagnosticReport, setDiagnosticReport] = useState<any | null>(null);
   const [showDiagnosticModal, setShowDiagnosticModal] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [videoStats, setVideoStats] = useState<{
+    width?: number;
+    height?: number;
+    duration?: number;
+    currentTime?: number;
+    networkState?: number;
+    readyState?: number;
+  }>({});
 
   const isPlayerLoading = isLoading || (internalLoading && !errorMessage && !internalError);
   const activeError = errorMessage || internalError;
@@ -84,7 +89,7 @@ export function VideoPlayer({
         hlsRef.current.stopLoad();
         hlsRef.current.detachMedia();
         hlsRef.current.destroy();
-      } catch (e) {
+      } catch {
         // ignore
       }
       hlsRef.current = null;
@@ -93,7 +98,7 @@ export function VideoPlayer({
     if (plyrRef.current) {
       try {
         plyrRef.current.destroy();
-      } catch (e) {
+      } catch {
         // ignore
       }
       plyrRef.current = null;
@@ -104,135 +109,26 @@ export function VideoPlayer({
         videoRef.current.pause();
         videoRef.current.removeAttribute('src');
         videoRef.current.load(); // Reset media element pipeline
-      } catch (e) {
+      } catch {
         // ignore
       }
     }
   };
 
-  // 1. Resolve stream URL via /api/media
-  useEffect(() => {
-    let isMounted = true;
-    setInternalError(null);
-    setInternalLoading(true);
-
-    if (!streamUrl) {
-      setResolvedStreamUrl('');
-      // If external loading is happening, don't set error yet
-      if (!isLoading) {
-        setInternalLoading(false);
-      }
-      return;
-    }
-
-    // Directly uses /api/media proxy route
-    if (streamUrl.startsWith('/api/media/')) {
-      setResolvedStreamUrl(streamUrl);
-      return;
-    }
-
-    // Convert legacy raw URL via /api/media/ticket
-    if (streamUrl.startsWith('http://') || streamUrl.startsWith('https://')) {
-      try {
-        const parsed = new URL(streamUrl);
-        const segments = parsed.pathname.split('/').filter(Boolean);
-
-        let type: 'live' | 'movie' | 'series' = 'live';
-        let username = '';
-        let password = '';
-        let file = '';
-
-        if (segments.length >= 4 && ['live', 'movie', 'series'].includes(segments[0])) {
-          type = segments[0] as any;
-          username = segments[1];
-          password = segments[2];
-          file = segments[3];
-        } else if (segments.length >= 3) {
-          username = segments[0];
-          password = segments[1];
-          file = segments[2];
-          if (file.endsWith('.mp4') || file.endsWith('.mkv')) {
-            type = 'movie';
-          }
-        }
-
-        const lastDot = file.lastIndexOf('.');
-        const id = lastDot !== -1 ? file.slice(0, lastDot) : file;
-        const ext = lastDot !== -1 ? file.slice(lastDot + 1) : (type === 'live' ? 'm3u8' : 'mp4');
-
-        if (username && password && id) {
-          const cleanServer = normalizeServerUrl(`${parsed.protocol}//${parsed.host}`);
-          fetch('/api/media/ticket', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              serverUrl: cleanServer,
-              username,
-              password,
-              type,
-              streamId: id,
-              ext,
-            }),
-          })
-            .then(async (res) => {
-              if (!res.ok) {
-                const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.message || `Erro no servidor de mídia (${res.status})`);
-              }
-              return res.json();
-            })
-            .then((data) => {
-              if (isMounted) {
-                if (data.streamUrl) {
-                  setResolvedStreamUrl(data.streamUrl);
-                } else {
-                  setInternalError('O servidor não forneceu uma rota de mídia segura válida.');
-                  setInternalLoading(false);
-                }
-              }
-            })
-            .catch((err: any) => {
-              if (isMounted) {
-                setInternalError(err.message || 'Falha ao preparar a reprodução da mídia via HTTPS.');
-                setInternalLoading(false);
-              }
-            });
-          return;
-        }
-      } catch (err: any) {
-        if (isMounted) {
-          setInternalError('URL de mídia com formato inválido.');
-          setInternalLoading(false);
-        }
-        return;
-      }
-    }
-
-    setInternalError('A URL de reprodução precisa ser processada pela rota segura /api/media.');
-    setInternalLoading(false);
-
-    return () => {
-      isMounted = false;
-    };
-  }, [streamUrl, retryTrigger, isLoading]);
-
-  // 2. Attach media to <video> when resolvedStreamUrl is available
+  // Direct playback setup on the <video> element
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !resolvedStreamUrl) {
+    if (!video || !streamUrl) {
       cleanupMedia();
+      setInternalLoading(false);
       return;
     }
 
     cleanupMedia();
 
-    let recoveryAttempts = 0;
-    const MAX_RECOVERIES = 3;
-
     setInternalLoading(true);
     setInternalError(null);
 
-    // Initialize Plyr only when not embedded to avoid DOM disruption in live channel switching
     const initPlyrIfNeeded = () => {
       if (embedded) return;
       if (plyrRef.current) return;
@@ -250,160 +146,163 @@ export function VideoPlayer({
             'pip',
             'fullscreen',
           ],
+          settings: ['quality', 'speed'],
+          speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] },
           autoplay: true,
           hideControls: true,
-          resetOnEnd: true,
-          seekTime: 10,
+          resetOnEnd: false,
           keyboard: { focused: true, global: true },
-          tooltips: { controls: true, seek: true },
         });
 
-        plyrRef.current.on('ready', () => {
-          if (startAt && startAt > 0) {
-            video.currentTime = startAt;
+        plyrRef.current.on('enterfullscreen', () => {
+          if (videoRef.current) {
+            // @ts-ignore
+            if (videoRef.current.webkitEnterFullscreen) {
+              // @ts-ignore
+              videoRef.current.webkitEnterFullscreen();
+            }
           }
-          video.play().catch(() => {});
         });
       } catch {
+        // fallback to standard controls if Plyr fails
         video.controls = true;
       }
     };
 
-    const isHlsUrl = resolvedStreamUrl.includes('.m3u8') || resolvedStreamUrl.includes('/hls');
+    const isHls =
+      streamUrl.includes('.m3u8') ||
+      streamUrl.includes('/live/') ||
+      streamUrl.toLowerCase().endsWith('.m3u8');
 
-    if (isHlsUrl && Hls.isSupported()) {
+    let isHandled = false;
+
+    // Direct HLS via Hls.js
+    if (isHls && Hls.isSupported()) {
+      isHandled = true;
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
         backBufferLength: 60,
         maxBufferLength: 30,
-        maxMaxBufferLength: 600,
-        maxBufferSize: 60 * 1000 * 1000,
+        maxMaxBufferLength: 60,
         xhrSetup: (xhr) => {
+          // Direct browser request to provider
           xhr.withCredentials = false;
         },
       });
-
       hlsRef.current = hls;
 
-      hls.loadSource(resolvedStreamUrl);
+      hls.loadSource(streamUrl);
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         setInternalLoading(false);
+        setInternalError(null);
         initPlyrIfNeeded();
-        if (embedded) {
-          video.play().catch(() => {});
+        video.play().catch(() => {});
+
+        if (startAt && startAt > 0) {
+          video.currentTime = startAt;
         }
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
-          recoveryAttempts++;
-          if (recoveryAttempts <= MAX_RECOVERIES) {
-            switch (data.type) {
-              case Hls.ErrorTypes.NETWORK_ERROR:
-                hls.startLoad();
-                break;
-              case Hls.ErrorTypes.MEDIA_ERROR:
-                hls.recoverMediaError();
-                break;
-              default:
-                cleanupMedia();
-                setInternalError('Erro irrecuperável na transmissão do canal.');
-                setInternalLoading(false);
-                break;
-            }
-          } else {
-            cleanupMedia();
-            setInternalError(
-              'Não foi possível reproduzir a transmissão após múltiplas tentativas. O canal pode estar offline no provedor.'
-            );
-            setInternalLoading(false);
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              setInternalError(
+                'Falha de rede ou CORS ao carregar manifesto HLS diretamente do provedor. ' +
+                  'Verifique se o provedor permite acesso cross-origin da sua rede.'
+              );
+              setInternalLoading(false);
+              hls.destroy();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              hls.recoverMediaError();
+              break;
+            default:
+              setInternalError('Erro fatal na decodificação do fluxo HLS.');
+              setInternalLoading(false);
+              hls.destroy();
+              break;
           }
         }
       });
-    } else if (isHlsUrl && video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Native Apple HLS (Safari)
-      video.src = resolvedStreamUrl;
-      const onLoadedMetadata = () => {
+    } else if (isHls && video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native Safari HLS
+      isHandled = true;
+      video.src = streamUrl;
+      video.addEventListener('loadedmetadata', () => {
         setInternalLoading(false);
         initPlyrIfNeeded();
-        if (embedded) {
-          video.play().catch(() => {});
-        }
-      };
-      const onError = () => {
-        setInternalError('Falha ao reproduzir fluxo HLS neste dispositivo.');
-        setInternalLoading(false);
-      };
-
-      video.addEventListener('loadedmetadata', onLoadedMetadata);
-      video.addEventListener('error', onError);
-
-      return () => {
-        video.removeEventListener('loadedmetadata', onLoadedMetadata);
-        video.removeEventListener('error', onError);
-        cleanupMedia();
-      };
-    } else {
-      // Direct video file (MP4, WebM)
-      video.src = resolvedStreamUrl;
-      const onLoaded = () => {
-        setInternalLoading(false);
-        initPlyrIfNeeded();
+        video.play().catch(() => {});
         if (startAt && startAt > 0) {
           video.currentTime = startAt;
         }
-        video.play().catch(() => {});
-      };
-      const onError = () => {
-        setInternalError(
-          'Falha ao carregar o arquivo de vídeo. O contêiner ou codec pode ser incompatível com o navegador.'
-        );
-        setInternalLoading(false);
-      };
-
-      video.addEventListener('loadedmetadata', onLoaded);
-      video.addEventListener('canplay', onLoaded);
-      video.addEventListener('error', onError);
-
-      return () => {
-        video.removeEventListener('loadedmetadata', onLoaded);
-        video.removeEventListener('canplay', onLoaded);
-        video.removeEventListener('error', onError);
-        cleanupMedia();
-      };
+      });
     }
 
-    // Save playback progress for resume functionality
-    const handleTimeUpdate = () => {
-      if (video && video.currentTime > 5 && streamId) {
-        localStorage.setItem('nc_progress_' + streamId, Math.floor(video.currentTime).toString());
-        localStorage.setItem('nc_last_watched_' + streamId, Date.now().toString());
+    // Direct Progressive MP4 / WebM / container file
+    if (!isHandled) {
+      video.src = streamUrl;
+      video.addEventListener('loadedmetadata', () => {
+        setInternalLoading(false);
+        setInternalError(null);
+        initPlyrIfNeeded();
+        video.play().catch(() => {});
+        if (startAt && startAt > 0) {
+          video.currentTime = startAt;
+        }
+      });
+    }
+
+    const onPlaying = () => {
+      setInternalLoading(false);
+      setInternalError(null);
+    };
+
+    const onWaiting = () => {
+      setInternalLoading(true);
+    };
+
+    const onError = () => {
+      const err = video.error;
+      let msg = 'Falha ao reproduzir o vídeo diretamente do provedor.';
+      if (err) {
+        if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+          msg =
+            'Formato não suportado nativamente pelo navegador ou bloqueio de CORS / Mixed Content pelo provedor.';
+        } else if (err.code === MediaError.MEDIA_ERR_NETWORK) {
+          msg = 'Erro de rede ao conectar à transmissão do provedor.';
+        } else if (err.code === MediaError.MEDIA_ERR_DECODE) {
+          msg = 'Erro na decodificação do fluxo de vídeo.';
+        }
+      }
+      setInternalError(msg);
+      setInternalLoading(false);
+    };
+
+    const onTimeUpdate = () => {
+      if (streamId && video.currentTime > 5) {
+        localStorage.setItem(`nc_progress_${streamId}`, String(Math.floor(video.currentTime)));
       }
     };
 
-    video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('playing', onPlaying);
+    video.addEventListener('waiting', onWaiting);
+    video.addEventListener('error', onError);
+    video.addEventListener('timeupdate', onTimeUpdate);
 
     return () => {
-      video.removeEventListener('timeupdate', handleTimeUpdate);
+      video.removeEventListener('playing', onPlaying);
+      video.removeEventListener('waiting', onWaiting);
+      video.removeEventListener('error', onError);
+      video.removeEventListener('timeupdate', onTimeUpdate);
       cleanupMedia();
     };
-  }, [resolvedStreamUrl, startAt, streamId, retryTrigger, embedded]);
-
-  const handleBack = () => {
-    cleanupMedia();
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    }
-    onBack();
-  };
+  }, [streamUrl, retryTrigger, embedded]);
 
   const handleRetry = () => {
-    setInternalError(null);
-    setInternalLoading(true);
-    setDiagnosticReport(null);
     if (onRetry) {
       onRetry();
     } else {
@@ -411,77 +310,31 @@ export function VideoPlayer({
     }
   };
 
-  // Run diagnostic tool on demand
-  const handleRunDiagnostic = async () => {
-    setDiagnosticLoading(true);
-    setShowDiagnosticModal(true);
-    try {
-      // If resolvedStreamUrl contains ticketId /api/media/stream/:ticket/:file
-      const match = resolvedStreamUrl.match(/\/api\/media\/stream\/([^/]+)/);
-      const ticketId = match ? match[1] : undefined;
-
-      const res = ticketId
-        ? await fetch(`/api/media/diagnose/${ticketId}`)
-        : await fetch('/api/media/diagnose', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ streamId }),
-          });
-
-      if (res.ok) {
-        const data = await res.json();
-        setDiagnosticReport(data);
-      } else {
-        setDiagnosticReport({
-          error: `Falha no serviço de diagnóstico (${res.status})`,
-        });
-      }
-    } catch (err: any) {
-      setDiagnosticReport({
-        error: err?.message || 'Não foi possível conectar ao serviço de diagnóstico.',
-      });
-    } finally {
-      setDiagnosticLoading(false);
-    }
+  const handleBack = () => {
+    cleanupMedia();
+    onBack();
   };
 
-  // Switch to alternative extension found by diagnostic and issue a new ticket
-  const handleSwitchExtension = async (newExt: string) => {
-    setDiagnosticLoading(true);
-    try {
-      const match = resolvedStreamUrl.match(/\/api\/media\/stream\/([^/]+)/);
-      const ticketId = match ? match[1] : undefined;
-
-      if (!ticketId) {
-        setInternalError('Não foi possível identificar a sessão de mídia atual para alternar extensão.');
-        setShowDiagnosticModal(false);
-        return;
-      }
-
-      const res = await fetch('/api/media/switch-extension', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticketId, newExt }),
+  const handleRunDiagnostic = () => {
+    if (videoRef.current) {
+      setVideoStats({
+        width: videoRef.current.videoWidth,
+        height: videoRef.current.videoHeight,
+        duration: videoRef.current.duration,
+        currentTime: videoRef.current.currentTime,
+        networkState: videoRef.current.networkState,
+        readyState: videoRef.current.readyState,
       });
+    }
+    setShowDiagnosticModal(true);
+  };
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.message || `Erro ao trocar extensão (${res.status})`);
-      }
-
-      const data = await res.json();
-      if (data.streamUrl) {
-        cleanupMedia();
-        setShowDiagnosticModal(false);
-        setDiagnosticReport(null);
-        setInternalError(null);
-        setInternalLoading(true);
-        setResolvedStreamUrl(data.streamUrl);
-      }
-    } catch (err: any) {
-      alert(err?.message || 'Falha ao comutar extensão.');
-    } finally {
-      setDiagnosticLoading(false);
+  const copyDirectUrl = () => {
+    if (streamUrl) {
+      navigator.clipboard.writeText(streamUrl).then(() => {
+        setCopiedUrl(true);
+        setTimeout(() => setCopiedUrl(false), 2000);
+      });
     }
   };
 
@@ -494,10 +347,10 @@ export function VideoPlayer({
       className={`${
         embedded
           ? 'relative w-full aspect-video rounded-2xl overflow-hidden bg-black border border-nc-border/40 shadow-xl'
-          : 'fixed inset-0 z-50 bg-black flex flex-col items-center justify-center'
+          : 'fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center'
       }`}
     >
-      {/* Top Header Controls (Full-Screen Mode) - Always display diagnostic button during playback */}
+      {/* Top Header Controls (Full-Screen Mode) */}
       {!embedded && (
         <div
           className={`absolute top-0 left-0 right-0 p-6 z-20 flex items-center justify-between bg-gradient-to-b from-black/80 via-black/40 to-transparent transition-opacity duration-300 ${
@@ -521,7 +374,7 @@ export function VideoPlayer({
                 handleRunDiagnostic();
               }}
               className="px-3.5 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors flex items-center gap-1.5 text-sm font-medium cursor-pointer"
-              title="Diagnóstico de reprodução e origem"
+              title="Diagnóstico de reprodução direta"
             >
               <Wrench className="w-4 h-4 text-nc-primary" />
               <span>Diagnóstico</span>
@@ -547,78 +400,50 @@ export function VideoPlayer({
                 }}
                 className="px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors flex items-center gap-2 text-sm font-medium"
               >
-                Próximo
                 <SkipForward className="w-4 h-4" />
+                Próximo
               </button>
             )}
           </div>
         </div>
       )}
 
-      {/* Embedded Mode Top Bar Header */}
-      {embedded && (
-        <div className="absolute top-0 left-0 right-0 p-2 px-3 z-20 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent">
-          <span className="text-xs font-semibold text-white/90 truncate max-w-[70%] drop-shadow">
-            {title}
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleRunDiagnostic();
-              }}
-              className="p-1 bg-black/40 hover:bg-black/70 rounded text-gray-300 hover:text-white transition-colors flex items-center gap-1 text-[10px] cursor-pointer"
-              title="Diagnóstico da transmissão"
-            >
-              <Wrench className="w-3 h-3 text-nc-primary" />
-              <span className="hidden sm:inline">Diagnóstico</span>
-            </button>
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[10px] font-semibold border border-red-500/30">
-              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
-              AO VIVO
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Persistent Loading Overlay (visible during channel switch & ticket creation; never blank/black) */}
-      {isPlayerLoading && !activeError && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-black/75 backdrop-blur-sm p-4 text-center">
-          <Loader2 className="w-10 h-10 text-nc-primary animate-spin mb-3" />
-          <p className="text-white text-base font-semibold truncate max-w-xs">{title}</p>
-          <p className="text-gray-400 text-xs mt-1">Carregando transmissão segura...</p>
-        </div>
-      )}
-
-      {/* Clear Error Overlay */}
-      {activeError && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-black/90 p-4 text-center">
-          <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center mb-3">
-            <AlertCircle className="w-6 h-6 text-red-500" />
-          </div>
-          <p className="text-red-400 text-sm md:text-base font-medium max-w-md mb-2">{activeError}</p>
-          <p className="text-gray-400 text-xs max-w-md mb-4">
-            A transmissão é processada pela rota segura /api/media para garantir compatibilidade no navegador.
+      {/* Loading Overlay */}
+      {isPlayerLoading && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/75 backdrop-blur-sm pointer-events-none">
+          <Loader2 className="w-12 h-12 animate-spin text-nc-primary mb-3" />
+          <p className="text-white text-sm font-medium tracking-wide">
+            Carregando transmissão direta...
           </p>
-          <div className="flex flex-wrap items-center justify-center gap-2">
+        </div>
+      )}
+
+      {/* Error Overlay */}
+      {activeError && !isPlayerLoading && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center">
+          <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
+            <AlertCircle className="w-7 h-7 text-red-500" />
+          </div>
+          <h3 className="text-lg font-bold text-white mb-2">Erro de Reprodução Direta</h3>
+          <p className="text-red-400 text-sm max-w-lg mb-6 leading-relaxed">{activeError}</p>
+
+          <div className="flex flex-wrap gap-3 justify-center">
             <button
               onClick={handleRetry}
-              className="px-4 py-2 bg-nc-primary hover:bg-nc-primary-hover text-black rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              className="px-5 py-2.5 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center gap-2 text-sm cursor-pointer"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Tentar Novamente
+              <RefreshCw className="w-4 h-4" /> Tentar Novamente
             </button>
             <button
               onClick={handleRunDiagnostic}
-              className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+              className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white font-medium rounded-xl transition-colors border border-nc-border/40 flex items-center gap-2 text-sm cursor-pointer"
             >
-              <Wrench className="w-3.5 h-3.5" />
-              Diagnóstico
+              <Wrench className="w-4 h-4 text-nc-primary" /> Diagnóstico
             </button>
             {!embedded && (
               <button
                 onClick={handleBack}
-                className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-medium cursor-pointer"
+                className="px-5 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary hover:text-white font-medium rounded-xl transition-colors border border-nc-border/50 text-sm cursor-pointer"
               >
                 Voltar
               </button>
@@ -627,135 +452,98 @@ export function VideoPlayer({
         </div>
       )}
 
-      {/* Diagnostic Modal */}
+      {/* Direct Connection Diagnostic Modal */}
       {showDiagnosticModal && (
-        <div className="absolute inset-0 z-30 bg-black/85 backdrop-blur-md p-4 flex flex-col items-center justify-center">
-          <div className="bg-nc-bg-card border border-nc-border rounded-2xl p-5 max-w-md w-full max-h-[85vh] overflow-y-auto text-left shadow-2xl">
-            <h3 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
-              <Wrench className="w-4 h-4 text-nc-primary" /> Diagnóstico de Conexão com Origem
-            </h3>
-
-            {diagnosticLoading ? (
-              <div className="py-8 flex flex-col items-center justify-center text-center">
-                <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-2" />
-                <p className="text-xs text-nc-text-secondary">Consultando servidor do provedor e cabeçalhos HTTP...</p>
+        <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-nc-bg border border-nc-border rounded-2xl p-6 max-w-lg w-full shadow-2xl flex flex-col gap-4 text-left max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div className="flex items-center justify-between border-b border-nc-border/50 pb-3">
+              <div className="flex items-center gap-2">
+                <Wrench className="w-5 h-5 text-nc-primary" />
+                <h3 className="text-lg font-bold text-white">Diagnóstico de Reprodução Direta</h3>
               </div>
-            ) : diagnosticReport ? (
-              <div className="space-y-3 text-xs">
-                {diagnosticReport.conclusion && (
-                  <div
-                    className={`p-3 rounded-xl border ${
-                      diagnosticReport.conclusion.category === 'MAINTENANCE_VIDEO'
-                        ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                        : diagnosticReport.conclusion.category === 'READY_NATIVE'
-                        ? 'bg-green-500/10 border-green-500/30 text-green-300'
-                        : 'bg-nc-bg-input border-nc-border text-white'
-                    }`}
-                  >
-                    <p className="font-semibold text-xs mb-1">
-                      {diagnosticReport.conclusion.category === 'MAINTENANCE_VIDEO'
-                        ? 'Vídeo Substituto de Manutenção Detectado'
-                        : 'Resultado da Análise'}
-                    </p>
-                    <p className="leading-relaxed">{diagnosticReport.conclusion.message}</p>
-                    {diagnosticReport.conclusion.transcodingWillFix === false &&
-                      diagnosticReport.conclusion.category === 'MAINTENANCE_VIDEO' && (
-                        <p className="mt-2 text-[11px] text-amber-200/80 font-mono">
-                          Nota técnica: Transcodificação não corrige mídias que a origem não forneceu.
-                        </p>
-                      )}
-                  </div>
-                )}
+              <button
+                onClick={() => setShowDiagnosticModal(false)}
+                className="text-nc-text-secondary hover:text-white text-xl font-bold px-2 py-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
 
-                {diagnosticReport.primaryProbe && (
-                  <div className="p-3 bg-nc-bg rounded-xl border border-nc-border/40 space-y-1 font-mono text-[11px] text-gray-300">
-                    <p>
-                      <span className="text-gray-400">Extensão solicitada:</span> .{diagnosticReport.primaryProbe.requestedExt}
-                    </p>
-                    <p>
-                      <span className="text-gray-400">Status HTTP:</span> {diagnosticReport.primaryProbe.httpStatus}
-                    </p>
-                    <p>
-                      <span className="text-gray-400">Content-Type:</span> {diagnosticReport.primaryProbe.contentType}
-                    </p>
-                    <p>
-                      <span className="text-gray-400">Tamanho:</span>{' '}
-                      {diagnosticReport.primaryProbe.contentLength
-                        ? `${Math.round(diagnosticReport.primaryProbe.contentLength / 1024)} KB`
-                        : 'Não informado'}
-                    </p>
-                    <p>
-                      <span className="text-gray-400">Suporte a Range:</span>{' '}
-                      {diagnosticReport.primaryProbe.rangeSupported ? 'Sim (HTTP 206)' : 'Não / Não verificado'}
-                    </p>
-                    <p>
-                      <span className="text-gray-400">Vídeo substituto:</span>{' '}
-                      {diagnosticReport.primaryProbe.isMaintenanceVideo ? 'Sim (Confirmado)' : 'Não'}
-                    </p>
-                  </div>
-                )}
-                {diagnosticReport.alternativeProbe && (
-                  <div className="p-3 bg-nc-bg rounded-xl border border-nc-border/40 space-y-1 font-mono text-[11px] text-gray-300">
-                    <p className="text-nc-primary font-bold">
-                      Extensão alternativa avaliada: .{diagnosticReport.alternativeProbe.requestedExt}
-                    </p>
-                    <p>
-                      <span className="text-gray-400">Status HTTP:</span> {diagnosticReport.alternativeProbe.httpStatus}
-                    </p>
-                    <p>
-                      <span className="text-gray-400">Content-Type:</span> {diagnosticReport.alternativeProbe.contentType}
-                    </p>
-                    <p>
-                      <span className="text-gray-400">Tamanho:</span>{' '}
-                      {diagnosticReport.alternativeProbe.contentLength
-                        ? `${Math.round(diagnosticReport.alternativeProbe.contentLength / (1024 * 1024))} MB (${Math.round(diagnosticReport.alternativeProbe.contentLength / 1024)} KB)`
-                        : 'Não informado'}
-                    </p>
-                    <p>
-                      <span className="text-gray-400">Mídia real válida:</span>{' '}
-                      {diagnosticReport.alternativeProbe.isCorrectMedia ? 'Sim (Arquivo autêntico)' : 'Não'}
-                    </p>
-                  </div>
-                )}
-
-                {/* If alternative extension is recommended, allow immediate switch and playback */}
-                {diagnosticReport.conclusion?.category === 'EXTENSION_MISMATCH' && diagnosticReport.recommendedExtension && (
-                  <div className="pt-1">
+            <div className="space-y-3 text-xs text-nc-text-secondary">
+              <div>
+                <span className="font-semibold text-white block mb-1">URL Direta da Transmissão:</span>
+                <div className="flex items-center gap-2 bg-nc-bg-card p-2 rounded border border-nc-border/40 font-mono text-[11px] text-gray-300 break-all select-all">
+                  <span className="flex-1">{streamUrl || 'Nenhuma URL ativa'}</span>
+                  {streamUrl && (
                     <button
-                      onClick={() => handleSwitchExtension(diagnosticReport.recommendedExtension!)}
-                      disabled={diagnosticLoading}
-                      className="w-full py-2.5 px-4 bg-nc-primary hover:bg-nc-primary-hover text-black font-semibold rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
+                      onClick={copyDirectUrl}
+                      className="p-1.5 bg-white/10 hover:bg-white/20 rounded text-white shrink-0 cursor-pointer"
+                      title="Copiar URL"
                     >
-                      {diagnosticLoading ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
+                      {copiedUrl ? (
+                        <Check className="w-3.5 h-3.5 text-green-400" />
                       ) : (
-                        <CheckCircle2 className="w-4 h-4" />
+                        <Copy className="w-3.5 h-3.5" />
                       )}
-                      <span>Alternar para .{diagnosticReport.recommendedExtension} e Reproduzir Agora</span>
                     </button>
-                  </div>
-                )}
-
-                <div className="flex justify-end pt-2">
-                  <button
-                    onClick={() => setShowDiagnosticModal(false)}
-                    className="px-4 py-2 bg-nc-bg-input hover:bg-nc-border text-white rounded-lg text-xs font-medium cursor-pointer"
-                  >
-                    Fechar
-                  </button>
+                  )}
                 </div>
               </div>
-            ) : (
-              <div className="py-4 text-center text-xs text-gray-400">
-                Nenhum dado disponível.
-                <button
-                  onClick={() => setShowDiagnosticModal(false)}
-                  className="block mx-auto mt-3 px-3 py-1 bg-nc-bg-input text-white rounded"
-                >
-                  Fechar
-                </button>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-nc-bg-card p-2.5 rounded border border-nc-border/40">
+                  <span className="block text-gray-400">Motor de Vídeo:</span>
+                  <span className="text-white font-medium">
+                    {hlsRef.current ? 'HLS.js (MediaSource)' : 'HTML5 Nativo'}
+                  </span>
+                </div>
+                <div className="bg-nc-bg-card p-2.5 rounded border border-nc-border/40">
+                  <span className="block text-gray-400">Resolução Ativa:</span>
+                  <span className="text-white font-medium">
+                    {videoStats.width && videoStats.height
+                      ? `${videoStats.width}x${videoStats.height}`
+                      : 'Indisponível'}
+                  </span>
+                </div>
+                <div className="bg-nc-bg-card p-2.5 rounded border border-nc-border/40">
+                  <span className="block text-gray-400">ReadyState / Network:</span>
+                  <span className="text-white font-medium">
+                    {videoStats.readyState ?? '-'} / {videoStats.networkState ?? '-'}
+                  </span>
+                </div>
+                <div className="bg-nc-bg-card p-2.5 rounded border border-nc-border/40">
+                  <span className="block text-gray-400">Posição / Duração:</span>
+                  <span className="text-white font-medium">
+                    {Math.floor(videoStats.currentTime || 0)}s /{' '}
+                    {videoStats.duration && isFinite(videoStats.duration)
+                      ? `${Math.floor(videoStats.duration)}s`
+                      : 'Ao vivo'}
+                  </span>
+                </div>
               </div>
-            )}
+
+              <div className="p-3 bg-nc-bg-card rounded-xl border border-nc-border/40 space-y-1.5">
+                <span className="font-semibold text-white block">Informações de Conectividade:</span>
+                <p className="leading-relaxed">
+                  • <strong>Sem Proxy Intermediário:</strong> O navegador conecta-se diretamente ao IP ou domínio do provedor.
+                </p>
+                <p className="leading-relaxed">
+                  • <strong>Políticas de Origem (CORS):</strong> Para transmissões HLS (.m3u8), o servidor do provedor precisa permitir cabeçalhos CORS (<code>Access-Control-Allow-Origin</code>).
+                </p>
+                <p className="leading-relaxed">
+                  • <strong>Conteúdo Misto:</strong> Se o aplicativo estiver em HTTPS e o provedor em HTTP puro, navegadores modernos bloqueiam o fluxo. Recomenda-se hospedar o aplicativo em HTTP na VPS para provedores HTTP.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setShowDiagnosticModal(false)}
+                className="px-4 py-2 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-xl border border-nc-border/50 text-xs font-medium cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
           </div>
         </div>
       )}

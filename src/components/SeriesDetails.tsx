@@ -5,7 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { VideoPlayer } from './VideoPlayer';
-import { getMediaStreamUrl, getProxiedImageUrl } from '../utils/mediaUtils';
+import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface SeriesDetailsProps {
   key?: React.Key;
@@ -58,7 +58,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     }
   };
 
-  const executePlay = async (episode: any, startAt: number = 0) => {
+  const executePlay = (episode: any, startAt: number = 0) => {
     localStorage.setItem('nc_parent_series_' + episode.id, String(seriesId));
     if (startAt === 0) {
       localStorage.removeItem('nc_progress_' + episode.id);
@@ -69,7 +69,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       setPlayError(null);
       setFailedEpisode(null);
       const ext = episode.container_extension || "mp4";
-      const mediaUrl = await getMediaStreamUrl(credentials, {
+      const mediaUrl = buildDirectMediaUrl(credentials, {
         type: 'series',
         streamId: episode.id,
         containerExtension: ext,
@@ -84,7 +84,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       setShowResumeModal(false);
     } catch (err: any) {
       console.error('Erro ao iniciar episódio:', err);
-      setPlayError(err?.message || 'Falha ao preparar a reprodução do episódio via HTTPS.');
+      setPlayError(err?.message || 'Falha ao preparar a reprodução do episódio.');
       setFailedEpisode({ episode, startAt });
     }
   };
@@ -161,13 +161,13 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                <div className="absolute inset-0 bg-black z-0">
                  {seriesInfo.info?.backdrop_path?.[0] ? (
                     <img 
-                      src={getProxiedImageUrl(seriesInfo.info.backdrop_path[0])}
+                      src={buildDirectImageUrl(seriesInfo.info.backdrop_path[0])}
                       alt="Backdrop"
                       className="w-full h-full object-cover opacity-50 object-top"
                     />
                  ) : (seriesInfo.info?.cover || seriesCover) ? (
                     <img 
-                      src={getProxiedImageUrl(seriesInfo.info?.cover || seriesCover)}
+                      src={buildDirectImageUrl(seriesInfo.info?.cover || seriesCover)}
                       alt="Cover fallback"
                       className="w-full h-full object-cover opacity-30 object-top"
                     />
@@ -332,7 +332,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
             <h3 className="text-xl font-bold text-white mb-2">Erro ao Iniciar Episódio</h3>
             <p className="text-red-400 text-sm mb-4 leading-relaxed">{playError}</p>
             <p className="text-gray-400 text-xs mb-6">
-              A transmissão foi solicitada através da rota segura da aplicação (/api/media). O provedor pode estar inacessível ou o formato requerer recursos específicos no servidor.
+              A transmissão foi solicitada diretamente ao provedor. O endereço pode estar inacessível ou o formato requerer compatibilidade no navegador.
             </p>
             <div className="flex gap-3 w-full">
               {failedEpisode && (

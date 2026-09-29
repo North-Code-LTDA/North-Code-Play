@@ -44,7 +44,12 @@ export function Login() {
           setUsername(urlUser);
           setPassword(urlPass);
           // urlObj.host already includes the port if present (e.g. "domain.com:8080")
-          setServerUrl(`${urlObj.protocol}//${urlObj.host}`);
+          // Strip M3U script endpoints like /get.php while preserving any base path
+          const cleanPath = urlObj.pathname
+            .replace(/\/get\.php.*$/i, "")
+            .replace(/\/player_api\.php.*$/i, "")
+            .replace(/\/+$/, "");
+          setServerUrl(`${urlObj.protocol}//${urlObj.host}${cleanPath}`);
         }
       }
     } catch {
@@ -57,7 +62,7 @@ export function Login() {
     setIsLoading(true);
     setError(null);
 
-    const credentials = {
+    const baseCredentials = {
       playlistName: playlistName.trim() || 'Minha Lista',
       serverUrl: serverUrl.trim().replace(/\/+$/, ''),
       username: username.trim(),
@@ -66,11 +71,17 @@ export function Login() {
     };
 
     try {
-      // Validate credentials against Xtream server
-      await XtreamService.authenticate(credentials);
+      // Validate credentials directly against Xtream server
+      const authResponse = await XtreamService.authenticate(baseCredentials);
       
+      const fullCredentials = {
+        ...baseCredentials,
+        allowed_output_formats: authResponse?.user_info?.allowed_output_formats || [],
+        server_info: authResponse?.server_info || {},
+      };
+
       // If validation succeeds, save and redirect
-      localStorage.setItem('northcode_tv_credentials', JSON.stringify(credentials));
+      localStorage.setItem('northcode_tv_credentials', JSON.stringify(fullCredentials));
       navigate('/home');
     } catch (err: any) {
       setError(err.message || 'Falha na autenticação. Verifique os dados inseridos.');

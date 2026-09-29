@@ -13,7 +13,7 @@ import { ConfigView } from '../views/ConfigView';
 import { FavoritesView } from '../views/FavoritesView';
 import { XtreamProvider } from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
-import { normalizeServerUrl, getProxiedImageUrl } from '../utils/mediaUtils';
+import { normalizeServerUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 import { APP_VERSION, APP_COMMIT } from '../version';
 
 export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
@@ -132,11 +132,11 @@ export function Home() {
               <div className="w-9 h-9 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0 overflow-hidden border border-nc-border">
                 {credentials.avatar ? (
                   <img 
-                    src={getProxiedImageUrl(credentials.avatar)} 
+                    src={buildDirectImageUrl(credentials.avatar)} 
                     alt="Avatar" 
                     className="w-full h-full object-cover" 
                     onError={(e) => {
-                      (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                      (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
                     }}
                   />
                 ) : (
@@ -206,11 +206,11 @@ export function Home() {
                     <div className="w-9 h-9 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0 overflow-hidden border border-nc-border">
                       {credentials.avatar ? (
                         <img 
-                          src={getProxiedImageUrl(credentials.avatar)} 
+                          src={buildDirectImageUrl(credentials.avatar)} 
                           alt="Avatar" 
                           className="w-full h-full object-cover" 
                           onError={(e) => {
-                            (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+                            (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
                           }}
                         />
                       ) : (

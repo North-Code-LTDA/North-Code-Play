@@ -3,7 +3,7 @@ import { Play, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
-import { getProxiedImageUrl } from '../utils/mediaUtils';
+import { buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
 
 interface HeroBannerProps {
   items: any[];
@@ -123,11 +123,11 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
           className="absolute inset-0 z-0"
         >
           <img
-            src={getProxiedImageUrl(bgImage)}
+            src={buildDirectImageUrl(bgImage)}
             alt={currentItem.name}
             className="w-full h-full object-cover object-top opacity-80"
             onError={(e) => {
-              (e.target as HTMLImageElement).src = '/api/media/image?fallback=1';
+              (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
             }}
           />
           <div className="absolute inset-0 bg-gradient-to-t from-nc-bg via-nc-bg/80 to-transparent" />

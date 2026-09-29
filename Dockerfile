@@ -1,30 +1,24 @@
-FROM node:20-bookworm-slim
-
-# Install system dependencies: FFmpeg, FFprobe and CA certificates
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+# Multi-stage build for pure static SPA web application
+FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Copy dependency definitions
+# Copy dependency manifests
 COPY package*.json ./
 
-# Install all dependencies (including devDependencies required for Vite and TypeScript compilation)
+# Install dependencies needed for build
 RUN npm ci
 
-# Copy application source code
+# Copy source code and build production static files
 COPY . .
-
-# Compile frontend and bundle production server
 RUN npm run build
 
-# Prune devDependencies to keep container lean in production
-RUN npm prune --omit=dev
+# Pure static Nginx server without any backend proxy, ffmpeg or node server
+FROM nginx:alpine
 
-EXPOSE 3000
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-ENV NODE_ENV=production
-ENV PORT=3000
+EXPOSE 80
 
-CMD ["node", "dist/server.cjs"]
+CMD ["nginx", "-g", "daemon off;"]
