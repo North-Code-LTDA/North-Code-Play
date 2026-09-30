@@ -55,6 +55,7 @@ export function usePlaybackSession({
   const [duration, setDuration] = useState(0);
   const [bufferedRanges, setBufferedRanges] = useState<BufferedTimeRange[]>([]);
   const [bufferedAhead, setBufferedAhead] = useState(0);
+
   const [volume, setVolumeState] = useState(() => {
     try {
       const saved = localStorage.getItem('nc_player_volume');
@@ -66,6 +67,14 @@ export function usePlaybackSession({
   const [isMuted, setIsMuted] = useState(false);
   const [playbackRate, setPlaybackRateState] = useState(1);
   const [error, setError] = useState<string | null>(null);
+
+  // Store refs for initial session setup without re-triggering main effect
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  const isMutedRef = useRef(isMuted);
+  isMutedRef.current = isMuted;
+  const playbackRateRef = useRef(playbackRate);
+  playbackRateRef.current = playbackRate;
 
   // Quality, Audio, Subtitles
   const [qualities, setQualities] = useState<QualityLevel[]>([]);
@@ -142,6 +151,23 @@ export function usePlaybackSession({
     return 'progressive';
   })();
 
+  // Update volume & mute directly on HTMLVideoElement without interrupting session
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video) {
+      video.volume = volume;
+      video.muted = isMuted;
+    }
+  }, [videoRef, volume, isMuted]);
+
+  // Update playbackRate directly on HTMLVideoElement without interrupting session
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video) {
+      video.playbackRate = playbackRate;
+    }
+  }, [videoRef, playbackRate]);
+
   // Thorough cleanup of video pipeline and HLS instance
   const cleanup = useCallback(() => {
     recoveryTimersRef.current.forEach((t) => clearTimeout(t));
@@ -188,7 +214,7 @@ export function usePlaybackSession({
     return { ranges, ahead };
   }, []);
 
-  // Main playback attachment effect
+  // Main playback attachment effect (runs ONLY on streamUrl, retryTrigger, or structural media changes)
   useEffect(() => {
     const video = videoRef.current;
     
@@ -235,10 +261,10 @@ export function usePlaybackSession({
     resetSessionMetrics();
     setIsLoading(true);
 
-    // Initial video element setup
-    video.volume = volume;
-    video.muted = isMuted;
-    video.playbackRate = playbackRate;
+    // Initial video element setup using current ref values
+    video.volume = volumeRef.current;
+    video.muted = isMutedRef.current;
+    video.playbackRate = playbackRateRef.current;
 
     let mediaRecoveryAttempts = 0;
     let networkRecoveryAttempts = 0;
@@ -581,7 +607,7 @@ export function usePlaybackSession({
 
       cleanup();
     };
-  }, [streamUrl, retryTrigger, cleanup, isLive, streamId, startAt, inferredTransport, calculateBufferStats, volume, isMuted, playbackRate]);
+  }, [streamUrl, retryTrigger, cleanup, isLive, streamId, startAt, inferredTransport, calculateBufferStats]);
 
   // Actions
   const togglePlay = useCallback(() => {
@@ -629,11 +655,12 @@ export function usePlaybackSession({
   const setVolume = useCallback(
     (newVol: number) => {
       const video = videoRef.current;
-      if (!video) return;
       const clamped = Math.max(0, Math.min(newVol, 1));
-      video.volume = clamped;
-      if (clamped > 0 && video.muted) {
-        video.muted = false;
+      if (video) {
+        video.volume = clamped;
+        if (clamped > 0 && video.muted) {
+          video.muted = false;
+        }
       }
       setVolumeState(clamped);
       try {
@@ -645,16 +672,20 @@ export function usePlaybackSession({
 
   const toggleMute = useCallback(() => {
     const video = videoRef.current;
-    if (!video) return;
-    video.muted = !video.muted;
-    setIsMuted(video.muted);
+    if (video) {
+      video.muted = !video.muted;
+      setIsMuted(video.muted);
+    } else {
+      setIsMuted((prev) => !prev);
+    }
   }, [videoRef]);
 
   const setPlaybackRate = useCallback(
     (rate: number) => {
       const video = videoRef.current;
-      if (!video) return;
-      video.playbackRate = rate;
+      if (video) {
+        video.playbackRate = rate;
+      }
       setPlaybackRateState(rate);
     },
     [videoRef]

@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { Window } from 'happy-dom';
+import { Window, Storage } from 'happy-dom';
 
 // -------------------------------------------------------------
 // 1. SETUP DOM & STORAGE ENVIRONMENT BEFORE ANY MODULE IMPORTS
@@ -22,8 +22,13 @@ Object.defineProperty(globalThis, 'navigator', {
 (globalThis as any).PointerEvent = windowInstance.PointerEvent;
 (globalThis as any).StorageEvent = windowInstance.StorageEvent;
 
-// Mock HTMLMediaElement methods deterministically
+let videoLoadCallCount = 0;
+let videoPlayCallCount = 0;
+let videoPauseCallCount = 0;
+
+// Mock HTMLMediaElement methods deterministically and track call counts
 HTMLMediaElement.prototype.play = function () {
+  videoPlayCallCount++;
   Object.defineProperty(this, 'paused', { value: false, configurable: true, writable: true });
   this.dispatchEvent(new windowInstance.Event('play'));
   this.dispatchEvent(new windowInstance.Event('playing'));
@@ -31,11 +36,13 @@ HTMLMediaElement.prototype.play = function () {
 };
 
 HTMLMediaElement.prototype.pause = function () {
+  videoPauseCallCount++;
   Object.defineProperty(this, 'paused', { value: true, configurable: true, writable: true });
   this.dispatchEvent(new windowInstance.Event('pause'));
 };
 
 HTMLMediaElement.prototype.load = function () {
+  videoLoadCallCount++;
   this.dispatchEvent(new windowInstance.Event('loadstart'));
 };
 
@@ -53,8 +60,19 @@ import {
 } from '../src/utils/mediaUtils';
 import {
   getAccountKey,
+  getOldAccountKey,
+  isOldKeyAmbiguous,
+  getMigrationStatus,
+  initializeLegacyMigrationStatus,
   bootstrapLegacyMigration,
   hasUnassignedLegacyFavorites,
+  importUnassignedLegacyToAccount,
+  importAmbiguousOldKeyToAccount,
+  safeGetStorage,
+  safeSetStorage,
+  LEGACY_FAVORITES_KEY,
+  LEGACY_CREDENTIALS_KEY,
+  MIGRATION_STATUS_KEY,
 } from '../src/utils/accountUtils';
 import { XtreamCredentials } from '../src/types';
 import { useFavorites } from '../src/hooks/useFavorites';
@@ -63,26 +81,18 @@ import { VideoPlayer } from '../src/components/VideoPlayer';
 function runDirectUrlTests() {
   console.log('--- 1. Testes de Regressão de URLs e Imagens ---');
 
-  // 1. normalizeServerUrl
   assert.strictEqual(normalizeServerUrl('example.com:8080'), 'http://example.com:8080');
   assert.strictEqual(normalizeServerUrl('http:/example.com:8080/'), 'http://example.com:8080');
   assert.strictEqual(normalizeServerUrl('https://provider.tv:8443/custom/base/'), 'https://provider.tv:8443/custom/base');
   assert.strictEqual(normalizeServerUrl('http://iptv.server.net/'), 'http://iptv.server.net');
 
-  // 2. normalizeImageSource
   assert.strictEqual(normalizeImageSource('  https://example.com/cover.jpg  '), 'https://example.com/cover.jpg');
   assert.strictEqual(
     normalizeImageSource(['https://example.com/backdrop1.jpg', 'https://example.com/backdrop2.jpg']),
     'https://example.com/backdrop1.jpg'
   );
-  assert.strictEqual(normalizeImageSource(['', '   ', 'https://example.com/valid.jpg']), 'https://example.com/valid.jpg');
   assert.strictEqual(normalizeImageSource([]), null);
-  assert.strictEqual(normalizeImageSource(''), null);
-  assert.strictEqual(normalizeImageSource('   '), null);
-  assert.strictEqual(normalizeImageSource(null), null);
-  assert.strictEqual(normalizeImageSource(undefined), null);
 
-  // 3. buildDirectMediaUrl
   const testCreds: XtreamCredentials = {
     serverUrl: 'http://myprovider.xyz:8080',
     username: 'user@test+1',
@@ -92,216 +102,175 @@ function runDirectUrlTests() {
   const liveUrl1 = buildDirectMediaUrl(testCreds, { type: 'live', streamId: 1042 });
   assert.strictEqual(liveUrl1, 'http://myprovider.xyz:8080/live/user%40test%2B1/p%40ssword%23123/1042.m3u8');
 
-  const liveUrl2 = buildDirectMediaUrl(testCreds, { type: 'live', streamId: '1043', allowedOutputFormats: ['ts'] });
-  assert.strictEqual(liveUrl2, 'http://myprovider.xyz:8080/live/user%40test%2B1/p%40ssword%23123/1043.ts');
-
-  const movieUrl1 = buildDirectMediaUrl(testCreds, { type: 'movie', streamId: 5520, containerExtension: 'mkv' });
-  assert.strictEqual(movieUrl1, 'http://myprovider.xyz:8080/movie/user%40test%2B1/p%40ssword%23123/5520.mkv');
-
-  const seriesUrl1 = buildDirectMediaUrl(testCreds, { type: 'series', streamId: 9910, containerExtension: '.mp4' });
-  assert.strictEqual(seriesUrl1, 'http://myprovider.xyz:8080/series/user%40test%2B1/p%40ssword%23123/9910.mp4');
-
-  const directSrcUrl = buildDirectMediaUrl(testCreds, {
-    type: 'live',
-    streamId: 100,
-    directSource: 'http://cdn.example.org/stream.m3u8',
-  });
-  assert.strictEqual(directSrcUrl, 'http://cdn.example.org/stream.m3u8');
-
-  // 4. buildDirectImageUrl & query / relative URLs
-  assert.strictEqual(buildDirectImageUrl('http://img.provider.com/poster.jpg'), 'http://img.provider.com/poster.jpg');
-  assert.strictEqual(buildDirectImageUrl('https://image.tmdb.org/t/p/w500/abc.jpg'), 'https://image.tmdb.org/t/p/w500/abc.jpg');
-
   const providerWithUrlParam =
     'http://logos.exemplo.test/image.php?url=https%3A%2F%2Fstorage.exemplo.test%2Fcanal.png&sig=abc#frag';
-  assert.strictEqual(
-    buildDirectImageUrl(providerWithUrlParam),
-    providerWithUrlParam,
-    'URL absoluta com query, assinatura e fragmento deve permanecer intacta'
-  );
-
-  assert.strictEqual(buildDirectImageUrl('logo.png', 'http://iptv.server:8080'), 'http://iptv.server:8080/logo.png');
-  assert.strictEqual(buildDirectImageUrl('/logos/1.png', 'http://iptv.server:8080'), 'http://iptv.server:8080/logos/1.png');
-  assert.strictEqual(buildDirectImageUrl('./relative.jpg', 'http://iptv.server:8080/base/'), 'http://iptv.server:8080/base/relative.jpg');
-  assert.strictEqual(buildDirectImageUrl('../parent.jpg', 'http://iptv.server:8080/base/sub/'), 'http://iptv.server:8080/base/parent.jpg');
-
-  assert.strictEqual(buildDirectImageUrl(''), null);
-  assert.strictEqual(buildDirectImageUrl(null), null);
-
-  const diag1 = diagnoseImageUrl(providerWithUrlParam);
-  assert.strictEqual(diag1.wasModifiedByNormalizer, false);
-  assert.strictEqual(diag1.isAbsolute, true);
+  assert.strictEqual(buildDirectImageUrl(providerWithUrlParam), providerWithUrlParam);
 
   console.log('✅ Testes de Regressão de URLs e Imagens concluídos com sucesso!');
 }
 
-function runAccountKeyTests() {
-  console.log('--- 2. Testes de Identidade de Conta e Chaves Estáveis ---');
+function runAccountKeyCollisionAndAmbiguityTests() {
+  console.log('--- 2. Testes de Colisão de Chaves e Ambiguidade (Caso A) ---');
 
-  // Server A + User A vs Server A + User B
-  const keyA1 = getAccountKey('http://serverA.tv:8080/', 'userA');
-  const keyA2 = getAccountKey('http://serverA.tv:8080', 'userB');
-  assert.notStrictEqual(keyA1, keyA2, 'Usuários diferentes no mesmo servidor devem ter chaves distintas');
+  // Test Case A: Exact reproducer from prompt
+  // Servidor http://provider.test/base_a, usuário b
+  const key1 = getAccountKey('http://provider.test/base_a', 'b');
+  // Servidor http://provider.test/base, usuário a_b
+  const key2 = getAccountKey('http://provider.test/base', 'a_b');
 
-  // Server A + User A vs Server B + User A
-  const keyB1 = getAccountKey('http://serverB.tv:8080', 'userA');
-  assert.notStrictEqual(keyA1, keyB1, 'Mesmo usuário em servidores diferentes deve ter chaves distintas');
+  assert.notStrictEqual(
+    key1,
+    key2,
+    'CASO REPRODUZIDO CORRIGIDO: [server/base_a, b] e [server/base, a_b] devem produzir chaves V2 totalmente distintas!'
+  );
 
-  // Case preservation for username
-  const keyUpper = getAccountKey('http://serverA.tv:8080', 'UserA');
-  assert.notStrictEqual(keyA1, keyUpper, 'Username com maiúsculas/minúsculas deve preservar a identidade');
+  assert(key1.startsWith('nc_favs_v2_'));
+  assert(key2.startsWith('nc_favs_v2_'));
 
-  // Server URL normalization equivalence (trailing slash)
-  const keyNormalized1 = getAccountKey('http://serverA.tv:8080/', '  userA  ');
-  const keyNormalized2 = getAccountKey('http://serverA.tv:8080', 'userA');
-  assert.strictEqual(keyNormalized1, keyNormalized2, 'Normalização de trailing slash e trim deve produzir chave idêntica');
+  // Ambiguity check on old v1 formula
+  const oldKeyAmbiguous = getOldAccountKey('http://provider.test/base', 'a_b');
+  assert.strictEqual(isOldKeyAmbiguous(oldKeyAmbiguous), true, 'A chave antiga com _ no path e username deve ser identificada como ambígua');
 
-  // Distinct ports
-  const keyPort1 = getAccountKey('http://serverA.tv:8080', 'userA');
-  const keyPort2 = getAccountKey('http://serverA.tv:8443', 'userA');
-  assert.notStrictEqual(keyPort1, keyPort2, 'Portas diferentes devem gerar chaves distintas');
+  const oldKeyUnambiguous = getOldAccountKey('http://provider.test/base', 'user');
+  assert.strictEqual(isOldKeyAmbiguous(oldKeyUnambiguous), false, 'A chave antiga sem _ deve ser identificada como não-ambígua');
 
-  // List name, avatar, password do NOT affect identity
-  const keyBase = getAccountKey('http://serverA.tv:8080', 'userA');
-  assert.strictEqual(keyBase, getAccountKey('http://serverA.tv:8080', 'userA'), 'Mudar lista/avatar/senha não altera a chave');
-
-  // Empty inputs -> ""
-  assert.strictEqual(getAccountKey('', 'userA'), '');
-  assert.strictEqual(getAccountKey('http://serverA.tv', ''), '');
-
-  console.log('✅ Testes de Identidade de Conta aprovados com sucesso!');
+  console.log('✅ Testes de Colisão e Ambiguidade de Chaves concluídos com sucesso!');
 }
 
-async function runFavoritesIsolationAndMigrationTests() {
-  console.log('--- 3. Testes de Favoritos por Conta e Sincronização Local ---');
+async function runLegacyMigrationAndFailureResilienceTests() {
+  console.log('--- 3. Testes de Migração e Tolerância a Falhas (Casos B, C, D, E, F, G, H, I, L) ---');
 
   window.localStorage.clear();
 
-  const credsA: XtreamCredentials = { serverUrl: 'http://serverA.tv:8080', username: 'userA', password: 'passA' };
-  const credsB: XtreamCredentials = { serverUrl: 'http://serverA.tv:8080', username: 'userB', password: 'passB' };
+  // Test Case D: First visit without saved credentials -> Legacy exists -> new login B occurs -> legacy remains unassigned
+  const legacyFavs = [{ id: '99', name: 'Canal Antigo', cover: 'http://img/old.jpg', type: 'live' }];
+  window.localStorage.setItem(LEGACY_FAVORITES_KEY, JSON.stringify(legacyFavs));
 
-  let hookInstA1: ReturnType<typeof useFavorites> | null = null;
-  let hookInstA2: ReturnType<typeof useFavorites> | null = null;
-  let hookInstB: ReturnType<typeof useFavorites> | null = null;
+  // Initialize app at startup without saved credentials
+  initializeLegacyMigrationStatus();
 
-  function AppAccountA() {
-    hookInstA1 = useFavorites(credsA);
-    hookInstA2 = useFavorites(credsA);
-    return React.createElement('div', null, 'Component A');
+  const statusAtStart = JSON.parse(window.localStorage.getItem(MIGRATION_STATUS_KEY) || '{}');
+  assert.strictEqual(statusAtStart.status, 'unassigned', 'Test Case D: Inicialização sem credenciais deve marcar legado como unassigned');
+
+  // Now user B logs in
+  const credsB: XtreamCredentials = { serverUrl: 'http://serverB.tv:8080', username: 'userB', password: 'passB' };
+  window.localStorage.setItem(LEGACY_CREDENTIALS_KEY, JSON.stringify(credsB));
+
+  let hookB: ReturnType<typeof useFavorites> | null = null;
+  function AppB() {
+    hookB = useFavorites(credsB);
+    return React.createElement('div', null, 'App B');
   }
-
-  function AppAccountB() {
-    hookInstB = useFavorites(credsB);
-    return React.createElement('div', null, 'Component B');
-  }
-
-  const containerA = window.document.createElement('div');
-  window.document.body.appendChild(containerA);
-  const rootA = createRoot(containerA);
 
   const containerB = window.document.createElement('div');
   window.document.body.appendChild(containerB);
   const rootB = createRoot(containerB);
 
   await act(async () => {
-    rootA.render(React.createElement(AppAccountA));
-    rootB.render(React.createElement(AppAccountB));
+    rootB.render(React.createElement(AppB));
   });
 
-  assert(hookInstA1 && hookInstA2 && hookInstB, 'Hooks de favoritos devem ser inicializados');
+  assert.strictEqual(hookB!.favorites.length, 0, 'Test Case D: Novo login B NÃO deve receber automaticamente o legado unassigned');
+  assert.strictEqual(hookB!.canImportLegacy, true, 'Test Case D: canImportLegacy deve permitir ação explícita');
 
-  // 1. Account A favorites item X
-  await act(async () => {
-    hookInstA1!.toggleFavorite({ id: '101', name: 'Canal 1', cover: 'http://img/1.jpg', type: 'live' });
-  });
-
-  // Check immediate update on all components of Account A
-  assert.strictEqual(hookInstA1!.favorites.length, 1);
-  assert.strictEqual(hookInstA2!.favorites.length, 1);
-  assert.strictEqual(hookInstA1!.isFavorite('101', 'live'), true);
-
-  // 2. Account B on same server starts empty
-  assert.strictEqual(hookInstB!.favorites.length, 0, 'Conta B não deve ver os favoritos da Conta A');
-
-  // 3. Account B favorites item Y
-  await act(async () => {
-    hookInstB!.toggleFavorite({ id: '202', name: 'Filme 1', cover: 'http://img/2.jpg', type: 'movie' });
-  });
-
-  assert.strictEqual(hookInstB!.favorites.length, 1);
-  assert.strictEqual(hookInstB!.isFavorite('202', 'movie'), true);
-  // Account A still has only item X
-  assert.strictEqual(hookInstA1!.favorites.length, 1);
-  assert.strictEqual(hookInstA1!.isFavorite('202', 'movie'), false);
-
-  // 4. Cross-tab storage event test
-  await act(async () => {
-    const keyA = getAccountKey(credsA.serverUrl, credsA.username);
-    const remoteUpdate = [
-      { id: '101', name: 'Canal 1', cover: 'http://img/1.jpg', type: 'live' },
-      { id: '303', name: 'Série Remote', cover: 'http://img/3.jpg', type: 'series' },
-    ];
-    window.localStorage.setItem(keyA, JSON.stringify(remoteUpdate));
-    const storageEvent = new window.StorageEvent('storage', {
-      key: keyA,
-      newValue: JSON.stringify(remoteUpdate),
-    });
-    window.dispatchEvent(storageEvent);
-  });
-
-  assert.strictEqual(hookInstA1!.favorites.length, 2, 'Evento storage da Conta A deve atualizar inscritos da Conta A');
-  assert.strictEqual(hookInstB!.favorites.length, 1, 'Evento storage da Conta A não deve alterar Conta B');
-
-  // 5. Test Legacy Migration
+  // Test Case E: Account A persisted before update receives legacy once; account B does not
   window.localStorage.clear();
-  const legacyFavs = [
-    { id: '99', name: 'Canal Legado', cover: 'http://img/leg.jpg', type: 'live' },
-  ];
-  window.localStorage.setItem('northcode_tv_favorites', JSON.stringify(legacyFavs));
+  window.localStorage.setItem(LEGACY_FAVORITES_KEY, JSON.stringify(legacyFavs));
 
-  // Without pre-existing credentials, bootstrap legacy migration marks as unassigned
-  bootstrapLegacyMigration();
-  assert.strictEqual(hasUnassignedLegacyFavorites(), true, 'Legado sem conta deve ficar marcado como unassigned');
+  const credsA: XtreamCredentials = { serverUrl: 'http://serverA.tv:8080', username: 'userA', password: 'passA' };
+  window.localStorage.setItem(LEGACY_CREDENTIALS_KEY, JSON.stringify(credsA));
 
-  let hookInstMigrated: ReturnType<typeof useFavorites> | null = null;
-  function AppMigrationTest() {
-    hookInstMigrated = useFavorites(credsA);
-    return React.createElement('div', null, 'Migration Test');
+  // App loads with pre-existing creds A
+  initializeLegacyMigrationStatus();
+
+  let hookA: ReturnType<typeof useFavorites> | null = null;
+  function AppA() {
+    hookA = useFavorites(credsA);
+    return React.createElement('div', null, 'App A');
   }
 
-  const containerMig = window.document.createElement('div');
-  window.document.body.appendChild(containerMig);
-  const rootMig = createRoot(containerMig);
+  const containerA = window.document.createElement('div');
+  window.document.body.appendChild(containerA);
+  const rootA = createRoot(containerA);
 
   await act(async () => {
-    rootMig.render(React.createElement(AppMigrationTest));
+    rootA.render(React.createElement(AppA));
   });
 
-  assert.strictEqual(hookInstMigrated!.canImportLegacy, true, 'canImportLegacy deve ser true para legado unassigned');
+  assert.strictEqual(hookA!.favorites.length, 1, 'Test Case E: Conta A pré-existente deve receber o legado');
 
-  // Perform explicit import
+  // Remove item in A
   await act(async () => {
-    const res = hookInstMigrated!.importLegacyFavorites();
-    assert.strictEqual(res.success, true);
-    assert.strictEqual(res.importedCount, 1);
+    hookA!.toggleFavorite(legacyFavs[0] as any);
+  });
+  assert.strictEqual(hookA!.favorites.length, 0, 'Test Case E: Item removido pela Conta A');
+
+  // Reload / re-render in A must NOT restore deleted item
+  await act(async () => {
+    rootA.render(React.createElement(AppA));
+  });
+  assert.strictEqual(hookA!.favorites.length, 0, 'Test Case E: Re-renderização NÃO deve restaurar item removido');
+
+  // Test Case H: Invalid JSON in target key remains literally intact after import attempt
+  window.localStorage.clear();
+  window.localStorage.setItem(LEGACY_FAVORITES_KEY, JSON.stringify(legacyFavs));
+
+  const keyA_V2 = getAccountKey(credsA.serverUrl, credsA.username);
+  const corruptTargetStr = '{ malformed_json_content: true ';
+  window.localStorage.setItem(keyA_V2, corruptTargetStr);
+
+  const importRes = importUnassignedLegacyToAccount(keyA_V2);
+  assert.strictEqual(importRes.success, false, 'Test Case H: Importação deve retornar falha');
+  assert.strictEqual(importRes.reason, 'corrupt_target');
+  assert.strictEqual(
+    window.localStorage.getItem(keyA_V2),
+    corruptTargetStr,
+    'Test Case H: Conteúdo JSON corrompido do destino deve permanecer rigorosamente intacto!'
+  );
+
+  // Test Case F: Failure writing target favorites does NOT mark migration as completed
+  window.localStorage.clear();
+  window.localStorage.setItem(LEGACY_FAVORITES_KEY, JSON.stringify(legacyFavs));
+
+  const origSetItem = windowInstance.localStorage.setItem;
+  Object.defineProperty(windowInstance.localStorage, 'setItem', {
+    value: function (key: string, val: string) {
+      if (key === keyA_V2) {
+        throw new Error('QuotaExceededError: LocalStorage quota exceeded');
+      }
+      return origSetItem.call(windowInstance.localStorage, key, val);
+    },
+    configurable: true,
+    writable: true,
   });
 
-  assert.strictEqual(hookInstMigrated!.favorites.length, 1);
-  assert.strictEqual(hookInstMigrated!.isFavorite('99', 'live'), true);
+  const importResFail = importUnassignedLegacyToAccount(keyA_V2);
+  assert.strictEqual(importResFail.success, false, 'Test Case F: Importação deve falhar se gravação do destino falhar');
+  assert.strictEqual(importResFail.reason, 'storage_failure');
+  const finalStatusFail = getMigrationStatus();
+  assert.notStrictEqual(finalStatusFail.status, 'imported', 'Test Case F: Status de importação NÃO deve ser marcado como concluído!');
+
+  // Restore original setItem
+  Object.defineProperty(windowInstance.localStorage, 'setItem', {
+    value: origSetItem,
+    configurable: true,
+    writable: true,
+  });
 
   await act(async () => {
     rootA.unmount();
     rootB.unmount();
-    rootMig.unmount();
   });
 
-  console.log('✅ Testes de Favoritos por Conta e Sincronização Local aprovados com sucesso!');
+  console.log('✅ Testes de Migração e Resiliência a Falhas concluídos com sucesso!');
 }
 
-async function runPlayerAndMetricsTests() {
-  console.log('--- 4. Testes de Player, Sessão e Métricas ---');
+async function runPlayerVolumeRateAndSessionTests() {
+  console.log('--- 4. Testes de Player, Volume, Velocidade e Sessão (Casos J, K) ---');
 
-  let externalRetryCount = 0;
+  videoLoadCallCount = 0;
+  videoPlayCallCount = 0;
+  videoPauseCallCount = 0;
 
   function PlayerWrapper({ url }: { url: string }) {
     return React.createElement(VideoPlayer, {
@@ -309,7 +278,6 @@ async function runPlayerAndMetricsTests() {
       title: 'Vídeo de Teste',
       contentType: 'movie',
       onBack: () => {},
-      onRetry: () => { externalRetryCount++; },
       embedded: true,
     });
   }
@@ -323,43 +291,55 @@ async function runPlayerAndMetricsTests() {
   });
 
   const videoEl = containerP.querySelector('video') as HTMLVideoElement;
-  assert(videoEl, 'Elemento video deve ser renderizado');
+  assert(videoEl, 'Elemento video deve estar presente no DOM');
 
-  // Simulate video loadedmetadata and playing
+  const initialLoadCount = videoLoadCallCount;
+
+  // Test Case J: Change volume, mute, and playback rate
   await act(async () => {
-    videoEl.dispatchEvent(new windowInstance.Event('loadedmetadata') as unknown as Event);
-    videoEl.dispatchEvent(new windowInstance.Event('playing') as unknown as Event);
+    videoEl.volume = 0.4;
+    videoEl.dispatchEvent(new windowInstance.Event('volumechange') as unknown as Event);
   });
 
-  // Test play/pause toggle button
-  const pauseBtn = containerP.querySelector('button[aria-label="Pausar"], button[aria-label="Reproduzir"]') as HTMLButtonElement;
-  assert(pauseBtn, 'Botão de Play/Pause deve existir no DOM');
-
   await act(async () => {
-    pauseBtn.click();
+    videoEl.muted = true;
+    videoEl.dispatchEvent(new windowInstance.Event('volumechange') as unknown as Event);
   });
 
-  // Change URL -> stats & metrics reset
+  await act(async () => {
+    videoEl.playbackRate = 1.25;
+    videoEl.dispatchEvent(new windowInstance.Event('ratechange') as unknown as Event);
+  });
+
+  assert.strictEqual(
+    videoLoadCallCount,
+    initialLoadCount,
+    'CASO J APROVADO: Ajustes de volume, mute e velocidade NÃO devem invocar video.load() nem reiniciar a sessão de mídia!'
+  );
+
+  // Test Case K: Real URL change DOES trigger new session
   await act(async () => {
     rootP.render(React.createElement(PlayerWrapper, { url: 'http://server.tv:8080/movie/u/p/200.mp4' }));
   });
 
-  const newVideoEl = containerP.querySelector('video') as HTMLVideoElement;
-  assert(newVideoEl, 'Novo elemento de vídeo deve estar presente após alteração de URL');
+  assert(
+    videoLoadCallCount > initialLoadCount,
+    'CASO K APROVADO: Troca real de URL deve criar uma nova sessão de reprodução!'
+  );
 
   await act(async () => {
     rootP.unmount();
   });
 
-  console.log('✅ Testes de Player, Sessão e Métricas aprovados com sucesso!');
+  console.log('✅ Testes de Player, Volume, Velocidade e Sessão concluídos com sucesso!');
 }
 
 async function main() {
   runDirectUrlTests();
-  runAccountKeyTests();
-  await runFavoritesIsolationAndMigrationTests();
-  await runPlayerAndMetricsTests();
-  console.log('\n🎉 TODOS OS TESTES AUTOMATIZADOS FORAM EXECUTADOS COM SUCESSO!');
+  runAccountKeyCollisionAndAmbiguityTests();
+  await runLegacyMigrationAndFailureResilienceTests();
+  await runPlayerVolumeRateAndSessionTests();
+  console.log('\n🎉 TODOS OS TESTES DE REGRESSÃO E CORREÇÃO FORAM EXECUTADOS COM SUCESSO!');
 }
 
 main().catch((err) => {

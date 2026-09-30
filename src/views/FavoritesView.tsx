@@ -24,7 +24,14 @@ interface FavoritesViewProps {
 }
 
 export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) {
-  const { favorites, toggleFavorite, canImportLegacy, importLegacyFavorites } = useFavorites();
+  const {
+    favorites,
+    toggleFavorite,
+    canImportLegacy,
+    canImportAmbiguousOldKey,
+    importLegacyFavorites,
+    importAmbiguousOldKeyFavorites,
+  } = useFavorites();
   const { credentials } = useXtreamContext();
   const [filterType, setFilterType] = useState<'all' | 'live' | 'movie' | 'series'>('all');
   const [importNotice, setImportNotice] = useState<string | null>(null);
@@ -72,6 +79,19 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
     } else if (fav.type === 'series') {
       setSelectedSeries(fav);
     }
+  };
+
+  const getReasonMessage = (reason?: string) => {
+    if (reason === 'corrupt_target') {
+      return 'Não foi possível importar: a lista desta conta contém dados inválidos e foi preservada intacta.';
+    }
+    if (reason === 'already_assigned') {
+      return 'Não foi possível importar: os favoritos antigos já foram atribuídos a outra conta.';
+    }
+    if (reason === 'storage_failure') {
+      return 'Falha ao salvar no armazenamento local do navegador.';
+    }
+    return 'Não foi possível importar os favoritos antigos.';
   };
 
   return (
@@ -134,22 +154,41 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
             <Heart className="w-8 h-8 fill-nc-primary text-nc-primary" /> Meus Favoritos
           </h1>
 
-          {canImportLegacy && (
-            <button
-              onClick={() => {
-                const res = importLegacyFavorites();
-                if (res.success) {
-                  setImportNotice(`${res.importedCount} favorito(s) antigo(s) importado(s) para esta conta!`);
-                } else {
-                  setImportNotice('Não foi possível importar os favoritos antigos.');
-                }
-                setTimeout(() => setImportNotice(null), 4000);
-              }}
-              className="px-4 py-2 bg-nc-primary/20 hover:bg-nc-primary/30 border border-nc-primary/50 text-nc-primary rounded-xl text-xs font-semibold transition-colors flex items-center gap-2 w-fit cursor-pointer"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Importar favoritos antigos para esta conta
-            </button>
-          )}
+          <div className="flex flex-wrap gap-2">
+            {canImportLegacy && (
+              <button
+                onClick={() => {
+                  const res = importLegacyFavorites();
+                  if (res.success) {
+                    setImportNotice(`${res.importedCount} favorito(s) antigo(s) importado(s) para esta conta!`);
+                  } else {
+                    setImportNotice(getReasonMessage(res.reason));
+                  }
+                  setTimeout(() => setImportNotice(null), 5000);
+                }}
+                className="px-4 py-2 bg-nc-primary/20 hover:bg-nc-primary/30 border border-nc-primary/50 text-nc-primary rounded-xl text-xs font-semibold transition-colors flex items-center gap-2 w-fit cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Importar favoritos antigos para esta conta
+              </button>
+            )}
+
+            {canImportAmbiguousOldKey && (
+              <button
+                onClick={() => {
+                  const res = importAmbiguousOldKeyFavorites();
+                  if (res.success) {
+                    setImportNotice(`${res.importedCount} favorito(s) da chave anterior importado(s) para esta conta!`);
+                  } else {
+                    setImportNotice(getReasonMessage(res.reason));
+                  }
+                  setTimeout(() => setImportNotice(null), 5000);
+                }}
+                className="px-4 py-2 bg-white/10 hover:bg-white/20 border border-nc-border text-white rounded-xl text-xs font-semibold transition-colors flex items-center gap-2 w-fit cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-nc-primary" /> Importar favoritos da chave antiga
+              </button>
+            )}
+          </div>
         </div>
 
         {importNotice && (

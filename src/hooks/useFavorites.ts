@@ -6,8 +6,12 @@ import {
   safeGetStorage,
   safeSetStorage,
   bootstrapLegacyMigration,
+  migrateOldKeyToV2,
   hasUnassignedLegacyFavorites,
+  hasAmbiguousOldKeyFavorites,
   importUnassignedLegacyToAccount,
+  importAmbiguousOldKeyToAccount,
+  ImportResult,
 } from '../utils/accountUtils';
 
 export interface FavoriteItem {
@@ -136,14 +140,15 @@ export function useFavorites(overrideCredentials?: XtreamCredentials | null) {
 
   const activeCreds = overrideCredentials !== undefined ? overrideCredentials : contextCreds;
 
-  // Run bootstrap migration lazily when credentials or hook is invoked
-  if (typeof window !== 'undefined') {
-    bootstrapLegacyMigration();
-  }
-
   const accountKey = useMemo(() => {
     return getAccountKey(activeCreds?.serverUrl, activeCreds?.username);
   }, [activeCreds?.serverUrl, activeCreds?.username]);
+
+  // Run lazy migration when credentials/accountKey are available
+  if (typeof window !== 'undefined' && activeCreds?.serverUrl && activeCreds?.username) {
+    bootstrapLegacyMigration(accountKey);
+    migrateOldKeyToV2(activeCreds.serverUrl, activeCreds.username);
+  }
 
   const subscribe = useCallback(
     (listener: () => void) => {
@@ -214,11 +219,16 @@ export function useFavorites(overrideCredentials?: XtreamCredentials | null) {
     return Boolean(accountKey) && hasUnassignedLegacyFavorites();
   }, [accountKey, favorites]);
 
-  const importLegacyFavorites = useCallback((): {
-    success: boolean;
-    importedCount: number;
-  } => {
-    if (!accountKey) return { success: false, importedCount: 0 };
+  const canImportAmbiguousOldKey = useMemo(() => {
+    return (
+      Boolean(activeCreds?.serverUrl) &&
+      Boolean(activeCreds?.username) &&
+      hasAmbiguousOldKeyFavorites(activeCreds?.serverUrl, activeCreds?.username)
+    );
+  }, [activeCreds?.serverUrl, activeCreds?.username, favorites]);
+
+  const importLegacyFavorites = useCallback((): ImportResult => {
+    if (!accountKey) return { success: false, reason: 'invalid_key', importedCount: 0 };
     const res = importUnassignedLegacyToAccount(accountKey);
     if (res.success) {
       getCachedFavoritesForAccount(accountKey);
@@ -227,6 +237,18 @@ export function useFavorites(overrideCredentials?: XtreamCredentials | null) {
     return res;
   }, [accountKey]);
 
+  const importAmbiguousOldKeyFavorites = useCallback((): ImportResult => {
+    if (!activeCreds?.serverUrl || !activeCreds?.username) {
+      return { success: false, reason: 'invalid_key', importedCount: 0 };
+    }
+    const res = importAmbiguousOldKeyToAccount(activeCreds.serverUrl, activeCreds.username);
+    if (res.success) {
+      getCachedFavoritesForAccount(accountKey);
+      notifyAccountSubscribers(accountKey);
+    }
+    return res;
+  }, [accountKey, activeCreds?.serverUrl, activeCreds?.username]);
+
   return {
     favorites,
     toggleFavorite,
@@ -234,6 +256,8 @@ export function useFavorites(overrideCredentials?: XtreamCredentials | null) {
     getFavoritesByType,
     accountKey,
     canImportLegacy,
+    canImportAmbiguousOldKey,
     importLegacyFavorites,
+    importAmbiguousOldKeyFavorites,
   };
 }
