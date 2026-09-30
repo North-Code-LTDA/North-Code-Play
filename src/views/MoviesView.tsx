@@ -196,7 +196,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
               ) : (
                 <>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                   {displayedStreams.map((stream) => (
+                   {displayedStreams.map((stream, idx) => (
                      <motion.div
                        key={stream.stream_id}
                        whileHover={{ scale: 1.05 }}
@@ -211,8 +211,11 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                            src={stream.stream_icon}
                            serverUrl={credentials?.serverUrl}
                            alt={stream.name}
+                           itemId={stream.stream_id}
+                           itemName={stream.name}
+                           priority={idx < 12}
+                           loading={idx < 12 ? 'eager' : 'lazy'}
                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                           loading="lazy"
                          />
                        ) : (
                          <div className="w-full h-full flex flex-col items-center justify-center bg-nc-bg-input">

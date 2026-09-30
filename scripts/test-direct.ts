@@ -3,6 +3,7 @@ import {
   normalizeServerUrl,
   buildDirectMediaUrl,
   buildDirectImageUrl,
+  diagnoseImageUrl,
   FALLBACK_IMAGE_DATA_URI,
 } from '../src/utils/mediaUtils';
 import { XtreamCredentials } from '../src/types';
@@ -111,16 +112,31 @@ function runTests() {
 
   // 3. buildDirectImageUrl
   console.log('3. Testando buildDirectImageUrl...');
-  // 3.1 Direct absolute URL (HTTP)
+  // 3.1 Direct absolute URL (HTTP and HTTPS)
   assert.strictEqual(
     buildDirectImageUrl('http://img.provider.com/poster.jpg'),
     'http://img.provider.com/poster.jpg'
   );
-
-  // 3.2 Direct absolute URL (HTTPS)
   assert.strictEqual(
     buildDirectImageUrl('https://image.tmdb.org/t/p/w500/abc.jpg'),
     'https://image.tmdb.org/t/p/w500/abc.jpg'
+  );
+
+  // 3.2 CRITICAL BUGFIX: Absolute provider URL containing ?url= and &sig= must remain 100% intact!
+  const providerWithUrlParam =
+    'http://logos.exemplo.test/image.php?url=https%3A%2F%2Fstorage.exemplo.test%2Fcanal.png&sig=abc';
+  assert.strictEqual(
+    buildDirectImageUrl(providerWithUrlParam),
+    providerWithUrlParam,
+    'URL absoluta do provedor com ?url= e &sig= deve sair rigorosamente intacta!'
+  );
+
+  const providerWithComplexQuery =
+    'https://images.provider.tv:9000/get.php?token=xyz&url=enc&sig=987#channel';
+  assert.strictEqual(
+    buildDirectImageUrl(providerWithComplexQuery),
+    providerWithComplexQuery,
+    'URL com porta, parâmetros e fragmento deve permanecer intacta!'
   );
 
   // 3.3 Protocol-relative URL
@@ -138,10 +154,22 @@ function runTests() {
     buildDirectImageUrl('images.tmdb.org/t/p/original/backdrop.jpg'),
     'https://images.tmdb.org/t/p/original/backdrop.jpg'
   );
-  // Defect fix: logo.png must NOT become http://logo.png, but resolve against serverUrl!
+  // logo.png must NOT become http://logo.png, but resolve against serverUrl!
   assert.strictEqual(
     buildDirectImageUrl('logo.png', 'http://iptv.server:8080'),
     'http://iptv.server:8080/logo.png'
+  );
+  assert.strictEqual(
+    buildDirectImageUrl('/logos/1.png', 'http://iptv.server:8080'),
+    'http://iptv.server:8080/logos/1.png'
+  );
+  assert.strictEqual(
+    buildDirectImageUrl('logos/1.png', 'http://iptv.server:8080/base/'),
+    'http://iptv.server:8080/base/logos/1.png'
+  );
+  assert.strictEqual(
+    buildDirectImageUrl('/logos/1.png?v=2&sig=abc', 'http://iptv.server:8080'),
+    'http://iptv.server:8080/logos/1.png?v=2&sig=abc'
   );
   assert.strictEqual(
     buildDirectImageUrl('./channel_logo.png', 'http://iptv.server:8080/base/'),
@@ -158,10 +186,14 @@ function runTests() {
     'http://iptv.server:8080/images/movie_123.jpg'
   );
 
-  // 3.6 Recover legacy query params
+  // 3.6 Recover legacy query params from local proxy route ONLY
   assert.strictEqual(
     buildDirectImageUrl('/api/media/image?url=https%3A%2F%2Fimage.tmdb.org%2Fpic.jpg'),
     'https://image.tmdb.org/pic.jpg'
+  );
+  assert.strictEqual(
+    buildDirectImageUrl('/api/media/image?url=logos%2Fch.png&serverUrl=http%3A%2F%2Fiptv.tv%3A8080'),
+    'http://iptv.tv:8080/logos/ch.png'
   );
 
   // 3.7 Invalid / empty URL returns SVG fallback
@@ -174,7 +206,25 @@ function runTests() {
   assert(!liveUrl1.includes('/api/media'), 'liveUrl1 não deve conter /api/media');
   assert(!movieUrl1.includes('/api/media'), 'movieUrl1 não deve conter /api/media');
   assert(!seriesUrl1.includes('/api/media'), 'seriesUrl1 não deve conter /api/media');
-  assert(!buildDirectImageUrl('http://example.com/logo.png').includes('/api/media'), 'Imagem não deve conter /api/media');
+  // 5. Testando diagnoseImageUrl
+  console.log('5. Testando diagnoseImageUrl...');
+  const diag1 = diagnoseImageUrl(providerWithUrlParam);
+  assert.strictEqual(diag1.wasModifiedByNormalizer, false);
+  assert.strictEqual(diag1.isAbsolute, true);
+  assert.strictEqual(diag1.diffCategory, 'identical');
+  assert.strictEqual(diag1.resolvedUrl, providerWithUrlParam);
+
+  const diag2 = diagnoseImageUrl('logo.png', 'http://iptv.server:8080');
+  assert.strictEqual(diag2.diffCategory, 'relative_resolved_to_provider');
+  assert.strictEqual(diag2.resolvedUrl, 'http://iptv.server:8080/logo.png');
+
+  const diag3 = diagnoseImageUrl('/api/media/image?url=https%3A%2F%2Fimg.test%2Fa.png');
+  assert.strictEqual(diag3.diffCategory, 'legacy_proxy_extracted');
+  assert.strictEqual(diag3.resolvedUrl, 'https://img.test/a.png');
+
+  const diag4 = diagnoseImageUrl('');
+  assert.strictEqual(diag4.diffCategory, 'fallback_empty');
+  assert.strictEqual(diag4.resolvedUrl, FALLBACK_IMAGE_DATA_URI);
 
   console.log('✅ Todos os testes da arquitetura direta passaram com sucesso!');
 }

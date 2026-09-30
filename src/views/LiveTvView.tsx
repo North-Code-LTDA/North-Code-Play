@@ -256,7 +256,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                  </div>
               ) : (
                 <div className="space-y-2">
-                  {displayedStreams.map((stream) => (
+                  {displayedStreams.map((stream, idx) => (
                     <button
                       key={stream.stream_id}
                       onClick={() => {
@@ -276,6 +276,10 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                             src={stream.stream_icon}
                             serverUrl={credentials?.serverUrl}
                             alt={stream.name}
+                            itemId={stream.stream_id}
+                            itemName={stream.name}
+                            priority={idx < 15}
+                            loading={idx < 15 ? 'eager' : 'lazy'}
                             className="w-full h-full object-contain p-1"
                           />
                         ) : (
@@ -339,6 +343,10 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                           src={selectedChannel.stream_icon}
                           serverUrl={credentials?.serverUrl}
                           alt={selectedChannel.name}
+                          itemId={selectedChannel.stream_id}
+                          itemName={selectedChannel.name}
+                          priority={true}
+                          loading="eager"
                           className="w-full h-full object-contain"
                         />
                       ) : (

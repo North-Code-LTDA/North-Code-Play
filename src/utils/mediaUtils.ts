@@ -89,7 +89,7 @@ const KNOWN_HTTPS_CDNS = [
  * as opposed to a relative filename/path (e.g. "logo.png", "covers/123.jpg", "./img.png").
  */
 function isSchemelessDomain(str: string): boolean {
-  // If it starts with a slash or dot-slash, it is a local/relative path
+  // If it starts with a slash, dot-slash, or has no dot, it is a local/relative path
   if (
     str.startsWith("/") ||
     str.startsWith("./") ||
@@ -125,13 +125,50 @@ function isSchemelessDomain(str: string): boolean {
 }
 
 /**
+ * Extracts inner URL from legacy proxy endpoints (e.g. /api/media/image?url=...&serverUrl=...)
+ * ONLY when the pathname is specifically '/api/media/image'.
+ * Never extracts from generic provider URLs like 'http://logos.test/image.php?url=...'.
+ */
+export function extractLegacyProxyUrl(urlStr: string): { innerUrl: string; legacyServerUrl?: string } | null {
+  try {
+    let parsed: URL | null = null;
+    const isRelative = urlStr.startsWith("/") || urlStr.startsWith("./");
+    if (isRelative) {
+      parsed = new URL(urlStr, "http://localhost");
+    } else if (/^https?:\/\//i.test(urlStr)) {
+      parsed = new URL(urlStr);
+    }
+    if (!parsed) return null;
+
+    // Strict validation: legacy proxy ONLY when the route is /api/media/image on local origin
+    const isLocalAppOrigin =
+      isRelative ||
+      (typeof window !== "undefined" && window.location && parsed.origin === window.location.origin) ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1";
+
+    if (isLocalAppOrigin && parsed.pathname === "/api/media/image") {
+      const inner = parsed.searchParams.get("url");
+      if (inner) {
+        const legacyServer = parsed.searchParams.get("serverUrl") || undefined;
+        return {
+          innerUrl: decodeURIComponent(inner).trim(),
+          legacyServerUrl: legacyServer ? decodeURIComponent(legacyServer).trim() : undefined,
+        };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
  * Resolves direct image URLs for channel logos, covers, backdrops, and avatars.
- * Directly targets the origin without server proxying, with comprehensive edge-case handling:
- * 1. Recovers original URLs embedded in legacy query strings (e.g. /api/media/image?url=...)
- * 2. Preserves data: and blob: URLs
- * 3. Preserves valid absolute HTTP/HTTPS URLs (including query parameters without double encoding)
- * 4. Resolves protocol-relative URLs (//domain/...) with secure CDN or origin scheme
- * 5. Distinguishes schemeless domain URLs from relative filenames (e.g. "image.tmdb.org/..." vs "logo.png")
+ * Directly targets the origin without server proxying:
+ * 1. Recognizes legacy proxy links ONLY when pointing to /api/media/image
+ * 2. Preserves valid absolute HTTP/HTTPS URLs literally (including query strings, signatures, casing, ports)
+ * 3. Preserves data: and blob: URLs
+ * 4. Resolves protocol-relative URLs (//domain/...)
+ * 5. Distinguishes schemeless domain URLs from relative filenames
  * 6. Resolves relative paths (including ./, ../, and root /) correctly against serverUrl
  */
 export function buildDirectImageUrl(
@@ -147,17 +184,15 @@ export function buildDirectImageUrl(
     return FALLBACK_IMAGE_DATA_URI;
   }
 
-  // 1. Recover original URL from legacy proxy endpoints (e.g. /api/media/image?url=...)
-  if (trimmed.includes("url=")) {
-    try {
-      const match = trimmed.match(/[?&]url=([^&]+)/);
-      if (match && match[1]) {
-        const decoded = decodeURIComponent(match[1]).trim();
-        if (decoded && decoded !== trimmed) {
-          trimmed = decoded;
-        }
-      }
-    } catch {}
+  let effectiveBase = serverUrl ? serverUrl.trim() : "";
+
+  // 1. Check if this is a legacy proxy link specifically targeting /api/media/image
+  const legacyMatch = extractLegacyProxyUrl(trimmed);
+  if (legacyMatch) {
+    trimmed = legacyMatch.innerUrl;
+    if (legacyMatch.legacyServerUrl && !effectiveBase) {
+      effectiveBase = legacyMatch.legacyServerUrl;
+    }
   }
 
   // 2. Preserve data and blob URIs directly
@@ -165,13 +200,12 @@ export function buildDirectImageUrl(
     return trimmed;
   }
 
-  // 3. Preserve valid absolute HTTP/HTTPS URLs as-is (preserves query params, CDN tokens)
+  // 3. Preserve valid absolute HTTP/HTTPS URLs as-is (CRITICAL: preserve queries, signatures, ports)
   if (/^https?:\/\//i.test(trimmed)) {
     return trimmed;
   }
 
   // Resolve base server URL (explicit param preferred, fallback to localStorage)
-  let effectiveBase = serverUrl ? serverUrl.trim() : "";
   if (!effectiveBase && typeof window !== "undefined" && window.localStorage) {
     try {
       const saved = window.localStorage.getItem("northcode_tv_credentials");
@@ -187,20 +221,26 @@ export function buildDirectImageUrl(
   // 4. Protocol-relative URL: //domain.com/path
   if (trimmed.startsWith("//")) {
     const isKnownHttps = KNOWN_HTTPS_CDNS.some((cdn) => trimmed.includes(cdn));
-    const scheme =
-      isKnownHttps ||
-      (typeof window !== "undefined" && window.location.protocol === "https:")
-        ? "https:"
-        : effectiveBase && effectiveBase.startsWith("https://")
-        ? "https:"
-        : "http:";
+    const scheme = isKnownHttps
+      ? "https:"
+      : effectiveBase && effectiveBase.startsWith("https://")
+      ? "https:"
+      : typeof window !== "undefined" && window.location.protocol.startsWith("http")
+      ? window.location.protocol
+      : "http:";
     return `${scheme}${trimmed}`;
   }
 
   // 5. Schemeless domain URL (e.g. image.tmdb.org/..., m.media-amazon.com/...)
   if (isSchemelessDomain(trimmed)) {
     const isKnownHttps = KNOWN_HTTPS_CDNS.some((cdn) => trimmed.includes(cdn));
-    const scheme = isKnownHttps ? "https://" : effectiveBase?.startsWith("https://") ? "https://" : "https://";
+    const scheme = isKnownHttps
+      ? "https://"
+      : effectiveBase?.startsWith("https://")
+      ? "https://"
+      : typeof window !== "undefined" && window.location.protocol === "https:"
+      ? "https://"
+      : "http://";
     return `${scheme}${trimmed}`;
   }
 
@@ -225,6 +265,125 @@ export function buildDirectImageUrl(
 
 // Backwards-compatible alias
 export const getProxiedImageUrl = buildDirectImageUrl;
+
+/**
+ * Diagnostic record comparing raw API image string with legacy browser resolution and normalized URL.
+ */
+export interface ImageUrlDiagnosis {
+  rawUrl: string | null | undefined;
+  serverUrl: string | null | undefined;
+  legacyBrowserResolution: string;
+  resolvedUrl: string;
+  isIdenticalToLegacy: boolean;
+  wasModifiedByNormalizer: boolean;
+  isAbsolute: boolean;
+  isLegacyProxy: boolean;
+  diffCategory:
+    | 'identical'
+    | 'relative_resolved_to_provider'
+    | 'legacy_proxy_extracted'
+    | 'modified_by_normalizer'
+    | 'fallback_empty';
+  notes: string;
+}
+
+/**
+ * Compares raw API image URL against legacy browser resolution (<img src={rawUrl}>)
+ * and the URL generated by buildDirectImageUrl.
+ */
+export function diagnoseImageUrl(
+  rawUrl?: string | null,
+  serverUrl?: string | null
+): ImageUrlDiagnosis {
+  const trimmed = (rawUrl || "").trim();
+  const resolved = buildDirectImageUrl(rawUrl, serverUrl);
+
+  // Compute what standard legacy <img src={rawUrl}> would have resolved to in the browser
+  let legacyResolution = trimmed;
+  if (trimmed && !trimmed.startsWith("data:") && !trimmed.startsWith("blob:")) {
+    if (trimmed.startsWith("//")) {
+      const proto = typeof window !== "undefined" ? window.location.protocol : "http:";
+      legacyResolution = `${proto}${trimmed}`;
+    } else if (!/^https?:\/\//i.test(trimmed)) {
+      if (typeof window !== "undefined" && window.location.origin) {
+        try {
+          legacyResolution = new URL(trimmed, window.location.href).href;
+        } catch {
+          legacyResolution = `${window.location.origin}/${trimmed.replace(/^\/+/, "")}`;
+        }
+      }
+    }
+  }
+
+  const isAbs = /^https?:\/\//i.test(trimmed);
+  const legacyProxy = Boolean(extractLegacyProxyUrl(trimmed));
+  const isIdentical = legacyResolution === resolved;
+  const wasModified = isAbs && resolved !== trimmed;
+
+  let diffCategory: ImageUrlDiagnosis['diffCategory'] = 'identical';
+  let notes = "";
+
+  if (!trimmed) {
+    diffCategory = 'fallback_empty';
+    notes = "Fonte vazia ou nula; imagem substituta (SVG) aplicada.";
+  } else if (legacyProxy) {
+    diffCategory = 'legacy_proxy_extracted';
+    notes = "Link herdado do antigo proxy (/api/media/image) extraído com sucesso para conexão direta.";
+  } else if (isAbs) {
+    if (wasModified) {
+      diffCategory = 'modified_by_normalizer';
+      notes = "ALERTA: URL absoluta foi modificada pelo normalizador!";
+    } else {
+      diffCategory = 'identical';
+      notes = "URL absoluta intacta, rigorosamente idêntica ao commit de referência. Se falhar, verifique status HTTP na aba Rede (404/403/DNS/Mixed Content).";
+    }
+  } else {
+    diffCategory = 'relative_resolved_to_provider';
+    notes = `Caminho relativo resolvido diretamente contra o servidor IPTV (${resolved}) em vez de falhar no host local.`;
+  }
+
+  return {
+    rawUrl,
+    serverUrl,
+    legacyBrowserResolution: legacyResolution,
+    resolvedUrl: resolved,
+    isIdenticalToLegacy: isIdentical,
+    wasModifiedByNormalizer: wasModified,
+    isAbsolute: isAbs,
+    isLegacyProxy: legacyProxy,
+    diffCategory,
+    notes,
+  };
+}
+
+export function isDebugImagesEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    Boolean((window as any).__NC_DEBUG_IMAGES__) ||
+    window.localStorage?.getItem("nc_debug_images") === "true"
+  );
+}
+
+export function setDebugImagesEnabled(enabled: boolean): void {
+  if (typeof window === "undefined") return;
+  (window as any).__NC_DEBUG_IMAGES__ = enabled;
+  if (enabled) {
+    window.localStorage?.setItem("nc_debug_images", "true");
+    console.log("[NC Debug Images] Diagnóstico de imagens ATIVADO.");
+  } else {
+    window.localStorage?.removeItem("nc_debug_images");
+    console.log("[NC Debug Images] Diagnóstico de imagens DESATIVADO.");
+  }
+}
+
+if (typeof window !== "undefined") {
+  (window as any).ncDebugImages = setDebugImagesEnabled;
+  (window as any).ncTestImage = (url: string, sUrl?: string) => {
+    const diag = diagnoseImageUrl(url, sUrl);
+    console.table(diag);
+    return diag;
+  };
+}
 
 export interface BuildDirectMediaUrlOptions {
   type: "live" | "movie" | "series";

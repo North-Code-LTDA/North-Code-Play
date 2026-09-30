@@ -40,7 +40,7 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
           className="flex flex-row overflow-x-auto overflow-y-hidden scroll-smooth w-full gap-4 pb-8 pt-4 scrollbar-hide"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
-        {items.map((item) => (
+        {items.map((item, idx) => (
           <motion.div
             key={item.stream_id || item.series_id || item.id}
             onClick={() => onItemClick(item)}
@@ -56,8 +56,11 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
                    src={item.stream_icon || item.cover}
                    serverUrl={credentials?.serverUrl}
                    alt={item.name}
+                   itemId={item.stream_id || item.series_id || item.id}
+                   itemName={item.name}
+                   priority={idx < 8}
+                   loading={idx < 8 ? 'eager' : 'lazy'}
                    className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'}`}
-                   loading="lazy"
                  />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-nc-bg-input">
