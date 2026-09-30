@@ -74,10 +74,16 @@ export function usePlaybackSession({
   const [subtitleTracks, setSubtitleTracks] = useState<MediaTrackInfo[]>([]);
   const [currentSubtitleTrack, setCurrentSubtitleTrack] = useState<number>(-1); // -1 = Off
 
-  // Live stream specifics
+  // Live stream specifics & stats tracking refs to prevent stale closure
   const [liveSyncPosition, setLiveSyncPosition] = useState<number | null>(null);
   const [liveEdgeDistance, setLiveEdgeDistance] = useState<number>(0);
   const [rebufferingCount, setRebufferingCount] = useState(0);
+  const rebufferingCountRef = useRef(0);
+  rebufferingCountRef.current = rebufferingCount;
+
+  const liveEdgeDistanceRef = useRef(0);
+  liveEdgeDistanceRef.current = liveEdgeDistance;
+
   const [stats, setStats] = useState<PlaybackStats>({ rebufferingCount: 0 });
 
   // Infer content type if not explicit
@@ -160,12 +166,35 @@ export function usePlaybackSession({
     }
   }, [videoRef]);
 
+  // Helper to extract active buffer ranges & ahead time directly from HTMLMediaElement
+  const calculateBufferStats = useCallback((video: HTMLVideoElement) => {
+    const ranges: BufferedTimeRange[] = [];
+    let ahead = 0;
+    const cur = video.currentTime;
+    if (video.buffered && video.buffered.length > 0) {
+      for (let i = 0; i < video.buffered.length; i++) {
+        const start = video.buffered.start(i);
+        const end = video.buffered.end(i);
+        ranges.push({ start, end });
+        if (cur >= start && cur <= end) {
+          ahead = Math.max(0, end - cur);
+        }
+      }
+    }
+    return { ranges, ahead };
+  }, []);
+
   // Main playback attachment effect
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !streamUrl) {
       cleanup();
       setIsLoading(false);
+      setIsPlaying(false);
+      setIsBuffering(false);
+      setError(null);
+      setBufferedAhead(0);
+      setBufferedRanges([]);
       return;
     }
 
@@ -173,13 +202,19 @@ export function usePlaybackSession({
     cleanup();
 
     setIsLoading(true);
+    setIsPlaying(false);
     setIsBuffering(false);
     setError(null);
+    setCurrentTime(0);
+    setDuration(0);
+    setBufferedAhead(0);
+    setBufferedRanges([]);
     setQualities([]);
     setAudioTracks([]);
     setSubtitleTracks([]);
     setCurrentQuality(-1);
     setRebufferingCount(0);
+    rebufferingCountRef.current = 0;
 
     // Initial video element setup
     video.volume = volume;
@@ -229,7 +264,11 @@ export function usePlaybackSession({
     const handleWaiting = () => {
       if (sessionIdRef.current !== currentSessionId) return;
       setIsBuffering(true);
-      setRebufferingCount((prev) => prev + 1);
+      setRebufferingCount((prev) => {
+        const next = prev + 1;
+        rebufferingCountRef.current = next;
+        return next;
+      });
     };
 
     const handleTimeUpdate = () => {
@@ -244,28 +283,19 @@ export function usePlaybackSession({
         } catch {}
       }
 
-      // Update buffered stats
-      if (video.buffered.length > 0) {
-        const ranges: BufferedTimeRange[] = [];
-        let ahead = 0;
-        for (let i = 0; i < video.buffered.length; i++) {
-          const start = video.buffered.start(i);
-          const end = video.buffered.end(i);
-          ranges.push({ start, end });
-          if (cur >= start && cur <= end) {
-            ahead = Math.max(0, end - cur);
-          }
-        }
-        setBufferedRanges(ranges);
-        setBufferedAhead(ahead);
-      }
+      // Update buffered stats dynamically
+      const { ranges, ahead } = calculateBufferStats(video);
+      setBufferedRanges(ranges);
+      setBufferedAhead(ahead);
 
       // Live latency calculation
       if (isLive && hlsRef.current) {
         const syncPos = hlsRef.current.liveSyncPosition;
         if (syncPos !== null && syncPos !== undefined && syncPos > 0) {
           setLiveSyncPosition(syncPos);
-          setLiveEdgeDistance(Math.max(0, syncPos - cur));
+          const dist = Math.max(0, syncPos - cur);
+          setLiveEdgeDistance(dist);
+          liveEdgeDistanceRef.current = dist;
         }
       }
     };
@@ -286,28 +316,15 @@ export function usePlaybackSession({
       handleDurationChange();
       applyStartAt();
       video.play().catch(() => {
-        // Autoplay may be blocked by browser policy; user can click play
         setIsPlaying(false);
       });
     };
 
     const handleProgress = () => {
       if (sessionIdRef.current !== currentSessionId) return;
-      if (video.buffered.length > 0) {
-        const ranges: BufferedTimeRange[] = [];
-        let ahead = 0;
-        const cur = video.currentTime;
-        for (let i = 0; i < video.buffered.length; i++) {
-          const start = video.buffered.start(i);
-          const end = video.buffered.end(i);
-          ranges.push({ start, end });
-          if (cur >= start && cur <= end) {
-            ahead = Math.max(0, end - cur);
-          }
-        }
-        setBufferedRanges(ranges);
-        setBufferedAhead(ahead);
-      }
+      const { ranges, ahead } = calculateBufferStats(video);
+      setBufferedRanges(ranges);
+      setBufferedAhead(ahead);
     };
 
     const handleVolumeChange = () => {
@@ -487,24 +504,25 @@ export function usePlaybackSession({
       video.load();
     }
 
-    // Interval to poll stats periodically without causing render storms
+    // Interval to poll stats periodically using fresh video element readings
     const statsTimer = setInterval(() => {
       if (sessionIdRef.current !== currentSessionId) return;
       if (video) {
+        const { ranges, ahead } = calculateBufferStats(video);
         setStats({
           width: video.videoWidth,
           height: video.videoHeight,
-          duration: video.duration,
-          currentTime: video.currentTime,
-          bufferedAhead,
-          bufferedRanges,
+          duration: video.duration || 0,
+          currentTime: video.currentTime || 0,
+          bufferedAhead: ahead,
+          bufferedRanges: ranges,
           networkState: video.networkState,
           readyState: video.readyState,
-          rebufferingCount,
-          liveLatency: liveEdgeDistance,
+          rebufferingCount: rebufferingCountRef.current,
+          liveLatency: liveEdgeDistanceRef.current,
         });
       }
-    }, 1500);
+    }, 1000);
 
     return () => {
       clearInterval(statsTimer);
@@ -530,7 +548,7 @@ export function usePlaybackSession({
 
       cleanup();
     };
-  }, [streamUrl, retryTrigger, cleanup, isLive, streamId, startAt, inferredTransport]);
+  }, [streamUrl, retryTrigger, cleanup, isLive, streamId, startAt, inferredTransport, calculateBufferStats]);
 
   // Actions
   const togglePlay = useCallback(() => {

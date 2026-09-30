@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import { AlertCircle, RefreshCw, Wrench, ArrowLeft } from 'lucide-react';
-import { VideoPlayerProps, PlayerContentType } from './player/types';
+import { VideoPlayerProps } from './player/types';
 import { usePlaybackSession } from './player/usePlaybackSession';
 import { PlayerControls } from './player/PlayerControls';
 import { PlayerSettingsMenu } from './player/PlayerSettingsMenu';
@@ -90,20 +90,26 @@ export function VideoPlayer({
     };
   }, []);
 
-  // Inactivity timer: hide controls after 3 seconds of playing
+  // Inactivity timer: hide controls after 3 seconds of playing when not focused on controls or modal
   const resetInactivityTimer = useCallback(() => {
     setIsControlsVisible(true);
     if (idleTimeoutRef.current) {
       clearTimeout(idleTimeoutRef.current);
     }
-    // Only auto-hide if playing and no modal is open
+
+    const isFocusedInControls = Boolean(
+      containerRef.current && containerRef.current.contains(document.activeElement)
+    );
+
+    // Only auto-hide if playing, no modal is open, and no control element is focused
     if (
       session.isPlaying &&
       !showSettings &&
       !showDiagnostics &&
       !activeError &&
       !isCurrentlyLoading &&
-      !session.isBuffering
+      !session.isBuffering &&
+      !isFocusedInControls
     ) {
       idleTimeoutRef.current = setTimeout(() => {
         setIsControlsVisible(false);
@@ -187,19 +193,27 @@ export function VideoPlayer({
     }
   }, []);
 
-  // Keyboard shortcuts active only for active player
+  // Keyboard shortcuts active only when no form or interactive control is focused
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is typing in form inputs
-      const activeEl = document.activeElement;
-      if (
-        activeEl &&
-        (activeEl.tagName === 'INPUT' ||
-          activeEl.tagName === 'TEXTAREA' ||
-          (activeEl as HTMLElement).isContentEditable)
-      ) {
-        return;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (activeEl) {
+        const tagName = activeEl.tagName;
+        const role = activeEl.getAttribute('role');
+        if (
+          tagName === 'INPUT' ||
+          tagName === 'TEXTAREA' ||
+          tagName === 'BUTTON' ||
+          tagName === 'SELECT' ||
+          role === 'slider' ||
+          role === 'menuitem' ||
+          activeEl.isContentEditable
+        ) {
+          return;
+        }
       }
+
+      if (!containerRef.current) return;
 
       resetInactivityTimer();
 
@@ -243,12 +257,11 @@ export function VideoPlayer({
             setShowDiagnostics(false);
           } else if (isFullscreen || isVisuallyExpanded) {
             toggleFullscreen();
-          } else if (!embedded) {
+          } else if (!embedded && onBack) {
             onBack();
           }
           break;
         default:
-          // Numeric keys 0-9 seek to % of duration (for VOD/Series)
           if (!session.isLive && /^[0-9]$/.test(e.key) && session.duration > 0) {
             e.preventDefault();
             const pct = parseInt(e.key, 10) * 0.1;
@@ -295,10 +308,9 @@ export function VideoPlayer({
   };
 
   const handleRetry = () => {
+    setRetryTrigger((p) => p + 1);
     if (onRetry) {
       onRetry();
-    } else {
-      setRetryTrigger((p) => p + 1);
     }
   };
 
@@ -317,7 +329,7 @@ export function VideoPlayer({
           : 'fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center select-none overflow-hidden'
       }`}
     >
-      {/* Video Element: custom React UI controls native/HLS playback, no Plyr */}
+      {/* Video Element */}
       <video
         ref={videoRef}
         className="w-full h-full object-contain pointer-events-none"
@@ -393,7 +405,7 @@ export function VideoPlayer({
       {/* Error Overlay */}
       {activeError && !isCurrentlyLoading && (
         <div
-          className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center"
+          className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center pointer-events-auto"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">

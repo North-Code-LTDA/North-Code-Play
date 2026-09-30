@@ -29,10 +29,10 @@ export function PlayerTimeline({
   const progressPercent = effectiveDuration > 0 ? Math.min(100, Math.max(0, (currentTime / effectiveDuration) * 100)) : 0;
 
   const calculateTimeFromEvent = useCallback(
-    (e: React.MouseEvent | MouseEvent | React.TouchEvent | TouchEvent): number => {
+    (e: React.MouseEvent | MouseEvent | React.TouchEvent | TouchEvent | React.PointerEvent): number => {
       if (!barRef.current || effectiveDuration <= 0) return 0;
       const rect = barRef.current.getBoundingClientRect();
-      const clientX = 'touches' in e ? e.touches[0].clientX : (e as MouseEvent).clientX;
+      const clientX = 'touches' in e && e.touches.length > 0 ? e.touches[0].clientX : (e as MouseEvent).clientX;
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
       return ratio * effectiveDuration;
     },
@@ -57,7 +57,9 @@ export function PlayerTimeline({
     e.stopPropagation();
     if (effectiveDuration <= 0) return;
     setIsDragging(true);
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
     const targetTime = calculateTimeFromEvent(e);
     onSeek(targetTime);
   };
@@ -80,10 +82,18 @@ export function PlayerTimeline({
     }
   };
 
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+  };
+
   if (isLive && effectiveDuration <= 0) {
     // Live stream without a seekable window: subtle live pulse bar
     return (
-      <div className="relative w-full h-2 flex items-center group py-2">
+      <div
+        className="relative w-full h-2 flex items-center group py-2"
+        onClick={handleClick}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
         <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden">
           <div className="w-full h-full bg-nc-primary/50 animate-pulse rounded-full" />
         </div>
@@ -94,6 +104,7 @@ export function PlayerTimeline({
   return (
     <div
       ref={barRef}
+      onClick={handleClick}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onPointerDown={handlePointerDown}
@@ -104,7 +115,17 @@ export function PlayerTimeline({
       aria-valuenow={Math.floor(currentTime)}
       aria-valuemin={0}
       aria-valuemax={Math.floor(effectiveDuration)}
-      className="relative w-full h-4 flex items-center cursor-pointer group py-2 select-none touch-none"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowLeft') {
+          e.stopPropagation();
+          onSeek(Math.max(0, currentTime - 5));
+        } else if (e.key === 'ArrowRight') {
+          e.stopPropagation();
+          onSeek(Math.min(effectiveDuration, currentTime + 5));
+        }
+      }}
+      className="relative w-full h-4 flex items-center cursor-pointer group py-2 select-none touch-none focus:outline-none focus:ring-1 focus:ring-nc-primary rounded"
     >
       {/* Background Track */}
       <div className="relative w-full h-1 group-hover:h-2 bg-white/20 rounded-full transition-all duration-150 overflow-hidden">
