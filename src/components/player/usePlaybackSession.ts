@@ -32,6 +32,7 @@ export function usePlaybackSession({
   // Session tracking to discard stale callbacks
   const sessionIdRef = useRef(0);
   const hlsRef = useRef<Hls | null>(null);
+  const recoveryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // Buffer profile state
   const [bufferProfile, setBufferProfileState] = useState<BufferProfileKey>(() => {
@@ -143,6 +144,9 @@ export function usePlaybackSession({
 
   // Thorough cleanup of video pipeline and HLS instance
   const cleanup = useCallback(() => {
+    recoveryTimersRef.current.forEach((t) => clearTimeout(t));
+    recoveryTimersRef.current = [];
+
     if (hlsRef.current) {
       try {
         hlsRef.current.stopLoad();
@@ -187,34 +191,49 @@ export function usePlaybackSession({
   // Main playback attachment effect
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !streamUrl) {
-      cleanup();
+    
+    // Immediate state & metrics reset helper
+    const resetSessionMetrics = () => {
       setIsLoading(false);
       setIsPlaying(false);
       setIsBuffering(false);
       setError(null);
+      setCurrentTime(0);
+      setDuration(0);
       setBufferedAhead(0);
       setBufferedRanges([]);
+      setQualities([]);
+      setAudioTracks([]);
+      setSubtitleTracks([]);
+      setCurrentQuality(-1);
+      setRebufferingCount(0);
+      rebufferingCountRef.current = 0;
+      setLiveSyncPosition(null);
+      setLiveEdgeDistance(0);
+      liveEdgeDistanceRef.current = 0;
+      setStats({
+        width: 0,
+        height: 0,
+        duration: 0,
+        currentTime: 0,
+        bufferedAhead: 0,
+        bufferedRanges: [],
+        rebufferingCount: 0,
+        liveLatency: undefined,
+        engineLabel: undefined,
+      });
+    };
+
+    if (!video || !streamUrl) {
+      cleanup();
+      resetSessionMetrics();
       return;
     }
 
     const currentSessionId = ++sessionIdRef.current;
     cleanup();
-
+    resetSessionMetrics();
     setIsLoading(true);
-    setIsPlaying(false);
-    setIsBuffering(false);
-    setError(null);
-    setCurrentTime(0);
-    setDuration(0);
-    setBufferedAhead(0);
-    setBufferedRanges([]);
-    setQualities([]);
-    setAudioTracks([]);
-    setSubtitleTracks([]);
-    setCurrentQuality(-1);
-    setRebufferingCount(0);
-    rebufferingCountRef.current = 0;
 
     // Initial video element setup
     video.volume = volume;
@@ -316,7 +335,9 @@ export function usePlaybackSession({
       handleDurationChange();
       applyStartAt();
       video.play().catch(() => {
-        setIsPlaying(false);
+        if (sessionIdRef.current === currentSessionId) {
+          setIsPlaying(false);
+        }
       });
     };
 
@@ -432,7 +453,9 @@ export function usePlaybackSession({
 
         applyStartAt();
         video.play().catch(() => {
-          setIsPlaying(false);
+          if (sessionIdRef.current === currentSessionId) {
+            setIsPlaying(false);
+          }
         });
       });
 
@@ -463,11 +486,12 @@ export function usePlaybackSession({
               if (networkRecoveryAttempts < 3) {
                 networkRecoveryAttempts++;
                 const delayMs = networkRecoveryAttempts * 1000;
-                setTimeout(() => {
+                const timer = setTimeout(() => {
                   if (sessionIdRef.current === currentSessionId && hlsRef.current) {
                     hlsRef.current.startLoad();
                   }
                 }, delayMs);
+                recoveryTimersRef.current.push(timer);
               } else {
                 setError(
                   'Falha de rede ou CORS ao carregar manifesto HLS diretamente do provedor. ' +
@@ -476,6 +500,7 @@ export function usePlaybackSession({
                 setIsLoading(false);
                 setIsBuffering(false);
                 hls.destroy();
+                hlsRef.current = null;
               }
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
@@ -487,6 +512,7 @@ export function usePlaybackSession({
                 setIsLoading(false);
                 setIsBuffering(false);
                 hls.destroy();
+                hlsRef.current = null;
               }
               break;
             default:
@@ -494,6 +520,7 @@ export function usePlaybackSession({
               setIsLoading(false);
               setIsBuffering(false);
               hls.destroy();
+              hlsRef.current = null;
               break;
           }
         }
@@ -509,6 +536,7 @@ export function usePlaybackSession({
       if (sessionIdRef.current !== currentSessionId) return;
       if (video) {
         const { ranges, ahead } = calculateBufferStats(video);
+        const hasLiveLatency = isLive && hlsRef.current && hlsRef.current.liveSyncPosition !== null;
         setStats({
           width: video.videoWidth,
           height: video.videoHeight,
@@ -519,7 +547,12 @@ export function usePlaybackSession({
           networkState: video.networkState,
           readyState: video.readyState,
           rebufferingCount: rebufferingCountRef.current,
-          liveLatency: liveEdgeDistanceRef.current,
+          liveLatency: hasLiveLatency ? liveEdgeDistanceRef.current : undefined,
+          engineLabel: hlsRef.current
+            ? 'HLS (Hls.js / MediaSource)'
+            : inferredTransport === 'hls'
+            ? 'HLS Nativo (Safari / HTML5 Video)'
+            : 'Progressivo Nativo (HTML5 Video)',
         });
       }
     }, 1000);
@@ -548,7 +581,7 @@ export function usePlaybackSession({
 
       cleanup();
     };
-  }, [streamUrl, retryTrigger, cleanup, isLive, streamId, startAt, inferredTransport, calculateBufferStats]);
+  }, [streamUrl, retryTrigger, cleanup, isLive, streamId, startAt, inferredTransport, calculateBufferStats, volume, isMuted, playbackRate]);
 
   // Actions
   const togglePlay = useCallback(() => {

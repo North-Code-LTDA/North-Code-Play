@@ -36,6 +36,7 @@ export interface PlaybackStats {
   readyState?: number;
   rebufferingCount: number;
   liveLatency?: number;
+  engineLabel?: string;
 }
 
 export interface VideoPlayerProps {

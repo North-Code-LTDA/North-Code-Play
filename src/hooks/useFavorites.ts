@@ -1,4 +1,14 @@
-import { useSyncExternalStore, useCallback } from 'react';
+import { useSyncExternalStore, useCallback, useMemo } from 'react';
+import { XtreamCredentials } from '../types';
+import { useXtreamContext } from '../context/XtreamContext';
+import {
+  getAccountKey,
+  safeGetStorage,
+  safeSetStorage,
+  bootstrapLegacyMigration,
+  hasUnassignedLegacyFavorites,
+  importUnassignedLegacyToAccount,
+} from '../utils/accountUtils';
 
 export interface FavoriteItem {
   id: string | number;
@@ -8,101 +18,222 @@ export interface FavoriteItem {
   extraData?: any;
 }
 
-const STORAGE_KEY = 'northcode_tv_favorites';
+interface CacheEntry {
+  raw: string | null;
+  items: FavoriteItem[];
+}
 
-let memoryFavorites: FavoriteItem[] = loadFavoritesFromStorage();
-const listeners = new Set<() => void>();
+// In-memory stable cache per accountKey -> CacheEntry
+const accountMemoryCache = new Map<string, CacheEntry>();
 
-function loadFavoritesFromStorage(): FavoriteItem[] {
-  if (typeof window === 'undefined' || !window.localStorage) return [];
+// Subscriptions per accountKey -> Set<() => void>
+const accountListeners = new Map<string, Set<() => void>>();
+
+// Empty fallback array with stable reference
+const EMPTY_FAVORITES: FavoriteItem[] = [];
+
+let isStorageListenerAttached = false;
+
+function getAccountListeners(accountKey: string): Set<() => void> {
+  let listeners = accountListeners.get(accountKey);
+  if (!listeners) {
+    listeners = new Set<() => void>();
+    accountListeners.set(accountKey, listeners);
+  }
+  return listeners;
+}
+
+function notifyAccountSubscribers(accountKey: string) {
+  const listeners = accountListeners.get(accountKey);
+  if (listeners) {
+    listeners.forEach((fn) => fn());
+  }
+}
+
+/**
+ * Gets cached favorites array for accountKey, updating cache only when raw storage string changes.
+ * Guarantees reference stability for useSyncExternalStore.
+ */
+function getCachedFavoritesForAccount(accountKey: string): FavoriteItem[] {
+  if (!accountKey) return EMPTY_FAVORITES;
+
+  const raw = safeGetStorage(accountKey);
+  const cached = accountMemoryCache.get(accountKey);
+
+  if (cached && cached.raw === raw) {
+    return cached.items;
+  }
+
+  if (raw === null || raw === undefined) {
+    accountMemoryCache.set(accountKey, { raw: null, items: EMPTY_FAVORITES });
+    return EMPTY_FAVORITES;
+  }
+
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      return parsed;
+      const validItems: FavoriteItem[] = parsed.filter(
+        (item) => item && item.id !== undefined && item.type
+      );
+      accountMemoryCache.set(accountKey, { raw, items: validItems });
+      return validItems;
     }
   } catch (e) {
-    console.error('Failed to parse favorites from storage', e);
+    console.error(`Failed to parse favorites JSON for account ${accountKey}`, e);
   }
-  return memoryFavorites || [];
+
+  // Preserve previous items if JSON corrupt
+  const fallback = cached ? cached.items : EMPTY_FAVORITES;
+  accountMemoryCache.set(accountKey, { raw, items: fallback });
+  return fallback;
 }
 
-function saveFavoritesToStorage(favs: FavoriteItem[]): boolean {
-  if (typeof window === 'undefined' || !window.localStorage) return false;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(favs));
-    return true;
-  } catch (e) {
-    console.error('Failed to save favorites to storage', e);
-    return false;
-  }
+/**
+ * Saves favorites for an accountKey to localStorage and updates in-memory cache & subscribers
+ */
+function saveFavoritesForAccount(accountKey: string, favs: FavoriteItem[]): boolean {
+  if (!accountKey) return false;
+
+  const rawJson = JSON.stringify(favs);
+  accountMemoryCache.set(accountKey, { raw: rawJson, items: favs });
+  const success = safeSetStorage(accountKey, rawJson);
+  notifyAccountSubscribers(accountKey);
+  return success;
 }
 
-function subscribe(listener: () => void) {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
+/**
+ * Attaches window storage event listener lazily
+ */
+function ensureStorageListener() {
+  if (isStorageListenerAttached || typeof window === 'undefined') return;
+  isStorageListenerAttached = true;
 
-function getSnapshot() {
-  return memoryFavorites;
-}
-
-// Window storage listener for cross-tab synchronization
-if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
-    if (e.key === STORAGE_KEY) {
-      const fresh = loadFavoritesFromStorage();
-      memoryFavorites = fresh;
-      listeners.forEach((fn) => fn());
+    if (!e.key) return;
+
+    if (accountListeners.has(e.key)) {
+      getCachedFavoritesForAccount(e.key);
+      notifyAccountSubscribers(e.key);
     }
   });
 }
 
-export function useFavorites() {
+/**
+ * Hook to manage favorites per Xtream account.
+ * Credentials can be passed explicitly or inferred from XtreamContext.
+ */
+export function useFavorites(overrideCredentials?: XtreamCredentials | null) {
+  ensureStorageListener();
+
+  // Try to read credentials from context if available
+  let contextCreds: XtreamCredentials | null = null;
+  try {
+    const context = useXtreamContext();
+    contextCreds = context.credentials;
+  } catch {
+    // Context not mounted, fallback to overrideCredentials or null
+  }
+
+  const activeCreds = overrideCredentials !== undefined ? overrideCredentials : contextCreds;
+
+  // Run bootstrap migration lazily when credentials or hook is invoked
+  if (typeof window !== 'undefined') {
+    bootstrapLegacyMigration();
+  }
+
+  const accountKey = useMemo(() => {
+    return getAccountKey(activeCreds?.serverUrl, activeCreds?.username);
+  }, [activeCreds?.serverUrl, activeCreds?.username]);
+
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (!accountKey) {
+        return () => {};
+      }
+      const listeners = getAccountListeners(accountKey);
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    [accountKey]
+  );
+
+  const getSnapshot = useCallback(() => {
+    if (!accountKey) return EMPTY_FAVORITES;
+    return getCachedFavoritesForAccount(accountKey);
+  }, [accountKey]);
+
   const favorites = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
-  const toggleFavorite = useCallback((item: FavoriteItem) => {
-    const current = memoryFavorites;
-    const exists = current.some(
-      (fav) => String(fav.id) === String(item.id) && fav.type === item.type
-    );
-    let updated: FavoriteItem[];
-    if (exists) {
-      updated = current.filter(
-        (fav) => !(String(fav.id) === String(item.id) && fav.type === item.type)
-      );
-    } else {
-      updated = [item, ...current];
-    }
+  const toggleFavorite = useCallback(
+    (item: FavoriteItem): boolean => {
+      if (!accountKey) {
+        console.warn('Cannot toggle favorite: no active account key.');
+        return false;
+      }
 
-    saveFavoritesToStorage(updated);
-    memoryFavorites = updated;
-    listeners.forEach((fn) => fn());
-  }, []);
+      const current = getCachedFavoritesForAccount(accountKey);
+      const exists = current.some(
+        (fav) => String(fav.id) === String(item.id) && fav.type === item.type
+      );
+
+      let updated: FavoriteItem[];
+      if (exists) {
+        updated = current.filter(
+          (fav) => !(String(fav.id) === String(item.id) && fav.type === item.type)
+        );
+      } else {
+        updated = [item, ...current];
+      }
+
+      return saveFavoritesForAccount(accountKey, updated);
+    },
+    [accountKey]
+  );
 
   const isFavorite = useCallback(
-    (id: string | number, type: 'live' | 'movie' | 'series') => {
+    (id: string | number, type: 'live' | 'movie' | 'series'): boolean => {
+      if (!accountKey) return false;
       return favorites.some(
         (fav) => String(fav.id) === String(id) && fav.type === type
       );
     },
-    [favorites]
+    [accountKey, favorites]
   );
 
   const getFavoritesByType = useCallback(
-    (type: 'live' | 'movie' | 'series') => {
+    (type: 'live' | 'movie' | 'series'): FavoriteItem[] => {
+      if (!accountKey) return EMPTY_FAVORITES;
       return favorites.filter((fav) => fav.type === type);
     },
-    [favorites]
+    [accountKey, favorites]
   );
+
+  const canImportLegacy = useMemo(() => {
+    return Boolean(accountKey) && hasUnassignedLegacyFavorites();
+  }, [accountKey, favorites]);
+
+  const importLegacyFavorites = useCallback((): {
+    success: boolean;
+    importedCount: number;
+  } => {
+    if (!accountKey) return { success: false, importedCount: 0 };
+    const res = importUnassignedLegacyToAccount(accountKey);
+    if (res.success) {
+      getCachedFavoritesForAccount(accountKey);
+      notifyAccountSubscribers(accountKey);
+    }
+    return res;
+  }, [accountKey]);
 
   return {
     favorites,
     toggleFavorite,
     isFavorite,
     getFavoritesByType,
+    accountKey,
+    canImportLegacy,
+    importLegacyFavorites,
   };
 }

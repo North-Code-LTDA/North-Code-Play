@@ -40,7 +40,8 @@ export function PlayerDiagnosticsModal({
       : 'Filme (VOD)';
 
   const transportLabel =
-    transport === 'hls' ? 'HLS (Hls.js / MediaSource)' : 'Progressivo Nativo (HTML5 Video)';
+    stats.engineLabel ||
+    (transport === 'hls' ? 'HLS (Hls.js / MediaSource)' : 'Progressivo Nativo (HTML5 Video)');
 
   return (
     <div
@@ -126,9 +127,11 @@ export function PlayerDiagnosticsModal({
             </span>
             <span className="font-medium text-white">
               {contentType === 'live'
-                ? stats.liveLatency !== undefined && stats.liveLatency > 0
-                  ? `~${Math.round(stats.liveLatency)}s atrás da borda`
-                  : 'Sincronizado ao vivo'
+                ? stats.liveLatency !== undefined && stats.liveLatency !== null
+                  ? stats.liveLatency > 0
+                    ? `~${Math.round(stats.liveLatency)}s atrás da borda`
+                    : 'Sincronizado ao vivo'
+                  : 'Indisponível'
                 : `${Math.floor(stats.currentTime || 0)}s / ${Math.floor(stats.duration || 0)}s`}
             </span>
           </div>

@@ -24,9 +24,10 @@ interface FavoritesViewProps {
 }
 
 export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) {
-  const { favorites, toggleFavorite } = useFavorites();
+  const { favorites, toggleFavorite, canImportLegacy, importLegacyFavorites } = useFavorites();
   const { credentials } = useXtreamContext();
   const [filterType, setFilterType] = useState<'all' | 'live' | 'movie' | 'series'>('all');
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   
   const [selectedMovie, setSelectedMovie] = useState<FavoriteItem | null>(null);
   const [selectedSeries, setSelectedSeries] = useState<FavoriteItem | null>(null);
@@ -128,9 +129,34 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
       )}
 
       <div className="p-6 md:p-8 shrink-0">
-        <h1 className="text-3xl font-bold text-white mb-6 flex items-center gap-2">
-          <Heart className="w-8 h-8 fill-nc-primary text-nc-primary" /> Meus Favoritos
-        </h1>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <h1 className="text-3xl font-bold text-white flex items-center gap-2">
+            <Heart className="w-8 h-8 fill-nc-primary text-nc-primary" /> Meus Favoritos
+          </h1>
+
+          {canImportLegacy && (
+            <button
+              onClick={() => {
+                const res = importLegacyFavorites();
+                if (res.success) {
+                  setImportNotice(`${res.importedCount} favorito(s) antigo(s) importado(s) para esta conta!`);
+                } else {
+                  setImportNotice('Não foi possível importar os favoritos antigos.');
+                }
+                setTimeout(() => setImportNotice(null), 4000);
+              }}
+              className="px-4 py-2 bg-nc-primary/20 hover:bg-nc-primary/30 border border-nc-primary/50 text-nc-primary rounded-xl text-xs font-semibold transition-colors flex items-center gap-2 w-fit cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Importar favoritos antigos para esta conta
+            </button>
+          )}
+        </div>
+
+        {importNotice && (
+          <div className="mb-4 p-3 bg-nc-primary/10 border border-nc-primary/30 text-nc-primary text-xs rounded-xl animate-in fade-in duration-200">
+            {importNotice}
+          </div>
+        )}
         
         <div className="flex gap-2">
           <button onClick={() => setFilterType('all')} className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${filterType === 'all' ? 'bg-white text-black' : 'bg-nc-bg-card hover:bg-nc-bg-input text-gray-300'}`}>Todos</button>
