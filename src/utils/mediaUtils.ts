@@ -1,29 +1,27 @@
 import { XtreamCredentials } from "../types";
 
 /**
- * Fallback SVG image data URI used when a cover, logo or backdrop fails to load
- * or is missing, eliminating any need for backend proxy fallback endpoints.
+ * Normalizes image source metadata that may arrive as a string, an array of strings,
+ * null, or undefined from Xtream Codes API endpoints.
+ * Extracts a valid non-empty trimmed string, preventing string indexing bugs
+ * like `backdrop_path[0]` grabbing 'h' from 'http...'.
  */
-export const FALLBACK_IMAGE_DATA_URI =
-  "data:image/svg+xml;charset=utf-8," +
-  encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" width="100%" height="100%">
-      <defs>
-        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#141923"/>
-          <stop offset="100%" stop-color="#0b0e14"/>
-        </linearGradient>
-      </defs>
-      <rect width="100%" height="100%" fill="url(#bg)"/>
-      <g fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" transform="translate(170, 270)">
-        <rect x="0" y="0" width="60" height="48" rx="6" stroke="#475569" stroke-width="3"/>
-        <polygon points="24,14 42,24 24,34" fill="#00df81" stroke="#00df81" stroke-width="2"/>
-      </g>
-      <text x="200" y="360" fill="#64748b" font-family="system-ui, sans-serif" font-size="14" font-weight="500" text-anchor="middle">
-        Sem Imagem
-      </text>
-    </svg>`
-  );
+export function normalizeImageSource(source: unknown): string | null {
+  if (!source) return null;
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      if (typeof item === "string" && item.trim()) {
+        return item.trim();
+      }
+    }
+    return null;
+  }
+  if (typeof source === "string") {
+    const trimmed = source.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
 
 /**
  * Normalizes an Xtream server URL:
@@ -71,25 +69,12 @@ const COMMON_IMAGE_EXTENSIONS = new Set([
   "avif",
 ]);
 
-const KNOWN_HTTPS_CDNS = [
-  "tmdb.org",
-  "themoviedb.org",
-  "media-amazon.com",
-  "imdb.com",
-  "metahub.space",
-  "thetvdb.com",
-  "fanart.tv",
-  "cloudinary.com",
-  "imgur.com",
-];
-
 /**
  * Checks whether a string represents a schemeless domain with path
- * (e.g. "image.tmdb.org/t/p/w500/..." or "m.media-amazon.com/images/...")
+ * (e.g. "image.tmdb.org/t/p/w500/..." or "images.provider.tv/ch1.png")
  * as opposed to a relative filename/path (e.g. "logo.png", "covers/123.jpg", "./img.png").
  */
-function isSchemelessDomain(str: string): boolean {
-  // If it starts with a slash, dot-slash, or has no dot, it is a local/relative path
+export function isSchemelessDomain(str: string): boolean {
   if (
     str.startsWith("/") ||
     str.startsWith("./") ||
@@ -109,7 +94,7 @@ function isSchemelessDomain(str: string): boolean {
   const hostPart = str.slice(0, endOfHost).trim();
   const hostWithoutPort = hostPart.split(":")[0].toLowerCase();
 
-  // If hostWithoutPort ends with a known image extension (e.g. "logo.png", "ch1.jpg"),
+  // If host ends with a known image extension (e.g. "logo.png", "ch1.jpg"),
   // it is definitely a relative file name, NOT a domain!
   const lastDot = hostWithoutPort.lastIndexOf(".");
   if (lastDot !== -1) {
@@ -126,8 +111,10 @@ function isSchemelessDomain(str: string): boolean {
 
 /**
  * Extracts inner URL from legacy proxy endpoints (e.g. /api/media/image?url=...&serverUrl=...)
- * ONLY when the pathname is specifically '/api/media/image'.
+ * ONLY when the pathname is specifically '/api/media/image' on the local app origin.
  * Never extracts from generic provider URLs like 'http://logos.test/image.php?url=...'.
+ * Note: URLSearchParams.get already decodes once, avoiding secondary decodeURIComponent
+ * that would alter signed parameters.
  */
 export function extractLegacyProxyUrl(urlStr: string): { innerUrl: string; legacyServerUrl?: string } | null {
   try {
@@ -149,11 +136,11 @@ export function extractLegacyProxyUrl(urlStr: string): { innerUrl: string; legac
 
     if (isLocalAppOrigin && parsed.pathname === "/api/media/image") {
       const inner = parsed.searchParams.get("url");
-      if (inner) {
-        const legacyServer = parsed.searchParams.get("serverUrl") || undefined;
+      if (inner && inner.trim()) {
+        const legacyServer = parsed.searchParams.get("serverUrl");
         return {
-          innerUrl: decodeURIComponent(inner).trim(),
-          legacyServerUrl: legacyServer ? decodeURIComponent(legacyServer).trim() : undefined,
+          innerUrl: inner.trim(),
+          legacyServerUrl: legacyServer ? legacyServer.trim() : undefined,
         };
       }
     }
@@ -162,28 +149,25 @@ export function extractLegacyProxyUrl(urlStr: string): { innerUrl: string; legac
 }
 
 /**
- * Resolves direct image URLs for channel logos, covers, backdrops, and avatars.
- * Directly targets the origin without server proxying:
- * 1. Recognizes legacy proxy links ONLY when pointing to /api/media/image
- * 2. Preserves valid absolute HTTP/HTTPS URLs literally (including query strings, signatures, casing, ports)
- * 3. Preserves data: and blob: URLs
- * 4. Resolves protocol-relative URLs (//domain/...)
- * 5. Distinguishes schemeless domain URLs from relative filenames
- * 6. Resolves relative paths (including ./, ../, and root /) correctly against serverUrl
+ * Standardized URL resolution for channel logos, movie posters, series covers, and backdrops.
+ * Separated from loading state:
+ * 1. Preserves valid absolute HTTP/HTTPS URLs literally (including query strings, signatures, casing, ports).
+ * 2. Preserves data: and blob: URLs.
+ * 3. Resolves protocol-relative URLs (//domain/...).
+ * 4. Resolves schemeless domain URLs with appropriate scheme.
+ * 5. Resolves relative paths against the provider serverUrl base.
+ * 6. Returns null when source is empty, invalid, or unresolvable (never returns a fallback SVG).
  */
 export function buildDirectImageUrl(
-  rawUrl?: string | null,
+  rawUrl?: unknown,
   serverUrl?: string | null
-): string {
-  if (!rawUrl || typeof rawUrl !== "string") {
-    return FALLBACK_IMAGE_DATA_URI;
+): string | null {
+  const normalized = normalizeImageSource(rawUrl);
+  if (!normalized) {
+    return null;
   }
 
-  let trimmed = rawUrl.trim();
-  if (!trimmed) {
-    return FALLBACK_IMAGE_DATA_URI;
-  }
-
+  let trimmed = normalized;
   let effectiveBase = serverUrl ? serverUrl.trim() : "";
 
   // 1. Check if this is a legacy proxy link specifically targeting /api/media/image
@@ -205,38 +189,19 @@ export function buildDirectImageUrl(
     return trimmed;
   }
 
-  // Resolve base server URL (explicit param preferred, fallback to localStorage)
-  if (!effectiveBase && typeof window !== "undefined" && window.localStorage) {
-    try {
-      const saved = window.localStorage.getItem("northcode_tv_credentials");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.serverUrl) {
-          effectiveBase = parsed.serverUrl.trim();
-        }
-      }
-    } catch {}
-  }
-
   // 4. Protocol-relative URL: //domain.com/path
   if (trimmed.startsWith("//")) {
-    const isKnownHttps = KNOWN_HTTPS_CDNS.some((cdn) => trimmed.includes(cdn));
-    const scheme = isKnownHttps
+    const scheme = effectiveBase?.startsWith("https:")
       ? "https:"
-      : effectiveBase && effectiveBase.startsWith("https://")
+      : typeof window !== "undefined" && window.location.protocol === "https:"
       ? "https:"
-      : typeof window !== "undefined" && window.location.protocol.startsWith("http")
-      ? window.location.protocol
       : "http:";
     return `${scheme}${trimmed}`;
   }
 
-  // 5. Schemeless domain URL (e.g. image.tmdb.org/..., m.media-amazon.com/...)
+  // 5. Schemeless domain URL (e.g. image.tmdb.org/...)
   if (isSchemelessDomain(trimmed)) {
-    const isKnownHttps = KNOWN_HTTPS_CDNS.some((cdn) => trimmed.includes(cdn));
-    const scheme = isKnownHttps
-      ? "https://"
-      : effectiveBase?.startsWith("https://")
+    const scheme = effectiveBase?.startsWith("https://")
       ? "https://"
       : typeof window !== "undefined" && window.location.protocol === "https:"
       ? "https://"
@@ -244,46 +209,41 @@ export function buildDirectImageUrl(
     return `${scheme}${trimmed}`;
   }
 
-  // 6. Relative path (e.g. "logo.png", "covers/123.jpg", "/images/logo.png", "./logo.png", "../logo.png")
+  // 6. Relative path (e.g. "logo.png", "/logos/1.png", "./ch.png", "../ch.png")
   if (effectiveBase) {
     try {
       const cleanBase = normalizeServerUrl(effectiveBase);
-      // Ensure cleanBase ends with '/' for directory-relative URL resolution
       const baseWithSlash = cleanBase.endsWith("/") ? cleanBase : `${cleanBase}/`;
       const resolved = new URL(trimmed, baseWithSlash);
       return resolved.href;
     } catch {
-      // Fallback manual resolution if URL constructor fails
       const cleanBase = normalizeServerUrl(effectiveBase);
       const relativePart = trimmed.replace(/^\/+/, "");
       return `${cleanBase}/${relativePart}`;
     }
   }
 
-  return FALLBACK_IMAGE_DATA_URI;
+  return null;
 }
-
-// Backwards-compatible alias
-export const getProxiedImageUrl = buildDirectImageUrl;
 
 /**
  * Diagnostic record comparing raw API image string with legacy browser resolution and normalized URL.
  */
 export interface ImageUrlDiagnosis {
-  rawUrl: string | null | undefined;
+  rawUrl: unknown;
   serverUrl: string | null | undefined;
   legacyBrowserResolution: string;
-  resolvedUrl: string;
+  resolvedUrl: string | null;
   isIdenticalToLegacy: boolean;
   wasModifiedByNormalizer: boolean;
   isAbsolute: boolean;
   isLegacyProxy: boolean;
   diffCategory:
-    | 'identical'
-    | 'relative_resolved_to_provider'
-    | 'legacy_proxy_extracted'
-    | 'modified_by_normalizer'
-    | 'fallback_empty';
+    | "identical"
+    | "relative_resolved_to_provider"
+    | "legacy_proxy_extracted"
+    | "modified_by_normalizer"
+    | "empty_source";
   notes: string;
 }
 
@@ -292,13 +252,13 @@ export interface ImageUrlDiagnosis {
  * and the URL generated by buildDirectImageUrl.
  */
 export function diagnoseImageUrl(
-  rawUrl?: string | null,
+  rawUrl?: unknown,
   serverUrl?: string | null
 ): ImageUrlDiagnosis {
-  const trimmed = (rawUrl || "").trim();
+  const normalized = normalizeImageSource(rawUrl);
   const resolved = buildDirectImageUrl(rawUrl, serverUrl);
 
-  // Compute what standard legacy <img src={rawUrl}> would have resolved to in the browser
+  const trimmed = normalized || "";
   let legacyResolution = trimmed;
   if (trimmed && !trimmed.startsWith("data:") && !trimmed.startsWith("blob:")) {
     if (trimmed.startsWith("//")) {
@@ -317,29 +277,29 @@ export function diagnoseImageUrl(
 
   const isAbs = /^https?:\/\//i.test(trimmed);
   const legacyProxy = Boolean(extractLegacyProxyUrl(trimmed));
-  const isIdentical = legacyResolution === resolved;
+  const isIdentical = legacyResolution === (resolved || "");
   const wasModified = isAbs && resolved !== trimmed;
 
-  let diffCategory: ImageUrlDiagnosis['diffCategory'] = 'identical';
+  let diffCategory: ImageUrlDiagnosis["diffCategory"] = "identical";
   let notes = "";
 
-  if (!trimmed) {
-    diffCategory = 'fallback_empty';
-    notes = "Fonte vazia ou nula; imagem substituta (SVG) aplicada.";
+  if (!trimmed || !resolved) {
+    diffCategory = "empty_source";
+    notes = "Fonte vazia, nula ou inválida; área reservada é mantida sem renderizar tag <img>.";
   } else if (legacyProxy) {
-    diffCategory = 'legacy_proxy_extracted';
+    diffCategory = "legacy_proxy_extracted";
     notes = "Link herdado do antigo proxy (/api/media/image) extraído com sucesso para conexão direta.";
   } else if (isAbs) {
     if (wasModified) {
-      diffCategory = 'modified_by_normalizer';
+      diffCategory = "modified_by_normalizer";
       notes = "ALERTA: URL absoluta foi modificada pelo normalizador!";
     } else {
-      diffCategory = 'identical';
-      notes = "URL absoluta intacta, rigorosamente idêntica ao commit de referência. Se falhar, verifique status HTTP na aba Rede (404/403/DNS/Mixed Content).";
+      diffCategory = "identical";
+      notes = "URL absoluta intacta, rigorosamente idêntica ao commit de referência.";
     }
   } else {
-    diffCategory = 'relative_resolved_to_provider';
-    notes = `Caminho relativo resolvido diretamente contra o servidor IPTV (${resolved}) em vez de falhar no host local.`;
+    diffCategory = "relative_resolved_to_provider";
+    notes = `Caminho relativo resolvido diretamente contra o servidor IPTV (${resolved}).`;
   }
 
   return {
@@ -378,7 +338,7 @@ export function setDebugImagesEnabled(enabled: boolean): void {
 
 if (typeof window !== "undefined") {
   (window as any).ncDebugImages = setDebugImagesEnabled;
-  (window as any).ncTestImage = (url: string, sUrl?: string) => {
+  (window as any).ncTestImage = (url: unknown, sUrl?: string) => {
     const diag = diagnoseImageUrl(url, sUrl);
     console.table(diag);
     return diag;
@@ -399,9 +359,6 @@ export interface BuildDirectMediaUrlOptions {
  * - Live:   /live/{username}/{password}/{stream_id}.{format}
  * - Movies: /movie/{username}/{password}/{stream_id}.{container_extension}
  * - Series: /series/{username}/{password}/{episode_id}.{container_extension}
- *
- * Encodes individual path segments with encodeURIComponent while preserving slashes.
- * Preserves the provider's scheme, host, and explicit port.
  */
 export function buildDirectMediaUrl(
   credentials: Pick<XtreamCredentials, "serverUrl" | "username" | "password">,
@@ -409,7 +366,6 @@ export function buildDirectMediaUrl(
 ): string {
   const { type, streamId, containerExtension, allowedOutputFormats, directSource } = options;
 
-  // If a valid direct_source is provided and is a full URL, consider it
   if (directSource && typeof directSource === "string") {
     const trimmedSource = directSource.trim();
     if (/^https?:\/\//i.test(trimmedSource)) {
@@ -455,7 +411,6 @@ export function buildDirectMediaUrl(
   return `${cleanBase}/live/${user}/${pass}/${id}.m3u8`;
 }
 
-// Backwards-compatible alias returning direct URL synchronously or as resolved promise
 export async function getMediaStreamUrl(
   credentials: XtreamCredentials,
   options: {

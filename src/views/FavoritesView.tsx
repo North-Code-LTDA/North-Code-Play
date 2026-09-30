@@ -6,7 +6,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { MediaImage } from '../components/MediaImage';
-import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
+import { buildDirectMediaUrl } from '../utils/mediaUtils';
 
 interface FavoritesViewProps {
   onPlay: (
@@ -161,24 +161,16 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                   onClick={() => handlePlayClick(fav)}
                   className={`relative ${fav.type === 'live' ? 'aspect-video' : 'aspect-[2/3]'}`}
                 >
-                   {fav.cover ? (
-                     <MediaImage
-                       src={fav.cover}
-                       serverUrl={credentials?.serverUrl}
-                       alt={fav.name}
-                       itemId={fav.id}
-                       itemName={fav.name}
-                       priority={idx < 12}
-                       loading={idx < 12 ? 'eager' : 'lazy'}
-                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                     />
-                   ) : (
-                     <div className="w-full h-full bg-nc-bg-input flex items-center justify-center">
-                       {fav.type === 'live' && <Tv className="w-8 h-8 text-nc-text-secondary" />}
-                       {fav.type === 'movie' && <Film className="w-8 h-8 text-nc-text-secondary" />}
-                       {fav.type === 'series' && <PlaySquare className="w-8 h-8 text-nc-text-secondary" />}
-                     </div>
-                   )}
+                   <MediaImage
+                        src={fav.cover}
+                        serverUrl={credentials?.serverUrl}
+                        alt={fav.name}
+                        itemId={fav.id}
+                        itemName={fav.name}
+                        priority={idx < 12}
+                        loading={idx < 12 ? "eager" : "lazy"}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      />
                    <div className="absolute inset-0 bg-black/opacity-0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
                       <div className="p-3 bg-nc-primary rounded-full opacity-0 group-hover:opacity-100 transform scale-75 group-hover:scale-100 transition-all shadow-xl">
                         <Play className="w-5 h-5 fill-black text-black ml-1" />

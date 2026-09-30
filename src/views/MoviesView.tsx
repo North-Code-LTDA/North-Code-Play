@@ -5,7 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { useFavorites } from '../hooks/useFavorites';
 import { MediaImage } from '../components/MediaImage';
-import { buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
+
 
 interface MoviesViewProps {
   onPlay: (
@@ -206,22 +206,16 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                        }}
                        className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
                      >
-                       {stream.stream_icon ? (
-                         <MediaImage
-                           src={stream.stream_icon}
-                           serverUrl={credentials?.serverUrl}
-                           alt={stream.name}
-                           itemId={stream.stream_id}
-                           itemName={stream.name}
-                           priority={idx < 12}
-                           loading={idx < 12 ? 'eager' : 'lazy'}
-                           className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                         />
-                       ) : (
-                         <div className="w-full h-full flex flex-col items-center justify-center bg-nc-bg-input">
-                           <Film className="w-8 h-8 text-nc-text-secondary/30 mb-2" />
-                         </div>
-                       )}
+                       <MediaImage
+                          src={stream.stream_icon}
+                          serverUrl={credentials?.serverUrl}
+                          alt={stream.name}
+                          itemId={stream.stream_id}
+                          itemName={stream.name}
+                          priority={idx < 12}
+                          loading={idx < 12 ? "eager" : "lazy"}
+                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        />
                        
                        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
                          <p className="text-white font-medium text-sm line-clamp-2 leading-tight">

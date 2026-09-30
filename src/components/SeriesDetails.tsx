@@ -5,7 +5,8 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { VideoPlayer } from './VideoPlayer';
-import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
+import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
+import { MediaImage } from './MediaImage';
 
 interface SeriesDetailsProps {
   key?: React.Key;
@@ -159,19 +160,23 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
             {/* Hero & Info Section */}
             <div className="relative w-full rounded-2xl overflow-hidden bg-black shrink-0 flex flex-col min-h-[400px] md:min-h-[500px]">
                <div className="absolute inset-0 bg-black z-0">
-                 {seriesInfo.info?.backdrop_path?.[0] ? (
-                    <img 
-                      src={buildDirectImageUrl(seriesInfo.info.backdrop_path[0], credentials?.serverUrl)}
-                      alt="Backdrop"
-                      className="w-full h-full object-cover opacity-50 object-top"
-                    />
-                 ) : (seriesInfo.info?.cover || seriesCover) ? (
-                    <img 
-                      src={buildDirectImageUrl(seriesInfo.info?.cover || seriesCover, credentials?.serverUrl)}
-                      alt="Cover fallback"
-                      className="w-full h-full object-cover opacity-30 object-top"
-                    />
-                 ) : null}
+                 {(() => {
+                   const backdropSource = normalizeImageSource(seriesInfo.info?.backdrop_path);
+                   const coverSource = normalizeImageSource(seriesInfo.info?.cover) || normalizeImageSource(seriesCover);
+                   const heroImageSource = backdropSource || coverSource;
+                   if (!heroImageSource) return null;
+                   return (
+                     <MediaImage 
+                       src={heroImageSource}
+                       serverUrl={credentials?.serverUrl}
+                       alt={seriesInfo.info?.name || seriesName || "Backdrop"}
+                       itemId={seriesId}
+                       itemName={seriesInfo.info?.name || seriesName}
+                       priority={true}
+                       className={`w-full h-full object-cover object-top ${backdropSource ? 'opacity-50' : 'opacity-30'}`}
+                     />
+                   );
+                 })()}
                </div>
                <div className="absolute inset-0 bg-gradient-to-t from-nc-bg via-nc-bg/40 to-transparent z-0" />
                <div className="absolute inset-0 bg-gradient-to-r from-nc-bg via-nc-bg/40 to-transparent z-0" />
@@ -203,7 +208,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                        onClick={() => toggleFavorite({
                          id: seriesId,
                          name: seriesInfo.info?.name || seriesName,
-                         cover: seriesInfo.info?.cover || seriesCover || '',
+                         cover: normalizeImageSource(seriesInfo.info?.cover) || normalizeImageSource(seriesCover) || '',
                          type: 'series'
                        })}
                        className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors w-fit font-medium text-white shadow-xl"

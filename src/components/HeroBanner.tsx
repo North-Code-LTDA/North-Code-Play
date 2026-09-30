@@ -3,7 +3,8 @@ import { Play, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
-import { buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
+import { MediaImage } from './MediaImage';
+import { normalizeImageSource } from '../utils/mediaUtils';
 
 interface HeroBannerProps {
   items: any[];
@@ -109,7 +110,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
 
   if (heroItems.length === 0 || !currentItem) return null;
 
-  const bgImage = currentItem.stream_icon || currentItem.cover || currentItem.backdrop_path;
+  const bgImage = currentItem.stream_icon || currentItem.cover || normalizeImageSource(currentItem.backdrop_path);
 
   return (
     <div className="relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden">
@@ -122,13 +123,14 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
           transition={{ duration: 0.7 }}
           className="absolute inset-0 z-0"
         >
-          <img
-            src={buildDirectImageUrl(bgImage, credentials?.serverUrl)}
+          <MediaImage
+            src={bgImage}
+            serverUrl={credentials?.serverUrl}
             alt={currentItem.name}
+            itemId={currentItem.stream_id || currentItem.name}
+            itemName={currentItem.name}
+            priority={true}
             className="w-full h-full object-cover object-top opacity-80"
-            onError={(e) => {
-              (e.target as HTMLImageElement).src = FALLBACK_IMAGE_DATA_URI;
-            }}
           />
           <div className="absolute inset-0 bg-gradient-to-t from-nc-bg via-nc-bg/80 to-transparent" />
           <div className="absolute inset-0 md:bg-gradient-to-r md:from-nc-bg md:via-nc-bg/60 md:to-transparent" />

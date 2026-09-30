@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { Play, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MediaImage } from './MediaImage';
-import { buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
+
 
 interface HorizontalRowProps {
   title: string;
@@ -51,22 +51,16 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
             }`}
           >
             <div className="relative w-full h-full">
-              {item.stream_icon || item.cover ? (
-                 <MediaImage
-                   src={item.stream_icon || item.cover}
-                   serverUrl={credentials?.serverUrl}
-                   alt={item.name}
-                   itemId={item.stream_id || item.series_id || item.id}
-                   itemName={item.name}
-                   priority={idx < 8}
-                   loading={idx < 8 ? 'eager' : 'lazy'}
-                   className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'}`}
-                 />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center bg-nc-bg-input">
-                  <span className="text-xs text-nc-text-secondary text-center px-1">{item.name}</span>
-                </div>
-              )}
+              <MediaImage
+                src={item.stream_icon || item.cover}
+                serverUrl={credentials?.serverUrl}
+                alt={item.name}
+                itemId={item.stream_id || item.series_id || item.id}
+                itemName={item.name}
+                priority={idx < 8}
+                loading={idx < 8 ? 'eager' : 'lazy'}
+                className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'}`}
+              />
               
               <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">
                 <p className="text-white font-medium text-sm truncate w-full">{item.name}</p>

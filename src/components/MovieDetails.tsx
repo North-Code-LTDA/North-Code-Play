@@ -3,7 +3,8 @@ import { Play, ArrowLeft, Loader2, Star, Calendar, Clock, Info, Heart } from 'lu
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
-import { buildDirectMediaUrl, buildDirectImageUrl } from '../utils/mediaUtils';
+import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
+import { MediaImage } from './MediaImage';
 
 interface MovieDetailsProps {
   key?: React.Key;
@@ -118,10 +119,8 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     );
   }
 
-  const rawCover = info.backdrop_path && info.backdrop_path.length > 0 
-      ? (info.backdrop_path[0] || info.cover_big || info.movie_image)
-      : (info.cover_big || info.movie_image || streamIcon);
-  const coverImage = buildDirectImageUrl(rawCover, credentials?.serverUrl);
+  const backdropSource = normalizeImageSource(info.backdrop_path);
+  const rawCover = backdropSource || normalizeImageSource(info.cover_big) || normalizeImageSource(info.movie_image) || normalizeImageSource(streamIcon);
 
   const durationMin = info.duration ? info.duration.split(':')[0] + 'm' : null;
 
@@ -129,11 +128,13 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     <div className="absolute inset-0 z-[50] bg-nc-bg w-full h-full overflow-hidden">
       
       {/* Fixed Page Background */}
-      {coverImage && (
+      {rawCover && (
         <div className="absolute inset-0 z-0 pointer-events-none">
-          <img 
-            src={coverImage} 
+          <MediaImage 
+            src={rawCover}
+            serverUrl={credentials?.serverUrl}
             alt="background"
+            priority={true}
             className="w-full h-full object-cover opacity-20 blur-3xl scale-110"
           />
           <div className="absolute inset-0 bg-nc-bg/60" />
@@ -145,10 +146,14 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
         {/* Hero Section */}
         <div className="relative w-full min-h-[50vh] md:min-h-[65vh] shrink-0 z-10 flex flex-col justify-end">
           <div className="absolute inset-0 bg-black z-0">
-            {coverImage && (
-              <img 
-                src={coverImage} 
-                alt={info.name || streamName} 
+            {rawCover && (
+              <MediaImage 
+                src={rawCover}
+                serverUrl={credentials?.serverUrl}
+                alt={info.name || streamName}
+                itemId={streamId}
+                itemName={info.name || streamName}
+                priority={true}
                 className="w-full h-full object-cover object-top opacity-60"
               />
             )}
@@ -208,7 +213,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
                 onClick={() => toggleFavorite({
                   id: streamId,
                   name: info.name || streamName,
-                  cover: coverImage || streamIcon || '',
+                  cover: rawCover || streamIcon || '',
                   type: 'movie'
                 })}
                 className="flex items-center justify-center p-3.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors"

@@ -4,6 +4,7 @@ import { Logo } from '../components/Logo';
 import { motion, AnimatePresence } from 'motion/react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { XtreamService } from '../services/xtreamService';
+import { MediaImage } from '../components/MediaImage';
 
 const AVATAR_OPTIONS = [
   'https://api.dicebear.com/10.x/fun-emoji/svg?seed=Sophie',
@@ -122,7 +123,7 @@ export function Login() {
                   onClick={() => setShowAvatarPicker(!showAvatarPicker)}
                   className="w-[50px] h-[50px] rounded-full overflow-hidden shrink-0 border-2 border-nc-border hover:border-nc-primary transition-colors focus:outline-none bg-black/20"
                 >
-                  <img src={avatar} alt="Avatar" className="w-full h-full object-cover" />
+                  <MediaImage src={avatar} alt="Avatar" className="w-full h-full object-cover" />
                 </button>
                 <input
                   id="playlistName"
@@ -151,7 +152,7 @@ export function Login() {
                           onClick={() => { setAvatar(opt); setShowAvatarPicker(false); }}
                           className={`rounded-full overflow-hidden border-2 transition-all duration-200 ${avatar === opt ? 'border-nc-primary scale-110 shadow-[0_0_15px_rgba(var(--nc-primary),0.3)]' : 'border-transparent hover:border-white/20 hover:bg-white/5'}`}
                         >
-                          <img src={opt} alt="Avatar option" className="w-full h-full object-cover" />
+                          <MediaImage src={opt} alt="Avatar option" className="w-full h-full object-cover" />
                         </button>
                       ))}
                     </div>

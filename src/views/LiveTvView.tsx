@@ -6,7 +6,7 @@ import { useFavorites } from '../hooks/useFavorites';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { MediaImage } from '../components/MediaImage';
 import { XtreamService } from '../services/xtreamService';
-import { buildDirectMediaUrl, buildDirectImageUrl, FALLBACK_IMAGE_DATA_URI } from '../utils/mediaUtils';
+import { buildDirectMediaUrl } from '../utils/mediaUtils';
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -271,20 +271,16 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                       }`}
                     >
                       <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden">
-                        {stream.stream_icon ? (
-                          <MediaImage
-                            src={stream.stream_icon}
-                            serverUrl={credentials?.serverUrl}
-                            alt={stream.name}
-                            itemId={stream.stream_id}
-                            itemName={stream.name}
-                            priority={idx < 15}
-                            loading={idx < 15 ? 'eager' : 'lazy'}
-                            className="w-full h-full object-contain p-1"
-                          />
-                        ) : (
-                          <TvMinimalPlay className="w-5 h-5 text-nc-text-secondary/50" />
-                        )}
+                        <MediaImage
+                          src={stream.stream_icon}
+                          serverUrl={credentials?.serverUrl}
+                          alt={stream.name}
+                          itemId={stream.stream_id}
+                          itemName={stream.name}
+                          priority={idx < 15}
+                          loading={idx < 15 ? 'eager' : 'lazy'}
+                          className="w-full h-full object-contain p-1"
+                        />
                       </div>
                       <div className="flex-1 min-w-0 text-left flex flex-col">
                         <p className={`font-medium text-sm truncate ${selectedChannel?.stream_id === stream.stream_id ? 'text-nc-primary' : 'text-white'}`}>
@@ -338,20 +334,16 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                <div className="flex-1 min-w-0 flex flex-col items-start gap-4 order-2 lg:order-1">
                  <div className="flex items-center gap-4 w-full">
                     <div className="w-20 h-20 bg-nc-bg-card rounded-2xl flex items-center justify-center overflow-hidden shrink-0 border border-nc-border/50 p-2">
-                      {selectedChannel.stream_icon ? (
-                        <MediaImage
-                          src={selectedChannel.stream_icon}
-                          serverUrl={credentials?.serverUrl}
-                          alt={selectedChannel.name}
-                          itemId={selectedChannel.stream_id}
-                          itemName={selectedChannel.name}
-                          priority={true}
-                          loading="eager"
-                          className="w-full h-full object-contain"
-                        />
-                      ) : (
-                        <TvMinimalPlay className="w-8 h-8 text-nc-text-secondary/50" />
-                      )}
+                      <MediaImage
+                        src={selectedChannel.stream_icon}
+                        serverUrl={credentials?.serverUrl}
+                        alt={selectedChannel.name}
+                        itemId={selectedChannel.stream_id}
+                        itemName={selectedChannel.name}
+                        priority={true}
+                        loading="eager"
+                        className="w-full h-full object-contain"
+                      />
                     </div>
                     <div className="overflow-hidden min-w-0 flex-1">
                       <h1 className="text-xl md:text-2xl font-bold text-white truncate block w-full">{selectedChannel.name}</h1>

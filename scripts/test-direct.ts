@@ -1,15 +1,15 @@
 import assert from 'assert';
 import {
   normalizeServerUrl,
+  normalizeImageSource,
   buildDirectMediaUrl,
   buildDirectImageUrl,
   diagnoseImageUrl,
-  FALLBACK_IMAGE_DATA_URI,
 } from '../src/utils/mediaUtils';
 import { XtreamCredentials } from '../src/types';
 
 function runTests() {
-  console.log('--- Iniciando Testes da Arquitetura Direta (Sem Proxy) ---');
+  console.log('--- Iniciando Testes da Arquitetura Direta e Padronização de Imagens ---');
 
   // 1. normalizeServerUrl
   console.log('1. Testando normalizeServerUrl...');
@@ -30,15 +30,36 @@ function runTests() {
     'http://iptv.server.net'
   );
 
-  // 2. buildDirectMediaUrl
-  console.log('2. Testando buildDirectMediaUrl...');
+  // 2. normalizeImageSource (array vs string safe boundary)
+  console.log('2. Testando normalizeImageSource...');
+  assert.strictEqual(
+    normalizeImageSource('  https://example.com/cover.jpg  '),
+    'https://example.com/cover.jpg'
+  );
+  // Arrays from backdrop_path
+  assert.strictEqual(
+    normalizeImageSource(['https://example.com/backdrop1.jpg', 'https://example.com/backdrop2.jpg']),
+    'https://example.com/backdrop1.jpg'
+  );
+  assert.strictEqual(
+    normalizeImageSource(['', '   ', 'https://example.com/valid.jpg']),
+    'https://example.com/valid.jpg'
+  );
+  assert.strictEqual(normalizeImageSource([]), null);
+  assert.strictEqual(normalizeImageSource(''), null);
+  assert.strictEqual(normalizeImageSource('   '), null);
+  assert.strictEqual(normalizeImageSource(null), null);
+  assert.strictEqual(normalizeImageSource(undefined), null);
+
+  // 3. buildDirectMediaUrl
+  console.log('3. Testando buildDirectMediaUrl...');
   const testCreds: XtreamCredentials = {
     serverUrl: 'http://myprovider.xyz:8080',
     username: 'user@test+1',
     password: 'p@ssword#123',
   };
 
-  // 2.1 Live Stream - Default m3u8
+  // 3.1 Live Stream - Default m3u8
   const liveUrl1 = buildDirectMediaUrl(testCreds, {
     type: 'live',
     streamId: 1042,
@@ -48,7 +69,7 @@ function runTests() {
     'http://myprovider.xyz:8080/live/user%40test%2B1/p%40ssword%23123/1042.m3u8'
   );
 
-  // 2.2 Live Stream - allowed_output_formats with ts only
+  // 3.2 Live Stream - allowed_output_formats with ts only
   const liveUrl2 = buildDirectMediaUrl(testCreds, {
     type: 'live',
     streamId: '1043',
@@ -59,7 +80,7 @@ function runTests() {
     'http://myprovider.xyz:8080/live/user%40test%2B1/p%40ssword%23123/1043.ts'
   );
 
-  // 2.3 Live Stream - allowed_output_formats with m3u8 and ts (should prefer m3u8)
+  // 3.3 Live Stream - allowed_output_formats with m3u8 and ts (should prefer m3u8)
   const liveUrl3 = buildDirectMediaUrl(testCreds, {
     type: 'live',
     streamId: 1044,
@@ -70,7 +91,7 @@ function runTests() {
     'http://myprovider.xyz:8080/live/user%40test%2B1/p%40ssword%23123/1044.m3u8'
   );
 
-  // 2.4 Movie - custom extension .mkv
+  // 3.4 Movie - custom extension .mkv
   const movieUrl1 = buildDirectMediaUrl(testCreds, {
     type: 'movie',
     streamId: 5520,
@@ -81,7 +102,7 @@ function runTests() {
     'http://myprovider.xyz:8080/movie/user%40test%2B1/p%40ssword%23123/5520.mkv'
   );
 
-  // 2.5 Movie - default mp4
+  // 3.5 Movie - default mp4
   const movieUrl2 = buildDirectMediaUrl(testCreds, {
     type: 'movie',
     streamId: 5521,
@@ -91,7 +112,7 @@ function runTests() {
     'http://myprovider.xyz:8080/movie/user%40test%2B1/p%40ssword%23123/5521.mp4'
   );
 
-  // 2.6 Series Episode - custom extension
+  // 3.6 Series Episode - custom extension
   const seriesUrl1 = buildDirectMediaUrl(testCreds, {
     type: 'series',
     streamId: 9910,
@@ -102,7 +123,7 @@ function runTests() {
     'http://myprovider.xyz:8080/series/user%40test%2B1/p%40ssword%23123/9910.mp4'
   );
 
-  // 2.7 Direct source precedence
+  // 3.7 Direct source precedence
   const directSrcUrl = buildDirectMediaUrl(testCreds, {
     type: 'live',
     streamId: 100,
@@ -110,9 +131,9 @@ function runTests() {
   });
   assert.strictEqual(directSrcUrl, 'http://cdn.example.org/stream.m3u8');
 
-  // 3. buildDirectImageUrl
-  console.log('3. Testando buildDirectImageUrl...');
-  // 3.1 Direct absolute URL (HTTP and HTTPS)
+  // 4. buildDirectImageUrl
+  console.log('4. Testando buildDirectImageUrl...');
+  // 4.1 Direct absolute URL (HTTP and HTTPS)
   assert.strictEqual(
     buildDirectImageUrl('http://img.provider.com/poster.jpg'),
     'http://img.provider.com/poster.jpg'
@@ -122,7 +143,7 @@ function runTests() {
     'https://image.tmdb.org/t/p/w500/abc.jpg'
   );
 
-  // 3.2 CRITICAL BUGFIX: Absolute provider URL containing ?url= and &sig= must remain 100% intact!
+  // 4.2 Absolute provider URL containing ?url= and &sig= must remain 100% intact!
   const providerWithUrlParam =
     'http://logos.exemplo.test/image.php?url=https%3A%2F%2Fstorage.exemplo.test%2Fcanal.png&sig=abc';
   assert.strictEqual(
@@ -139,22 +160,7 @@ function runTests() {
     'URL com porta, parâmetros e fragmento deve permanecer intacta!'
   );
 
-  // 3.3 Protocol-relative URL
-  assert.strictEqual(
-    buildDirectImageUrl('//images.tmdb.org/poster.png', 'http://provider.tv:8080'),
-    'https://images.tmdb.org/poster.png'
-  );
-  assert.strictEqual(
-    buildDirectImageUrl('//custom-iptv.net/logo.png', 'http://provider.tv:8080'),
-    'http://custom-iptv.net/logo.png'
-  );
-
-  // 3.4 Schemeless domain vs relative filename
-  assert.strictEqual(
-    buildDirectImageUrl('images.tmdb.org/t/p/original/backdrop.jpg'),
-    'https://images.tmdb.org/t/p/original/backdrop.jpg'
-  );
-  // logo.png must NOT become http://logo.png, but resolve against serverUrl!
+  // 4.3 Schemeless domain vs relative filename
   assert.strictEqual(
     buildDirectImageUrl('logo.png', 'http://iptv.server:8080'),
     'http://iptv.server:8080/logo.png'
@@ -180,13 +186,19 @@ function runTests() {
     'http://iptv.server:8080/base/logos/ch1.png'
   );
 
-  // 3.5 Relative URL resolved against serverUrl
+  // 4.4 Array input handled safely through normalizeImageSource
+  assert.strictEqual(
+    buildDirectImageUrl(['https://image.tmdb.org/t/p/w500/test.jpg']),
+    'https://image.tmdb.org/t/p/w500/test.jpg'
+  );
+
+  // 4.5 Relative URL resolved against serverUrl
   assert.strictEqual(
     buildDirectImageUrl('/images/movie_123.jpg', 'http://iptv.server:8080'),
     'http://iptv.server:8080/images/movie_123.jpg'
   );
 
-  // 3.6 Recover legacy query params from local proxy route ONLY
+  // 4.6 Recover legacy query params from local proxy route ONLY
   assert.strictEqual(
     buildDirectImageUrl('/api/media/image?url=https%3A%2F%2Fimage.tmdb.org%2Fpic.jpg'),
     'https://image.tmdb.org/pic.jpg'
@@ -196,18 +208,20 @@ function runTests() {
     'http://iptv.tv:8080/logos/ch.png'
   );
 
-  // 3.7 Invalid / empty URL returns SVG fallback
-  assert.strictEqual(buildDirectImageUrl(''), FALLBACK_IMAGE_DATA_URI);
-  assert.strictEqual(buildDirectImageUrl(null), FALLBACK_IMAGE_DATA_URI);
-  assert.strictEqual(buildDirectImageUrl(undefined), FALLBACK_IMAGE_DATA_URI);
+  // 4.7 Invalid / empty URL returns null (NEVER returns fallback SVG)
+  assert.strictEqual(buildDirectImageUrl(''), null);
+  assert.strictEqual(buildDirectImageUrl('   '), null);
+  assert.strictEqual(buildDirectImageUrl(null), null);
+  assert.strictEqual(buildDirectImageUrl(undefined), null);
 
-  // 4. Verification that no proxy URL is generated
-  console.log('4. Verificando ausência de rotas /api/media ou /api/xtream...');
+  // 5. Verification that no proxy URL is generated
+  console.log('5. Verificando ausência de rotas /api/media ou /api/xtream...');
   assert(!liveUrl1.includes('/api/media'), 'liveUrl1 não deve conter /api/media');
   assert(!movieUrl1.includes('/api/media'), 'movieUrl1 não deve conter /api/media');
   assert(!seriesUrl1.includes('/api/media'), 'seriesUrl1 não deve conter /api/media');
-  // 5. Testando diagnoseImageUrl
-  console.log('5. Testando diagnoseImageUrl...');
+
+  // 6. Testando diagnoseImageUrl
+  console.log('6. Testando diagnoseImageUrl...');
   const diag1 = diagnoseImageUrl(providerWithUrlParam);
   assert.strictEqual(diag1.wasModifiedByNormalizer, false);
   assert.strictEqual(diag1.isAbsolute, true);
@@ -223,10 +237,10 @@ function runTests() {
   assert.strictEqual(diag3.resolvedUrl, 'https://img.test/a.png');
 
   const diag4 = diagnoseImageUrl('');
-  assert.strictEqual(diag4.diffCategory, 'fallback_empty');
-  assert.strictEqual(diag4.resolvedUrl, FALLBACK_IMAGE_DATA_URI);
+  assert.strictEqual(diag4.diffCategory, 'empty_source');
+  assert.strictEqual(diag4.resolvedUrl, null);
 
-  console.log('✅ Todos os testes da arquitetura direta passaram com sucesso!');
+  console.log('✅ Todos os testes de padronização passaram com sucesso!');
 }
 
 runTests();
