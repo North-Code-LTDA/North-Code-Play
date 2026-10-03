@@ -99,10 +99,21 @@ function saveFavoritesForAccount(accountKey: string, favs: FavoriteItem[]): bool
   if (!accountKey) return false;
 
   const rawJson = JSON.stringify(favs);
-  accountMemoryCache.set(accountKey, { raw: rawJson, items: favs });
+  const previousEntry = accountMemoryCache.get(accountKey);
+
   const success = safeSetStorage(accountKey, rawJson);
-  notifyAccountSubscribers(accountKey);
-  return success;
+  if (success) {
+    accountMemoryCache.set(accountKey, { raw: rawJson, items: favs });
+    notifyAccountSubscribers(accountKey);
+    return true;
+  } else {
+    if (previousEntry) {
+      accountMemoryCache.set(accountKey, previousEntry);
+    } else {
+      accountMemoryCache.delete(accountKey);
+    }
+    return false;
+  }
 }
 
 /**
@@ -216,7 +227,7 @@ export function useFavorites(overrideCredentials?: XtreamCredentials | null) {
   );
 
   const canImportLegacy = useMemo(() => {
-    return Boolean(accountKey) && hasUnassignedLegacyFavorites();
+    return Boolean(accountKey) && hasUnassignedLegacyFavorites(accountKey);
   }, [accountKey, favorites]);
 
   const canImportAmbiguousOldKey = useMemo(() => {

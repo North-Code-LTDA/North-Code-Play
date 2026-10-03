@@ -143,32 +143,76 @@ export function isOldKeyAmbiguous(oldKey: string): boolean {
 }
 
 /**
- * Checks if ambiguous old keys exist for the current active account
+ * Checks if ambiguous old keys exist and have items not yet imported into the active v2 account
  */
 export function hasAmbiguousOldKeyFavorites(serverUrl?: string | null, username?: string | null): boolean {
   if (!serverUrl || !username) return false;
+  const keyV2 = getAccountKey(serverUrl, username);
   const oldKey = getOldAccountKey(serverUrl, username);
+  if (!keyV2 || !oldKey) return false;
+
   const rawOld = safeGetStorage(oldKey);
   if (!rawOld) return false;
 
+  let oldItems: any[] = [];
   try {
     const parsed = JSON.parse(rawOld);
     if (!Array.isArray(parsed) || parsed.length === 0) return false;
+    oldItems = parsed;
   } catch {
     return false;
   }
 
-  return isOldKeyAmbiguous(oldKey);
+  if (!isOldKeyAmbiguous(oldKey)) return false;
+
+  // If keyV2 already contains all valid items from oldKey, it is already imported!
+  const rawTarget = safeGetStorage(keyV2);
+  if (rawTarget) {
+    try {
+      const targetItems = JSON.parse(rawTarget);
+      if (Array.isArray(targetItems)) {
+        const hasUnimported = oldItems.some(
+          (oldItem) =>
+            oldItem &&
+            oldItem.id !== undefined &&
+            oldItem.type &&
+            !targetItems.some(
+              (targetItem: any) =>
+                String(targetItem.id) === String(oldItem.id) && targetItem.type === oldItem.type
+            )
+        );
+        if (!hasUnimported) {
+          return false;
+        }
+      }
+    } catch {
+      // ignore target parse errors
+    }
+  }
+
+  return true;
 }
 
 /**
- * Checks if unassigned legacy global favorites exist and can be imported explicitly
+ * Checks if unassigned legacy global favorites exist and can be imported explicitly by the active account.
+ * If status is pending_import or unmigrated for a specific account, only that account can import/retry.
  */
-export function hasUnassignedLegacyFavorites(): boolean {
+export function hasUnassignedLegacyFavorites(accountKey?: string): boolean {
   const status = getMigrationStatus();
   if (status.status === 'migrated' || status.status === 'imported') {
     return false;
   }
+
+  // If an import is pending, only the assigned account can resume it
+  if (status.status === 'pending_import' && status.assignedAccountKey) {
+    return Boolean(accountKey && accountKey === status.assignedAccountKey);
+  }
+
+  // If legacy was reserved for a pre-existing account, only that account can import it
+  if (status.status === 'unmigrated' && status.preExistingAccountKey) {
+    return Boolean(accountKey && accountKey === status.preExistingAccountKey);
+  }
+
   const rawLegacy = safeGetStorage(LEGACY_FAVORITES_KEY);
   if (!rawLegacy) return false;
 
@@ -183,13 +227,14 @@ export function hasUnassignedLegacyFavorites(): boolean {
 /**
  * Initializes migration status on app load.
  * Must run BEFORE any new login overwrites LEGACY_CREDENTIALS_KEY!
+ * If status is already stored in localStorage, never re-evaluate or overwrite!
  */
 export function initializeLegacyMigrationStatus(): void {
   if (typeof window === 'undefined') return;
 
-  const currentStatus = getMigrationStatus();
-  if (currentStatus.status !== 'unmigrated') {
-    return; // Migration status already determined
+  const rawStatus = safeGetStorage(MIGRATION_STATUS_KEY);
+  if (rawStatus !== null) {
+    return; // Migration status already determined, NEVER overwrite!
   }
 
   const rawLegacy = safeGetStorage(LEGACY_FAVORITES_KEY);
@@ -252,20 +297,46 @@ export function bootstrapLegacyMigration(activeAccountKey?: string): void {
     const rawLegacy = safeGetStorage(LEGACY_FAVORITES_KEY);
     if (!rawLegacy) return;
 
+    let legacyItems: any[] = [];
     try {
       const parsedLegacy = JSON.parse(rawLegacy);
-      if (!Array.isArray(parsedLegacy) || parsedLegacy.length === 0) return;
+      if (Array.isArray(parsedLegacy) && parsedLegacy.length > 0) {
+        legacyItems = parsedLegacy;
+      } else {
+        return;
+      }
     } catch {
       return;
     }
 
-    // Save data to target key first
+    // Merge with any existing target items safely
+    let targetItems: any[] = [];
     const existingTarget = safeGetStorage(targetKey);
-    let ok = true;
-    if (!existingTarget) {
-      ok = safeSetStorage(targetKey, rawLegacy);
+    if (existingTarget !== null && existingTarget.trim() !== '') {
+      try {
+        const parsedTarget = JSON.parse(existingTarget);
+        if (Array.isArray(parsedTarget)) {
+          targetItems = parsedTarget;
+        } else {
+          return; // Target corrupt, do not overwrite!
+        }
+      } catch {
+        return; // Malformed JSON in target, preserve intact
+      }
     }
 
+    const merged = [...targetItems];
+    for (const item of legacyItems) {
+      if (!item || item.id === undefined || !item.type) continue;
+      const exists = merged.some(
+        (existing) => String(existing.id) === String(item.id) && existing.type === item.type
+      );
+      if (!exists) {
+        merged.push(item);
+      }
+    }
+
+    const ok = safeSetStorage(targetKey, JSON.stringify(merged));
     if (ok) {
       const newStatus: MigrationStatus = {
         status: 'migrated',
@@ -339,10 +410,30 @@ export function importUnassignedLegacyToAccount(accountKey: string): ImportResul
   if (!accountKey) return { success: false, reason: 'invalid_key', importedCount: 0 };
 
   const status = getMigrationStatus();
+
+  // If already migrated or imported to another account
   if (
     (status.status === 'imported' || status.status === 'migrated') &&
     status.assignedAccountKey &&
     status.assignedAccountKey !== accountKey
+  ) {
+    return { success: false, reason: 'already_assigned', importedCount: 0 };
+  }
+
+  // If pending import has been assigned to another account
+  if (
+    status.status === 'pending_import' &&
+    status.assignedAccountKey &&
+    status.assignedAccountKey !== accountKey
+  ) {
+    return { success: false, reason: 'already_assigned', importedCount: 0 };
+  }
+
+  // If unmigrated legacy is reserved for a pre-existing account
+  if (
+    status.status === 'unmigrated' &&
+    status.preExistingAccountKey &&
+    status.preExistingAccountKey !== accountKey
   ) {
     return { success: false, reason: 'already_assigned', importedCount: 0 };
   }
@@ -352,9 +443,9 @@ export function importUnassignedLegacyToAccount(accountKey: string): ImportResul
 
   let legacyItems: any[] = [];
   try {
-    const parsed = JSON.parse(rawLegacy);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      legacyItems = parsed;
+    const parsedLegacy = JSON.parse(rawLegacy);
+    if (Array.isArray(parsedLegacy) && parsedLegacy.length > 0) {
+      legacyItems = parsedLegacy;
     } else {
       return { success: false, reason: 'no_legacy', importedCount: 0 };
     }

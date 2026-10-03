@@ -66,6 +66,7 @@ import {
   initializeLegacyMigrationStatus,
   bootstrapLegacyMigration,
   hasUnassignedLegacyFavorites,
+  hasAmbiguousOldKeyFavorites,
   importUnassignedLegacyToAccount,
   importAmbiguousOldKeyToAccount,
   safeGetStorage,
@@ -257,7 +258,171 @@ async function runLegacyMigrationAndFailureResilienceTests() {
     writable: true,
   });
 
+  const keyB_V2 = getAccountKey(credsB.serverUrl, credsB.username);
+
+  // DEFEITO 1: Conta B tenta tomar a importação pendente atribuída à Conta A
+  // 1. hasUnassignedLegacyFavorites deve ser falso para a Conta B
+  assert.strictEqual(
+    hasUnassignedLegacyFavorites(keyB_V2),
+    false,
+    'DEFEITO 1: hasUnassignedLegacyFavorites deve retornar false para Conta B quando há importação pendente da Conta A'
+  );
+
+  // 2. Conta B tenta executar importUnassignedLegacyToAccount e deve ser rejeitada com already_assigned
+  const importResB = importUnassignedLegacyToAccount(keyB_V2);
+  assert.strictEqual(importResB.success, false, 'DEFEITO 1: Conta B NÃO deve conseguir tomar importação pendente da Conta A');
+  assert.strictEqual(importResB.reason, 'already_assigned', 'DEFEITO 1: Conta B deve receber motivo already_assigned');
+  assert.strictEqual(window.localStorage.getItem(keyB_V2), null, 'DEFEITO 1: Conta B não deve ter recebido os favoritos');
+
+  // 3. Status deve permanecer intocado como pending_import da Conta A
+  const statusAfterB = getMigrationStatus();
+  assert.strictEqual(statusAfterB.status, 'pending_import', 'DEFEITO 1: Status deve permanecer pending_import');
+  assert.strictEqual(statusAfterB.assignedAccountKey, keyA_V2, 'DEFEITO 1: assignedAccountKey deve continuar sendo Conta A');
+
+  // 4. Conta A pode retomar a importação pendente
+  assert.strictEqual(
+    hasUnassignedLegacyFavorites(keyA_V2),
+    true,
+    'DEFEITO 1: Conta A deve ver hasUnassignedLegacyFavorites como true para retomar sua importação pendente'
+  );
+
+  const importResARetry = importUnassignedLegacyToAccount(keyA_V2);
+  assert.strictEqual(importResARetry.success, true, 'DEFEITO 1: Conta A deve conseguir retomar sua importação pendente com sucesso');
+  assert.strictEqual(importResARetry.importedCount, 1, 'DEFEITO 1: Conta A deve ter importado os itens com sucesso');
+
+  const statusFinalA = getMigrationStatus();
+  assert.strictEqual(statusFinalA.status, 'imported', 'DEFEITO 1: Status deve transitar para imported');
+  assert.strictEqual(statusFinalA.assignedAccountKey, keyA_V2, 'DEFEITO 1: assignedAccountKey deve ser Conta A');
+  assert.strictEqual(hasUnassignedLegacyFavorites(keyA_V2), false, 'DEFEITO 1: hasUnassignedLegacyFavorites deve ser false após conclusão');
+  assert.strictEqual(hasUnassignedLegacyFavorites(keyB_V2), false, 'DEFEITO 1: hasUnassignedLegacyFavorites deve ser false para Conta B após conclusão');
+
+  // DEFEITO 2: Proteção do legado atribuído a conta pré-existente
+  window.localStorage.clear();
+  window.localStorage.setItem(LEGACY_FAVORITES_KEY, JSON.stringify(legacyFavs));
+  window.localStorage.setItem(LEGACY_CREDENTIALS_KEY, JSON.stringify(credsA));
+  initializeLegacyMigrationStatus();
+
+  // Simular falha de quota durante migração automática (bootstrapLegacyMigration) da Conta A
+  Object.defineProperty(windowInstance.localStorage, 'setItem', {
+    value: function (key: string, val: string) {
+      if (key === keyA_V2) {
+        throw new Error('QuotaExceededError: LocalStorage quota exceeded');
+      }
+      return origSetItem.call(windowInstance.localStorage, key, val);
+    },
+    configurable: true,
+    writable: true,
+  });
+
+  bootstrapLegacyMigration(keyA_V2);
+
+  // Restaurar setItem
+  Object.defineProperty(windowInstance.localStorage, 'setItem', {
+    value: origSetItem,
+    configurable: true,
+    writable: true,
+  });
+
+  const statusPreExistingFail = getMigrationStatus();
+  assert.strictEqual(statusPreExistingFail.status, 'unmigrated', 'Status deve permanecer unmigrated após falha no bootstrap');
+  assert.strictEqual(statusPreExistingFail.preExistingAccountKey, keyA_V2, 'preExistingAccountKey deve ser Conta A');
+
+  // Conta B não pode importar legado da Conta A pré-existente
+  assert.strictEqual(
+    hasUnassignedLegacyFavorites(keyB_V2),
+    false,
+    'DEFEITO 2: Conta B não deve ver legado pré-existente da Conta A como desatribuído'
+  );
+  const importResBPreExisting = importUnassignedLegacyToAccount(keyB_V2);
+  assert.strictEqual(importResBPreExisting.success, false, 'DEFEITO 2: Conta B não deve conseguir importar legado da Conta A');
+  assert.strictEqual(importResBPreExisting.reason, 'already_assigned', 'DEFEITO 2: Deve retornar already_assigned');
+
+  // Login da Conta B não deve sobrescrever preExistingAccountKey
+  window.localStorage.setItem(LEGACY_CREDENTIALS_KEY, JSON.stringify(credsB));
+  initializeLegacyMigrationStatus();
+  const statusAfterBLogin = getMigrationStatus();
+  assert.strictEqual(
+    statusAfterBLogin.preExistingAccountKey,
+    keyA_V2,
+    'DEFEITO 2: initializeLegacyMigrationStatus não deve sobrescrever preExistingAccountKey após novo login'
+  );
+
+  // Conta A consegue retomar a migração
+  assert.strictEqual(
+    hasUnassignedLegacyFavorites(keyA_V2),
+    true,
+    'DEFEITO 2: Conta A deve conseguir importar seu legado pré-existente'
+  );
+  const importResAPreExisting = importUnassignedLegacyToAccount(keyA_V2);
+  assert.strictEqual(importResAPreExisting.success, true, 'DEFEITO 2: Conta A importa seu legado com sucesso');
+
+  // DEFEITO 3: Chave antiga ambígua não reaparece após importação e rollback de cache em falha de storage
+  const ambigServer = 'http://provider.test/base_a';
+  const ambigUser = 'b';
+  const ambigOldKey = getOldAccountKey(ambigServer, ambigUser);
+
+  window.localStorage.setItem(ambigOldKey, JSON.stringify([{ id: 999, name: 'Canal Ambig', type: 'live' }]));
+  assert.strictEqual(
+    hasAmbiguousOldKeyFavorites(ambigServer, ambigUser),
+    true,
+    'DEFEITO 3: hasAmbiguousOldKeyFavorites deve ser true antes da importação'
+  );
+
+  const ambigImportRes = importAmbiguousOldKeyToAccount(ambigServer, ambigUser);
+  assert.strictEqual(ambigImportRes.success, true, 'Importação da chave ambígua deve ter sucesso');
+  assert.strictEqual(
+    hasAmbiguousOldKeyFavorites(ambigServer, ambigUser),
+    false,
+    'DEFEITO 3: hasAmbiguousOldKeyFavorites deve ser false após importação bem sucedida (banner some)'
+  );
+
+  // Testar rollback de cache em memória do useFavorites após QuotaExceededError no toggleFavorite
+  let hookTestCache: ReturnType<typeof useFavorites> | null = null;
+  function AppTestCache() {
+    hookTestCache = useFavorites(credsA);
+    return React.createElement('div', null, 'Test Cache');
+  }
+  const containerCache = window.document.createElement('div');
+  window.document.body.appendChild(containerCache);
+  const rootCache = createRoot(containerCache);
+
   await act(async () => {
+    rootCache.render(React.createElement(AppTestCache));
+  });
+
+  const countBeforeQuota = hookTestCache!.favorites.length;
+  // Simular falha de gravação durante toggleFavorite
+  Object.defineProperty(windowInstance.localStorage, 'setItem', {
+    value: function (key: string, val: string) {
+      if (key === keyA_V2) {
+        throw new Error('QuotaExceededError: LocalStorage quota exceeded');
+      }
+      return origSetItem.call(windowInstance.localStorage, key, val);
+    },
+    configurable: true,
+    writable: true,
+  });
+
+  await act(async () => {
+    const toggleSuccess = hookTestCache!.toggleFavorite({ id: 8888, name: 'Item Quota', type: 'movie', cover: '' });
+    assert.strictEqual(toggleSuccess, false, 'toggleFavorite deve retornar false em falha de storage');
+  });
+
+  assert.strictEqual(
+    hookTestCache!.favorites.length,
+    countBeforeQuota,
+    'DEFEITO 3: Cache em memória NÃO deve reter itens que falharam ao salvar no localStorage'
+  );
+
+  // Restaurar setItem
+  Object.defineProperty(windowInstance.localStorage, 'setItem', {
+    value: origSetItem,
+    configurable: true,
+    writable: true,
+  });
+
+  await act(async () => {
+    rootCache.unmount();
     rootA.unmount();
     rootB.unmount();
   });
