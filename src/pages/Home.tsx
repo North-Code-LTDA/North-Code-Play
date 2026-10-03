@@ -14,6 +14,7 @@ import { FavoritesView } from '../views/FavoritesView';
 import { XtreamProvider } from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
 import { normalizeServerUrl } from '../utils/mediaUtils';
+import { safeRemoveCredentials } from '../utils/accountUtils';
 import { MediaImage } from '../components/MediaImage';
 import { APP_VERSION, APP_COMMIT } from '../version';
 
@@ -58,7 +59,7 @@ export function Home() {
   }, [navigate]);
 
   const handleLogout = () => {
-    localStorage.removeItem('northcode_tv_credentials');
+    safeRemoveCredentials();
     navigate('/');
   };
 

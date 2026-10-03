@@ -160,7 +160,11 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                 onClick={() => {
                   const res = importLegacyFavorites();
                   if (res.success) {
-                    setImportNotice(`${res.importedCount} favorito(s) antigo(s) importado(s) para esta conta!`);
+                    if (res.importedCount > 0) {
+                      setImportNotice(`${res.importedCount} favorito(s) antigo(s) importado(s) para esta conta!`);
+                    } else {
+                      setImportNotice('Favoritos antigos já foram importados para esta conta.');
+                    }
                   } else {
                     setImportNotice(getReasonMessage(res.reason));
                   }
@@ -177,7 +181,11 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                 onClick={() => {
                   const res = importAmbiguousOldKeyFavorites();
                   if (res.success) {
-                    setImportNotice(`${res.importedCount} favorito(s) da chave anterior importado(s) para esta conta!`);
+                    if (res.importedCount > 0) {
+                      setImportNotice(`${res.importedCount} favorito(s) da chave anterior importado(s) para esta conta!`);
+                    } else {
+                      setImportNotice('Favoritos da chave anterior já foram importados para esta conta.');
+                    }
                   } else {
                     setImportNotice(getReasonMessage(res.reason));
                   }

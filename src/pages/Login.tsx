@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from '../components/MediaImage';
+import { safeSaveCredentials } from '../utils/accountUtils';
 
 const AVATAR_OPTIONS = [
   'https://api.dicebear.com/10.x/fun-emoji/svg?seed=Sophie',
@@ -82,7 +83,15 @@ export function Login() {
       };
 
       // If validation succeeds, save and redirect
-      localStorage.setItem('northcode_tv_credentials', JSON.stringify(fullCredentials));
+      const saveRes = safeSaveCredentials(fullCredentials);
+      if (!saveRes.success) {
+        if (saveRes.error === 'storage_failure_protecting_legacy' || saveRes.error === 'storage_failure') {
+          setError('Falha no armazenamento local do navegador ao salvar a sessão. Libere espaço no navegador e tente novamente.');
+          return;
+        }
+        setError('Falha ao salvar as credenciais no dispositivo.');
+        return;
+      }
       navigate('/home');
     } catch (err: any) {
       setError(err.message || 'Falha na autenticação. Verifique os dados inseridos.');
