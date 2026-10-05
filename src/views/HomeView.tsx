@@ -318,23 +318,25 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         )}
 
         {!searchQuery && dynamicVodCategoryRows.map((row) => (
-          <HorizontalRow 
-            key={row.categoryId}
-            title={row.title}
-            items={row.items.slice(0, displayCount.vod)}
-            type="vod"
-            onItemClick={(item) => setSelectedMovie(item)}
-          />
+          <div key={row.categoryId} className="w-full">
+            <HorizontalRow 
+              title={row.title}
+              items={row.items.slice(0, displayCount.vod)}
+              type="vod"
+              onItemClick={(item) => setSelectedMovie(item)}
+            />
+          </div>
         ))}
 
         {!searchQuery && dynamicSeriesCategoryRows.map((row) => (
-          <HorizontalRow 
-            key={row.categoryId}
-            title={row.title}
-            items={row.items.slice(0, displayCount.series)}
-            type="series"
-            onItemClick={(item) => setSelectedSeries(item)}
-          />
+          <div key={row.categoryId} className="w-full">
+            <HorizontalRow 
+              title={row.title}
+              items={row.items.slice(0, displayCount.series)}
+              type="series"
+              onItemClick={(item) => setSelectedSeries(item)}
+            />
+          </div>
         ))}
       </div>
 
