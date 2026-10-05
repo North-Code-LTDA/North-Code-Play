@@ -30,7 +30,6 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
   
   const [selectedMovie, setSelectedMovie] = useState<FavoriteItem | null>(null);
   const [selectedSeries, setSelectedSeries] = useState<FavoriteItem | null>(null);
-  const [displayCount, setDisplayCount] = useState(100);
   const [favPlayError, setFavPlayError] = useState<string | null>(null);
   const [failedFav, setFailedFav] = useState<FavoriteItem | null>(null);
   const [favActionError, setFavActionError] = useState<string | null>(null);
@@ -54,10 +53,6 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
     }
   };
 
-  useEffect(() => {
-    setDisplayCount(100);
-  }, [searchQuery, filterType]);
-
   const filteredFavorites = useMemo(() => {
     return favorites.filter(fav => {
       const matchesSearch = fav.name?.toLowerCase().includes(searchQuery.toLowerCase());
@@ -65,8 +60,6 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
       return matchesSearch && matchesType;
     });
   }, [favorites, searchQuery, filterType]);
-
-  const displayedFavorites = filteredFavorites.slice(0, displayCount);
 
   const handlePlayClick = (fav: FavoriteItem) => {
     if (!credentials) return;
@@ -199,7 +192,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 md:p-8 pt-0">
-        {displayedFavorites.length === 0 ? (
+        {filteredFavorites.length === 0 ? (
           <div className="h-64 flex flex-col items-center justify-center text-gray-500">
             <Heart className="w-12 h-12 mb-3 stroke-1 text-gray-600" />
             <p className="text-lg">Nenhum favorito encontrado</p>
@@ -209,7 +202,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-            {displayedFavorites.map((fav) => (
+            {filteredFavorites.map((fav) => (
               <motion.div
                 key={`${fav.type}-${fav.id}`}
                 layout
@@ -224,6 +217,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                 >
                   <MediaImage
                     src={fav.cover}
+                    serverUrl={credentials?.serverUrl}
                     alt={fav.name}
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                   />

@@ -31,8 +31,37 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
   const [continueWatching, setContinueWatching] = useState<any[]>([]);
 
   const mainRef = useRef<HTMLElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const prevCategoryRef = useRef<string | undefined>(selectedCategoryId);
   const prevSearchRef = useRef<string>(searchQuery);
+
+  useEffect(() => {
+    if (selectedMovie || displayCount >= filteredStreams.length) return;
+
+    const root = mainRef.current;
+    const sentinel = sentinelRef.current;
+
+    if (!root || !sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setDisplayCount(prev => prev + 100);
+        }
+      },
+      {
+        root: root,
+        rootMargin: '200px',
+        threshold: 0,
+      }
+    );
+
+    observer.observe(sentinel);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [selectedMovie, displayCount, filteredStreams.length]);
 
   const handleSelectCategory = (catId: string) => {
     if (catId === selectedCategoryId) return; // Do not reset scroll if same category is clicked
@@ -247,14 +276,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                  </div>
                  
                  {displayCount < filteredStreams.length && (
-                    <div className="mt-8 flex justify-center">
-                      <button
-                        onClick={() => setDisplayCount(prev => prev + 100)}
-                        className="px-6 py-3 bg-nc-bg-card hover:bg-nc-bg-input border border-nc-border/50 rounded-xl text-white font-medium transition-colors"
-                      >
-                        Carregar Mais
-                      </button>
-                    </div>
+                    <div ref={sentinelRef} className="h-10 w-full" />
                   )}
                 </>
               )}

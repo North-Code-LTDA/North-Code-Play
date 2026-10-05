@@ -142,7 +142,39 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const backdropSource = normalizeImageSource(info.backdrop_path);
   const rawCover = backdropSource || normalizeImageSource(info.cover_big) || normalizeImageSource(info.movie_image) || normalizeImageSource(streamIcon);
 
-  const durationMin = info.duration ? info.duration.split(':')[0] + 'm' : null;
+  const formatMovieDuration = (duration: unknown): string | null => {
+    if (typeof duration !== 'string') return null;
+    const trimmed = duration.trim();
+    if (!trimmed) return null;
+
+    const parts = trimmed.split(':');
+    if (parts.length === 3 || parts.length === 2) {
+      const nums = parts.map(p => Number(p));
+      if (nums.every(n => !isNaN(n) && n >= 0)) {
+        let hours = 0;
+        let minutes = 0;
+        if (parts.length === 3) {
+          hours = nums[0];
+          minutes = nums[1];
+        } else {
+          minutes = nums[0];
+        }
+        if (hours > 0 && minutes > 0) {
+          return `${hours}h ${minutes}min`;
+        } else if (hours > 0 && minutes === 0) {
+          return `${hours}h`;
+        } else if (hours === 0 && minutes > 0) {
+          return `${minutes}min`;
+        } else if (hours === 0 && minutes === 0) {
+          return null;
+        }
+      }
+    }
+
+    return trimmed;
+  };
+
+  const durationText = formatMovieDuration(info.duration);
 
   return (
     <div className="absolute inset-0 z-[50] bg-nc-bg w-full h-full overflow-hidden">
@@ -207,10 +239,10 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
                   {new Date(info.releasedate).getFullYear() || info.releasedate}
                 </span>
               )}
-              {durationMin && (
+              {durationText && (
                 <span className="flex items-center gap-1">
                   <Clock className="w-4 h-4" />
-                  {durationMin}
+                  {durationText}
                 </span>
               )}
               {info.genre && (

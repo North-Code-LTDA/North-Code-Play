@@ -1,12 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { PlaySquare, Loader2, Play, X, ChevronLeft, Heart } from 'lucide-react';
+import { PlaySquare, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
-import { XtreamService } from '../services/xtreamService';
 import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { MediaImage } from '../components/MediaImage';
-import { buildDirectMediaUrl } from '../utils/mediaUtils';
 
 interface SeriesViewProps {
   onPlay: (
@@ -27,14 +25,12 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
   const { seriesCategories, seriesStreams, allSeriesStreams, fetchSeriesStreams, loadingSeries, error, credentials } = useXtreamContext();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
-  const [seriesInfo, setSeriesInfo] = useState<any | null>(null);
-  const [loadingInfo, setLoadingInfo] = useState(false);
-  const [selectedSeason, setSelectedSeason] = useState<string | null>(null);
   const [displayCount, setDisplayCount] = useState(100);
   const { favorites } = useFavorites();
   const [continueWatching, setContinueWatching] = useState<any[]>([]);
 
   const mainRef = useRef<HTMLElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const prevCategoryRef = useRef<string | undefined>(selectedCategoryId);
   const prevSearchRef = useRef<string>(searchQuery);
 
@@ -45,6 +41,34 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
       mainRef.current.scrollTop = 0;
     }
   };
+
+  useEffect(() => {
+    if (selectedSeries || displayCount >= filteredStreams.length) return;
+
+    const root = mainRef.current;
+    const sentinel = sentinelRef.current;
+
+    if (!root || !sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setDisplayCount(prev => prev + 100);
+        }
+      },
+      {
+        root: root,
+        rootMargin: '200px',
+        threshold: 0,
+      }
+    );
+
+    observer.observe(sentinel);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [selectedSeries, displayCount, filteredStreams.length]);
 
   const favoriteSeries = useMemo(() => {
     return favorites
@@ -144,42 +168,8 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
 
   const displayedStreams = filteredStreams.slice(0, displayCount);
 
-  const handleSeriesClick = async (series: any) => {
-    if (!credentials) return;
+  const handleSeriesClick = (series: any) => {
     setSelectedSeries(series);
-    setSeriesInfo(null);
-    setLoadingInfo(true);
-    setSelectedSeason(null);
-    try {
-      const info = await XtreamService.getSeriesInfo(credentials, series.series_id || series.id);
-      setSeriesInfo(info);
-      // Select first season by default
-      if (info?.episodes) {
-        const seasons = Object.keys(info.episodes);
-        if (seasons.length > 0) {
-          setSelectedSeason(seasons[0]);
-        }
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingInfo(false);
-    }
-  };
-
-  const handlePlayEpisode = (episode: any) => {
-    if (!credentials) return;
-    try {
-      const ext = episode.container_extension || "mp4";
-      const mediaUrl = buildDirectMediaUrl(credentials, {
-        type: 'series',
-        streamId: episode.id,
-        containerExtension: ext,
-      });
-      onPlay(mediaUrl, `${selectedSeries?.name} - S${selectedSeason}E${episode.episode_num || episode.id}`, 0, episode.id);
-    } catch (err: any) {
-      console.error('Erro ao iniciar episódio:', err);
-    }
   };
 
   return (
@@ -224,7 +214,8 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
             </button>
           ))}
         </div>
-         <div className="p-6 flex-1">
+
+        <div className="p-6 flex-1">
           {error && (
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 text-red-500 rounded-xl">
               {error}
@@ -286,14 +277,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
               </div>
               
               {displayCount < filteredStreams.length && (
-                <div className="mt-8 flex justify-center">
-                  <button
-                    onClick={() => setDisplayCount(prev => prev + 100)}
-                    className="px-6 py-3 bg-nc-bg-card hover:bg-nc-bg-input border border-nc-border/50 rounded-xl text-white font-medium transition-colors"
-                  >
-                    Carregar Mais
-                  </button>
-                </div>
+                <div ref={sentinelRef} className="h-10 w-full" />
               )}
             </>
           )}
