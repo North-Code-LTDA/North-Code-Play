@@ -42,34 +42,6 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
     }
   };
 
-  useEffect(() => {
-    if (selectedSeries || displayCount >= filteredStreams.length) return;
-
-    const root = mainRef.current;
-    const sentinel = sentinelRef.current;
-
-    if (!root || !sentinel) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setDisplayCount(prev => prev + 100);
-        }
-      },
-      {
-        root: root,
-        rootMargin: '200px',
-        threshold: 0,
-      }
-    );
-
-    observer.observe(sentinel);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [selectedSeries, displayCount, filteredStreams.length]);
-
   const favoriteSeries = useMemo(() => {
     return favorites
       .filter(f => f.type === 'series')
@@ -165,6 +137,34 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
 
     return seriesStreams;
   }, [searchQuery, selectedCategoryId, continueWatching, favoriteSeries, seriesStreams, allSeriesStreams]);
+
+  useEffect(() => {
+    if (selectedSeries || displayCount >= filteredStreams.length) return;
+
+    const root = mainRef.current;
+    const sentinel = sentinelRef.current;
+
+    if (!root || !sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setDisplayCount(prev => prev + 100);
+        }
+      },
+      {
+        root: root,
+        rootMargin: '200px',
+        threshold: 0,
+      }
+    );
+
+    observer.observe(sentinel);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [selectedSeries, displayCount, filteredStreams.length]);
 
   const displayedStreams = filteredStreams.slice(0, displayCount);
 

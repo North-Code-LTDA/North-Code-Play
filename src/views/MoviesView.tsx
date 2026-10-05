@@ -35,34 +35,6 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
   const prevCategoryRef = useRef<string | undefined>(selectedCategoryId);
   const prevSearchRef = useRef<string>(searchQuery);
 
-  useEffect(() => {
-    if (selectedMovie || displayCount >= filteredStreams.length) return;
-
-    const root = mainRef.current;
-    const sentinel = sentinelRef.current;
-
-    if (!root || !sentinel) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setDisplayCount(prev => prev + 100);
-        }
-      },
-      {
-        root: root,
-        rootMargin: '200px',
-        threshold: 0,
-      }
-    );
-
-    observer.observe(sentinel);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [selectedMovie, displayCount, filteredStreams.length]);
-
   const handleSelectCategory = (catId: string) => {
     if (catId === selectedCategoryId) return; // Do not reset scroll if same category is clicked
     setSelectedCategoryId(catId);
@@ -163,6 +135,34 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
     
     return vodStreams;
   }, [searchQuery, selectedCategoryId, continueWatching, favoriteMovies, vodStreams, allVodStreams]);
+
+  useEffect(() => {
+    if (selectedMovie || displayCount >= filteredStreams.length) return;
+
+    const root = mainRef.current;
+    const sentinel = sentinelRef.current;
+
+    if (!root || !sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setDisplayCount(prev => prev + 100);
+        }
+      },
+      {
+        root: root,
+        rootMargin: '200px',
+        threshold: 0,
+      }
+    );
+
+    observer.observe(sentinel);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [selectedMovie, displayCount, filteredStreams.length]);
 
   const displayedStreams = filteredStreams.slice(0, displayCount);
 
