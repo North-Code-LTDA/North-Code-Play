@@ -128,7 +128,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       XtreamService.getShortEpg(credentials, selectedChannel.stream_id, 10)
         .then(data => {
           if (isMounted) {
-            setEpgData(data?.epg_listings || []);
+            const rawListings = Array.isArray(data?.epg_listings) ? data.epg_listings : [];
+            const validListings = rawListings.filter(
+              (item: any) => item !== null && typeof item === 'object' && !Array.isArray(item)
+            );
+            setEpgData(validListings);
             setLoadingEpg(false);
           }
         })
@@ -155,12 +159,28 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const displayedStreams = filteredStreams.slice(0, displayCount);
 
   // Helper to decode Base64 EPG titles safely
-  const decodeBase64 = (str: string) => {
+  const decodeBase64 = (val: unknown): string => {
+    if (typeof val !== 'string') return '';
     try {
-      return decodeURIComponent(escape(atob(str)));
+      return decodeURIComponent(escape(atob(val)));
     } catch {
-      return str; // Return raw if decoding fails
+      return val; // Return raw string if decoding fails
     }
+  };
+
+  // Helper to extract HH:mm from time string safely without timezone conversion
+  const formatEpgTime = (val: unknown): string | null => {
+    if (typeof val !== 'string') return null;
+    const trimmed = val.trim();
+    if (!trimmed) return null;
+    const parts = trimmed.split(/\s+/);
+    const timePart = parts.length > 1 ? parts[1] : parts[0];
+    if (!timePart) return null;
+    const timeSub = timePart.substring(0, 5);
+    if (/^\d{1,2}:\d{2}$/.test(timeSub)) {
+      return timeSub.padStart(5, '0');
+    }
+    return null;
   };
 
   const activeCategory = extendedCategories.find(c => c.category_id === selectedCategoryId);
@@ -386,15 +406,26 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                  {epgData && epgData.length > 0 && epgData[0] && (
                    <div className="mt-2 w-full p-4 bg-nc-bg-card/50 rounded-xl border border-nc-border/50 flex flex-col gap-1">
                       <p className="text-xs text-nc-primary font-semibold uppercase tracking-wider">Passando Agora</p>
-                      <p className="text-white font-medium">{decodeBase64(epgData[0].title)}</p>
-                      {epgData[0].description && (
+                      {decodeBase64(epgData[0].title) && (
+                        <p className="text-white font-medium">{decodeBase64(epgData[0].title)}</p>
+                      )}
+                      {decodeBase64(epgData[0].description) && (
                         <p className="text-sm text-nc-text-secondary line-clamp-2">
                           {decodeBase64(epgData[0].description)}
                         </p>
                       )}
-                      <p className="text-xs text-nc-text-secondary mt-1 font-mono">
-                        {epgData[0].start.split(' ')[1]?.substring(0,5)} - {epgData[0].end.split(' ')[1]?.substring(0,5)}
-                      </p>
+                      {(() => {
+                        const startStr = formatEpgTime(epgData[0].start);
+                        const endStr = formatEpgTime(epgData[0].end);
+                        if (startStr && endStr) {
+                          return (
+                            <p className="text-xs text-nc-text-secondary mt-1 font-mono">
+                              {startStr} - {endStr}
+                            </p>
+                          );
+                        }
+                        return null;
+                      })()}
                    </div>
                  )}
                </div>
@@ -406,7 +437,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                    streamUrl={miniPlayerUrl}
                    title={selectedChannel.name}
                    channelName={selectedChannel.name}
-                   programTitle={epgData && epgData.length > 0 && epgData[0] ? decodeBase64(epgData[0].title) : undefined}
+                   programTitle={epgData && epgData.length > 0 && epgData[0] ? (decodeBase64(epgData[0].title) || undefined) : undefined}
                    contentType="live"
                    streamId={selectedChannel.stream_id}
                    onBack={handleCloseChannel}
@@ -431,6 +462,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                ) : epgData && epgData.length > 0 ? (
                  <div className="space-y-3 relative before:absolute before:inset-0 before:ml-[3.5rem] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-nc-border/50 before:to-transparent pb-8">
                    {epgData.map((prog: any, idx: number) => {
+                     const startStr = formatEpgTime(prog?.start);
+                     const endStr = formatEpgTime(prog?.end);
+                     const title = decodeBase64(prog?.title);
+                     const description = decodeBase64(prog?.description);
+
                      return (
                        <div key={idx} className="relative flex items-start justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
                          {/* Timeline Marker */}
@@ -441,15 +477,19 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                          {/* EPG Card */}
                          <div className="w-[calc(100%-4.5rem)] md:w-[calc(50%-2.5rem)] ml-[4.5rem] md:ml-0 p-4 rounded-xl border border-nc-border/50 bg-nc-bg-card hover:bg-nc-bg-input transition-colors">
                            <div className="flex flex-col gap-1">
-                             <div className={`text-xs font-semibold uppercase tracking-wider ${idx === 0 ? 'text-nc-primary' : 'text-nc-text-secondary'}`}>
-                               {prog.start.split(' ')[1]?.substring(0,5)} - {prog.end.split(' ')[1]?.substring(0,5)}
-                             </div>
-                             <h4 className={`font-medium text-base ${idx === 0 ? 'text-white' : 'text-white/80'}`}>
-                               {decodeBase64(prog.title)}
-                             </h4>
-                             {prog.description && (
+                             {startStr && endStr && (
+                               <div className={`text-xs font-semibold uppercase tracking-wider ${idx === 0 ? 'text-nc-primary' : 'text-nc-text-secondary'}`}>
+                                 {startStr} - {endStr}
+                               </div>
+                             )}
+                             {title && (
+                               <h4 className={`font-medium text-base ${idx === 0 ? 'text-white' : 'text-white/80'}`}>
+                                 {title}
+                               </h4>
+                             )}
+                             {description && (
                                <p className="text-sm text-nc-text-secondary line-clamp-2 mt-1">
-                                 {decodeBase64(prog.description)}
+                                 {description}
                                </p>
                              )}
                            </div>
