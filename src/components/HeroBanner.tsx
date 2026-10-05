@@ -5,24 +5,13 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from './MediaImage';
 import { normalizeImageSource } from '../utils/mediaUtils';
+import { getValidYear, sortByYearAndRating } from '../utils/catalogRanking';
 
 interface HeroBannerProps {
   items: any[];
   onPlay: (item: any) => void;
   onInfo: (item: any) => void;
 }
-
-const getValidYear = (item: any) => {
-  let yearStr = item.year || item.releasedate || '';
-  if (!yearStr && item.name) {
-    const match = item.name.match(/(19|20)\d{2}/);
-    if (match) yearStr = match[0];
-  }
-  const year = parseInt(yearStr, 10);
-  return year >= 1950 && year <= 2026 ? year : 0;
-};
-
-const getValidRating = (item: any) => parseFloat(item.rating) || 0;
 
 export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -42,14 +31,8 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
         .trim();
     };
 
-    const sortedItems = [...items]
-      .filter((item) => item.stream_icon || item.cover || item.backdrop_path)
-      .sort((a, b) => {
-        const yearA = getValidYear(a);
-        const yearB = getValidYear(b);
-        if (yearB !== yearA) return yearB - yearA;
-        return getValidRating(b) - getValidRating(a);
-      });
+    const itemsWithImages = items.filter((item) => item.stream_icon || item.cover || item.backdrop_path);
+    const sortedItems = sortByYearAndRating(itemsWithImages);
 
     const deduped: any[] = [];
     const seenNames = new Set<string>();

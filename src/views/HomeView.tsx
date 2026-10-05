@@ -7,6 +7,7 @@ import { HorizontalRow } from '../components/HorizontalRow';
 import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
+import { sortByYearAndRating } from '../utils/catalogRanking';
 
 interface HomeViewProps {
   onPlay: (
@@ -63,7 +64,6 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
               const itemId = item.stream_id || item.series_id || item.id;
               const lastWatched = Number(localStorage.getItem('nc_last_watched_' + progressId)) || 0;
 
-              // Se o item ainda não está no Map OU se encontramos um episódio mais recente dessa mesma série, atualizamos
               if (!watchedMap.has(itemId) || watchedMap.get(itemId).lastWatched < lastWatched) {
                 watchedMap.set(itemId, { item, lastWatched });
               }
@@ -72,7 +72,6 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         }
       }
 
-      // Extrai os valores do Map, ordena cronologicamente (decrescente) e mapeia apenas os itens
       const sortedItems = Array.from(watchedMap.values())
         .sort((a, b) => b.lastWatched - a.lastWatched)
         .map(w => w.item);
@@ -98,65 +97,28 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   const isLoading = loadingLive || loadingVod || loadingSeries;
 
-  // -- Helper for sorting by Year and Rating --
-  const getValidYear = (item: any) => {
-    let year = Number(item.year);
-    if (!isNaN(year) && year >= 1950 && year <= 2026) {
-      return year;
-    }
-    if (item.name) {
-      const match = String(item.name).match(/\b(19[5-9]\d|20[0-2][0-6])\b/);
-      if (match) {
-        return Number(match[0]);
-      }
-    }
-    return 0;
-  };
-
-  const getValidRating = (item: any) => {
-    if (item.rating === null || item.rating === undefined || item.rating === '') return 0;
-    const rating = parseFloat(item.rating);
-    return isNaN(rating) ? 0 : rating;
-  };
-
-  const sortByYearAndRating = (streams: any[]) => {
-    const validStreams = streams.filter(item => getValidYear(item) > 0 || getValidRating(item) > 0);
-    return validStreams.sort((a, b) => {
-      const aYear = getValidYear(a);
-      const bYear = getValidYear(b);
-      if (aYear !== bYear) return bYear - aYear;
-      
-      const aRating = getValidRating(a);
-      const bRating = getValidRating(b);
-      return bRating - aRating;
-    });
-  };
-
-  // -- Destaques Live (Deduplicated VIP Channels) --
-  const topKeywords = ['globo sp', 'sbt sp', 'record sp', 'telecine', 'megapix', 'cinemax', 'discovery', 'history', 'animal', 'cazé', 'sportv', 'premiere'];
+  // -- Destaques Live (Deterministic channels list preserving provider order) --
   const topLiveStreams = useMemo(() => {
-    const topChannels = [];
-    const usedStreamIds = new Set();
+    if (!allLiveStreams || allLiveStreams.length === 0) return [];
+    const result: any[] = [];
+    const seenIds = new Set<string | number>();
 
-    for (const keyword of topKeywords) {
-      const matches = allLiveStreams.filter(item =>
-        item.name?.toLowerCase().includes(keyword) && !usedStreamIds.has(item.stream_id)
-      );
+    for (const channel of allLiveStreams) {
+      if (!channel) continue;
+      const id = channel.stream_id || channel.id;
+      const name = channel.name;
+      if (id === null || id === undefined || id === '') continue;
+      if (!name || typeof name !== 'string' || !name.trim()) continue;
 
-      if (matches.length > 0) {
-        const bestMatch = matches.find(m => {
-          const nameLower = m.name?.toLowerCase() || '';
-          return nameLower.includes('fhd') || nameLower.includes(' hd');
-        }) || matches[0];
-
-        topChannels.push(bestMatch);
-        usedStreamIds.add(bestMatch.stream_id);
+      if (!seenIds.has(id)) {
+        seenIds.add(id);
+        result.push(channel);
       }
     }
-    return topChannels;
+    return result;
   }, [allLiveStreams]);
 
-  // -- Lançamentos Reais --
+  // -- Ranking Universal --
   const recentMovies = useMemo(() => {
     return sortByYearAndRating(allVodStreams);
   }, [allVodStreams]);
@@ -165,42 +127,84 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     return sortByYearAndRating(allSeriesStreams);
   }, [allSeriesStreams]);
 
-  // -- Categorias Dinamicas VOD --
-  const getCategoryIdsByKeywords = (categories: any[], keywords: string[]) => {
-    return categories
-      .filter(c => keywords.some(k => c.category_name?.toLowerCase().includes(k.toLowerCase())))
-      .map(c => String(c.category_id));
-  };
+  // -- Fileiras de Categorias Reais VOD & Series --
+  const dynamicVodCategoryRows = useMemo(() => {
+    if (searchQuery || !vodCategories || vodCategories.length === 0 || !allVodStreams || allVodStreams.length === 0) {
+      return [];
+    }
 
-  const actionMovies = useMemo(() => {
-    const pids = getCategoryIdsByKeywords(vodCategories, ['ação', 'action']);
-    return sortByYearAndRating(allVodStreams.filter(m => pids.includes(String(m.category_id))));
-  }, [allVodStreams, vodCategories]);
+    const rows: { categoryId: string; title: string; items: any[] }[] = [];
 
-  const scifiMovies = useMemo(() => {
-    const pids = getCategoryIdsByKeywords(vodCategories, ['ficção', 'sci-fi']);
-    return sortByYearAndRating(allVodStreams.filter(m => pids.includes(String(m.category_id))));
-  }, [allVodStreams, vodCategories]);
+    for (const cat of vodCategories) {
+      if (!cat || !cat.category_id || !cat.category_name) continue;
+      const catId = String(cat.category_id);
+      
+      const itemsInCat = allVodStreams.filter(m => String(m.category_id) === catId);
+      if (itemsInCat.length > 0) {
+        const sorted = sortByYearAndRating(itemsInCat);
+        rows.push({
+          categoryId: `vod_cat_${catId}`,
+          title: `Filmes • ${cat.category_name}`,
+          items: sorted,
+        });
+      }
 
-  const adventureMovies = useMemo(() => {
-    const pids = getCategoryIdsByKeywords(vodCategories, ['aventura', 'adventure']);
-    return sortByYearAndRating(allVodStreams.filter(m => pids.includes(String(m.category_id))));
-  }, [allVodStreams, vodCategories]);
+      if (rows.length === 4) break;
+    }
+
+    return rows;
+  }, [searchQuery, vodCategories, allVodStreams]);
+
+  const dynamicSeriesCategoryRows = useMemo(() => {
+    if (searchQuery || !seriesCategories || seriesCategories.length === 0 || !allSeriesStreams || allSeriesStreams.length === 0) {
+      return [];
+    }
+
+    const rows: { categoryId: string; title: string; items: any[] }[] = [];
+
+    for (const cat of seriesCategories) {
+      if (!cat || !cat.category_id || !cat.category_name) continue;
+      const catId = String(cat.category_id);
+      
+      const itemsInCat = allSeriesStreams.filter(s => String(s.category_id) === catId);
+      if (itemsInCat.length > 0) {
+        const sorted = sortByYearAndRating(itemsInCat);
+        rows.push({
+          categoryId: `series_cat_${catId}`,
+          title: `Séries • ${cat.category_name}`,
+          items: sorted,
+        });
+      }
+
+      if (rows.length === 4) break;
+    }
+
+    return rows;
+  }, [searchQuery, seriesCategories, allSeriesStreams]);
 
   // Search overrides
   const filteredLive = useMemo(() => {
     if (!searchQuery) return topLiveStreams;
-    return allLiveStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+    return allLiveStreams.filter(item => {
+      const name = item?.name;
+      return name && String(name).toLowerCase().includes(searchQuery.toLowerCase());
+    });
   }, [topLiveStreams, allLiveStreams, searchQuery]);
 
   const filteredVod = useMemo(() => {
     if (!searchQuery) return recentMovies;
-    return allVodStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+    return allVodStreams.filter(item => {
+      const name = item?.name;
+      return name && String(name).toLowerCase().includes(searchQuery.toLowerCase());
+    });
   }, [recentMovies, allVodStreams, searchQuery]);
 
   const filteredSeries = useMemo(() => {
     if (!searchQuery) return recentSeries;
-    return allSeriesStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+    return allSeriesStreams.filter(item => {
+      const name = item?.name;
+      return name && String(name).toLowerCase().includes(searchQuery.toLowerCase());
+    });
   }, [recentSeries, allSeriesStreams, searchQuery]);
 
   const handlePlayLive = (stream: any) => {
@@ -286,53 +290,52 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           />
         )}
         
-        <HorizontalRow 
-           title="Canais Ao Vivo"
-           items={filteredLive.slice(0, displayCount.live)}
-           type="live"
-           onItemClick={handlePlayLive}
-        />
+        {filteredLive.length > 0 && (
+          <HorizontalRow 
+             title="Canais Ao Vivo"
+             items={filteredLive.slice(0, displayCount.live)}
+             type="live"
+             onItemClick={handlePlayLive}
+          />
+        )}
         
-        <HorizontalRow 
-           title="Filmes em Destaque"
-           items={filteredVod.slice(0, displayCount.vod)}
-           type="vod"
-           onItemClick={(item) => setSelectedMovie(item)}
-        />
+        {filteredVod.length > 0 && (
+          <HorizontalRow 
+             title="Filmes em Destaque"
+             items={filteredVod.slice(0, displayCount.vod)}
+             type="vod"
+             onItemClick={(item) => setSelectedMovie(item)}
+          />
+        )}
         
-        <HorizontalRow 
-           title="Séries em Destaque"
-           items={filteredSeries.slice(0, displayCount.series)}
-           type="series"
-           onItemClick={(item) => setSelectedSeries(item)}
-        />
-
-        {!searchQuery && actionMovies.length > 0 && (
+        {filteredSeries.length > 0 && (
           <HorizontalRow 
-            title="Ação"
-            items={actionMovies.slice(0, displayCount.vod)}
-            type="vod"
-            onItemClick={(item) => setSelectedMovie(item)}
+             title="Séries em Destaque"
+             items={filteredSeries.slice(0, displayCount.series)}
+             type="series"
+             onItemClick={(item) => setSelectedSeries(item)}
           />
         )}
 
-        {!searchQuery && scifiMovies.length > 0 && (
+        {!searchQuery && dynamicVodCategoryRows.map((row) => (
           <HorizontalRow 
-            title="Ficção Científica"
-            items={scifiMovies.slice(0, displayCount.vod)}
+            key={row.categoryId}
+            title={row.title}
+            items={row.items.slice(0, displayCount.vod)}
             type="vod"
             onItemClick={(item) => setSelectedMovie(item)}
           />
-        )}
+        ))}
 
-        {!searchQuery && adventureMovies.length > 0 && (
+        {!searchQuery && dynamicSeriesCategoryRows.map((row) => (
           <HorizontalRow 
-            title="Aventura"
-            items={adventureMovies.slice(0, displayCount.vod)}
-            type="vod"
-            onItemClick={(item) => setSelectedMovie(item)}
+            key={row.categoryId}
+            title={row.title}
+            items={row.items.slice(0, displayCount.series)}
+            type="series"
+            onItemClick={(item) => setSelectedSeries(item)}
           />
-        )}
+        ))}
       </div>
 
       <AnimatePresence>
