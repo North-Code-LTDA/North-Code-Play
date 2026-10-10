@@ -288,7 +288,11 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
              items={continueWatching}
              type="vod"
              onItemClick={(item) => {
-               if (item.stream_type === 'movie' || item.stream_id) {
+               if (typeof item.rowKey === 'string' && item.rowKey.startsWith('series_')) {
+                 setSelectedSeries(item);
+               } else if (typeof item.rowKey === 'string' && item.rowKey.startsWith('movie_')) {
+                 setSelectedMovie(item);
+               } else if (item.stream_type === 'movie' || (item.stream_id && !item.series_id)) {
                  setSelectedMovie(item);
                } else {
                  setSelectedSeries(item);

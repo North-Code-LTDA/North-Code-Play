@@ -308,13 +308,15 @@ export function usePlaybackSession({
       setIsPlaying(false);
       // Save progress on pause for VOD/series
       if (!isLive && streamId && video.currentTime > 5) {
-        lastRecordedTimeRef.current = video.currentTime;
         const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
-        recordPlaybackPosition(activeAccountRef.current, {
+        const recorded = recordPlaybackPosition(activeAccountRef.current, {
           id: streamId,
           type: playbackType,
           positionSec: video.currentTime,
         });
+        if (recorded) {
+          lastRecordedTimeRef.current = video.currentTime;
+        }
       }
     };
 
@@ -336,13 +338,15 @@ export function usePlaybackSession({
       // Save progress periodically (at most once every 5 seconds) for VOD/series
       if (!isLive && streamId && cur > 5) {
         if (Math.abs(cur - lastRecordedTimeRef.current) >= 5) {
-          lastRecordedTimeRef.current = cur;
           const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
-          recordPlaybackPosition(activeAccountRef.current, {
+          const recorded = recordPlaybackPosition(activeAccountRef.current, {
             id: streamId,
             type: playbackType,
             positionSec: cur,
           });
+          if (recorded) {
+            lastRecordedTimeRef.current = cur;
+          }
         }
       }
 

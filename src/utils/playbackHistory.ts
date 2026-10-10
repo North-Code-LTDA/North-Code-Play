@@ -64,7 +64,15 @@ export function readHistoryMap(historyKey: string): PlaybackHistoryMap | null {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const validMap: PlaybackHistoryMap = {};
       for (const [k, item] of Object.entries(parsed)) {
-        if (item && typeof item === 'object' && (item as any).id && (item as any).type) {
+        if (
+          item &&
+          typeof item === 'object' &&
+          !Array.isArray(item) &&
+          (item as any).id !== undefined &&
+          (item as any).id !== null &&
+          (item as any).id !== '' &&
+          ((item as any).type === 'live' || (item as any).type === 'movie' || (item as any).type === 'episode')
+        ) {
           validMap[k] = item as PlaybackHistoryRecord;
         }
       }
