@@ -24,7 +24,7 @@ interface MoviesViewProps {
 }
 
 export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
-  const { vodCategories, vodStreams, allVodStreams, fetchVodStreams, loadingVod, error, credentials } = useXtreamContext();
+  const { vodCategories, vodStreams, allVodStreams, fetchVodStreams, loadingVod, vodError, credentials } = useXtreamContext();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
   const [displayCount, setDisplayCount] = useState(100);
@@ -200,9 +200,15 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
         </div>
 
             <div className="p-6 flex-1">
-              {error && (
-                <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 text-red-500 rounded-xl">
-                  {error}
+              {vodError && (
+                <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 text-red-500 rounded-xl flex items-center justify-between">
+                  <span>{vodError}</span>
+                  <button
+                    onClick={() => fetchVodStreams(selectedCategoryId)}
+                    className="ml-4 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-white rounded-lg text-xs font-medium transition-colors"
+                  >
+                    Tentar novamente
+                  </button>
                 </div>
               )}
 

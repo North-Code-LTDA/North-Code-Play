@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
 import { XtreamCredentials, Category, LiveStream, VodStream, SeriesStream } from "../types";
 import { XtreamService } from "../services/xtreamService";
 
@@ -17,6 +17,9 @@ interface XtreamContextData {
   loadingVod: boolean;
   loadingSeries: boolean;
   error: string | null;
+  liveError: string | null;
+  vodError: string | null;
+  seriesError: string | null;
   fetchLiveStreams: (categoryId?: string) => Promise<void>;
   fetchVodStreams: (categoryId?: string) => Promise<void>;
   fetchSeriesStreams: (categoryId?: string) => Promise<void>;
@@ -35,7 +38,18 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
   const [loadingLive, setLoadingLive] = useState(false);
   const [loadingVod, setLoadingVod] = useState(false);
   const [loadingSeries, setLoadingSeries] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [vodError, setVodError] = useState<string | null>(null);
+  const [seriesError, setSeriesError] = useState<string | null>(null);
+  const [categoriesError, setCategoriesError] = useState<string | null>(null);
+
+  // Backward-compatible global error: displays any active error
+  const error = liveError || vodError || seriesError || categoriesError;
+
+  // In-flight promise references to prevent concurrent duplicate full-catalog fetches
+  const inFlightLiveRef = useRef<Promise<void> | null>(null);
+  const inFlightVodRef = useRef<Promise<void> | null>(null);
+  const inFlightSeriesRef = useRef<Promise<void> | null>(null);
 
   // Initial fetch of categories
   useEffect(() => {
@@ -43,7 +57,7 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
 
     const fetchInitialData = async () => {
       try {
-        setError(null);
+        setCategoriesError(null);
         // We can fetch categories simultaneously
         const [liveCat, vodCat, seriesCat] = await Promise.all([
           XtreamService.getLiveCategories(credentials).catch(() => []),
@@ -54,7 +68,7 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
         setVodCategories(vodCat);
         setSeriesCategories(seriesCat);
       } catch (err: any) {
-        setError(err.message || "Failed to load categories.");
+        setCategoriesError(err.message || "Failed to load categories.");
       }
     };
 
@@ -78,23 +92,39 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
       return;
     }
 
-    setLoadingLive(true);
-    try {
-      // First try to fetch ALL if no category is specified, or if we want to cache all
-      // Actually, let's always fetch ALL streams once, since it makes search possible across all categories.
-      const streams = await XtreamService.getLiveStreams(credentials);
-      setAllLiveStreams(streams);
-      
-      if (categoryId) {
-        setLiveStreams(streams.filter(s => String(s.category_id) === String(categoryId)));
-      } else {
-        setLiveStreams(streams);
+    // If a full-catalog fetch is already in flight, reuse it
+    if (inFlightLiveRef.current) {
+      try {
+        await inFlightLiveRef.current;
+      } catch {
+        // Handled in the original call
       }
-    } catch (err: any) {
-      setError(err.message || "Failed to load live streams.");
-    } finally {
-      setLoadingLive(false);
+      return;
     }
+
+    setLoadingLive(true);
+    setLiveError(null);
+
+    const promise = (async () => {
+      try {
+        const streams = await XtreamService.getLiveStreams(credentials);
+        setAllLiveStreams(streams);
+        
+        if (categoryId) {
+          setLiveStreams(streams.filter(s => String(s.category_id) === String(categoryId)));
+        } else {
+          setLiveStreams(streams);
+        }
+      } catch (err: any) {
+        setLiveError(err.message || "Failed to load live streams.");
+      } finally {
+        setLoadingLive(false);
+        inFlightLiveRef.current = null;
+      }
+    })();
+
+    inFlightLiveRef.current = promise;
+    await promise;
   }, [credentials, allLiveStreams]);
 
   const fetchVodStreams = useCallback(async (categoryId?: string) => {
@@ -109,21 +139,38 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
       return;
     }
 
-    setLoadingVod(true);
-    try {
-      const streams = await XtreamService.getVodStreams(credentials);
-      setAllVodStreams(streams);
-      
-      if (categoryId) {
-        setVodStreams(streams.filter(s => String(s.category_id) === String(categoryId)));
-      } else {
-        setVodStreams(streams);
+    if (inFlightVodRef.current) {
+      try {
+        await inFlightVodRef.current;
+      } catch {
+        // Handled in original call
       }
-    } catch (err: any) {
-      setError(err.message || "Failed to load movies.");
-    } finally {
-      setLoadingVod(false);
+      return;
     }
+
+    setLoadingVod(true);
+    setVodError(null);
+
+    const promise = (async () => {
+      try {
+        const streams = await XtreamService.getVodStreams(credentials);
+        setAllVodStreams(streams);
+        
+        if (categoryId) {
+          setVodStreams(streams.filter(s => String(s.category_id) === String(categoryId)));
+        } else {
+          setVodStreams(streams);
+        }
+      } catch (err: any) {
+        setVodError(err.message || "Failed to load movies.");
+      } finally {
+        setLoadingVod(false);
+        inFlightVodRef.current = null;
+      }
+    })();
+
+    inFlightVodRef.current = promise;
+    await promise;
   }, [credentials, allVodStreams]);
 
   const fetchSeriesStreams = useCallback(async (categoryId?: string) => {
@@ -138,27 +185,39 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
       return;
     }
 
-    setLoadingSeries(true);
-    try {
-      const streams = await XtreamService.getSeries(credentials);
-      setAllSeriesStreams(streams);
-      
-      if (categoryId) {
-        setSeriesStreams(streams.filter(s => String(s.category_id) === String(categoryId)));
-      } else {
-        setSeriesStreams(streams);
+    if (inFlightSeriesRef.current) {
+      try {
+        await inFlightSeriesRef.current;
+      } catch {
+        // Handled in original call
       }
-    } catch (err: any) {
-      setError(err.message || "Failed to load series.");
-    } finally {
-      setLoadingSeries(false);
+      return;
     }
+
+    setLoadingSeries(true);
+    setSeriesError(null);
+
+    const promise = (async () => {
+      try {
+        const streams = await XtreamService.getSeries(credentials);
+        setAllSeriesStreams(streams);
+        
+        if (categoryId) {
+          setSeriesStreams(streams.filter(s => String(s.category_id) === String(categoryId)));
+        } else {
+          setSeriesStreams(streams);
+        }
+      } catch (err: any) {
+        setSeriesError(err.message || "Failed to load series.");
+      } finally {
+        setLoadingSeries(false);
+        inFlightSeriesRef.current = null;
+      }
+    })();
+
+    inFlightSeriesRef.current = promise;
+    await promise;
   }, [credentials, allSeriesStreams]);
-
-  // Provide the all... streams to the context
-
-  // Removed automatic fetching to prevent memory issues with massive lists.
-  // Streams should be fetched per-category by the respective views.
 
   return (
     <XtreamContext.Provider value={{
@@ -176,6 +235,9 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
       loadingVod,
       loadingSeries,
       error,
+      liveError,
+      vodError,
+      seriesError,
       fetchLiveStreams,
       fetchVodStreams,
       fetchSeriesStreams,

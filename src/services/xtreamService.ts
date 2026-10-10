@@ -49,43 +49,57 @@ export class XtreamService {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    let response: Response;
     try {
-      response = await fetch(targetUrl.toString(), {
-        method: "GET",
-        signal: controller.signal,
-      });
-    } catch (err: any) {
-      clearTimeout(timeoutId);
-      if (err.name === "AbortError") {
+      let response: Response;
+      try {
+        response = await fetch(targetUrl.toString(), {
+          method: "GET",
+          signal: controller.signal,
+        });
+      } catch (err: any) {
+        if (err.name === "AbortError" || controller.signal.aborted) {
+          throw new Error(
+            "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
+          );
+        }
+        // Standard browser network error (often caused by CORS restrictions on the provider or mixed content)
         throw new Error(
-          "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
+          "Falha de rede ou bloqueio de CORS ao comunicar diretamente com o provedor. " +
+            "Verifique se o servidor está online e se permite requisições da web."
         );
       }
-      // Standard browser network error (often caused by CORS restrictions on the provider or mixed content)
-      throw new Error(
-        "Falha de rede ou bloqueio de CORS ao comunicar diretamente com o provedor. " +
-          "Verifique se o servidor está online e se permite requisições da web."
-      );
+
+      if (!response.ok) {
+        throw new Error(
+          `O servidor do provedor retornou HTTP ${response.status} (${response.statusText || "Erro"}).`
+        );
+      }
+
+      let textData: string;
+      try {
+        textData = await response.text();
+      } catch (err: any) {
+        if (err.name === "AbortError" || controller.signal.aborted) {
+          throw new Error(
+            "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
+          );
+        }
+        throw new Error("Falha ao ler os dados da resposta do provedor.");
+      }
+
+      if (!textData || !textData.trim()) {
+        return [] as unknown as T;
+      }
+
+      try {
+        return JSON.parse(textData) as T;
+      } catch {
+        throw new Error(
+          "O provedor retornou uma resposta em formato inválido (não é um JSON válido)."
+        );
+      }
     } finally {
       clearTimeout(timeoutId);
-    }
-
-    if (!response.ok) {
-      throw new Error(
-        `O servidor do provedor retornou HTTP ${response.status} (${response.statusText || "Erro"}).`
-      );
-    }
-
-    let textData: string;
-    try {
-      textData = await response.text();
-    } catch {
-      throw new Error("Falha ao ler os dados da resposta do provedor.");
-    }
-
-    if (!textData || !textData.trim()) {
-      return [] as unknown as T;
     }
 
     try {

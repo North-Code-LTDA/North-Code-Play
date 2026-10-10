@@ -31,6 +31,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     allLiveStreams, allVodStreams, allSeriesStreams,
     liveCategories, vodCategories, seriesCategories,
     loadingLive, loadingVod, loadingSeries, credentials,
+    liveError, vodError, seriesError,
     fetchLiveStreams, fetchVodStreams, fetchSeriesStreams
   } = useXtreamContext();
 
@@ -250,7 +251,10 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     }
   };
 
-  if (isLoading && allVodStreams.length === 0 && allSeriesStreams.length === 0) {
+  const hasAnyContent = allVodStreams.length > 0 || allSeriesStreams.length > 0 || allLiveStreams.length > 0;
+  const isInitialLoading = (loadingLive || loadingVod || loadingSeries) && !hasAnyContent && !liveError && !vodError && !seriesError;
+
+  if (isInitialLoading) {
     return (
       <div className="flex-1 flex items-center justify-center min-h-screen">
         <Loader2 className="w-12 h-12 animate-spin text-nc-text-secondary" />
@@ -301,6 +305,21 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           />
         )}
         
+        {liveError && allLiveStreams.length === 0 && (
+          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-red-400">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>Falha ao carregar canais ao vivo: {liveError}</span>
+            </div>
+            <button
+              onClick={() => fetchLiveStreams()}
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+            </button>
+          </div>
+        )}
+
         {filteredLive.length > 0 && (
           <HorizontalRow 
              title="Canais Ao Vivo"
@@ -310,6 +329,21 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           />
         )}
         
+        {vodError && allVodStreams.length === 0 && (
+          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-red-400">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>Falha ao carregar filmes: {vodError}</span>
+            </div>
+            <button
+              onClick={() => fetchVodStreams()}
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+            </button>
+          </div>
+        )}
+
         {filteredVod.length > 0 && (
           <HorizontalRow 
              title="Filmes em Destaque"
@@ -319,6 +353,21 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           />
         )}
         
+        {seriesError && allSeriesStreams.length === 0 && (
+          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-red-400">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>Falha ao carregar séries: {seriesError}</span>
+            </div>
+            <button
+              onClick={() => fetchSeriesStreams()}
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+            </button>
+          </div>
+        )}
+
         {filteredSeries.length > 0 && (
           <HorizontalRow 
              title="Séries em Destaque"
