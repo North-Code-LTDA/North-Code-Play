@@ -5,6 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { MediaImage } from '../components/MediaImage';
+import { useAccountPlaybackHistory } from '../utils/playbackHistory';
 
 interface SeriesViewProps {
   onPlay: (
@@ -27,7 +28,8 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
   const [displayCount, setDisplayCount] = useState(100);
   const { favorites } = useFavorites();
-  const [continueWatching, setContinueWatching] = useState<any[]>([]);
+
+  const historyRecords = useAccountPlaybackHistory(credentials);
 
   const mainRef = useRef<HTMLElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -49,45 +51,31 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
       .filter(Boolean);
   }, [favorites, allSeriesStreams]);
 
-  useEffect(() => {
-    if (allSeriesStreams.length === 0) return;
+  const continueWatching = useMemo(() => {
+    if (!allSeriesStreams || allSeriesStreams.length === 0) return [];
+    const episodeRecords = historyRecords.filter(
+      (r) => r.type === 'episode' && (r.positionSec ?? 0) > 30
+    );
 
-    try {
-      const watchedMap = new Map();
-      
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('nc_progress_')) {
-          const progressId = key.replace('nc_progress_', '');
-          const value = Number(localStorage.getItem(key));
-          
-          if (value > 30) {
-            const parentSeriesId = localStorage.getItem('nc_parent_series_' + progressId);
-            const targetId = parentSeriesId ? parentSeriesId : progressId;
+    const result: any[] = [];
+    const seenIds = new Set<string | number>();
 
-            const item = allSeriesStreams.find((c: any) => String(c.series_id || c.id) === String(targetId));
-            
-            if (item) {
-              const itemId = item.series_id || item.id;
-              const lastWatched = Number(localStorage.getItem('nc_last_watched_' + progressId)) || 0;
-
-              if (!watchedMap.has(itemId) || watchedMap.get(itemId).lastWatched < lastWatched) {
-                watchedMap.set(itemId, { item, lastWatched });
-              }
-            }
-          }
+    for (const record of episodeRecords) {
+      const targetId = record.parentSeriesId || record.id;
+      const item = allSeriesStreams.find(
+        (c: any) => String(c.series_id || c.id) === String(targetId)
+      );
+      if (item) {
+        const itemId = item.series_id || item.id;
+        if (!seenIds.has(itemId)) {
+          seenIds.add(itemId);
+          result.push(item);
         }
       }
-
-      const sortedItems = Array.from(watchedMap.values())
-        .sort((a, b) => b.lastWatched - a.lastWatched)
-        .map(w => w.item);
-
-      setContinueWatching(sortedItems);
-    } catch (error) {
-      console.warn('Error reading from localStorage for continue watching series:', error);
     }
-  }, [allSeriesStreams]);
+
+    return result;
+  }, [historyRecords, allSeriesStreams]);
 
   const extendedCategories = useMemo(() => {
     const virtualCats = [

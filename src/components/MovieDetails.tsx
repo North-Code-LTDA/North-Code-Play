@@ -5,6 +5,7 @@ import { XtreamService } from '../services/xtreamService';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { MediaImage } from './MediaImage';
+import { getItemProgress, recordPlaybackPosition, clearItemProgress } from '../utils/playbackHistory';
 
 interface MovieDetailsProps {
   key?: React.Key;
@@ -82,7 +83,13 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
 
   const executePlay = (startAt: number = 0) => {
     if (startAt === 0) {
-      localStorage.removeItem('nc_progress_' + streamId);
+      clearItemProgress(credentials, 'movie', streamId);
+    } else {
+      recordPlaybackPosition(credentials, {
+        id: streamId,
+        type: 'movie',
+        positionSec: startAt,
+      });
     }
     requestFullscreen();
     if (!credentials) return;
@@ -103,7 +110,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   };
 
   const handlePlayClick = () => {
-    const progress = Number(localStorage.getItem('nc_progress_' + streamId)) || 0;
+    const progress = getItemProgress(credentials, 'movie', streamId);
     if (progress > 30) {
       setSavedProgress(progress);
       setShowResumeModal(true);

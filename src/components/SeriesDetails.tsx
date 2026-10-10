@@ -8,6 +8,8 @@ import { VideoPlayer } from './VideoPlayer';
 import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { MediaImage } from './MediaImage';
 
+import { getItemProgress, recordPlaybackPosition, clearItemProgress } from '../utils/playbackHistory';
+
 interface SeriesDetailsProps {
   key?: React.Key;
   seriesId: string | number;
@@ -80,10 +82,18 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   };
 
   const executePlay = (episode: any, startAt: number = 0) => {
-    localStorage.setItem('nc_parent_series_' + episode.id, String(seriesId));
+    // Associate episode with parent series ID in active account's history
+    recordPlaybackPosition(credentials, {
+      id: episode.id,
+      type: 'episode',
+      parentSeriesId: seriesId,
+      ...(startAt > 0 ? { positionSec: startAt } : {}),
+    });
+
     if (startAt === 0) {
-      localStorage.removeItem('nc_progress_' + episode.id);
+      clearItemProgress(credentials, 'episode', episode.id);
     }
+
     requestFullscreen();
     if (!credentials) return;
     try {
@@ -129,7 +139,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   };
 
   const handlePlayEpisodeClick = (episode: any) => {
-    const progress = Number(localStorage.getItem('nc_progress_' + episode.id)) || 0;
+    const progress = getItemProgress(credentials, 'episode', episode.id);
     if (progress > 30) {
       setSavedProgress(progress);
       setSelectedEpisode(episode);

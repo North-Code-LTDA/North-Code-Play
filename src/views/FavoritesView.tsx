@@ -7,6 +7,7 @@ import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { MediaImage } from '../components/MediaImage';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
+import { recordPlaybackPosition } from '../utils/playbackHistory';
 
 interface FavoritesViewProps {
   onPlay: (
@@ -66,6 +67,10 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
 
     if (fav.type === 'live') {
       try {
+        recordPlaybackPosition(credentials, {
+          id: fav.id,
+          type: 'live',
+        });
         setFavPlayError(null);
         setFailedFav(null);
         const url = buildDirectMediaUrl(credentials, {

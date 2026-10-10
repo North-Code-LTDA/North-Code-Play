@@ -8,6 +8,7 @@ import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
 import { sortByYearAndRating } from '../utils/catalogRanking';
+import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 
 interface HomeViewProps {
   onPlay: (
@@ -36,51 +37,40 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
   const [selectedMovie, setSelectedMovie] = useState<any | null>(null);
   const [displayCount, setDisplayCount] = useState({ live: 24, vod: 24, series: 24 });
-  const [continueWatching, setContinueWatching] = useState<any[]>([]);
   const [homePlayError, setHomePlayError] = useState<string | null>(null);
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
 
-  // Continue Watching logic
-  useEffect(() => {
+  const historyRecords = useAccountPlaybackHistory(credentials);
+
+  // Continue Watching logic using account playback history
+  const continueWatching = useMemo(() => {
     const combined = [...allVodStreams, ...allSeriesStreams];
-    if (combined.length === 0) return;
+    if (combined.length === 0) return [];
 
-    try {
-      const watchedMap = new Map();
-      
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('nc_progress_')) {
-          const progressId = key.replace('nc_progress_', '');
-          const value = Number(localStorage.getItem(key));
-          
-          if (value > 30) {
-            const parentSeriesId = localStorage.getItem('nc_parent_series_' + progressId);
-            const targetId = parentSeriesId ? parentSeriesId : progressId;
+    const validRecords = historyRecords.filter(
+      (r) => (r.type === 'movie' || r.type === 'episode') && (r.positionSec ?? 0) > 30
+    );
 
-            const item = combined.find((c: any) => String(c.stream_id || c.series_id || c.id) === String(targetId));
-            
-            if (item) {
-              const itemId = item.stream_id || item.series_id || item.id;
-              const lastWatched = Number(localStorage.getItem('nc_last_watched_' + progressId)) || 0;
+    const result: any[] = [];
+    const seenIds = new Set<string | number>();
 
-              if (!watchedMap.has(itemId) || watchedMap.get(itemId).lastWatched < lastWatched) {
-                watchedMap.set(itemId, { item, lastWatched });
-              }
-            }
-          }
+    for (const record of validRecords) {
+      const targetId = record.parentSeriesId || record.id;
+      const item = combined.find(
+        (c: any) => String(c.stream_id || c.series_id || c.id) === String(targetId)
+      );
+
+      if (item) {
+        const itemId = item.stream_id || item.series_id || item.id;
+        if (!seenIds.has(itemId)) {
+          seenIds.add(itemId);
+          result.push(item);
         }
       }
-
-      const sortedItems = Array.from(watchedMap.values())
-        .sort((a, b) => b.lastWatched - a.lastWatched)
-        .map(w => w.item);
-
-      setContinueWatching(sortedItems);
-    } catch (error) {
-      console.warn('Error reading from localStorage for continue watching:', error);
     }
-  }, [allVodStreams, allSeriesStreams]);
+
+    return result;
+  }, [historyRecords, allVodStreams, allSeriesStreams]);
 
   // Auto-Fetch data in background if empty when landing on Dashboard
   useEffect(() => {
@@ -210,6 +200,10 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const handlePlayLive = (stream: any) => {
     if (!credentials) return;
     try {
+      recordPlaybackPosition(credentials, {
+        id: stream.stream_id,
+        type: 'live',
+      });
       setHomePlayError(null);
       setRetryAction(null);
       const url = buildDirectMediaUrl(credentials, {

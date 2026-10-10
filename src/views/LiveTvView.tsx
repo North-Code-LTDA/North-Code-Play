@@ -7,6 +7,7 @@ import { VideoPlayer } from '../components/VideoPlayer';
 import { MediaImage } from '../components/MediaImage';
 import { XtreamService } from '../services/xtreamService';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
+import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -30,7 +31,8 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
   const { favorites, isFavorite, toggleFavorite, favoriteError, clearFavoriteError } = useFavorites();
   const [favActionError, setFavActionError] = useState<string | null>(null);
-  const [recentChannels, setRecentChannels] = useState<any[]>([]);
+
+  const historyRecords = useAccountPlaybackHistory(credentials);
 
   useEffect(() => {
     if (favActionError) {
@@ -58,35 +60,28 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       .filter(Boolean);
   }, [favorites, allLiveStreams]);
 
-  useEffect(() => {
-    if (allLiveStreams.length === 0) return;
+  const recentChannels = useMemo(() => {
+    if (!allLiveStreams || allLiveStreams.length === 0) return [];
+    const liveRecords = historyRecords.filter((r) => r.type === 'live');
 
-    try {
-      const watchedMap = new Map();
-      
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('nc_live_history_')) {
-          const channelId = key.replace('nc_live_history_', '');
-          const lastWatched = Number(localStorage.getItem(key)) || 0;
-          
-          const item = allLiveStreams.find((c: any) => String(c.stream_id || c.id) === String(channelId));
-          
-          if (item) {
-            watchedMap.set(channelId, { item, lastWatched });
-          }
+    const result: any[] = [];
+    const seenIds = new Set<string | number>();
+
+    for (const record of liveRecords) {
+      const item = allLiveStreams.find(
+        (c: any) => String(c.stream_id || c.id) === String(record.id)
+      );
+      if (item) {
+        const itemId = item.stream_id || item.id;
+        if (!seenIds.has(itemId)) {
+          seenIds.add(itemId);
+          result.push(item);
         }
       }
-
-      const sortedItems = Array.from(watchedMap.values())
-        .sort((a, b) => b.lastWatched - a.lastWatched)
-        .map(w => w.item);
-
-      setRecentChannels(sortedItems);
-    } catch (error) {
-      console.warn('Error reading from localStorage for continue watching live:', error);
     }
-  }, [allLiveStreams]);
+
+    return result;
+  }, [historyRecords, allLiveStreams]);
 
   const extendedCategories = useMemo(() => {
     const virtualCats = [
@@ -310,7 +305,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                       onClick={() => {
                         setSelectedChannel(stream);
                         setIsMobilePlayerOpen(true);
-                        localStorage.setItem('nc_live_history_' + stream.stream_id, Date.now().toString());
+                        recordPlaybackPosition(credentials, { id: stream.stream_id, type: 'live' });
                       }}
                       className={`w-full flex items-center gap-3 p-2 rounded-xl transition-colors border ${
                         selectedChannel?.stream_id === stream.stream_id 

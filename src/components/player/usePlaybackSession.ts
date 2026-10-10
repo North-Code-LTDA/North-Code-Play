@@ -10,6 +10,7 @@ import {
   PlaybackStats,
 } from './types';
 import { BUFFER_PROFILES } from './profiles';
+import { recordPlaybackPosition, AccountIdentity, PlaybackType } from '../../utils/playbackHistory';
 
 interface UsePlaybackSessionOptions {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -17,6 +18,7 @@ interface UsePlaybackSessionOptions {
   contentType?: PlayerContentType;
   startAt?: number;
   streamId?: string | number;
+  credentials?: AccountIdentity | null;
   onRetry?: () => void;
   retryTrigger?: number;
 }
@@ -27,8 +29,10 @@ export function usePlaybackSession({
   contentType: explicitContentType,
   startAt = 0,
   streamId,
+  credentials,
   retryTrigger = 0,
 }: UsePlaybackSessionOptions) {
+  const activeAccountRef = useRef<AccountIdentity | null>(credentials || null);
   // Session tracking to discard stale callbacks
   const sessionIdRef = useRef(0);
   const hlsRef = useRef<Hls | null>(null);
@@ -257,6 +261,7 @@ export function usePlaybackSession({
     }
 
     const currentSessionId = ++sessionIdRef.current;
+    activeAccountRef.current = credentials || null;
     cleanup();
     resetSessionMetrics();
     setIsLoading(true);
@@ -300,9 +305,12 @@ export function usePlaybackSession({
       setIsPlaying(false);
       // Save progress on pause for VOD/series
       if (!isLive && streamId && video.currentTime > 5) {
-        try {
-          localStorage.setItem(`nc_progress_${streamId}`, String(Math.floor(video.currentTime)));
-        } catch {}
+        const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
+        recordPlaybackPosition(activeAccountRef.current, {
+          id: streamId,
+          type: playbackType,
+          positionSec: video.currentTime,
+        });
       }
     };
 
@@ -323,9 +331,12 @@ export function usePlaybackSession({
 
       // Save progress every ~5 seconds for VOD/series
       if (!isLive && streamId && cur > 5 && Math.floor(cur) % 5 === 0) {
-        try {
-          localStorage.setItem(`nc_progress_${streamId}`, String(Math.floor(cur)));
-        } catch {}
+        const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
+        recordPlaybackPosition(activeAccountRef.current, {
+          id: streamId,
+          type: playbackType,
+          positionSec: cur,
+        });
       }
 
       // Update buffered stats dynamically
@@ -600,9 +611,12 @@ export function usePlaybackSession({
 
       // Save progress on exit if VOD/series
       if (!isLive && streamId && video.currentTime > 5) {
-        try {
-          localStorage.setItem(`nc_progress_${streamId}`, String(Math.floor(video.currentTime)));
-        } catch {}
+        const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
+        recordPlaybackPosition(activeAccountRef.current, {
+          id: streamId,
+          type: playbackType,
+          positionSec: video.currentTime,
+        });
       }
 
       cleanup();

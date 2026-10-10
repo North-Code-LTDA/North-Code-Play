@@ -5,6 +5,7 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { useFavorites } from '../hooks/useFavorites';
 import { MediaImage } from '../components/MediaImage';
+import { useAccountPlaybackHistory } from '../utils/playbackHistory';
 
 
 interface MoviesViewProps {
@@ -28,7 +29,8 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
   const [displayCount, setDisplayCount] = useState(100);
   const { favorites } = useFavorites();
-  const [continueWatching, setContinueWatching] = useState<any[]>([]);
+
+  const historyRecords = useAccountPlaybackHistory(credentials);
 
   const mainRef = useRef<HTMLElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -50,42 +52,30 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
       .filter(Boolean);
   }, [favorites, allVodStreams]);
 
-  useEffect(() => {
-    if (allVodStreams.length === 0) return;
+  const continueWatching = useMemo(() => {
+    if (!allVodStreams || allVodStreams.length === 0) return [];
+    const movieRecords = historyRecords.filter(
+      (r) => r.type === 'movie' && (r.positionSec ?? 0) > 30
+    );
 
-    try {
-      const watchedMap = new Map();
-      
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('nc_progress_')) {
-          const progressId = key.replace('nc_progress_', '');
-          const value = Number(localStorage.getItem(key));
-          
-          if (value > 30) {
-            const item = allVodStreams.find((c: any) => String(c.stream_id || c.id) === String(progressId));
-            
-            if (item) {
-              const itemId = item.stream_id || item.id;
-              const lastWatched = Number(localStorage.getItem('nc_last_watched_' + progressId)) || 0;
+    const result: any[] = [];
+    const seenIds = new Set<string | number>();
 
-              if (!watchedMap.has(itemId) || watchedMap.get(itemId).lastWatched < lastWatched) {
-                watchedMap.set(itemId, { item, lastWatched });
-              }
-            }
-          }
+    for (const record of movieRecords) {
+      const item = allVodStreams.find(
+        (c: any) => String(c.stream_id || c.id) === String(record.id)
+      );
+      if (item) {
+        const itemId = item.stream_id || item.id;
+        if (!seenIds.has(itemId)) {
+          seenIds.add(itemId);
+          result.push(item);
         }
       }
-
-      const sortedItems = Array.from(watchedMap.values())
-        .sort((a, b) => b.lastWatched - a.lastWatched)
-        .map(w => w.item);
-
-      setContinueWatching(sortedItems);
-    } catch (error) {
-      console.warn('Error reading from localStorage for continue watching movies:', error);
     }
-  }, [allVodStreams]);
+
+    return result;
+  }, [historyRecords, allVodStreams]);
 
   const extendedCategories = useMemo(() => {
     const virtualCats = [
