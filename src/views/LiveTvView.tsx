@@ -15,7 +15,7 @@ interface LiveTvViewProps {
 }
 
 export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
-  const { liveCategories, liveStreams, allLiveStreams, fetchLiveStreams, loadingLive, error, credentials } = useXtreamContext();
+  const { liveCategories, liveStreams, allLiveStreams, fetchLiveStreams, loadingLive, liveError, error, credentials } = useXtreamContext();
   
   // Navigation states
   const [leftPaneView, setLeftPaneView] = useState<'categories' | 'channels'>('categories');
@@ -288,7 +288,18 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
             </div>
             
             <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
-              {loadingLive && filteredStreams.length === 0 ? (
+              {liveError && filteredStreams.length === 0 ? (
+                <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-3 my-4">
+                  <p className="text-sm text-red-400">{liveError}</p>
+                  <button
+                    onClick={() => fetchLiveStreams(selectedCategoryId)}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg text-xs font-medium transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Tentar novamente
+                  </button>
+                </div>
+              ) : loadingLive && filteredStreams.length === 0 ? (
                  <div className="flex items-center justify-center py-10">
                    <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
                  </div>

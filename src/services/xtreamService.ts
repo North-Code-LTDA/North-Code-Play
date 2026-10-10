@@ -101,14 +101,6 @@ export class XtreamService {
     } finally {
       clearTimeout(timeoutId);
     }
-
-    try {
-      return JSON.parse(textData) as T;
-    } catch {
-      throw new Error(
-        "O provedor retornou uma resposta em formato inválido (não é um JSON válido)."
-      );
-    }
   }
 
   /**
