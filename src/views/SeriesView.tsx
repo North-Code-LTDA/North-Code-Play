@@ -54,16 +54,16 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
   const continueWatching = useMemo(() => {
     if (!allSeriesStreams || allSeriesStreams.length === 0) return [];
     const episodeRecords = historyRecords.filter(
-      (r) => r.type === 'episode' && (r.positionSec ?? 0) > 30
+      (r) => r.type === 'episode' && r.parentSeriesId && (r.positionSec ?? 0) > 30
     );
 
     const result: any[] = [];
     const seenIds = new Set<string | number>();
 
     for (const record of episodeRecords) {
-      const targetId = record.parentSeriesId || record.id;
+      if (!record.parentSeriesId) continue;
       const item = allSeriesStreams.find(
-        (c: any) => String(c.series_id || c.id) === String(targetId)
+        (c: any) => String(c.series_id || c.id) === String(record.parentSeriesId)
       );
       if (item) {
         const itemId = item.series_id || item.id;

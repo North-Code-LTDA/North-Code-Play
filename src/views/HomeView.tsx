@@ -44,27 +44,40 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   // Continue Watching logic using account playback history
   const continueWatching = useMemo(() => {
-    const combined = [...allVodStreams, ...allSeriesStreams];
-    if (combined.length === 0) return [];
+    if (allVodStreams.length === 0 && allSeriesStreams.length === 0) return [];
 
     const validRecords = historyRecords.filter(
       (r) => (r.type === 'movie' || r.type === 'episode') && (r.positionSec ?? 0) > 30
     );
 
     const result: any[] = [];
-    const seenIds = new Set<string | number>();
+    const seenKeys = new Set<string>();
 
     for (const record of validRecords) {
-      const targetId = record.parentSeriesId || record.id;
-      const item = combined.find(
-        (c: any) => String(c.stream_id || c.series_id || c.id) === String(targetId)
-      );
-
-      if (item) {
-        const itemId = item.stream_id || item.series_id || item.id;
-        if (!seenIds.has(itemId)) {
-          seenIds.add(itemId);
-          result.push(item);
+      if (record.type === 'movie') {
+        const item = allVodStreams.find(
+          (c: any) => String(c.stream_id || c.id) === String(record.id)
+        );
+        if (item) {
+          const itemId = item.stream_id || item.id;
+          const rowKey = `movie_${itemId}`;
+          if (!seenKeys.has(rowKey)) {
+            seenKeys.add(rowKey);
+            result.push({ ...item, rowKey });
+          }
+        }
+      } else if (record.type === 'episode') {
+        if (!record.parentSeriesId) continue;
+        const item = allSeriesStreams.find(
+          (c: any) => String(c.series_id || c.id) === String(record.parentSeriesId)
+        );
+        if (item) {
+          const itemId = item.series_id || item.id;
+          const rowKey = `series_${itemId}`;
+          if (!seenKeys.has(rowKey)) {
+            seenKeys.add(rowKey);
+            result.push({ ...item, rowKey });
+          }
         }
       }
     }

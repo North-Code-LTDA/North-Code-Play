@@ -98,6 +98,8 @@ export function usePlaybackSession({
   const liveEdgeDistanceRef = useRef(0);
   liveEdgeDistanceRef.current = liveEdgeDistance;
 
+  const lastRecordedTimeRef = useRef<number>(0);
+
   const [stats, setStats] = useState<PlaybackStats>({ rebufferingCount: 0 });
 
   // Infer content type if not explicit
@@ -241,6 +243,7 @@ export function usePlaybackSession({
       setLiveSyncPosition(null);
       setLiveEdgeDistance(0);
       liveEdgeDistanceRef.current = 0;
+      lastRecordedTimeRef.current = startAt || 0;
       setStats({
         width: 0,
         height: 0,
@@ -305,6 +308,7 @@ export function usePlaybackSession({
       setIsPlaying(false);
       // Save progress on pause for VOD/series
       if (!isLive && streamId && video.currentTime > 5) {
+        lastRecordedTimeRef.current = video.currentTime;
         const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
         recordPlaybackPosition(activeAccountRef.current, {
           id: streamId,
@@ -329,14 +333,17 @@ export function usePlaybackSession({
       const cur = video.currentTime;
       setCurrentTime(cur);
 
-      // Save progress every ~5 seconds for VOD/series
-      if (!isLive && streamId && cur > 5 && Math.floor(cur) % 5 === 0) {
-        const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
-        recordPlaybackPosition(activeAccountRef.current, {
-          id: streamId,
-          type: playbackType,
-          positionSec: cur,
-        });
+      // Save progress periodically (at most once every 5 seconds) for VOD/series
+      if (!isLive && streamId && cur > 5) {
+        if (Math.abs(cur - lastRecordedTimeRef.current) >= 5) {
+          lastRecordedTimeRef.current = cur;
+          const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
+          recordPlaybackPosition(activeAccountRef.current, {
+            id: streamId,
+            type: playbackType,
+            positionSec: cur,
+          });
+        }
       }
 
       // Update buffered stats dynamically

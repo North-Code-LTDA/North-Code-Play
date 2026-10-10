@@ -42,7 +42,7 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
         >
         {items.map((item, idx) => (
           <motion.div
-            key={item.stream_id || item.series_id || item.id}
+            key={item.rowKey || item.stream_id || item.series_id || item.id}
             onClick={() => onItemClick(item)}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}

@@ -45,13 +45,19 @@ export function getRecordKey(type: PlaybackType, id: string | number): string {
 
 /**
  * Safely reads raw JSON string from localStorage and parses PlaybackHistoryMap.
- * Returns empty object {} if key is absent, corrupted, or invalid.
+ * Returns empty object {} if key is absent.
+ * Returns null if localStorage read fails, throws, or JSON is corrupted/malformed.
  */
-export function readHistoryMap(historyKey: string): PlaybackHistoryMap {
+export function readHistoryMap(historyKey: string): PlaybackHistoryMap | null {
   if (!historyKey) return {};
 
   const readRes = safeReadStorage(historyKey);
-  if (!readRes.success || !readRes.value) return {};
+  if (!readRes.success) {
+    return null;
+  }
+  if (readRes.value === null || readRes.value === undefined) {
+    return {};
+  }
 
   try {
     const parsed = JSON.parse(readRes.value);
@@ -64,11 +70,21 @@ export function readHistoryMap(historyKey: string): PlaybackHistoryMap {
       }
       return validMap;
     }
+    return null;
   } catch {
-    // Malformed JSON returns empty map cleanly
+    return null;
   }
+}
 
-  return {};
+/**
+ * Reads history map for a given account identity.
+ * Returns null if read fails or throws exception.
+ */
+export function loadPlaybackHistory(identity: AccountIdentity | null | undefined): PlaybackHistoryMap | null {
+  if (!identity || !identity.serverUrl || !identity.username) return {};
+  const historyKey = getHistoryKey(identity.serverUrl, identity.username);
+  if (!historyKey) return {};
+  return readHistoryMap(historyKey);
 }
 
 /**
@@ -99,6 +115,7 @@ export function writeHistoryMap(historyKey: string, map: PlaybackHistoryMap): bo
  * Records or updates a playback position in the active account's history.
  * Type + ID combination prevents collisions between movie/episode/live with same ID.
  * Preserves existing parentSeriesId if not supplied.
+ * Aborts and returns false if reading existing history fails (returns null).
  */
 export function recordPlaybackPosition(
   account: AccountIdentity | null | undefined,
@@ -114,9 +131,14 @@ export function recordPlaybackPosition(
   const historyKey = getHistoryKey(account.serverUrl, account.username);
   if (!historyKey) return false;
 
+  const historyMap = readHistoryMap(historyKey);
+  if (historyMap === null) {
+    // Read failed due to storage exception or corrupt JSON; abort to avoid data loss
+    return false;
+  }
+
   const strId = String(params.id);
   const recordKey = getRecordKey(params.type, strId);
-  const historyMap = readHistoryMap(historyKey);
 
   const existing = historyMap[recordKey];
 
@@ -155,6 +177,8 @@ export function getItemProgress(
   if (!historyKey) return 0;
 
   const historyMap = readHistoryMap(historyKey);
+  if (!historyMap) return 0;
+
   const recordKey = getRecordKey(type, id);
   const record = historyMap[recordKey];
 
@@ -175,6 +199,8 @@ export function clearItemProgress(
   if (!historyKey) return false;
 
   const historyMap = readHistoryMap(historyKey);
+  if (!historyMap) return false;
+
   const recordKey = getRecordKey(type, id);
   const existing = historyMap[recordKey];
 
@@ -202,6 +228,8 @@ export function getHistoryRecords(
   if (!historyKey) return [];
 
   const historyMap = readHistoryMap(historyKey);
+  if (!historyMap) return [];
+
   let records = Object.values(historyMap);
 
   if (typeFilter) {
