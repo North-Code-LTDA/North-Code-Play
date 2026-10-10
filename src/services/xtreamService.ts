@@ -17,7 +17,7 @@ export class XtreamService {
     credentials: XtreamCredentials,
     action?: string,
     params: Record<string, string | number> = {},
-    timeoutMs: number = 25000
+    timeoutMs: number = 60000
   ): Promise<T> {
     const cleanServerUrl = normalizeServerUrl(credentials.serverUrl);
     if (!cleanServerUrl) {
