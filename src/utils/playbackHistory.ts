@@ -61,24 +61,54 @@ export function readHistoryMap(historyKey: string): PlaybackHistoryMap | null {
 
   try {
     const parsed = JSON.parse(readRes.value);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const validMap: PlaybackHistoryMap = {};
-      for (const [k, item] of Object.entries(parsed)) {
-        if (
-          item &&
-          typeof item === 'object' &&
-          !Array.isArray(item) &&
-          (item as any).id !== undefined &&
-          (item as any).id !== null &&
-          (item as any).id !== '' &&
-          ((item as any).type === 'live' || (item as any).type === 'movie' || (item as any).type === 'episode')
-        ) {
-          validMap[k] = item as PlaybackHistoryRecord;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    for (const [key, item] of Object.entries(parsed)) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        return null;
+      }
+
+      const rec = item as Record<string, any>;
+      const { type, id, updatedAt, positionSec, parentSeriesId } = rec;
+
+      if (type !== 'live' && type !== 'movie' && type !== 'episode') {
+        return null;
+      }
+
+      const isValidId =
+        (typeof id === 'string' && id.length > 0) ||
+        (typeof id === 'number' && Number.isFinite(id));
+      if (!isValidId) {
+        return null;
+      }
+
+      if (key !== `${type}:${String(id)}`) {
+        return null;
+      }
+
+      if (typeof updatedAt !== 'number' || !Number.isFinite(updatedAt)) {
+        return null;
+      }
+
+      if ('positionSec' in rec && positionSec !== undefined) {
+        if (typeof positionSec !== 'number' || !Number.isFinite(positionSec) || positionSec < 0) {
+          return null;
         }
       }
-      return validMap;
+
+      if ('parentSeriesId' in rec && parentSeriesId !== undefined) {
+        const isValidParent =
+          (typeof parentSeriesId === 'string' && parentSeriesId.length > 0) ||
+          (typeof parentSeriesId === 'number' && Number.isFinite(parentSeriesId));
+        if (!isValidParent) {
+          return null;
+        }
+      }
     }
-    return null;
+
+    return parsed as PlaybackHistoryMap;
   } catch {
     return null;
   }
