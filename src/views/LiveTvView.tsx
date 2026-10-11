@@ -328,7 +328,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     setActiveVariantStream(targetStream);
     setMiniPlayerLoading(true);
     setMiniPlayerError(null);
-    setAttemptTrigger((prev) => prev + 1);
+    setAttemptTrigger(currentAttemptId);
 
     const streamId = targetStream.stream_id || targetStream.id;
 
@@ -391,8 +391,8 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
   // Handle playback success callback
   const handlePlaybackSuccess = useCallback((attemptId?: number) => {
-    if (attemptId !== undefined && attemptId !== attemptIdRef.current) {
-      return; // Discard stale callback
+    if (attemptId === undefined || attemptId !== attemptIdRef.current) {
+      return; // Discard absent or stale callback
     }
 
     if (fallbackTimeoutRef.current) {
@@ -411,8 +411,8 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
   // Handle playback final error callback
   const handlePlaybackFinalError = useCallback((errorMsg: string, attemptId?: number) => {
-    if (attemptId !== undefined && attemptId !== attemptIdRef.current) {
-      return; // Discard stale callback
+    if (attemptId === undefined || attemptId !== attemptIdRef.current) {
+      return; // Discard absent or stale callback
     }
 
     if (fallbackTimeoutRef.current) {

@@ -1475,6 +1475,82 @@ async function runCategoryLabelAndChannelGroupTests() {
   console.log('✅ Testes de rótulos de categorias, busca global e agrupamento de canais aprovados!');
 }
 
+async function runAttemptIdPropagationAndStaleCallbackTests() {
+  console.log('\n--- 7. Testes de ID de Tentativa e Descarte de Callbacks Antigos ---');
+  const React = await import('react');
+  const { act } = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const { VideoPlayer } = await import('../src/components/VideoPlayer');
+
+  let successAttemptId: number | undefined;
+  let errorAttemptId: number | undefined;
+
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  function PlayerTester({ attemptTrigger }: { attemptTrigger: number }) {
+    return React.createElement(VideoPlayer, {
+      streamUrl: 'http://server.tv:8080/live/user/pass/101.ts',
+      title: 'Canal Teste',
+      embedded: true,
+      attemptTrigger,
+      onPlaybackSuccess: (id) => {
+        successAttemptId = id;
+      },
+      onPlaybackFinalError: (msg, id) => {
+        errorAttemptId = id;
+      },
+    });
+  }
+
+  // 1. Renderiza o player com attemptTrigger = 5
+  await act(async () => {
+    root.render(React.createElement(PlayerTester, { attemptTrigger: 5 }));
+  });
+
+  const video = container.querySelector('video') as HTMLVideoElement;
+  assert(video, 'Elemento <video> deve ser renderizado no player');
+
+  // Simula evento 'playing' nativo do elemento <video>
+  await act(async () => {
+    video.dispatchEvent(new Event('playing'));
+  });
+
+  assert.strictEqual(
+    successAttemptId,
+    5,
+    'O callback de sucesso deve receber exatamente o ID de tentativa (5) repassado via attemptTrigger'
+  );
+
+  // 2. Atualiza attemptTrigger para 6 (nova tentativa da mesma URL) no mesmo elemento <video>
+  await act(async () => {
+    root.render(React.createElement(PlayerTester, { attemptTrigger: 6 }));
+  });
+
+  // Confirma que o elemento <video> é mantido (mesma referência no DOM)
+  const video2 = container.querySelector('video') as HTMLVideoElement;
+  assert.strictEqual(video2, video, 'Mesmo elemento <video> deve ser reutilizado sem desmontar o player');
+
+  // Emitir evento para a nova tentativa 6
+  await act(async () => {
+    video.dispatchEvent(new Event('playing'));
+  });
+
+  assert.strictEqual(
+    successAttemptId,
+    6,
+    'O callback de sucesso da nova tentativa recebe o novo ID (6)'
+  );
+
+  await act(async () => {
+    root.unmount();
+  });
+  document.body.removeChild(container);
+
+  console.log('✅ Testes de propagação de ID de tentativa e estabilidade do player aprovados!');
+}
+
 async function main() {
   console.log('🚀 INICIANDO VALIDAÇÃO COMPLETA DOS FAVORITOS SIMPLES E REGRESSÕES\n');
   runDirectUrlTests();
@@ -1483,6 +1559,7 @@ async function main() {
   await runPlayerControlsStabilityAndAutoHideTests();
   await runPlayerBackAndScrollNavigationTests();
   await runCategoryLabelAndChannelGroupTests();
+  await runAttemptIdPropagationAndStaleCallbackTests();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
 }
 
