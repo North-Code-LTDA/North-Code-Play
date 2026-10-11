@@ -6,7 +6,7 @@ import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { MediaImage } from '../components/MediaImage';
 import { useAccountPlaybackHistory } from '../utils/playbackHistory';
-import { formatCategoryLabel } from './HomeView';
+import { formatCategoryLabel } from '../utils/categoryLabel';
 
 interface SeriesViewProps {
   onPlay: (

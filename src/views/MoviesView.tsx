@@ -6,7 +6,7 @@ import { MovieDetails } from '../components/MovieDetails';
 import { useFavorites } from '../hooks/useFavorites';
 import { MediaImage } from '../components/MediaImage';
 import { useAccountPlaybackHistory } from '../utils/playbackHistory';
-import { formatCategoryLabel } from './HomeView';
+import { formatCategoryLabel } from '../utils/categoryLabel';
 
 
 interface MoviesViewProps {

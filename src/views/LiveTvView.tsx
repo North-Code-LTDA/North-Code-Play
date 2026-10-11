@@ -8,7 +8,7 @@ import { MediaImage } from '../components/MediaImage';
 import { XtreamService } from '../services/xtreamService';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
-import { formatCategoryLabel } from './HomeView';
+import { formatCategoryLabel } from '../utils/categoryLabel';
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
-import { LogOut, Home as HomeIcon, Tv, Film, PlaySquare, Settings, Menu, X, Search, Heart, AlertCircle } from 'lucide-react';
+import { LogOut, Home as HomeIcon, Tv, Film, PlaySquare, Settings, Menu, X, Search, Heart, AlertCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { VideoPlayer } from '../components/VideoPlayer';
 
@@ -11,7 +11,7 @@ import { MoviesView } from '../views/MoviesView';
 import { SeriesView } from '../views/SeriesView';
 import { ConfigView } from '../views/ConfigView';
 import { FavoritesView } from '../views/FavoritesView';
-import { XtreamProvider } from '../context/XtreamContext';
+import { XtreamProvider, useXtreamContext } from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
 import { normalizeServerUrl } from '../utils/mediaUtils';
 import { safeRemoveCredentials } from '../utils/accountUtils';
@@ -20,9 +20,8 @@ import { APP_VERSION, APP_COMMIT } from '../version';
 
 export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
 
-export function Home() {
+function HomeContent({ credentials }: { credentials: any }) {
   const navigate = useNavigate();
-  const [credentials, setCredentials] = useState<any>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [currentView, setCurrentView] = useState<ViewType>('inicio');
   const [logoutError, setLogoutError] = useState<string | null>(null);
@@ -40,31 +39,55 @@ export function Home() {
   const [searchQuery, setSearchQuery] = useState('');
   const debouncedSearchQuery = useDebounce(searchQuery, 500);
 
+  // Overlay state & context consumption
+  const {
+    sessionReady,
+    liveCategoriesStatus,
+    vodCategoriesStatus,
+    seriesCategoriesStatus,
+    liveCatalogStatus,
+    vodCatalogStatus,
+    seriesCatalogStatus,
+  } = useXtreamContext();
+
+  const [isOpeningDismissed, setIsOpeningDismissed] = useState(false);
+  const [showContinueButton, setShowContinueButton] = useState(false);
+
+  const isStatusFinished = (s: string) => s === 'ready' || s === 'error';
+  const allSixFinished = Boolean(
+    sessionReady &&
+    isStatusFinished(liveCategoriesStatus) &&
+    isStatusFinished(vodCategoriesStatus) &&
+    isStatusFinished(seriesCategoriesStatus) &&
+    isStatusFinished(liveCatalogStatus) &&
+    isStatusFinished(vodCatalogStatus) &&
+    isStatusFinished(seriesCatalogStatus)
+  );
+
+  // Automatically close without minimum artificial delay when all six are ready or error
+  useEffect(() => {
+    if (allSixFinished) {
+      setIsOpeningDismissed(true);
+    }
+  }, [allSixFinished]);
+
+  // Show "Continuar enquanto carrega" button if pending after 10s
+  useEffect(() => {
+    if (isOpeningDismissed) return;
+    const timer = setTimeout(() => {
+      setShowContinueButton(true);
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [isOpeningDismissed]);
+
+  const isOverlayActive = !isOpeningDismissed && !allSixFinished;
+
   useEffect(() => {
     if (logoutError) {
       const timer = setTimeout(() => setLogoutError(null), 4000);
       return () => clearTimeout(timer);
     }
   }, [logoutError]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem('northcode_tv_credentials');
-    if (!saved) {
-      navigate('/');
-    } else {
-      try {
-        const parsed = JSON.parse(saved);
-        const normalized = normalizeServerUrl(parsed.serverUrl);
-        if (normalized && normalized !== parsed.serverUrl) {
-          parsed.serverUrl = normalized;
-          localStorage.setItem('northcode_tv_credentials', JSON.stringify(parsed));
-        }
-        setCredentials(parsed);
-      } catch {
-        navigate('/');
-      }
-    }
-  }, [navigate]);
 
   const handleLogout = () => {
     const res = safeRemoveCredentials();
@@ -75,8 +98,6 @@ export function Home() {
     setLogoutError(null);
     navigate('/');
   };
-
-  if (!credentials) return null;
 
   const handlePlay = (
     url: string,
@@ -152,8 +173,11 @@ export function Home() {
   };
 
   return (
-    <XtreamProvider credentials={credentials}>
-      <div className="h-[100dvh] bg-nc-bg flex flex-col md:flex-row w-full overflow-hidden">
+    <>
+      <div
+        className="h-[100dvh] bg-nc-bg flex flex-col md:flex-row w-full overflow-hidden"
+        inert={isOverlayActive ? true : undefined}
+      >
         <AnimatePresence>
           {activeVideo && (
             <VideoPlayer 
@@ -331,6 +355,85 @@ export function Home() {
           </div>
         )}
       </div>
+
+      {/* Initial Opening Overlay covering the entire interface */}
+      {isOverlayActive && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Carregando programação"
+          className="fixed inset-0 z-[100] bg-nc-bg/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center select-none"
+        >
+          <div className="relative mb-6">
+            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-white/[0.04] border border-nc-border/60 flex items-center justify-center shadow-2xl backdrop-blur-sm">
+              <Loader2 className="w-8 h-8 sm:w-10 sm:h-10 animate-spin motion-reduce:animate-none text-nc-primary" />
+            </div>
+            <div className="absolute inset-0 bg-white/[0.06] blur-2xl rounded-full pointer-events-none" />
+          </div>
+
+          <Logo className="mb-3 scale-105" />
+
+          <h2 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">
+            Carregando sua programação
+          </h2>
+          <p className="text-sm text-nc-text-secondary mt-2 max-w-md">
+            Sincronizando canais ao vivo, filmes e séries para {credentials?.playlistName || 'sua lista'}...
+          </p>
+
+          <div className="w-full max-w-4xl mt-8 grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 sm:gap-4 opacity-40 pointer-events-none">
+            {Array.from({ length: 6 }).map((_, idx) => (
+              <div
+                key={idx}
+                className="aspect-[2/3] rounded-xl bg-white/[0.03] border border-nc-border/40 animate-pulse motion-reduce:animate-none"
+              />
+            ))}
+          </div>
+
+          {showContinueButton && (
+            <div className="mt-8">
+              <button
+                type="button"
+                onClick={() => setIsOpeningDismissed(true)}
+                className="px-5 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-white border border-nc-border/80 rounded-xl text-sm font-medium transition-colors shadow-lg focus:outline-none focus:ring-2 focus:ring-nc-primary"
+              >
+                Continuar enquanto carrega
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+export function Home() {
+  const navigate = useNavigate();
+  const [credentials, setCredentials] = useState<any>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('northcode_tv_credentials');
+    if (!saved) {
+      navigate('/');
+    } else {
+      try {
+        const parsed = JSON.parse(saved);
+        const normalized = normalizeServerUrl(parsed.serverUrl);
+        if (normalized && normalized !== parsed.serverUrl) {
+          parsed.serverUrl = normalized;
+          localStorage.setItem('northcode_tv_credentials', JSON.stringify(parsed));
+        }
+        setCredentials(parsed);
+      } catch {
+        navigate('/');
+      }
+    }
+  }, [navigate]);
+
+  if (!credentials) return null;
+
+  return (
+    <XtreamProvider credentials={credentials}>
+      <HomeContent credentials={credentials} />
     </XtreamProvider>
   );
 }
