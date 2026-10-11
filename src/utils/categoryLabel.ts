@@ -3,24 +3,24 @@
  * Atua SOMENTE na apresentação; não modifica category_id, category_name original,
  * parâmetros de API ou chaves de estado/busca.
  */
-export function formatCategoryLabel(rawName: unknown, _domain?: string): string {
+export function formatCategoryLabel(rawName: unknown, domain?: string): string {
   if (rawName == null || typeof rawName !== 'string') {
-    return 'Geral';
+    return 'GERAL';
   }
 
   const trimmed = rawName.trim();
   if (!trimmed) {
-    return 'Geral';
+    return 'GERAL';
   }
 
-  // Preserva categorias virtuais internas do app exatamente como estão
+  // Preserva categorias virtuais internas do app, exibindo em caixa alta
   if (
     trimmed === 'Assistidos Recentemente' ||
     trimmed === 'Canais Favoritos' ||
     trimmed === 'Filmes Favoritos' ||
     trimmed === 'Séries Favoritas'
   ) {
-    return trimmed;
+    return trimmed.toLocaleUpperCase('pt-BR');
   }
 
   let text = trimmed;
@@ -33,8 +33,8 @@ export function formatCategoryLabel(rawName: unknown, _domain?: string): string 
 
   // 2. Remove colchetes ou parênteses puramente decorativos em torno de tokens isolados
   // Ex: "[BR] | Esportes" -> "BR | Esportes"
-  text = text.replace(/(?:^|\s)\[([^[\]]+)\](?=\s|$|[|/·•-])/g, ' $1 ');
-  text = text.replace(/(?:^|\s)\(([^()]+)\)(?=\s|$|[|/·•-])/g, ' $1 ');
+  text = text.replace(/(?:^|\s)\[([^[\]]+)\](?=\s|$|[|/·•:-])/g, ' $1 ');
+  text = text.replace(/(?:^|\s)\(([^()]+)\)(?=\s|$|[|/·•:-])/g, ' $1 ');
 
   // 3. Substitui pipes usados como separadores por um separador visual consistente (" · ")
   text = text.replace(/\s*\|\s*/g, ' · ');
@@ -49,12 +49,22 @@ export function formatCategoryLabel(rawName: unknown, _domain?: string): string 
   // 6. Normaliza múltiplos separadores consecutivos (ex: " · · " -> " · ")
   text = text.replace(/(?:\s*·\s*)+/g, ' · ');
 
-  // 7. Remove separadores, pontuações residuais e espaços nas pontas
+  // 7. Somente para TV (domain === 'live'), retira prefixo "CANAIS" se for palavra completa
+  // seguida por separador inequívoco (·, |, :, -, .) e se houver texto significativo depois.
+  if (domain === 'live') {
+    const matchPrefix = text.match(/^canais(?:\s*[·•|:.-]|\s+·)\s*(.+)$/i);
+    if (matchPrefix && matchPrefix[1] && matchPrefix[1].trim()) {
+      text = matchPrefix[1].trim();
+    }
+  }
+
+  // 8. Remove separadores, pontuações residuais e espaços nas pontas
   text = text.replace(/^[\s·•\-—_~:/|\\]+|[\s·•\-—_~:/|\\]+$/gu, '');
 
-  // 8. Normaliza espaços internos
+  // 9. Normaliza espaços internos
   text = text.replace(/\s+/g, ' ').trim();
 
   // Se a higienização resultar em texto vazio, utiliza o original aparado
-  return text || trimmed;
+  const result = text || trimmed;
+  return result.toLocaleUpperCase('pt-BR');
 }

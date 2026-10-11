@@ -55,4 +55,6 @@ export interface VideoPlayerProps {
   isLoading?: boolean;
   errorMessage?: string | null;
   onRetry?: () => void;
+  onPlaybackSuccess?: () => void;
+  onPlaybackFatalError?: (error: string) => void;
 }

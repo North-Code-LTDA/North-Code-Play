@@ -21,6 +21,8 @@ interface UsePlaybackSessionOptions {
   credentials?: AccountIdentity | null;
   onRetry?: () => void;
   retryTrigger?: number;
+  onPlaybackSuccess?: () => void;
+  onPlaybackFatalError?: (error: string) => void;
 }
 
 export function usePlaybackSession({
@@ -31,12 +33,21 @@ export function usePlaybackSession({
   streamId,
   credentials,
   retryTrigger = 0,
+  onPlaybackSuccess,
+  onPlaybackFatalError,
 }: UsePlaybackSessionOptions) {
   const activeAccountRef = useRef<AccountIdentity | null>(credentials || null);
   // Session tracking to discard stale callbacks
   const sessionIdRef = useRef(0);
   const hlsRef = useRef<Hls | null>(null);
   const recoveryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  // Stable callback refs to ensure main connection effect is not re-triggered
+  const onPlaybackSuccessRef = useRef(onPlaybackSuccess);
+  onPlaybackSuccessRef.current = onPlaybackSuccess;
+  const onPlaybackFatalErrorRef = useRef(onPlaybackFatalError);
+  onPlaybackFatalErrorRef.current = onPlaybackFatalError;
+  const hasEmittedOutcomeRef = useRef(false);
 
   // Buffer profile state
   const [bufferProfile, setBufferProfileState] = useState<BufferProfileKey>(() => {
@@ -267,6 +278,7 @@ export function usePlaybackSession({
     activeAccountRef.current = credentials || null;
     cleanup();
     resetSessionMetrics();
+    hasEmittedOutcomeRef.current = false;
     setIsLoading(true);
 
     // Initial video element setup using current ref values
@@ -296,6 +308,14 @@ export function usePlaybackSession({
       setIsPlaying(true);
       setIsLoading(false);
       setIsBuffering(false);
+      if (!hasEmittedOutcomeRef.current) {
+        hasEmittedOutcomeRef.current = true;
+        try {
+          onPlaybackSuccessRef.current?.();
+        } catch (err) {
+          console.error('Error invoking onPlaybackSuccess:', err);
+        }
+      }
     };
 
     const handlePlay = () => {
@@ -427,6 +447,14 @@ export function usePlaybackSession({
       setError(msg);
       setIsLoading(false);
       setIsBuffering(false);
+      if (!hasEmittedOutcomeRef.current) {
+        hasEmittedOutcomeRef.current = true;
+        try {
+          onPlaybackFatalErrorRef.current?.(msg);
+        } catch (err) {
+          console.error('Error invoking onPlaybackFatalError:', err);
+        }
+      }
     };
 
     // Attach listeners to video element
@@ -541,14 +569,22 @@ export function usePlaybackSession({
                 }, delayMs);
                 recoveryTimersRef.current.push(timer);
               } else {
-                setError(
+                const msg =
                   'Falha de rede ou CORS ao carregar manifesto HLS diretamente do provedor. ' +
-                    'Verifique se o servidor do provedor permite requisições da web.'
-                );
+                  'Verifique se o servidor do provedor permite requisições da web.';
+                setError(msg);
                 setIsLoading(false);
                 setIsBuffering(false);
                 hls.destroy();
                 hlsRef.current = null;
+                if (!hasEmittedOutcomeRef.current) {
+                  hasEmittedOutcomeRef.current = true;
+                  try {
+                    onPlaybackFatalErrorRef.current?.(msg);
+                  } catch (err) {
+                    console.error('Error invoking onPlaybackFatalError:', err);
+                  }
+                }
               }
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
@@ -556,20 +592,39 @@ export function usePlaybackSession({
                 mediaRecoveryAttempts++;
                 hls.recoverMediaError();
               } else {
-                setError('Erro fatal irrecuperável na decodificação de mídia HLS.');
+                const msg = 'Erro fatal irrecuperável na decodificação de mídia HLS.';
+                setError(msg);
                 setIsLoading(false);
                 setIsBuffering(false);
                 hls.destroy();
                 hlsRef.current = null;
+                if (!hasEmittedOutcomeRef.current) {
+                  hasEmittedOutcomeRef.current = true;
+                  try {
+                    onPlaybackFatalErrorRef.current?.(msg);
+                  } catch (err) {
+                    console.error('Error invoking onPlaybackFatalError:', err);
+                  }
+                }
               }
               break;
-            default:
-              setError('Erro fatal irrecuperável no fluxo HLS.');
+            default: {
+              const msg = 'Erro fatal irrecuperável no fluxo HLS.';
+              setError(msg);
               setIsLoading(false);
               setIsBuffering(false);
               hls.destroy();
               hlsRef.current = null;
+              if (!hasEmittedOutcomeRef.current) {
+                hasEmittedOutcomeRef.current = true;
+                try {
+                  onPlaybackFatalErrorRef.current?.(msg);
+                } catch (err) {
+                  console.error('Error invoking onPlaybackFatalError:', err);
+                }
+              }
               break;
+            }
           }
         }
       });
