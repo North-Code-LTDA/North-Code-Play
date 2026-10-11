@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { TvMinimalPlay, Loader2, Play, Heart, ArrowLeft, Calendar, AlertCircle, RefreshCw, X } from 'lucide-react';
+import { TvMinimalPlay, Loader2, Play, Heart, ArrowLeft, Calendar, AlertCircle, RefreshCw, X, Layers } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
@@ -9,6 +9,13 @@ import { XtreamService } from '../services/xtreamService';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 import { formatCategoryLabel } from '../utils/categoryLabel';
+import {
+  groupLiveStreams,
+  filterLiveChannelGroups,
+  parseChannelVariantSuffix,
+  LiveChannelGroup,
+  ResolutionQuality,
+} from '../utils/liveChannelGroups';
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -27,7 +34,12 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const [isMobilePlayerOpen, setIsMobilePlayerOpen] = useState(false);
 
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>('nc_recent');
-  const [selectedChannel, setSelectedChannel] = useState<any | null>(null);
+  
+  // Group selection & variant selection state
+  const [selectedGroup, setSelectedGroup] = useState<LiveChannelGroup | null>(null);
+  const [activeVariantStream, setActiveVariantStream] = useState<any | null>(null);
+  const [selectedResolutionMode, setSelectedResolutionMode] = useState<'auto' | ResolutionQuality>('auto');
+  
   const [displayCount, setDisplayCount] = useState(100);
   
   // States for EPG
@@ -38,6 +50,12 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const [favActionError, setFavActionError] = useState<string | null>(null);
 
   const historyRecords = useAccountPlaybackHistory(credentials);
+
+  // References for playback attempt tracking and session fallback
+  const sessionSuccessfulVariantsRef = useRef<Map<string, string | number>>(new Map());
+  const attemptedStreamIdsRef = useRef<Set<string | number>>(new Set());
+  const attemptIdRef = useRef<number>(0);
+  const fallbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (favActionError) {
@@ -119,13 +137,247 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     }
   }, [searchQuery]);
 
-  // Fetch EPG when channel is selected
+  const rawFilteredStreams = useMemo(() => {
+    if (searchQuery) {
+      return allLiveStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+    }
+    if (selectedCategoryId === 'nc_recent') return recentChannels;
+    if (selectedCategoryId === 'nc_fav') return favoriteChannels;
+
+    return liveStreams;
+  }, [searchQuery, selectedCategoryId, recentChannels, favoriteChannels, liveStreams, allLiveStreams]);
+
+  // Groups streams in categories, respecting virtual categories
+  const groupedChannels = useMemo(() => {
+    if (selectedCategoryId === 'nc_recent' || selectedCategoryId === 'nc_fav') {
+      return rawFilteredStreams.map((stream) => {
+        const sId = stream.stream_id || stream.id;
+        return {
+          groupId: `single_virtual_${sId}`,
+          displayName: stream.name || 'Sem nome',
+          category_id: stream.category_id,
+          epg_channel_id: stream.epg_channel_id,
+          stream_icon: stream.stream_icon,
+          isGrouped: false,
+          variants: [],
+          primaryStream: stream,
+          allStreams: [stream],
+        } as LiveChannelGroup;
+      });
+    }
+
+    const rawGroups = groupLiveStreams(rawFilteredStreams);
+    if (searchQuery) {
+      return filterLiveChannelGroups(rawGroups, searchQuery);
+    }
+    return rawGroups;
+  }, [rawFilteredStreams, selectedCategoryId, searchQuery]);
+
+  const displayedGroups = groupedChannels.slice(0, displayCount);
+
+  // Mini-player states
+  const [miniPlayerUrl, setMiniPlayerUrl] = useState<string>('');
+  const [miniPlayerError, setMiniPlayerError] = useState<string | null>(null);
+  const [miniPlayerLoading, setMiniPlayerLoading] = useState(false);
+
+  // Helper to pick next variant in group
+  const pickVariantForGroup = useCallback((
+    group: LiveChannelGroup,
+    resMode: 'auto' | ResolutionQuality,
+    attemptedSet: Set<string | number>
+  ): any | null => {
+    if (!group) return null;
+    if (!group.isGrouped || group.variants.length === 0) {
+      const sId = group.primaryStream.stream_id || group.primaryStream.id;
+      return attemptedSet.has(sId) ? null : group.primaryStream;
+    }
+
+    if (resMode !== 'auto') {
+      const matchingVariant = group.variants.find((v) => v.resolution === resMode);
+      if (matchingVariant) {
+        const sId = matchingVariant.streamId;
+        if (!attemptedSet.has(sId)) {
+          return matchingVariant.stream;
+        }
+      }
+    }
+
+    // Auto mode: check session memory first
+    const successfulId = sessionSuccessfulVariantsRef.current.get(group.groupId);
+    if (successfulId && !attemptedSet.has(successfulId)) {
+      const recordedVariant = group.variants.find((v) => v.streamId === successfulId);
+      if (recordedVariant) {
+        return recordedVariant.stream;
+      }
+    }
+
+    // Stability priority: FHD > HD > SD > 4K
+    const stabilityPriority: ResolutionQuality[] = ['FHD', 'HD', 'SD', '4K'];
+    for (const res of stabilityPriority) {
+      const v = group.variants.find((item) => item.resolution === res);
+      if (v) {
+        const sId = v.streamId;
+        if (!attemptedSet.has(sId)) {
+          return v.stream;
+        }
+      }
+    }
+
+    // Pick any untried variant remaining in group
+    for (const v of group.variants) {
+      if (!attemptedSet.has(v.streamId)) {
+        return v.stream;
+      }
+    }
+
+    return null;
+  }, []);
+
+  // Execute an attempt for a variant
+  const startVariantAttempt = useCallback((
+    group: LiveChannelGroup,
+    resMode: 'auto' | ResolutionQuality
+  ) => {
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+
+    const currentAttemptId = ++attemptIdRef.current;
+    const targetStream = pickVariantForGroup(group, resMode, attemptedStreamIdsRef.current);
+
+    if (!targetStream) {
+      setMiniPlayerError('Não foi possível carregar nenhuma versão do canal. Verifique a conexão com o servidor.');
+      setMiniPlayerLoading(false);
+      return;
+    }
+
+    setActiveVariantStream(targetStream);
+    setMiniPlayerLoading(true);
+    setMiniPlayerError(null);
+
+    const streamId = targetStream.stream_id || targetStream.id;
+
+    try {
+      const url = buildDirectMediaUrl(credentials, {
+        type: 'live',
+        streamId,
+        allowedOutputFormats: credentials?.allowed_output_formats,
+      });
+
+      if (attemptIdRef.current === currentAttemptId) {
+        setMiniPlayerUrl(url);
+
+        // 28-second fallback timeout if playback doesn't start
+        fallbackTimeoutRef.current = setTimeout(() => {
+          if (attemptIdRef.current !== currentAttemptId) return;
+          attemptedStreamIdsRef.current.add(streamId);
+          const nextStream = pickVariantForGroup(group, resMode, attemptedStreamIdsRef.current);
+          if (nextStream) {
+            startVariantAttempt(group, resMode);
+          } else {
+            setMiniPlayerError('Não foi possível carregar nenhuma versão do canal (Tempo limite esgotado).');
+            setMiniPlayerLoading(false);
+          }
+        }, 28000);
+      }
+    } catch (err: any) {
+      if (attemptIdRef.current === currentAttemptId) {
+        attemptedStreamIdsRef.current.add(streamId);
+        setMiniPlayerUrl('');
+        setMiniPlayerError(err.message || 'Falha ao conectar à transmissão do canal.');
+        setMiniPlayerLoading(false);
+      }
+    }
+  }, [credentials, pickVariantForGroup]);
+
+  // Handle group click
+  const handleSelectGroup = useCallback((group: LiveChannelGroup) => {
+    setSelectedGroup(group);
+    setSelectedResolutionMode('auto');
+    attemptedStreamIdsRef.current.clear();
+    setIsMobilePlayerOpen(true);
+    startVariantAttempt(group, 'auto');
+  }, [startVariantAttempt]);
+
+  // Handle manual resolution mode change
+  const handleSelectResolutionMode = useCallback((mode: 'auto' | ResolutionQuality) => {
+    if (!selectedGroup) return;
+    setSelectedResolutionMode(mode);
+    attemptedStreamIdsRef.current.clear();
+    startVariantAttempt(selectedGroup, mode);
+  }, [selectedGroup, startVariantAttempt]);
+
+  // Handle playback success callback
+  const handlePlaybackSuccess = useCallback(() => {
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+    setMiniPlayerLoading(false);
+    setMiniPlayerError(null);
+
+    if (selectedGroup && activeVariantStream) {
+      const streamId = activeVariantStream.stream_id || activeVariantStream.id;
+      sessionSuccessfulVariantsRef.current.set(selectedGroup.groupId, streamId);
+      recordPlaybackPosition(credentials, { id: streamId, type: 'live' });
+    }
+  }, [selectedGroup, activeVariantStream, credentials]);
+
+  // Handle playback final error callback
+  const handlePlaybackFinalError = useCallback((errorMsg: string) => {
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+
+    if (activeVariantStream) {
+      const streamId = activeVariantStream.stream_id || activeVariantStream.id;
+      attemptedStreamIdsRef.current.add(streamId);
+    }
+
+    if (selectedGroup) {
+      const nextStream = pickVariantForGroup(selectedGroup, selectedResolutionMode, attemptedStreamIdsRef.current);
+      if (nextStream) {
+        startVariantAttempt(selectedGroup, selectedResolutionMode);
+        return;
+      }
+    }
+
+    setMiniPlayerError('Não foi possível carregar nenhuma versão do canal. ' + (errorMsg || ''));
+    setMiniPlayerLoading(false);
+  }, [activeVariantStream, selectedGroup, selectedResolutionMode, pickVariantForGroup, startVariantAttempt]);
+
+  // Handle retry
+  const handleRetry = useCallback(() => {
+    if (!selectedGroup) return;
+    attemptedStreamIdsRef.current.clear();
+    startVariantAttempt(selectedGroup, selectedResolutionMode);
+  }, [selectedGroup, selectedResolutionMode, startVariantAttempt]);
+
+  // Close channel/player
+  const handleCloseChannel = useCallback(() => {
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+    attemptIdRef.current++;
+    setSelectedGroup(null);
+    setActiveVariantStream(null);
+    setMiniPlayerUrl('');
+    setMiniPlayerLoading(false);
+    setMiniPlayerError(null);
+    setIsMobilePlayerOpen(false);
+  }, []);
+
+  // Fetch EPG when active variant stream is selected
   useEffect(() => {
     let isMounted = true;
-    if (selectedChannel && credentials) {
+    if (activeVariantStream && credentials) {
       setLoadingEpg(true);
       setEpgData([]);
-      XtreamService.getShortEpg(credentials, selectedChannel.stream_id, 10)
+      const sId = activeVariantStream.stream_id || activeVariantStream.id;
+      XtreamService.getShortEpg(credentials, sId, 10)
         .then(data => {
           if (isMounted) {
             const rawListings = Array.isArray(data?.epg_listings) ? data.epg_listings : [];
@@ -144,31 +396,18 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
         });
     }
     return () => { isMounted = false; };
-  }, [selectedChannel, credentials]);
+  }, [activeVariantStream, credentials]);
 
-  const filteredStreams = useMemo(() => {
-    if (searchQuery) {
-      return allLiveStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
-    }
-    if (selectedCategoryId === 'nc_recent') return recentChannels;
-    if (selectedCategoryId === 'nc_fav') return favoriteChannels;
-
-    return liveStreams;
-  }, [searchQuery, selectedCategoryId, recentChannels, favoriteChannels, liveStreams, allLiveStreams]);
-
-  const displayedStreams = filteredStreams.slice(0, displayCount);
-
-  // Helper to decode Base64 EPG titles safely
+  // Helpers to decode Base64 and format EPG time
   const decodeBase64 = (val: unknown): string => {
     if (typeof val !== 'string') return '';
     try {
       return decodeURIComponent(escape(atob(val)));
     } catch {
-      return val; // Return raw string if decoding fails
+      return val;
     }
   };
 
-  // Helper to extract HH:mm from time string safely without timezone conversion
   const formatEpgTime = (val: unknown): string | null => {
     if (typeof val !== 'string') return null;
     const trimmed = val.trim();
@@ -185,62 +424,6 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
   const activeCategory = extendedCategories.find(c => c.category_id === selectedCategoryId);
 
-  // Obtain safe same-origin stream URL for the mini-player
-  const [miniPlayerUrl, setMiniPlayerUrl] = useState<string>('');
-  const [miniPlayerError, setMiniPlayerError] = useState<string | null>(null);
-  const [miniPlayerLoading, setMiniPlayerLoading] = useState(false);
-  const [miniPlayerRetry, setMiniPlayerRetry] = useState(0);
-
-  // Active channel request sequencer to reject out-of-order responses
-  const activeRequestIdRef = useRef<number>(0);
-
-  useEffect(() => {
-    if (!selectedChannel || !credentials) {
-      setMiniPlayerUrl('');
-      setMiniPlayerError(null);
-      setMiniPlayerLoading(false);
-      return;
-    }
-
-    const currentReqId = ++activeRequestIdRef.current;
-    setMiniPlayerLoading(true);
-    setMiniPlayerError(null);
-    setMiniPlayerUrl(''); // Clear previous stream URL immediately so old channel stops
-
-    try {
-      const url = buildDirectMediaUrl(credentials, {
-        type: 'live',
-        streamId: selectedChannel.stream_id,
-        allowedOutputFormats: credentials.allowed_output_formats,
-      });
-
-      if (activeRequestIdRef.current === currentReqId) {
-        setMiniPlayerUrl(url);
-        setMiniPlayerLoading(false);
-      }
-    } catch (err: any) {
-      if (activeRequestIdRef.current === currentReqId) {
-        console.error('Erro ao preparar stream ao vivo:', err.message);
-        setMiniPlayerUrl('');
-        setMiniPlayerError(err.message || 'Falha ao conectar à transmissão do canal.');
-        setMiniPlayerLoading(false);
-      }
-    }
-
-    return () => {
-      // Invalidate current in-flight request when channel changes or component unmounts
-      activeRequestIdRef.current++;
-    };
-  }, [selectedChannel?.stream_id, credentials, miniPlayerRetry]);
-
-  const handleCloseChannel = useCallback(() => {
-    setSelectedChannel(null);
-    setMiniPlayerUrl('');
-    setMiniPlayerLoading(false);
-    setMiniPlayerError(null);
-    setIsMobilePlayerOpen(false);
-  }, []);
-
   return (
     <div className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg">
       {/* Left Pane: Categories or Channels */}
@@ -250,7 +433,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
         {leftPaneView === 'categories' && (
           <div className="flex flex-col h-full overflow-hidden">
             <div className="p-4 border-b border-nc-border/50 bg-nc-bg shrink-0">
-              <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de TV</h2>
+              <h2 className="text-sm font-semibold text-white uppercase tracking-wider">CATEGORIAS DE TV</h2>
             </div>
             <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar">
               {liveCategoriesError && liveCategories.length === 0 && (
@@ -300,12 +483,12 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                 </button>
               )}
               <h2 className="text-lg font-semibold text-white truncate">
-                {searchQuery ? `Busca: ${searchQuery}` : formatCategoryLabel(activeCategory?.category_name, 'live')}
+                {searchQuery ? `BUSCA: ${searchQuery.toUpperCase()}` : formatCategoryLabel(activeCategory?.category_name, 'live')}
               </h2>
             </div>
             
             <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
-              {liveError && filteredStreams.length === 0 ? (
+              {liveError && rawFilteredStreams.length === 0 ? (
                 <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-3 my-4">
                   <p className="text-sm text-red-400">{liveError}</p>
                   <button
@@ -316,64 +499,79 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                     Tentar novamente
                   </button>
                 </div>
-              ) : liveCatalogStatus === 'loading' && filteredStreams.length === 0 ? (
+              ) : liveCatalogStatus === 'loading' && rawFilteredStreams.length === 0 ? (
                  <div className="flex items-center justify-center py-10">
                    <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
                  </div>
-              ) : liveCatalogStatus === 'ready' && !liveError && filteredStreams.length === 0 ? (
+              ) : liveCatalogStatus === 'ready' && !liveError && groupedChannels.length === 0 ? (
                  <div className="flex flex-col items-center justify-center py-10 text-nc-text-secondary">
                    <TvMinimalPlay className="w-12 h-12 mb-4 opacity-20" />
                    <p className="text-sm">Nenhum canal encontrado.</p>
                  </div>
               ) : (
                 <div className="space-y-2">
-                  {displayedStreams.map((stream, idx) => (
-                    <button
-                      key={stream.stream_id}
-                      onClick={() => {
-                        setSelectedChannel(stream);
-                        setIsMobilePlayerOpen(true);
-                        recordPlaybackPosition(credentials, { id: stream.stream_id, type: 'live' });
-                      }}
-                      className={`w-full flex items-center gap-3 p-2 rounded-xl transition-colors border ${
-                        selectedChannel?.stream_id === stream.stream_id 
-                          ? 'bg-nc-primary/10 border-nc-primary/30' 
-                          : 'bg-transparent border-transparent hover:bg-nc-bg-input'
-                      }`}
-                    >
-                      <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden">
-                        <MediaImage
-                          src={stream.stream_icon}
-                          serverUrl={credentials?.serverUrl}
-                          alt={stream.name}
-                          itemId={stream.stream_id}
-                          itemName={stream.name}
-                          priority={idx < 15}
-                          loading={idx < 15 ? 'eager' : 'lazy'}
-                          className="w-full h-full object-contain p-1"
-                        />
-                      </div>
-                      <div className="flex-1 min-w-0 text-left flex flex-col">
-                        <p className={`font-medium text-sm truncate ${selectedChannel?.stream_id === stream.stream_id ? 'text-nc-primary' : 'text-white'}`}>
-                          {stream.name}
-                        </p>
-                      </div>
-                      <div 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleFavorite({ id: stream.stream_id, name: stream.name, cover: stream.stream_icon || '', type: 'live' });
-                        }}
-                        className="p-2 shrink-0 text-nc-text-secondary hover:text-white"
+                  {displayedGroups.map((group, idx) => {
+                    const isSelected = selectedGroup?.groupId === group.groupId;
+                    const primaryStream = group.primaryStream;
+                    const primaryId = primaryStream.stream_id || primaryStream.id;
+
+                    return (
+                      <button
+                        key={group.groupId}
+                        onClick={() => handleSelectGroup(group)}
+                        className={`w-full flex items-center gap-3 p-2 rounded-xl transition-colors border ${
+                          isSelected 
+                            ? 'bg-nc-primary/10 border-nc-primary/30' 
+                            : 'bg-transparent border-transparent hover:bg-nc-bg-input'
+                        }`}
                       >
-                         <Heart className={`w-4 h-4 ${isFavorite(stream.stream_id, 'live') ? 'fill-nc-primary text-nc-primary' : ''}`} />
-                      </div>
-                    </button>
-                  ))}
+                        <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden relative">
+                          <MediaImage
+                            src={group.stream_icon}
+                            serverUrl={credentials?.serverUrl}
+                            alt={group.displayName}
+                            itemId={primaryId}
+                            itemName={group.displayName}
+                            priority={idx < 15}
+                            loading={idx < 15 ? 'eager' : 'lazy'}
+                            className="w-full h-full object-contain p-1"
+                          />
+                        </div>
+
+                        <div className="flex-1 min-w-0 text-left flex flex-col gap-0.5">
+                          <p className={`font-medium text-sm truncate ${isSelected ? 'text-nc-primary' : 'text-white'}`}>
+                            {group.displayName}
+                          </p>
+                          {group.isGrouped && (
+                            <div className="flex items-center gap-1.5 text-[10px] text-nc-text-secondary overflow-hidden">
+                              <span className="inline-flex items-center gap-0.5 font-semibold text-nc-primary/90 bg-nc-primary/10 px-1.5 py-0.5 rounded border border-nc-primary/20">
+                                <Layers className="w-2.5 h-2.5" />
+                                {group.variants.length} versões
+                              </span>
+                              <span className="truncate opacity-75">
+                                {group.variants.map((v) => v.resolution).join(' · ')}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleFavorite({ id: primaryId, name: group.displayName, cover: group.stream_icon || '', type: 'live' });
+                          }}
+                          className="p-2 shrink-0 text-nc-text-secondary hover:text-white"
+                        >
+                           <Heart className={`w-4 h-4 ${isFavorite(primaryId, 'live') ? 'fill-nc-primary text-nc-primary' : ''}`} />
+                        </div>
+                      </button>
+                    );
+                  })}
                   
-                  {displayCount < filteredStreams.length && (
+                  {displayCount < groupedChannels.length && (
                     <button
                       onClick={() => setDisplayCount(prev => prev + 100)}
-                      className="w-full py-3 mt-4 text-sm bg-nc-bg-input hover:bg-nc-bg-card rounded-xl text-nc-text-secondary transition-colors"
+                      className="w-full py-3 mt-4 text-sm bg-nc-bg-input hover:bg-nc-bg-card rounded-xl text-nc-text-secondary transition-colors font-medium"
                     >
                       Carregar Mais
                     </button>
@@ -387,13 +585,13 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
       {/* Right Pane: Player & EPG */}
       <div className={`flex-1 min-w-0 flex-col w-full h-auto md:h-full overflow-visible md:overflow-y-auto bg-nc-bg flex ${!isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
-        {selectedChannel ? (
+        {selectedGroup ? (
           <div className="flex flex-col w-full h-auto md:h-full overflow-visible md:overflow-y-auto">
              {/* Mobile Back Button */}
              <div className="md:hidden p-4 shrink-0 border-b border-nc-border/50 flex items-center bg-nc-bg">
                <button 
                  onClick={handleCloseChannel}
-                 className="flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors"
+                 className="flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors text-sm font-medium"
                >
                  <ArrowLeft className="w-5 h-5" /> Voltar aos Canais
                </button>
@@ -401,33 +599,79 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
              {/* Top Section (Header + Mini-Player) */}
              <div className="flex flex-col lg:flex-row gap-4 p-4 shrink-0 border-b border-nc-border/10 bg-nc-bg">
-               {/* Left child: Channel Info */}
-               <div className="flex-1 min-w-0 flex flex-col items-start gap-4 order-2 lg:order-1">
+               {/* Left child: Channel Info & Version Selector */}
+               <div className="flex-1 min-w-0 flex flex-col items-start gap-3 order-2 lg:order-1">
                  <div className="flex items-center gap-4 w-full">
-                    <div className="w-20 h-20 bg-nc-bg-card rounded-2xl flex items-center justify-center overflow-hidden shrink-0 border border-nc-border/50 p-2">
+                    <div className="w-20 h-20 bg-nc-bg-card rounded-2xl flex items-center justify-center overflow-hidden shrink-0 border border-nc-border/50 p-2 shadow-lg">
                       <MediaImage
-                        src={selectedChannel.stream_icon}
+                        src={selectedGroup.stream_icon}
                         serverUrl={credentials?.serverUrl}
-                        alt={selectedChannel.name}
-                        itemId={selectedChannel.stream_id}
-                        itemName={selectedChannel.name}
+                        alt={selectedGroup.displayName}
+                        itemId={selectedGroup.primaryStream?.stream_id || selectedGroup.primaryStream?.id}
+                        itemName={selectedGroup.displayName}
                         priority={true}
                         loading="eager"
                         className="w-full h-full object-contain"
                       />
                     </div>
                     <div className="overflow-hidden min-w-0 flex-1">
-                      <h1 className="text-xl md:text-2xl font-bold text-white truncate block w-full">{selectedChannel.name}</h1>
-                      <span className="inline-flex items-center gap-2 px-3 py-1 mt-2 rounded-full bg-red-500/10 text-red-400 text-xs font-medium border border-red-500/20">
-                        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
-                        AO VIVO
-                      </span>
+                      <h1 className="text-xl md:text-2xl font-bold text-white truncate block w-full">{selectedGroup.displayName}</h1>
+                      <div className="flex items-center gap-2 mt-2 flex-wrap">
+                        <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/10 text-red-400 text-xs font-medium border border-red-500/20">
+                          <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                          AO VIVO
+                        </span>
+                        {activeVariantStream?.name && parseChannelVariantSuffix(activeVariantStream.name).resolution && (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-nc-primary/20 text-nc-primary border border-nc-primary/30 text-xs font-bold">
+                            {parseChannelVariantSuffix(activeVariantStream.name).resolution}
+                          </span>
+                        )}
+                      </div>
                     </div>
                  </div>
+
+                 {/* Version Selector for Grouped Channels */}
+                 {selectedGroup.isGrouped && selectedGroup.variants.length > 0 && (
+                   <div className="w-full p-3 bg-nc-bg-card/70 border border-nc-border/50 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-sm">
+                     <span className="text-xs font-semibold text-white/90 shrink-0">Versão do canal:</span>
+                     <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar w-full sm:w-auto">
+                       <button
+                         type="button"
+                         onClick={() => handleSelectResolutionMode('auto')}
+                         className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors shrink-0 ${
+                           selectedResolutionMode === 'auto'
+                             ? 'bg-nc-primary text-black font-bold shadow-md'
+                             : 'bg-nc-bg-input hover:bg-nc-border/60 text-nc-text-secondary hover:text-white'
+                         }`}
+                       >
+                         Automático
+                       </button>
+                       {selectedGroup.variants.map((v) => {
+                         const activeId = activeVariantStream?.stream_id || activeVariantStream?.id;
+                         const isCurrentActive = activeId === v.streamId;
+                         return (
+                           <button
+                             type="button"
+                             key={v.streamId}
+                             onClick={() => handleSelectResolutionMode(v.resolution)}
+                             className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors shrink-0 flex items-center gap-1.5 ${
+                               isCurrentActive
+                                 ? 'bg-nc-primary/20 text-nc-primary border border-nc-primary/50 font-bold'
+                                 : 'bg-nc-bg-input hover:bg-nc-border/60 text-nc-text-secondary hover:text-white'
+                             }`}
+                           >
+                             <span>{v.resolution}</span>
+                             {isCurrentActive && <span className="w-1.5 h-1.5 rounded-full bg-nc-primary animate-pulse" />}
+                           </button>
+                         );
+                       })}
+                     </div>
+                   </div>
+                 )}
                  
                  {/* Current Program Info */}
                  {epgData && epgData.length > 0 && epgData[0] && (
-                   <div className="mt-2 w-full p-4 bg-nc-bg-card/50 rounded-xl border border-nc-border/50 flex flex-col gap-1">
+                   <div className="w-full p-4 bg-nc-bg-card/50 rounded-xl border border-nc-border/50 flex flex-col gap-1">
                       <p className="text-xs text-nc-primary font-semibold uppercase tracking-wider">Passando Agora</p>
                       {decodeBase64(epgData[0].title) && (
                         <p className="text-white font-medium">{decodeBase64(epgData[0].title)}</p>
@@ -456,18 +700,20 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                {/* Right child: Mini-Player */}
                <div className="w-full lg:w-[45%] lg:max-w-md md:max-h-[50vh] lg:max-h-[60vh] xl:max-h-none shrink-0 order-1 lg:order-2 shadow-2xl">
                  <VideoPlayer
-                   key={selectedChannel.stream_id}
+                   key={selectedGroup.groupId}
                    streamUrl={miniPlayerUrl}
-                   title={selectedChannel.name}
-                   channelName={selectedChannel.name}
+                   title={selectedGroup.displayName}
+                   channelName={selectedGroup.displayName}
                    programTitle={epgData && epgData.length > 0 && epgData[0] ? (decodeBase64(epgData[0].title) || undefined) : undefined}
                    contentType="live"
-                   streamId={selectedChannel.stream_id}
+                   streamId={activeVariantStream?.stream_id || activeVariantStream?.id || selectedGroup.groupId}
                    onBack={handleCloseChannel}
                    embedded={true}
                    isLoading={miniPlayerLoading}
                    errorMessage={miniPlayerError}
-                   onRetry={() => setMiniPlayerRetry(p => p + 1)}
+                   onRetry={handleRetry}
+                   onPlaybackSuccess={handlePlaybackSuccess}
+                   onPlaybackFinalError={handlePlaybackFinalError}
                  />
                </div>
              </div>

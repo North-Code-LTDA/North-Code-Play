@@ -1405,6 +1405,56 @@ async function runPlayerBackAndScrollNavigationTests() {
   console.log('✅ Todos os testes de botão Voltar, isolamento e preservação de scroll aprovados com sucesso!');
 }
 
+async function runCategoryLabelAndChannelGroupTests() {
+  console.log('\n--- 6. Testes de Nomes de Categorias e Agrupamento de Canais ---');
+  const { formatCategoryLabel } = await import('../src/utils/categoryLabel');
+  const { parseChannelVariantSuffix, groupLiveStreams } = await import('../src/utils/liveChannelGroups');
+
+  // Testes de Nomes de Categorias
+  assert.strictEqual(formatCategoryLabel('CANAIS · TELECINE', 'live'), 'TELECINE');
+  assert.strictEqual(formatCategoryLabel('Canais | Esportes', 'live'), 'ESPORTES');
+  assert.strictEqual(formatCategoryLabel('CANAIS', 'live'), 'CANAIS');
+  assert.strictEqual(formatCategoryLabel('CANAIS 4K', 'live'), 'CANAIS 4K');
+  assert.strictEqual(formatCategoryLabel('CANALIS', 'live'), 'CANALIS');
+  assert.strictEqual(formatCategoryLabel('Filmes de Ação', 'vod'), 'FILMES DE AÇÃO');
+  assert.strictEqual(formatCategoryLabel('Assistidos Recentemente'), 'ASSISTIDOS RECENTEMENTE');
+
+  // Testes de Parser de Sufixos
+  const p1 = parseChannelVariantSuffix('Telecine Action FHD');
+  assert.strictEqual(p1.baseName, 'Telecine Action');
+  assert.strictEqual(p1.resolution, 'FHD');
+  assert.strictEqual(p1.isVariant, true);
+
+  const p2 = parseChannelVariantSuffix('HDMI');
+  assert.strictEqual(p2.resolution, null);
+
+  const p3 = parseChannelVariantSuffix('Canal HD 2');
+  assert.strictEqual(p3.resolution, null);
+
+  // Testes de Agrupamento
+  const mockStreams = [
+    { stream_id: 1, name: 'Telecine Action 4K', category_id: '10' },
+    { stream_id: 2, name: 'Telecine Action FHD', category_id: '10' },
+    { stream_id: 3, name: 'Telecine Action HD', category_id: '10' },
+    { stream_id: 4, name: 'Telecine Action SD', category_id: '10' },
+    { stream_id: 5, name: 'HBO HD', category_id: '10' },
+  ];
+
+  const groups = groupLiveStreams(mockStreams);
+  assert.strictEqual(groups.length, 2, 'Deve resultar em 2 itens (1 grupo Telecine Action + 1 single HBO HD)');
+  
+  const group1 = groups.find((g) => g.displayName === 'Telecine Action');
+  assert(group1, 'Grupo Telecine Action encontrado');
+  assert.strictEqual(group1.isGrouped, true);
+  assert.strictEqual(group1.variants.length, 4);
+
+  const group2 = groups.find((g) => g.displayName === 'HBO HD');
+  assert(group2, 'Item HBO HD mantido com nome original');
+  assert.strictEqual(group2.isGrouped, false);
+
+  console.log('✅ Testes de rótulos de categorias e agrupamento de canais aprovados!');
+}
+
 async function main() {
   console.log('🚀 INICIANDO VALIDAÇÃO COMPLETA DOS FAVORITOS SIMPLES E REGRESSÕES\n');
   runDirectUrlTests();
@@ -1412,6 +1462,7 @@ async function main() {
   await runPlayerVolumeRateAndSessionTests();
   await runPlayerControlsStabilityAndAutoHideTests();
   await runPlayerBackAndScrollNavigationTests();
+  await runCategoryLabelAndChannelGroupTests();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
 }
 
@@ -1419,3 +1470,4 @@ main().catch((err) => {
   console.error('\n❌ ERRO NA EXECUÇÃO DOS TESTES:', err);
   process.exit(1);
 });
+

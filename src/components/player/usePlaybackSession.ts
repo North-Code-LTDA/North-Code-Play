@@ -21,6 +21,8 @@ interface UsePlaybackSessionOptions {
   credentials?: AccountIdentity | null;
   onRetry?: () => void;
   retryTrigger?: number;
+  onPlaybackSuccess?: () => void;
+  onPlaybackFinalError?: (errorMessage: string) => void;
 }
 
 export function usePlaybackSession({
@@ -31,8 +33,16 @@ export function usePlaybackSession({
   streamId,
   credentials,
   retryTrigger = 0,
+  onPlaybackSuccess,
+  onPlaybackFinalError,
 }: UsePlaybackSessionOptions) {
   const activeAccountRef = useRef<AccountIdentity | null>(credentials || null);
+
+  const onPlaybackSuccessRef = useRef(onPlaybackSuccess);
+  onPlaybackSuccessRef.current = onPlaybackSuccess;
+
+  const onPlaybackFinalErrorRef = useRef(onPlaybackFinalError);
+  onPlaybackFinalErrorRef.current = onPlaybackFinalError;
   // Session tracking to discard stale callbacks
   const sessionIdRef = useRef(0);
   const hlsRef = useRef<Hls | null>(null);
@@ -290,12 +300,32 @@ export function usePlaybackSession({
       }
     };
 
+    let hasReportedSuccess = false;
+    let hasReportedFinalError = false;
+
+    const reportSuccess = () => {
+      if (sessionIdRef.current !== currentSessionId) return;
+      if (!hasReportedSuccess) {
+        hasReportedSuccess = true;
+        onPlaybackSuccessRef.current?.();
+      }
+    };
+
+    const reportFinalError = (msg: string) => {
+      if (sessionIdRef.current !== currentSessionId) return;
+      if (!hasReportedFinalError) {
+        hasReportedFinalError = true;
+        onPlaybackFinalErrorRef.current?.(msg);
+      }
+    };
+
     // Named video element event listeners for clean disposal
     const handlePlaying = () => {
       if (sessionIdRef.current !== currentSessionId) return;
       setIsPlaying(true);
       setIsLoading(false);
       setIsBuffering(false);
+      reportSuccess();
     };
 
     const handlePlay = () => {
@@ -427,6 +457,7 @@ export function usePlaybackSession({
       setError(msg);
       setIsLoading(false);
       setIsBuffering(false);
+      reportFinalError(msg);
     };
 
     // Attach listeners to video element
@@ -541,12 +572,13 @@ export function usePlaybackSession({
                 }, delayMs);
                 recoveryTimersRef.current.push(timer);
               } else {
-                setError(
+                const msg =
                   'Falha de rede ou CORS ao carregar manifesto HLS diretamente do provedor. ' +
-                    'Verifique se o servidor do provedor permite requisições da web.'
-                );
+                  'Verifique se o servidor do provedor permite requisições da web.';
+                setError(msg);
                 setIsLoading(false);
                 setIsBuffering(false);
+                reportFinalError(msg);
                 hls.destroy();
                 hlsRef.current = null;
               }
@@ -556,20 +588,25 @@ export function usePlaybackSession({
                 mediaRecoveryAttempts++;
                 hls.recoverMediaError();
               } else {
-                setError('Erro fatal irrecuperável na decodificação de mídia HLS.');
+                const msg = 'Erro fatal irrecuperável na decodificação de mídia HLS.';
+                setError(msg);
                 setIsLoading(false);
                 setIsBuffering(false);
+                reportFinalError(msg);
                 hls.destroy();
                 hlsRef.current = null;
               }
               break;
-            default:
-              setError('Erro fatal irrecuperável no fluxo HLS.');
+            default: {
+              const msg = 'Erro fatal irrecuperável no fluxo HLS.';
+              setError(msg);
               setIsLoading(false);
               setIsBuffering(false);
+              reportFinalError(msg);
               hls.destroy();
               hlsRef.current = null;
               break;
+            }
           }
         }
       });

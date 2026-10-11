@@ -3,24 +3,28 @@
  * Atua SOMENTE na apresentação; não modifica category_id, category_name original,
  * parâmetros de API ou chaves de estado/busca.
  */
-export function formatCategoryLabel(rawName: unknown, _domain?: string): string {
+export function formatCategoryLabel(rawName: unknown, domain?: string): string {
   if (rawName == null || typeof rawName !== 'string') {
-    return 'Geral';
+    return 'GERAL';
   }
 
   const trimmed = rawName.trim();
   if (!trimmed) {
-    return 'Geral';
+    return 'GERAL';
   }
 
-  // Preserva categorias virtuais internas do app exatamente como estão
+  // Preserva categorias virtuais internas do app em caixa alta
   if (
     trimmed === 'Assistidos Recentemente' ||
     trimmed === 'Canais Favoritos' ||
     trimmed === 'Filmes Favoritos' ||
-    trimmed === 'Séries Favoritas'
+    trimmed === 'Séries Favoritas' ||
+    trimmed === 'ASSISTIDOS RECENTEMENTE' ||
+    trimmed === 'CANAIS FAVORITOS' ||
+    trimmed === 'FILMES FAVORITOS' ||
+    trimmed === 'SÉRIES FAVORITAS'
   ) {
-    return trimmed;
+    return trimmed.toUpperCase();
   }
 
   let text = trimmed;
@@ -40,7 +44,6 @@ export function formatCategoryLabel(rawName: unknown, _domain?: string): string 
   text = text.replace(/\s*\|\s*/g, ' · ');
 
   // 4. Substitui barras separadas por espaços por " · " (ex: "Infantil / Família" -> "Infantil · Família")
-  // mas preserva barras sem espaço que fazem parte de um nome contíguo (ex: "HBO/MAX", "AC/DC")
   text = text.replace(/\s+\/\s+/g, ' · ');
 
   // 5. Substitui traços espaçados usados como separadores por " · " (ex: "BR - Esportes" -> "BR · Esportes")
@@ -55,6 +58,12 @@ export function formatCategoryLabel(rawName: unknown, _domain?: string): string 
   // 8. Normaliza espaços internos
   text = text.replace(/\s+/g, ' ').trim();
 
-  // Se a higienização resultar em texto vazio, utiliza o original aparado
-  return text || trimmed;
+  // 9. Somente quando domain === 'live', remove prefixo "CANAIS" se for palavra completa seguida de separador
+  if (domain === 'live') {
+    text = text.replace(/^CANAIS\s*[·.|:-]\s*(?=\S)/i, '');
+    text = text.replace(/^[\s·•\-—_~:/|\\]+|[\s·•\-—_~:/|\\]+$/gu, '').trim();
+  }
+
+  const result = text || trimmed;
+  return result.toUpperCase();
 }

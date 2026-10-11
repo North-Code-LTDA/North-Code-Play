@@ -27,6 +27,8 @@ export function VideoPlayer({
   isLoading: externalLoading = false,
   errorMessage: externalError = null,
   onRetry,
+  onPlaybackSuccess,
+  onPlaybackFinalError,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -66,6 +68,8 @@ export function VideoPlayer({
     credentials,
     onRetry,
     retryTrigger,
+    onPlaybackSuccess,
+    onPlaybackFinalError,
   });
 
   const activeError = externalError || session.error;
