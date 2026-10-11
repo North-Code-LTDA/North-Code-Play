@@ -65,6 +65,9 @@ interface XtreamContextData {
   loadedVodCatalog: boolean;
   loadedSeriesCatalog: boolean;
 
+  // Session readiness
+  sessionReady: boolean;
+
   // Actions
   fetchLiveCategories: () => Promise<void>;
   fetchVodCategories: () => Promise<void>;
@@ -110,6 +113,9 @@ export function XtreamProvider({
   const [seriesCategories, setSeriesCategories] = useState<Category[]>([]);
   const [seriesStreams, setSeriesStreams] = useState<SeriesStream[]>([]);
   const [allSeriesStreams, setAllSeriesStreams] = useState<SeriesStream[]>([]);
+
+  // Session readiness
+  const [sessionReady, setSessionReady] = useState<boolean>(false);
 
   // Statuses
   const [liveCategoriesStatus, setLiveCategoriesStatus] =
@@ -358,6 +364,8 @@ export function XtreamProvider({
     setVodError(null);
     setSeriesError(null);
 
+    setSessionReady(false);
+
     if (!credentials) return;
 
     // Queue initial category fetches with controlled priority: Live TV first (priority 6), VOD (4), Series (3)
@@ -411,6 +419,9 @@ export function XtreamProvider({
         setSeriesCategoriesStatus("error");
       }
     });
+
+    // Mark current session as fully initialized and ready for component consumer requests
+    setSessionReady(true);
 
     return () => {
       abortControllerRef.current?.abort();
@@ -698,6 +709,7 @@ export function XtreamProvider({
         loadedLiveCatalog,
         loadedVodCatalog,
         loadedSeriesCatalog,
+        sessionReady,
         fetchLiveCategories,
         fetchVodCategories,
         fetchSeriesCategories,

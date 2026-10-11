@@ -31,6 +31,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     allLiveStreams, allVodStreams, allSeriesStreams,
     liveCategories, vodCategories, seriesCategories,
     credentials,
+    sessionReady,
     liveCatalogStatus, vodCatalogStatus, seriesCatalogStatus,
     liveCategoriesStatus, vodCategoriesStatus, seriesCategoriesStatus,
     liveCategoriesError, vodCategoriesError, seriesCategoriesError,
@@ -90,11 +91,11 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     return result;
   }, [historyRecords, allVodStreams, allSeriesStreams]);
 
-  // Request catalog operations ONLY when status is idle.
-  // The context's concurrency coordinator controls execution order (max 2 concurrent).
-  // Ready (including ready with []) and error statuses are NOT re-requested automatically.
+  // Request catalog operations ONLY when the session is ready and status is idle.
+  // This prevents HomeView from enqueueing tasks before the provider reset finishes,
+  // avoiding queue purges of these tasks or false idle states.
   useEffect(() => {
-    if (credentials) {
+    if (credentials && sessionReady) {
       if (liveCatalogStatus === 'idle') {
         fetchLiveStreams().catch(() => {});
       }
@@ -107,6 +108,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     }
   }, [
     credentials,
+    sessionReady,
     liveCatalogStatus,
     vodCatalogStatus,
     seriesCatalogStatus,
