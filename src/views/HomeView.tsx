@@ -31,8 +31,9 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     allLiveStreams, allVodStreams, allSeriesStreams,
     liveCategories, vodCategories, seriesCategories,
     loadingLive, loadingVod, loadingSeries, credentials,
-    liveError, vodError, seriesError,
-    fetchLiveStreams, fetchVodStreams, fetchSeriesStreams
+    liveError, vodError, seriesError, categoriesError,
+    loadedLiveCatalog, loadedVodCatalog, loadedSeriesCatalog,
+    fetchLiveStreams, fetchVodStreams, fetchSeriesStreams, retryCategories
   } = useXtreamContext();
 
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
@@ -86,14 +87,28 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     return result;
   }, [historyRecords, allVodStreams, allSeriesStreams]);
 
-  // Auto-Fetch data in background if empty when landing on Dashboard
+  // Auto-Fetch data in background if empty and not yet loaded when landing on Dashboard
   useEffect(() => {
     if (credentials) {
-      if (allLiveStreams.length === 0) fetchLiveStreams();
-      if (allVodStreams.length === 0) fetchVodStreams();
-      if (allSeriesStreams.length === 0) fetchSeriesStreams();
+      if (!loadedLiveCatalog && !loadingLive && !liveError) fetchLiveStreams();
+      if (!loadedVodCatalog && !loadingVod && !vodError) fetchVodStreams();
+      if (!loadedSeriesCatalog && !loadingSeries && !seriesError) fetchSeriesStreams();
     }
-  }, [credentials, allLiveStreams.length, allVodStreams.length, allSeriesStreams.length, fetchLiveStreams, fetchVodStreams, fetchSeriesStreams]);
+  }, [
+    credentials,
+    loadedLiveCatalog,
+    loadedVodCatalog,
+    loadedSeriesCatalog,
+    loadingLive,
+    loadingVod,
+    loadingSeries,
+    liveError,
+    vodError,
+    seriesError,
+    fetchLiveStreams,
+    fetchVodStreams,
+    fetchSeriesStreams,
+  ]);
 
   useEffect(() => {
     setDisplayCount({ live: 24, vod: 24, series: 24 });
@@ -252,7 +267,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   };
 
   const hasAnyContent = allVodStreams.length > 0 || allSeriesStreams.length > 0 || allLiveStreams.length > 0;
-  const isInitialLoading = (loadingLive || loadingVod || loadingSeries) && !hasAnyContent && !liveError && !vodError && !seriesError;
+  const isInitialLoading = (loadingLive || loadingVod || loadingSeries) && !hasAnyContent && !liveError && !vodError && !seriesError && !categoriesError;
 
   if (isInitialLoading) {
     return (
@@ -303,6 +318,21 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
                }
              }}
           />
+        )}
+
+        {categoriesError && (liveCategories.length === 0 || vodCategories.length === 0 || seriesCategories.length === 0) && (
+          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-red-400">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>Falha ao carregar categorias: {categoriesError}</span>
+            </div>
+            <button
+              onClick={() => retryCategories()}
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+            </button>
+          </div>
         )}
         
         {liveError && allLiveStreams.length === 0 && (

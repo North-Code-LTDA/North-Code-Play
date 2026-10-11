@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { PlaySquare, Loader2 } from 'lucide-react';
+import { PlaySquare, Loader2, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites } from '../hooks/useFavorites';
@@ -23,7 +23,7 @@ interface SeriesViewProps {
 }
 
 export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
-  const { seriesCategories, seriesStreams, allSeriesStreams, fetchSeriesStreams, loadingSeries, seriesError, credentials } = useXtreamContext();
+  const { seriesCategories, seriesStreams, allSeriesStreams, fetchSeriesStreams, loadingSeries, seriesError, categoriesError, retryCategories, credentials } = useXtreamContext();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
   const [displayCount, setDisplayCount] = useState(100);
@@ -168,6 +168,18 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
           <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de Séries</h2>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
+          {categoriesError && seriesCategories.length === 0 && (
+            <div className="p-3 mb-2 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-2">
+              <p className="text-xs text-red-400">{categoriesError}</p>
+              <button
+                onClick={() => retryCategories()}
+                className="flex items-center gap-1.5 px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg text-xs font-medium transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Tentar novamente
+              </button>
+            </div>
+          )}
           {loadingSeries && extendedCategories.length === 2 ? (
              <div className="flex items-center justify-center py-10">
                <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
@@ -192,6 +204,14 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
       <main ref={mainRef} className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
         {/* Mobile Categories Navbar */}
         <div className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
+          {categoriesError && seriesCategories.length === 0 && (
+            <button
+              onClick={() => retryCategories()}
+              className="shrink-0 snap-center px-4 py-2 rounded-full text-sm bg-red-500/20 text-red-300 font-medium flex items-center gap-1.5"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Recarregar categorias
+            </button>
+          )}
           {extendedCategories.map((cat) => (
             <button
               key={cat.category_id}

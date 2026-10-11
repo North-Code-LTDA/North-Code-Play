@@ -21,6 +21,9 @@ interface XtreamContextData {
   vodError: string | null;
   seriesError: string | null;
   categoriesError: string | null;
+  loadedLiveCatalog: boolean;
+  loadedVodCatalog: boolean;
+  loadedSeriesCatalog: boolean;
   fetchLiveStreams: (categoryId?: string) => Promise<void>;
   fetchVodStreams: (categoryId?: string) => Promise<void>;
   fetchSeriesStreams: (categoryId?: string) => Promise<void>;
@@ -49,9 +52,9 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
   const error = liveError || vodError || seriesError || categoriesError;
 
   // In-flight promise references to prevent concurrent duplicate full-catalog fetches
-  const inFlightLiveRef = useRef<Promise<void> | null>(null);
-  const inFlightVodRef = useRef<Promise<void> | null>(null);
-  const inFlightSeriesRef = useRef<Promise<void> | null>(null);
+  const inFlightLiveRef = useRef<Promise<LiveStream[]> | null>(null);
+  const inFlightVodRef = useRef<Promise<VodStream[]> | null>(null);
+  const inFlightSeriesRef = useRef<Promise<SeriesStream[]> | null>(null);
 
   // Catalog loaded flags to distinguish truly empty catalogs from not yet fetched
   const [loadedLiveCatalog, setLoadedLiveCatalog] = useState(false);
@@ -108,23 +111,33 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
   const [allVodStreams, setAllVodStreams] = useState<VodStream[]>([]);
   const [allSeriesStreams, setAllSeriesStreams] = useState<SeriesStream[]>([]);
 
+  const allLiveStreamsRef = useRef<LiveStream[]>([]);
+  const allVodStreamsRef = useRef<VodStream[]>([]);
+  const allSeriesStreamsRef = useRef<SeriesStream[]>([]);
+
   const fetchLiveStreams = useCallback(async (categoryId?: string) => {
     if (!credentials) return;
     
     // If we already have the full catalog loaded, just filter locally.
     if (loadedLiveCatalog) {
+      const source = allLiveStreamsRef.current.length > 0 ? allLiveStreamsRef.current : allLiveStreams;
       if (categoryId) {
-        setLiveStreams(allLiveStreams.filter(s => String(s.category_id) === String(categoryId)));
+        setLiveStreams(source.filter(s => String(s.category_id) === String(categoryId)));
       } else {
-        setLiveStreams(allLiveStreams);
+        setLiveStreams(source);
       }
       return;
     }
 
-    // If a full-catalog fetch is already in flight, reuse it
+    // If a full-catalog fetch is already in flight, await it and apply local filter
     if (inFlightLiveRef.current) {
       try {
-        await inFlightLiveRef.current;
+        const streams = await inFlightLiveRef.current;
+        if (categoryId) {
+          setLiveStreams(streams.filter(s => String(s.category_id) === String(categoryId)));
+        } else {
+          setLiveStreams(streams);
+        }
       } catch {
         // Handled in the original call
       }
@@ -137,6 +150,7 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
     const promise = (async () => {
       try {
         const streams = await XtreamService.getLiveStreams(credentials);
+        allLiveStreamsRef.current = streams;
         setAllLiveStreams(streams);
         setLoadedLiveCatalog(true);
         
@@ -145,8 +159,10 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
         } else {
           setLiveStreams(streams);
         }
+        return streams;
       } catch (err: any) {
         setLiveError(err.message || "Failed to load live streams.");
+        throw err;
       } finally {
         setLoadingLive(false);
         inFlightLiveRef.current = null;
@@ -154,24 +170,34 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
     })();
 
     inFlightLiveRef.current = promise;
-    await promise;
+    try {
+      await promise;
+    } catch {
+      // Handled in promise
+    }
   }, [credentials, loadedLiveCatalog, allLiveStreams]);
 
   const fetchVodStreams = useCallback(async (categoryId?: string) => {
     if (!credentials) return;
 
     if (loadedVodCatalog) {
+      const source = allVodStreamsRef.current.length > 0 ? allVodStreamsRef.current : allVodStreams;
       if (categoryId) {
-        setVodStreams(allVodStreams.filter(s => String(s.category_id) === String(categoryId)));
+        setVodStreams(source.filter(s => String(s.category_id) === String(categoryId)));
       } else {
-        setVodStreams(allVodStreams);
+        setVodStreams(source);
       }
       return;
     }
 
     if (inFlightVodRef.current) {
       try {
-        await inFlightVodRef.current;
+        const streams = await inFlightVodRef.current;
+        if (categoryId) {
+          setVodStreams(streams.filter(s => String(s.category_id) === String(categoryId)));
+        } else {
+          setVodStreams(streams);
+        }
       } catch {
         // Handled in original call
       }
@@ -184,6 +210,7 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
     const promise = (async () => {
       try {
         const streams = await XtreamService.getVodStreams(credentials);
+        allVodStreamsRef.current = streams;
         setAllVodStreams(streams);
         setLoadedVodCatalog(true);
         
@@ -192,8 +219,10 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
         } else {
           setVodStreams(streams);
         }
+        return streams;
       } catch (err: any) {
         setVodError(err.message || "Failed to load movies.");
+        throw err;
       } finally {
         setLoadingVod(false);
         inFlightVodRef.current = null;
@@ -201,24 +230,34 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
     })();
 
     inFlightVodRef.current = promise;
-    await promise;
+    try {
+      await promise;
+    } catch {
+      // Handled in promise
+    }
   }, [credentials, loadedVodCatalog, allVodStreams]);
 
   const fetchSeriesStreams = useCallback(async (categoryId?: string) => {
     if (!credentials) return;
     
     if (loadedSeriesCatalog) {
+      const source = allSeriesStreamsRef.current.length > 0 ? allSeriesStreamsRef.current : allSeriesStreams;
       if (categoryId) {
-        setSeriesStreams(allSeriesStreams.filter(s => String(s.category_id) === String(categoryId)));
+        setSeriesStreams(source.filter(s => String(s.category_id) === String(categoryId)));
       } else {
-        setSeriesStreams(allSeriesStreams);
+        setSeriesStreams(source);
       }
       return;
     }
 
     if (inFlightSeriesRef.current) {
       try {
-        await inFlightSeriesRef.current;
+        const streams = await inFlightSeriesRef.current;
+        if (categoryId) {
+          setSeriesStreams(streams.filter(s => String(s.category_id) === String(categoryId)));
+        } else {
+          setSeriesStreams(streams);
+        }
       } catch {
         // Handled in original call
       }
@@ -231,6 +270,7 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
     const promise = (async () => {
       try {
         const streams = await XtreamService.getSeries(credentials);
+        allSeriesStreamsRef.current = streams;
         setAllSeriesStreams(streams);
         setLoadedSeriesCatalog(true);
         
@@ -239,8 +279,10 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
         } else {
           setSeriesStreams(streams);
         }
+        return streams;
       } catch (err: any) {
         setSeriesError(err.message || "Failed to load series.");
+        throw err;
       } finally {
         setLoadingSeries(false);
         inFlightSeriesRef.current = null;
@@ -248,7 +290,11 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
     })();
 
     inFlightSeriesRef.current = promise;
-    await promise;
+    try {
+      await promise;
+    } catch {
+      // Handled in promise
+    }
   }, [credentials, loadedSeriesCatalog, allSeriesStreams]);
 
   return (
@@ -271,6 +317,9 @@ export function XtreamProvider({ children, credentials }: { children: React.Reac
       vodError,
       seriesError,
       categoriesError,
+      loadedLiveCatalog,
+      loadedVodCatalog,
+      loadedSeriesCatalog,
       fetchLiveStreams,
       fetchVodStreams,
       fetchSeriesStreams,
