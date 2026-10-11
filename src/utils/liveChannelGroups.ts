@@ -8,8 +8,8 @@ export interface ChannelVariant {
 }
 
 export interface LiveChannelGroup {
-  groupId: string; // Stable ID based on category, EPG, and normalized base name
-  displayName: string; // Preserves casing of baseName
+  groupId: string; // Serialized JSON tuple: ['group', categoryId, epgId, normalizedBaseName]
+  displayName: string; // Preserves original casing of baseName
   category_id: string | number;
   epg_channel_id?: string;
   stream_icon?: string;
@@ -88,9 +88,10 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
   }
 
   // Map to hold candidate buckets: key -> streams array
+  // bucketKey uses JSON.stringify([String(catId), epgId, normalizedBaseName]) for unambiguous separation
   const buckets = new Map<
     string,
-    { baseName: string; categoryId: string | number; epgId: string; streams: { stream: any; parsed: ParsedSuffixResult }[] }
+    { baseName: string; normalizedBaseName: string; categoryId: string | number; epgId: string; streams: { stream: any; parsed: ParsedSuffixResult }[] }
   >();
   const streamToBucketKey = new Map<any, string>();
 
@@ -100,11 +101,12 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
 
     if (parsed.isVariant && parsed.resolution) {
       const epgId = stream?.epg_channel_id ? String(stream.epg_channel_id).trim() : '';
-      const bucketKey = `${catId}_${epgId}_${parsed.normalizedBaseName}`;
+      const bucketKey = JSON.stringify([String(catId), epgId, parsed.normalizedBaseName]);
 
       if (!buckets.has(bucketKey)) {
         buckets.set(bucketKey, {
           baseName: parsed.baseName,
+          normalizedBaseName: parsed.normalizedBaseName,
           categoryId: catId,
           epgId,
           streams: [],
@@ -176,9 +178,8 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
         if (!primary) primary = variants.find((v) => v.resolution === '4K')?.stream;
         if (!primary) primary = stream;
 
-        // Stable groupId based on category, EPG, and normalized base name
-        const cleanBase = bucket.streams[0].parsed.normalizedBaseName.replace(/[^a-z0-9]/g, '_');
-        const groupId = `group_${bucket.categoryId}_${epgId || 'noepg'}_${cleanBase}`;
+        // Unequivocal groupId JSON tuple
+        const groupId = JSON.stringify(['group', String(bucket.categoryId), epgId, bucket.normalizedBaseName]);
 
         result.push({
           groupId,
@@ -198,8 +199,10 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
 
     // Single item (either no resolution variant, or only 1 resolution variant in bucket)
     const streamId = stream.stream_id || stream.id;
+    const groupId = JSON.stringify(['single', String(stream.category_id || 'default'), String(streamId)]);
+
     result.push({
-      groupId: `single_${stream.category_id || 'default'}_${streamId}`,
+      groupId,
       displayName: stream.name || 'Sem nome',
       category_id: stream.category_id,
       epg_channel_id: stream.epg_channel_id,

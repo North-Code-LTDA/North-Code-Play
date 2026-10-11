@@ -274,6 +274,7 @@ export function usePlaybackSession({
     }
 
     const currentSessionId = ++sessionIdRef.current;
+    const activeAttemptId = retryTrigger;
     activeAccountRef.current = credentials || null;
     cleanup();
     resetSessionMetrics();
@@ -307,7 +308,7 @@ export function usePlaybackSession({
       if (sessionIdRef.current !== currentSessionId) return;
       if (!hasReportedSuccess) {
         hasReportedSuccess = true;
-        onPlaybackSuccessRef.current?.(currentSessionId);
+        onPlaybackSuccessRef.current?.(activeAttemptId);
       }
     };
 
@@ -315,7 +316,7 @@ export function usePlaybackSession({
       if (sessionIdRef.current !== currentSessionId) return;
       if (!hasReportedFinalError) {
         hasReportedFinalError = true;
-        onPlaybackFinalErrorRef.current?.(msg, currentSessionId);
+        onPlaybackFinalErrorRef.current?.(msg, activeAttemptId);
       }
     };
 

@@ -511,9 +511,10 @@ export function VideoPlayer({
   };
 
   const handleRetry = () => {
-    setRetryTrigger((p) => p + 1);
     if (onRetry) {
       onRetry();
+    } else {
+      setRetryTrigger((p) => p + 1);
     }
   };
 

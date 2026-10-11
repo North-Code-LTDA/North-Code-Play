@@ -237,17 +237,44 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       return attemptedSet.has(sId) ? null : group.primaryStream;
     }
 
-    // Manual mode with specific stream ID or specific resolution
+    // 1. Manual mode handling:
     if (targetMode !== 'auto') {
-      const specificVariant = group.variants.find(
+      // Find the variant directly selected by user (by streamId, label, or resolution)
+      const selectedVariant = group.variants.find(
         (v) => String(v.streamId) === targetMode || v.label === targetMode || v.resolution === targetMode
       );
-      if (specificVariant && !attemptedSet.has(specificVariant.streamId)) {
-        return specificVariant.stream;
+
+      const targetResolution = selectedVariant ? selectedVariant.resolution : (targetMode as ResolutionQuality);
+
+      // First priority in manual mode: try the specific chosen stream if not yet attempted
+      if (selectedVariant && !attemptedSet.has(selectedVariant.streamId)) {
+        return selectedVariant.stream;
       }
+
+      // Second priority: try other untried streams of the SAME chosen resolution in original order
+      const sameResVariants = group.variants.filter((v) => v.resolution === targetResolution);
+      for (const v of sameResVariants) {
+        if (!attemptedSet.has(v.streamId)) {
+          return v.stream;
+        }
+      }
+
+      // Third priority: fallback to other resolutions in standard priority order FHD > HD > SD > 4K
+      const resolutionPriority: ResolutionQuality[] = ['FHD', 'HD', 'SD', '4K'];
+      for (const res of resolutionPriority) {
+        if (res === targetResolution) continue; // already exhausted above
+        const otherVariants = group.variants.filter((v) => v.resolution === res);
+        for (const v of otherVariants) {
+          if (!attemptedSet.has(v.streamId)) {
+            return v.stream;
+          }
+        }
+      }
+
+      return null;
     }
 
-    // Auto mode or fallback after manual mode failure:
+    // 2. Automatic mode handling:
     // Check session memory first
     const successfulId = sessionSuccessfulVariantsRef.current.get(group.groupId);
     if (successfulId && !attemptedSet.has(successfulId)) {
@@ -268,7 +295,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       }
     }
 
-    // Pick any untried variant remaining in group
+    // Pick any remaining untried variant in group
     for (const v of group.variants) {
       if (!attemptedSet.has(v.streamId)) {
         return v.stream;

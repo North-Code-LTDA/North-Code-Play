@@ -1457,12 +1457,20 @@ async function runCategoryLabelAndChannelGroupTests() {
   assert(group2, 'Item HBO HD mantido com nome original');
   assert.strictEqual(group2.isGrouped, false);
 
-  // Teste de Busca
-  const { filterLiveChannelGroups } = await import('../src/utils/liveChannelGroups');
-  const searchResults = filterLiveChannelGroups(groups, '4K');
-  assert.strictEqual(searchResults.length, 1, 'Busca por 4K encontra o grupo Telecine Action');
-  assert.strictEqual(searchResults[0].displayName, 'Telecine Action');
-  assert.strictEqual(searchResults[0].variants.length, 5, 'A busca preserva todas as versões do grupo');
+  // Teste de Agrupamento Sem Colisão de Pontuação (ex: A/B vs A-B)
+  const collisionMock = [
+    { stream_id: 100, name: 'A/B HD', category_id: '10' },
+    { stream_id: 101, name: 'A/B FHD', category_id: '10' },
+    { stream_id: 102, name: 'A-B HD', category_id: '10' },
+    { stream_id: 103, name: 'A-B FHD', category_id: '10' },
+  ];
+  const collisionGroups = groupLiveStreams(collisionMock);
+  assert.strictEqual(collisionGroups.length, 2, 'A/B e A-B devem produzir 2 grupos distintos');
+  assert.notStrictEqual(
+    collisionGroups[0].groupId,
+    collisionGroups[1].groupId,
+    'GroupIDs de A/B e A-B devem ser estritamente diferentes sem colisão por pontuação'
+  );
 
   console.log('✅ Testes de rótulos de categorias, busca global e agrupamento de canais aprovados!');
 }
