@@ -8,16 +8,51 @@ import {
 } from "../types";
 import { normalizeServerUrl } from "../utils/mediaUtils";
 
+export interface RequestOptions {
+  signal?: AbortSignal;
+}
+
 export class XtreamService {
+  private static readonly DEFAULT_TIMEOUT_MS = 25000;
+  private static readonly CATALOG_TIMEOUT_MS = 90000;
+
+  /**
+   * Helper to delay between attempts, respecting caller cancellation.
+   */
+  private static sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        return reject(new Error("Operação cancelada pelo usuário."));
+      }
+      const timer = setTimeout(() => {
+        if (signal) {
+          signal.removeEventListener("abort", onAbort);
+        }
+        resolve();
+      }, ms);
+
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new Error("Operação cancelada pelo usuário."));
+      };
+
+      if (signal) {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+  }
+
   /**
    * Performs direct HTTP/HTTPS GET requests from the user's browser directly to the Xtream provider.
-   * Uses URL and URLSearchParams to construct the query string.
+   * Applies at most ONE automatic retry for transient network errors or timeouts.
+   * Does NOT retry HTTP 4xx, invalid JSON, or intentional caller cancellation.
    */
   private static async request<T = any>(
     credentials: XtreamCredentials,
     action?: string,
     params: Record<string, string | number> = {},
-    timeoutMs: number = 60000
+    timeoutMs: number = XtreamService.DEFAULT_TIMEOUT_MS,
+    options?: RequestOptions
   ): Promise<T> {
     const cleanServerUrl = normalizeServerUrl(credentials.serverUrl);
     if (!cleanServerUrl) {
@@ -46,69 +81,144 @@ export class XtreamService {
       }
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const callerSignal = options?.signal;
+    const maxAttempts = 2;
 
-    try {
-      let response: Response;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (callerSignal?.aborted) {
+        throw new Error("Operação cancelada pelo usuário.");
+      }
+
+      const controller = new AbortController();
+      let didTimeout = false;
+      const timeoutId = setTimeout(() => {
+        didTimeout = true;
+        controller.abort();
+      }, timeoutMs);
+
+      const onCallerAbort = () => {
+        controller.abort();
+      };
+
+      if (callerSignal) {
+        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+
       try {
-        response = await fetch(targetUrl.toString(), {
-          method: "GET",
-          signal: controller.signal,
-        });
-      } catch (err: any) {
-        if (err.name === "AbortError" || controller.signal.aborted) {
-          throw new Error(
-            "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
+        let response: Response;
+        try {
+          response = await fetch(targetUrl.toString(), {
+            method: "GET",
+            signal: controller.signal,
+          });
+        } catch (err: any) {
+          if (callerSignal?.aborted) {
+            throw new Error("Operação cancelada pelo usuário.");
+          }
+          if (didTimeout) {
+            const timeoutError = new Error(
+              "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
+            );
+            (timeoutError as any).isTransient = true;
+            throw timeoutError;
+          }
+          const netError = new Error(
+            "Falha de rede ou bloqueio de CORS ao comunicar diretamente com o provedor. " +
+              "Verifique se o servidor está online e se permite requisições da web."
           );
+          (netError as any).isTransient = true;
+          throw netError;
         }
-        // Standard browser network error (often caused by CORS restrictions on the provider or mixed content)
-        throw new Error(
-          "Falha de rede ou bloqueio de CORS ao comunicar diretamente com o provedor. " +
-            "Verifique se o servidor está online e se permite requisições da web."
-        );
-      }
 
-      if (!response.ok) {
-        throw new Error(
-          `O servidor do provedor retornou HTTP ${response.status} (${response.statusText || "Erro"}).`
-        );
-      }
-
-      let textData: string;
-      try {
-        textData = await response.text();
-      } catch (err: any) {
-        if (err.name === "AbortError" || controller.signal.aborted) {
-          throw new Error(
-            "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
+        if (!response.ok) {
+          const status = response.status;
+          const isClientError = status >= 400 && status < 500;
+          const httpError = new Error(
+            `O servidor do provedor retornou HTTP ${status} (${response.statusText || "Erro"}).`
           );
+          (httpError as any).isClientError = isClientError;
+          (httpError as any).isTransient = !isClientError;
+          throw httpError;
         }
-        throw new Error("Falha ao ler os dados da resposta do provedor.");
-      }
 
-      if (!textData || !textData.trim()) {
-        return [] as unknown as T;
-      }
+        let textData: string;
+        try {
+          textData = await response.text();
+        } catch (err: any) {
+          if (callerSignal?.aborted) {
+            throw new Error("Operação cancelada pelo usuário.");
+          }
+          if (didTimeout) {
+            const timeoutError = new Error(
+              "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
+            );
+            (timeoutError as any).isTransient = true;
+            throw timeoutError;
+          }
+          const readError = new Error("Falha ao ler os dados da resposta do provedor.");
+          (readError as any).isTransient = true;
+          throw readError;
+        }
 
-      try {
-        return JSON.parse(textData) as T;
-      } catch {
-        throw new Error(
-          "O provedor retornou uma resposta em formato inválido (não é um JSON válido)."
-        );
+        if (!textData || !textData.trim()) {
+          return [] as unknown as T;
+        }
+
+        try {
+          return JSON.parse(textData) as T;
+        } catch {
+          const jsonError = new Error(
+            "O provedor retornou uma resposta em formato inválido (não é um JSON válido)."
+          );
+          (jsonError as any).isFatalFormat = true;
+          throw jsonError;
+        }
+      } catch (err: any) {
+        // Do not retry caller aborts
+        if (callerSignal?.aborted || err.message === "Operação cancelada pelo usuário.") {
+          throw err;
+        }
+        // Do not retry HTTP 4xx
+        if (err?.isClientError) {
+          throw err;
+        }
+        // Do not retry fatal format errors (malformed JSON)
+        if (err?.isFatalFormat) {
+          throw err;
+        }
+        // If this was the last attempt, rethrow error
+        if (attempt >= maxAttempts) {
+          throw err;
+        }
+        // Wait briefly before the single retry
+        await XtreamService.sleep(1000, callerSignal);
+      } finally {
+        clearTimeout(timeoutId);
+        if (callerSignal) {
+          callerSignal.removeEventListener("abort", onCallerAbort);
+        }
       }
-    } finally {
-      clearTimeout(timeoutId);
     }
+
+    throw new Error("Falha ao comunicar com o servidor do provedor.");
   }
 
   /**
    * 1. Authenticate user and retrieve general account/server properties.
    * Calls player_api.php?username=...&password=... without action.
+   * Uses default 25000ms timeout per attempt.
    */
-  static async authenticate(credentials: XtreamCredentials): Promise<XtreamAuthResponse> {
-    const data = await this.request<any>(credentials);
+  static async authenticate(
+    credentials: XtreamCredentials,
+    options?: RequestOptions
+  ): Promise<XtreamAuthResponse> {
+    const data = await this.request<any>(
+      credentials,
+      undefined,
+      {},
+      XtreamService.DEFAULT_TIMEOUT_MS,
+      options
+    );
 
     if (!data || typeof data !== "object") {
       throw new Error("Resposta inválida recebida do servidor do provedor.");
@@ -119,7 +229,6 @@ export class XtreamService {
     }
 
     const auth = data.user_info.auth;
-    // Validate auth: must not be 0, "0", or false
     if (auth === 0 || auth === "0" || auth === false || String(auth) === "0") {
       throw new Error("Usuário ou senha inválidos ou conta desativada.");
     }
@@ -135,80 +244,183 @@ export class XtreamService {
   }
 
   /**
-   * Fetch Live Categories
+   * Fetch Live Categories (25000ms)
    */
-  static async getLiveCategories(credentials: XtreamCredentials): Promise<Category[]> {
-    const data = await this.request<any>(credentials, "get_live_categories");
-    return Array.isArray(data) ? data : [];
-  }
-
-  /**
-   * Fetch Live Streams
-   */
-  static async getLiveStreams(credentials: XtreamCredentials, categoryId?: string): Promise<LiveStream[]> {
-    const params = categoryId ? { category_id: categoryId } : {};
-    const data = await this.request<any>(credentials, "get_live_streams", params);
-    return Array.isArray(data) ? data : [];
-  }
-
-  /**
-   * Fetch VOD Categories
-   */
-  static async getVodCategories(credentials: XtreamCredentials): Promise<Category[]> {
-    const data = await this.request<any>(credentials, "get_vod_categories");
-    return Array.isArray(data) ? data : [];
-  }
-
-  /**
-   * Fetch VOD Streams
-   */
-  static async getVodStreams(credentials: XtreamCredentials, categoryId?: string): Promise<VodStream[]> {
-    const params = categoryId ? { category_id: categoryId } : {};
-    const data = await this.request<any>(credentials, "get_vod_streams", params);
-    return Array.isArray(data) ? data : [];
-  }
-
-  /**
-   * Fetch VOD Info
-   */
-  static async getVodInfo(credentials: XtreamCredentials, vodId: string | number): Promise<any> {
-    const data = await this.request<any>(credentials, "get_vod_info", { vod_id: String(vodId) });
+  static async getLiveCategories(
+    credentials: XtreamCredentials,
+    options?: RequestOptions
+  ): Promise<Category[]> {
+    const data = await this.request<any>(
+      credentials,
+      "get_live_categories",
+      {},
+      XtreamService.DEFAULT_TIMEOUT_MS,
+      options
+    );
+    if (!Array.isArray(data)) {
+      throw new Error("Resposta inválida do provedor ao buscar categorias de TV (esperava-se uma lista).");
+    }
     return data;
   }
 
   /**
-   * Fetch Series Categories
+   * Fetch Live Streams (90000ms)
    */
-  static async getSeriesCategories(credentials: XtreamCredentials): Promise<Category[]> {
-    const data = await this.request<any>(credentials, "get_series_categories");
-    return Array.isArray(data) ? data : [];
-  }
-
-  /**
-   * Fetch Series
-   */
-  static async getSeries(credentials: XtreamCredentials, categoryId?: string): Promise<SeriesStream[]> {
+  static async getLiveStreams(
+    credentials: XtreamCredentials,
+    categoryId?: string,
+    options?: RequestOptions
+  ): Promise<LiveStream[]> {
     const params = categoryId ? { category_id: categoryId } : {};
-    const data = await this.request<any>(credentials, "get_series", params);
-    return Array.isArray(data) ? data : [];
-  }
-
-  /**
-   * Fetch Series Info (Episodes, Seasons, Details)
-   */
-  static async getSeriesInfo(credentials: XtreamCredentials, seriesId: string | number): Promise<any> {
-    const data = await this.request<any>(credentials, "get_series_info", { series_id: String(seriesId) });
+    const data = await this.request<any>(
+      credentials,
+      "get_live_streams",
+      params,
+      XtreamService.CATALOG_TIMEOUT_MS,
+      options
+    );
+    if (!Array.isArray(data)) {
+      throw new Error("Resposta inválida do provedor ao buscar canais ao vivo (esperava-se uma lista).");
+    }
     return data;
   }
 
   /**
-   * Fetch Short EPG for a stream
+   * Fetch VOD Categories (25000ms)
    */
-  static async getShortEpg(credentials: XtreamCredentials, streamId: string | number, limit: number = 10): Promise<any> {
-    const data = await this.request<any>(credentials, "get_short_epg", {
-      stream_id: String(streamId),
-      limit: String(limit),
-    });
+  static async getVodCategories(
+    credentials: XtreamCredentials,
+    options?: RequestOptions
+  ): Promise<Category[]> {
+    const data = await this.request<any>(
+      credentials,
+      "get_vod_categories",
+      {},
+      XtreamService.DEFAULT_TIMEOUT_MS,
+      options
+    );
+    if (!Array.isArray(data)) {
+      throw new Error("Resposta inválida do provedor ao buscar categorias de filmes (esperava-se uma lista).");
+    }
     return data;
+  }
+
+  /**
+   * Fetch VOD Streams (90000ms)
+   */
+  static async getVodStreams(
+    credentials: XtreamCredentials,
+    categoryId?: string,
+    options?: RequestOptions
+  ): Promise<VodStream[]> {
+    const params = categoryId ? { category_id: categoryId } : {};
+    const data = await this.request<any>(
+      credentials,
+      "get_vod_streams",
+      params,
+      XtreamService.CATALOG_TIMEOUT_MS,
+      options
+    );
+    if (!Array.isArray(data)) {
+      throw new Error("Resposta inválida do provedor ao buscar catálogo de filmes (esperava-se uma lista).");
+    }
+    return data;
+  }
+
+  /**
+   * Fetch VOD Info (25000ms)
+   */
+  static async getVodInfo(
+    credentials: XtreamCredentials,
+    vodId: string | number,
+    options?: RequestOptions
+  ): Promise<any> {
+    return this.request<any>(
+      credentials,
+      "get_vod_info",
+      { vod_id: String(vodId) },
+      XtreamService.DEFAULT_TIMEOUT_MS,
+      options
+    );
+  }
+
+  /**
+   * Fetch Series Categories (25000ms)
+   */
+  static async getSeriesCategories(
+    credentials: XtreamCredentials,
+    options?: RequestOptions
+  ): Promise<Category[]> {
+    const data = await this.request<any>(
+      credentials,
+      "get_series_categories",
+      {},
+      XtreamService.DEFAULT_TIMEOUT_MS,
+      options
+    );
+    if (!Array.isArray(data)) {
+      throw new Error("Resposta inválida do provedor ao buscar categorias de séries (esperava-se uma lista).");
+    }
+    return data;
+  }
+
+  /**
+   * Fetch Series (90000ms)
+   */
+  static async getSeries(
+    credentials: XtreamCredentials,
+    categoryId?: string,
+    options?: RequestOptions
+  ): Promise<SeriesStream[]> {
+    const params = categoryId ? { category_id: categoryId } : {};
+    const data = await this.request<any>(
+      credentials,
+      "get_series",
+      params,
+      XtreamService.CATALOG_TIMEOUT_MS,
+      options
+    );
+    if (!Array.isArray(data)) {
+      throw new Error("Resposta inválida do provedor ao buscar catálogo de séries (esperava-se uma lista).");
+    }
+    return data;
+  }
+
+  /**
+   * Fetch Series Info (25000ms)
+   */
+  static async getSeriesInfo(
+    credentials: XtreamCredentials,
+    seriesId: string | number,
+    options?: RequestOptions
+  ): Promise<any> {
+    return this.request<any>(
+      credentials,
+      "get_series_info",
+      { series_id: String(seriesId) },
+      XtreamService.DEFAULT_TIMEOUT_MS,
+      options
+    );
+  }
+
+  /**
+   * Fetch Short EPG (25000ms)
+   */
+  static async getShortEpg(
+    credentials: XtreamCredentials,
+    streamId: string | number,
+    limit: number = 10,
+    options?: RequestOptions
+  ): Promise<any> {
+    return this.request<any>(
+      credentials,
+      "get_short_epg",
+      {
+        stream_id: String(streamId),
+        limit: String(limit),
+      },
+      XtreamService.DEFAULT_TIMEOUT_MS,
+      options
+    );
   }
 }

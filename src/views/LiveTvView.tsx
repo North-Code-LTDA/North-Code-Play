@@ -15,7 +15,11 @@ interface LiveTvViewProps {
 }
 
 export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
-  const { liveCategories, liveStreams, allLiveStreams, fetchLiveStreams, loadingLive, liveError, categoriesError, retryCategories, error, credentials } = useXtreamContext();
+  const { 
+    liveCategories, liveStreams, allLiveStreams, fetchLiveStreams, 
+    loadingLive, liveError, liveCategoriesError, liveCategoriesStatus,
+    liveCatalogStatus, fetchLiveCategories, credentials 
+  } = useXtreamContext();
   
   // Navigation states
   const [leftPaneView, setLeftPaneView] = useState<'categories' | 'channels'>('categories');
@@ -248,11 +252,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
               <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de TV</h2>
             </div>
             <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar">
-              {categoriesError && liveCategories.length === 0 && (
+              {liveCategoriesError && liveCategories.length === 0 && (
                 <div className="p-3 mb-2 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-2">
-                  <p className="text-xs text-red-400">{categoriesError}</p>
+                  <p className="text-xs text-red-400">{liveCategoriesError}</p>
                   <button
-                    onClick={() => retryCategories()}
+                    onClick={() => fetchLiveCategories()}
                     className="flex items-center gap-1.5 px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg text-xs font-medium transition-colors"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
@@ -260,7 +264,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                   </button>
                 </div>
               )}
-              {loadingLive && extendedCategories.length === 2 ? (
+              {liveCategoriesStatus === 'loading' && extendedCategories.length === 2 ? (
                  <div className="flex items-center justify-center py-10">
                    <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
                  </div>
@@ -311,11 +315,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                     Tentar novamente
                   </button>
                 </div>
-              ) : loadingLive && filteredStreams.length === 0 ? (
+              ) : liveCatalogStatus === 'loading' && filteredStreams.length === 0 ? (
                  <div className="flex items-center justify-center py-10">
                    <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
                  </div>
-              ) : filteredStreams.length === 0 ? (
+              ) : liveCatalogStatus === 'ready' && !liveError && filteredStreams.length === 0 ? (
                  <div className="flex flex-col items-center justify-center py-10 text-nc-text-secondary">
                    <TvMinimalPlay className="w-12 h-12 mb-4 opacity-20" />
                    <p className="text-sm">Nenhum canal encontrado.</p>

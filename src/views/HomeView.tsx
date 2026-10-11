@@ -30,10 +30,13 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     liveStreams, vodStreams, seriesStreams, 
     allLiveStreams, allVodStreams, allSeriesStreams,
     liveCategories, vodCategories, seriesCategories,
-    loadingLive, loadingVod, loadingSeries, credentials,
-    liveError, vodError, seriesError, categoriesError,
-    loadedLiveCatalog, loadedVodCatalog, loadedSeriesCatalog,
-    fetchLiveStreams, fetchVodStreams, fetchSeriesStreams, retryCategories
+    credentials,
+    liveCatalogStatus, vodCatalogStatus, seriesCatalogStatus,
+    liveCategoriesStatus, vodCategoriesStatus, seriesCategoriesStatus,
+    liveCategoriesError, vodCategoriesError, seriesCategoriesError,
+    liveError, vodError, seriesError,
+    fetchLiveStreams, fetchVodStreams, fetchSeriesStreams,
+    fetchLiveCategories, fetchVodCategories, fetchSeriesCategories,
   } = useXtreamContext();
 
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
@@ -87,163 +90,134 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
     return result;
   }, [historyRecords, allVodStreams, allSeriesStreams]);
 
-  // Auto-Fetch data in background if empty and not yet loaded when landing on Dashboard
+  // Request catalog operations ONLY when status is idle.
+  // The context's concurrency coordinator controls execution order (max 2 concurrent).
+  // Ready (including ready with []) and error statuses are NOT re-requested automatically.
   useEffect(() => {
     if (credentials) {
-      if (!loadedLiveCatalog && !loadingLive && !liveError) fetchLiveStreams();
-      if (!loadedVodCatalog && !loadingVod && !vodError) fetchVodStreams();
-      if (!loadedSeriesCatalog && !loadingSeries && !seriesError) fetchSeriesStreams();
+      if (liveCatalogStatus === 'idle') {
+        fetchLiveStreams();
+      }
+      if (vodCatalogStatus === 'idle') {
+        fetchVodStreams();
+      }
+      if (seriesCatalogStatus === 'idle') {
+        fetchSeriesStreams();
+      }
     }
   }, [
     credentials,
-    loadedLiveCatalog,
-    loadedVodCatalog,
-    loadedSeriesCatalog,
-    loadingLive,
-    loadingVod,
-    loadingSeries,
-    liveError,
-    vodError,
-    seriesError,
+    liveCatalogStatus,
+    vodCatalogStatus,
+    seriesCatalogStatus,
     fetchLiveStreams,
     fetchVodStreams,
     fetchSeriesStreams,
   ]);
 
-  useEffect(() => {
-    setDisplayCount({ live: 24, vod: 24, series: 24 });
-  }, [searchQuery]);
-
-  const isLoading = loadingLive || loadingVod || loadingSeries;
-
-  // -- Destaques Live (Deterministic channels list preserving provider order) --
-  const topLiveStreams = useMemo(() => {
-    if (!allLiveStreams || allLiveStreams.length === 0) return [];
-    const result: any[] = [];
-    const seenIds = new Set<string | number>();
-
-    for (const channel of allLiveStreams) {
-      if (!channel) continue;
-      const id = channel.stream_id || channel.id;
-      const name = channel.name;
-      if (id === null || id === undefined || id === '') continue;
-      if (!name || typeof name !== 'string' || !name.trim()) continue;
-
-      if (!seenIds.has(id)) {
-        seenIds.add(id);
-        result.push(channel);
-      }
-    }
-    return result;
-  }, [allLiveStreams]);
-
-  // -- Ranking Universal --
-  const recentMovies = useMemo(() => {
-    return sortByYearAndRating(allVodStreams);
-  }, [allVodStreams]);
-
-  const recentSeries = useMemo(() => {
-    return sortByYearAndRating(allSeriesStreams);
-  }, [allSeriesStreams]);
-
-  // -- Fileiras de Categorias Reais VOD & Series --
-  const dynamicVodCategoryRows = useMemo(() => {
-    if (searchQuery || !vodCategories || vodCategories.length === 0 || !allVodStreams || allVodStreams.length === 0) {
-      return [];
-    }
-
-    const rows: { categoryId: string; title: string; items: any[] }[] = [];
-
-    for (const cat of vodCategories) {
-      if (!cat || !cat.category_id || !cat.category_name) continue;
-      const catId = String(cat.category_id);
-      
-      const itemsInCat = allVodStreams.filter(m => String(m.category_id) === catId);
-      if (itemsInCat.length > 0) {
-        const sorted = sortByYearAndRating(itemsInCat);
-        rows.push({
-          categoryId: `vod_cat_${catId}`,
-          title: `Filmes • ${cat.category_name}`,
-          items: sorted,
-        });
-      }
-
-      if (rows.length === 4) break;
-    }
-
-    return rows;
-  }, [searchQuery, vodCategories, allVodStreams]);
-
-  const dynamicSeriesCategoryRows = useMemo(() => {
-    if (searchQuery || !seriesCategories || seriesCategories.length === 0 || !allSeriesStreams || allSeriesStreams.length === 0) {
-      return [];
-    }
-
-    const rows: { categoryId: string; title: string; items: any[] }[] = [];
-
-    for (const cat of seriesCategories) {
-      if (!cat || !cat.category_id || !cat.category_name) continue;
-      const catId = String(cat.category_id);
-      
-      const itemsInCat = allSeriesStreams.filter(s => String(s.category_id) === catId);
-      if (itemsInCat.length > 0) {
-        const sorted = sortByYearAndRating(itemsInCat);
-        rows.push({
-          categoryId: `series_cat_${catId}`,
-          title: `Séries • ${cat.category_name}`,
-          items: sorted,
-        });
-      }
-
-      if (rows.length === 4) break;
-    }
-
-    return rows;
-  }, [searchQuery, seriesCategories, allSeriesStreams]);
-
-  // Search overrides
+  // Filter content based on search query
   const filteredLive = useMemo(() => {
-    if (!searchQuery) return topLiveStreams;
-    return allLiveStreams.filter(item => {
-      const name = item?.name;
-      return name && String(name).toLowerCase().includes(searchQuery.toLowerCase());
-    });
-  }, [topLiveStreams, allLiveStreams, searchQuery]);
+    if (!searchQuery) return allLiveStreams;
+    const q = searchQuery.toLowerCase();
+    return allLiveStreams.filter(s => s.name?.toLowerCase().includes(q));
+  }, [allLiveStreams, searchQuery]);
 
   const filteredVod = useMemo(() => {
-    if (!searchQuery) return recentMovies;
-    return allVodStreams.filter(item => {
-      const name = item?.name;
-      return name && String(name).toLowerCase().includes(searchQuery.toLowerCase());
-    });
-  }, [recentMovies, allVodStreams, searchQuery]);
+    if (!searchQuery) {
+      return sortByYearAndRating(allVodStreams);
+    }
+    const q = searchQuery.toLowerCase();
+    return sortByYearAndRating(
+      allVodStreams.filter(s => s.name?.toLowerCase().includes(q))
+    );
+  }, [allVodStreams, searchQuery]);
 
   const filteredSeries = useMemo(() => {
-    if (!searchQuery) return recentSeries;
-    return allSeriesStreams.filter(item => {
-      const name = item?.name;
-      return name && String(name).toLowerCase().includes(searchQuery.toLowerCase());
-    });
-  }, [recentSeries, allSeriesStreams, searchQuery]);
+    if (!searchQuery) {
+      return sortByYearAndRating(allSeriesStreams);
+    }
+    const q = searchQuery.toLowerCase();
+    return sortByYearAndRating(
+      allSeriesStreams.filter(s => s.name?.toLowerCase().includes(q))
+    );
+  }, [allSeriesStreams, searchQuery]);
+
+  // Dynamic category rows for Movies (limit to 4 categories with at least 4 items)
+  const dynamicVodCategoryRows = useMemo(() => {
+    if (allVodStreams.length === 0 || vodCategories.length === 0) return [];
+    
+    const excludedIds = new Set(['all', 'favorites', 'recent']);
+    const candidateCategories = vodCategories.filter(
+      (cat) => !excludedIds.has(String(cat.category_id))
+    );
+
+    const rows: { categoryId: string; title: string; items: any[] }[] = [];
+
+    for (const cat of candidateCategories) {
+      const itemsInCat = allVodStreams.filter(
+        (m: any) => String(m.category_id) === String(cat.category_id)
+      );
+
+      if (itemsInCat.length >= 4) {
+        rows.push({
+          categoryId: String(cat.category_id),
+          title: `Filmes: ${cat.category_name}`,
+          items: sortByYearAndRating(itemsInCat),
+        });
+      }
+
+      if (rows.length >= 4) break;
+    }
+
+    return rows;
+  }, [allVodStreams, vodCategories]);
+
+  // Dynamic category rows for Series (limit to 3 categories with at least 4 items)
+  const dynamicSeriesCategoryRows = useMemo(() => {
+    if (allSeriesStreams.length === 0 || seriesCategories.length === 0) return [];
+
+    const excludedIds = new Set(['all', 'favorites', 'recent']);
+    const candidateCategories = seriesCategories.filter(
+      (cat) => !excludedIds.has(String(cat.category_id))
+    );
+
+    const rows: { categoryId: string; title: string; items: any[] }[] = [];
+
+    for (const cat of candidateCategories) {
+      const itemsInCat = allSeriesStreams.filter(
+        (s: any) => String(s.category_id) === String(cat.category_id)
+      );
+
+      if (itemsInCat.length >= 4) {
+        rows.push({
+          categoryId: String(cat.category_id),
+          title: `Séries: ${cat.category_name}`,
+          items: sortByYearAndRating(itemsInCat),
+        });
+      }
+
+      if (rows.length >= 3) break;
+    }
+
+    return rows;
+  }, [allSeriesStreams, seriesCategories]);
 
   const handlePlayLive = (stream: any) => {
     if (!credentials) return;
     try {
+      const url = buildDirectMediaUrl(credentials, {
+        type: 'live',
+        streamId: stream.stream_id,
+        containerExtension: 'ts',
+      });
       recordPlaybackPosition(credentials, {
         id: stream.stream_id,
         type: 'live',
       });
-      setHomePlayError(null);
-      setRetryAction(null);
-      const url = buildDirectMediaUrl(credentials, {
-        type: 'live',
-        streamId: stream.stream_id,
-        allowedOutputFormats: credentials.allowed_output_formats,
-      });
-      onPlay(url, stream.name, 0, stream.stream_id, 'live', stream.name);
+      onPlay(url, stream.name, 0, stream.stream_id, 'live', stream.name, stream.epg_title || stream.name);
     } catch (err: any) {
       console.error('Erro ao iniciar canal ao vivo:', err.message);
-      setHomePlayError(err?.message || 'Falha ao iniciar transmissão ao vivo.');
+      setHomePlayError(err?.message || 'Falha ao iniciar canal.');
       setRetryAction(() => () => handlePlayLive(stream));
     }
   };
@@ -251,12 +225,14 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const handlePlayVod = (stream: any) => {
     if (!credentials) return;
     try {
-      setHomePlayError(null);
-      setRetryAction(null);
       const url = buildDirectMediaUrl(credentials, {
         type: 'movie',
         streamId: stream.stream_id,
-        containerExtension: stream.container_extension || "mp4",
+        containerExtension: stream.container_extension || 'mp4',
+      });
+      recordPlaybackPosition(credentials, {
+        id: stream.stream_id,
+        type: 'movie',
       });
       onPlay(url, stream.name, 0, stream.stream_id, 'movie');
     } catch (err: any) {
@@ -265,17 +241,6 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
       setRetryAction(() => () => handlePlayVod(stream));
     }
   };
-
-  const hasAnyContent = allVodStreams.length > 0 || allSeriesStreams.length > 0 || allLiveStreams.length > 0;
-  const isInitialLoading = (loadingLive || loadingVod || loadingSeries) && !hasAnyContent && !liveError && !vodError && !seriesError && !categoriesError;
-
-  if (isInitialLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center min-h-screen">
-        <Loader2 className="w-12 h-12 animate-spin text-nc-text-secondary" />
-      </div>
-    );
-  }
 
   // Combine VOD and Series for Hero banner
   const contentForHero = [...allVodStreams, ...allSeriesStreams];
@@ -301,6 +266,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
       />
 
       <div className="px-6 md:px-12 pb-12 gap-8 flex flex-col relative z-20 mt-4 md:mt-8 lg:mt-16 xl:mt-24 shrink-0">
+        {/* Continue Watching Row */}
         {continueWatching.length > 0 && (
           <HorizontalRow 
              title="Continuar Assistindo"
@@ -320,14 +286,45 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           />
         )}
 
-        {categoriesError && (liveCategories.length === 0 || vodCategories.length === 0 || seriesCategories.length === 0) && (
+        {/* Specific Category Error Banners */}
+        {liveCategoriesError && liveCategories.length === 0 && (
           <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
             <div className="flex items-center gap-2 text-red-400">
               <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar categorias: {categoriesError}</span>
+              <span>Falha ao carregar categorias de TV: {liveCategoriesError}</span>
             </div>
             <button
-              onClick={() => retryCategories()}
+              onClick={() => fetchLiveCategories()}
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+            </button>
+          </div>
+        )}
+
+        {vodCategoriesError && vodCategories.length === 0 && (
+          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-red-400">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>Falha ao carregar categorias de filmes: {vodCategoriesError}</span>
+            </div>
+            <button
+              onClick={() => fetchVodCategories()}
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+            </button>
+          </div>
+        )}
+
+        {seriesCategoriesError && seriesCategories.length === 0 && (
+          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-red-400">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span>Falha ao carregar categorias de séries: {seriesCategoriesError}</span>
+            </div>
+            <button
+              onClick={() => fetchSeriesCategories()}
               className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
@@ -335,7 +332,15 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           </div>
         )}
         
-        {liveError && allLiveStreams.length === 0 && (
+        {/* Live TV Section: Discrete loading, Error with Retry, or Content */}
+        {liveCatalogStatus === 'loading' && allLiveStreams.length === 0 && (
+          <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
+            <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
+            <span>Carregando canais ao vivo...</span>
+          </div>
+        )}
+
+        {liveCatalogStatus === 'error' && allLiveStreams.length === 0 && (
           <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
             <div className="flex items-center gap-2 text-red-400">
               <AlertCircle className="w-5 h-5 shrink-0" />
@@ -359,7 +364,15 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           />
         )}
         
-        {vodError && allVodStreams.length === 0 && (
+        {/* Movies Section: Discrete loading, Error with Retry, or Content */}
+        {vodCatalogStatus === 'loading' && allVodStreams.length === 0 && (
+          <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
+            <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
+            <span>Carregando filmes em destaque...</span>
+          </div>
+        )}
+
+        {vodCatalogStatus === 'error' && allVodStreams.length === 0 && (
           <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
             <div className="flex items-center gap-2 text-red-400">
               <AlertCircle className="w-5 h-5 shrink-0" />
@@ -383,7 +396,15 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           />
         )}
         
-        {seriesError && allSeriesStreams.length === 0 && (
+        {/* Series Section: Discrete loading, Error with Retry, or Content */}
+        {seriesCatalogStatus === 'loading' && allSeriesStreams.length === 0 && (
+          <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
+            <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
+            <span>Carregando séries em destaque...</span>
+          </div>
+        )}
+
+        {seriesCatalogStatus === 'error' && allSeriesStreams.length === 0 && (
           <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
             <div className="flex items-center gap-2 text-red-400">
               <AlertCircle className="w-5 h-5 shrink-0" />
@@ -407,6 +428,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           />
         )}
 
+        {/* Dynamic Category Rows */}
         {!searchQuery && dynamicVodCategoryRows.map((row) => (
           <div key={row.categoryId} className="w-full">
             <HorizontalRow 
@@ -447,8 +469,8 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
             seriesId={selectedSeries.series_id || selectedSeries.id}
             seriesName={selectedSeries.name}
             seriesCover={selectedSeries.cover}
-            onClose={() => setSelectedSeries(null)}
-            onPlay={onPlay}
+            onClose={() => setSelectedSeries(null)} 
+            onPlay={onPlay} 
           />
         )}
       </AnimatePresence>
