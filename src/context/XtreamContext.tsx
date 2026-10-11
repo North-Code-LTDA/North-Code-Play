@@ -118,6 +118,7 @@ export function XtreamProvider({
     useState<OperationStatus>("idle");
   const [seriesCategoriesStatus, setSeriesCategoriesStatus] =
     useState<OperationStatus>("idle");
+
   const [liveCatalogStatus, setLiveCatalogStatus] =
     useState<OperationStatus>("idle");
   const [vodCatalogStatus, setVodCatalogStatus] =
@@ -160,9 +161,64 @@ export function XtreamProvider({
   const queueRef = useRef<QueueItem[]>([]);
   const pendingSetRef = useRef<Set<OperationType>>(new Set());
 
+  // Helpers to update operation status and errors immediately
+  const setOperationStatus = useCallback(
+    (type: OperationType, status: OperationStatus) => {
+      switch (type) {
+        case "live_categories":
+          setLiveCategoriesStatus(status);
+          break;
+        case "vod_categories":
+          setVodCategoriesStatus(status);
+          break;
+        case "series_categories":
+          setSeriesCategoriesStatus(status);
+          break;
+        case "live_catalog":
+          setLiveCatalogStatus(status);
+          break;
+        case "vod_catalog":
+          setVodCatalogStatus(status);
+          break;
+        case "series_catalog":
+          setSeriesCatalogStatus(status);
+          break;
+      }
+    },
+    []
+  );
+
+  const clearOperationError = useCallback((type: OperationType) => {
+    switch (type) {
+      case "live_categories":
+        setLiveCategoriesError(null);
+        break;
+      case "vod_categories":
+        setVodCategoriesError(null);
+        break;
+      case "series_categories":
+        setSeriesCategoriesError(null);
+        break;
+      case "live_catalog":
+        setLiveError(null);
+        break;
+      case "vod_catalog":
+        setVodError(null);
+        break;
+      case "series_catalog":
+        setSeriesError(null);
+        break;
+    }
+  }, []);
+
   // Pump queue to execute next available task when slots are free
   const processQueue = useCallback(() => {
-    while (activeCountRef.current < MAX_CONCURRENT && queueRef.current.length > 0) {
+    const queueSession = sessionRef.current;
+    while (
+      activeCountRef.current < MAX_CONCURRENT &&
+      queueRef.current.length > 0
+    ) {
+      if (sessionRef.current !== queueSession) break;
       // Sort queue by priority descending (higher priority first)
       queueRef.current.sort((a, b) => b.priority - a.priority);
       const nextItem = queueRef.current.shift();
@@ -173,18 +229,23 @@ export function XtreamProvider({
 
       (async () => {
         try {
-          if (currentSignal?.aborted) {
-            throw new Error("Operação cancelada pelo usuário.");
+          if (currentSignal?.aborted || sessionRef.current !== queueSession) {
+            nextItem.resolve();
+            return;
           }
           await nextItem.run(currentSignal || new AbortController().signal);
           nextItem.resolve();
-        } catch (err) {
-          nextItem.reject(err);
+        } catch {
+          // Internal catch ensures tasks don't leave unhandled promise rejections
+          nextItem.resolve();
         } finally {
-          activeCountRef.current--;
-          pendingSetRef.current.delete(nextItem.type);
-          inFlightPromisesRef.current.delete(nextItem.type);
-          processQueue();
+          // CRITICAL: Only mutate counters and trigger processQueue if session is still current
+          if (sessionRef.current === queueSession) {
+            activeCountRef.current = Math.max(0, activeCountRef.current - 1);
+            pendingSetRef.current.delete(nextItem.type);
+            inFlightPromisesRef.current.delete(nextItem.type);
+            processQueue();
+          }
         }
       })();
     }
@@ -192,7 +253,7 @@ export function XtreamProvider({
 
   /**
    * Enqueues an operation with concurrency coordination and deduplication.
-   * Registers operation as pending BEFORE enqueuing so concurrent calls do not create duplicates.
+   * Registers operation as loading immediately upon enqueuing.
    */
   const enqueueOperation = useCallback(
     (
@@ -211,7 +272,9 @@ export function XtreamProvider({
         return existingPromise;
       }
 
-      // Mark as pending immediately to avoid race conditions
+      // Mark status as loading and clear error IMMEDIATELY upon enqueuing
+      setOperationStatus(type, "loading");
+      clearOperationError(type);
       pendingSetRef.current.add(type);
 
       let taskResolve!: () => void;
@@ -235,7 +298,7 @@ export function XtreamProvider({
       processQueue();
       return promise;
     },
-    [processQueue]
+    [processQueue, setOperationStatus, clearOperationError]
   );
 
   // Reset and cancel all work on credentials change or unmount
@@ -248,10 +311,14 @@ export function XtreamProvider({
     abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
 
-    // Clear queue and pending tasks
-    queueRef.current.forEach((item) =>
-      item.reject(new Error("Conta alterada ou desfeita."))
-    );
+    // Clear queue and pending tasks cleanly without emitting unhandled promise rejections
+    queueRef.current.forEach((item) => {
+      try {
+        item.resolve();
+      } catch {
+        // ignore
+      }
+    });
     queueRef.current = [];
     pendingSetRef.current.clear();
     inFlightPromisesRef.current.clear();
@@ -294,11 +361,8 @@ export function XtreamProvider({
     if (!credentials) return;
 
     // Queue initial category fetches with controlled priority: Live TV first (priority 6), VOD (4), Series (3)
-    // They are queued with max 2 active operations without blocking or locking out user requests
     enqueueOperation("live_categories", 6, async (signal) => {
       if (sessionRef.current !== currentSession) return;
-      setLiveCategoriesStatus("loading");
-      setLiveCategoriesError(null);
       try {
         const cats = await XtreamService.getLiveCategories(credentials, {
           signal,
@@ -316,8 +380,6 @@ export function XtreamProvider({
 
     enqueueOperation("vod_categories", 4, async (signal) => {
       if (sessionRef.current !== currentSession) return;
-      setVodCategoriesStatus("loading");
-      setVodCategoriesError(null);
       try {
         const cats = await XtreamService.getVodCategories(credentials, {
           signal,
@@ -335,8 +397,6 @@ export function XtreamProvider({
 
     enqueueOperation("series_categories", 3, async (signal) => {
       if (sessionRef.current !== currentSession) return;
-      setSeriesCategoriesStatus("loading");
-      setSeriesCategoriesError(null);
       try {
         const cats = await XtreamService.getSeriesCategories(credentials, {
           signal,
@@ -363,8 +423,6 @@ export function XtreamProvider({
     const currentSession = sessionRef.current;
     return enqueueOperation("live_categories", 100, async (signal) => {
       if (sessionRef.current !== currentSession) return;
-      setLiveCategoriesStatus("loading");
-      setLiveCategoriesError(null);
       try {
         const cats = await XtreamService.getLiveCategories(credentials, {
           signal,
@@ -377,7 +435,6 @@ export function XtreamProvider({
         const msg = err.message || "Falha ao carregar categorias de TV.";
         setLiveCategoriesError(msg);
         setLiveCategoriesStatus("error");
-        throw err;
       }
     });
   }, [credentials, enqueueOperation]);
@@ -387,8 +444,6 @@ export function XtreamProvider({
     const currentSession = sessionRef.current;
     return enqueueOperation("vod_categories", 100, async (signal) => {
       if (sessionRef.current !== currentSession) return;
-      setVodCategoriesStatus("loading");
-      setVodCategoriesError(null);
       try {
         const cats = await XtreamService.getVodCategories(credentials, {
           signal,
@@ -401,7 +456,6 @@ export function XtreamProvider({
         const msg = err.message || "Falha ao carregar categorias de filmes.";
         setVodCategoriesError(msg);
         setVodCategoriesStatus("error");
-        throw err;
       }
     });
   }, [credentials, enqueueOperation]);
@@ -411,8 +465,6 @@ export function XtreamProvider({
     const currentSession = sessionRef.current;
     return enqueueOperation("series_categories", 100, async (signal) => {
       if (sessionRef.current !== currentSession) return;
-      setSeriesCategoriesStatus("loading");
-      setSeriesCategoriesError(null);
       try {
         const cats = await XtreamService.getSeriesCategories(credentials, {
           signal,
@@ -425,7 +477,6 @@ export function XtreamProvider({
         const msg = err.message || "Falha ao carregar categorias de séries.";
         setSeriesCategoriesError(msg);
         setSeriesCategoriesStatus("error");
-        throw err;
       }
     });
   }, [credentials, enqueueOperation]);
@@ -464,8 +515,6 @@ export function XtreamProvider({
 
       return enqueueOperation("live_catalog", priority, async (signal) => {
         if (sessionRef.current !== currentSession) return;
-        setLiveCatalogStatus("loading");
-        setLiveError(null);
         try {
           const streams = await XtreamService.getLiveStreams(credentials, undefined, {
             signal,
@@ -489,7 +538,6 @@ export function XtreamProvider({
           const msg = err.message || "Falha ao carregar canais ao vivo.";
           setLiveError(msg);
           setLiveCatalogStatus("error");
-          throw err;
         }
       });
     },
@@ -521,8 +569,6 @@ export function XtreamProvider({
 
       return enqueueOperation("vod_catalog", priority, async (signal) => {
         if (sessionRef.current !== currentSession) return;
-        setVodCatalogStatus("loading");
-        setVodError(null);
         try {
           const streams = await XtreamService.getVodStreams(credentials, undefined, {
             signal,
@@ -546,7 +592,6 @@ export function XtreamProvider({
           const msg = err.message || "Falha ao carregar filmes.";
           setVodError(msg);
           setVodCatalogStatus("error");
-          throw err;
         }
       });
     },
@@ -578,8 +623,6 @@ export function XtreamProvider({
 
       return enqueueOperation("series_catalog", priority, async (signal) => {
         if (sessionRef.current !== currentSession) return;
-        setSeriesCatalogStatus("loading");
-        setSeriesError(null);
         try {
           const streams = await XtreamService.getSeries(credentials, undefined, {
             signal,
@@ -603,7 +646,6 @@ export function XtreamProvider({
           const msg = err.message || "Falha ao carregar séries.";
           setSeriesError(msg);
           setSeriesCatalogStatus("error");
-          throw err;
         }
       });
     },

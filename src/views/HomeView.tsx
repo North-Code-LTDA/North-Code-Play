@@ -96,13 +96,13 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   useEffect(() => {
     if (credentials) {
       if (liveCatalogStatus === 'idle') {
-        fetchLiveStreams();
+        fetchLiveStreams().catch(() => {});
       }
       if (vodCatalogStatus === 'idle') {
-        fetchVodStreams();
+        fetchVodStreams().catch(() => {});
       }
       if (seriesCatalogStatus === 'idle') {
-        fetchSeriesStreams();
+        fetchSeriesStreams().catch(() => {});
       }
     }
   }, [
@@ -294,7 +294,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
               <span>Falha ao carregar categorias de TV: {liveCategoriesError}</span>
             </div>
             <button
-              onClick={() => fetchLiveCategories()}
+              onClick={() => { fetchLiveCategories().catch(() => {}); }}
               className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
@@ -309,7 +309,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
               <span>Falha ao carregar categorias de filmes: {vodCategoriesError}</span>
             </div>
             <button
-              onClick={() => fetchVodCategories()}
+              onClick={() => { fetchVodCategories().catch(() => {}); }}
               className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
@@ -324,7 +324,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
               <span>Falha ao carregar categorias de séries: {seriesCategoriesError}</span>
             </div>
             <button
-              onClick={() => fetchSeriesCategories()}
+              onClick={() => { fetchSeriesCategories().catch(() => {}); }}
               className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
@@ -333,7 +333,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         )}
         
         {/* Live TV Section: Discrete loading, Error with Retry, or Content */}
-        {liveCatalogStatus === 'loading' && allLiveStreams.length === 0 && (
+        {(liveCatalogStatus === 'loading' || (credentials && liveCatalogStatus === 'idle')) && allLiveStreams.length === 0 && (
           <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
             <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
             <span>Carregando canais ao vivo...</span>
@@ -347,7 +347,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
               <span>Falha ao carregar canais ao vivo: {liveError}</span>
             </div>
             <button
-              onClick={() => fetchLiveStreams()}
+              onClick={() => { fetchLiveStreams().catch(() => {}); }}
               className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
@@ -365,7 +365,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         )}
         
         {/* Movies Section: Discrete loading, Error with Retry, or Content */}
-        {vodCatalogStatus === 'loading' && allVodStreams.length === 0 && (
+        {(vodCatalogStatus === 'loading' || (credentials && vodCatalogStatus === 'idle')) && allVodStreams.length === 0 && (
           <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
             <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
             <span>Carregando filmes em destaque...</span>
@@ -379,7 +379,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
               <span>Falha ao carregar filmes: {vodError}</span>
             </div>
             <button
-              onClick={() => fetchVodStreams()}
+              onClick={() => { fetchVodStreams().catch(() => {}); }}
               className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
@@ -397,7 +397,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         )}
         
         {/* Series Section: Discrete loading, Error with Retry, or Content */}
-        {seriesCatalogStatus === 'loading' && allSeriesStreams.length === 0 && (
+        {(seriesCatalogStatus === 'loading' || (credentials && seriesCatalogStatus === 'idle')) && allSeriesStreams.length === 0 && (
           <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
             <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
             <span>Carregando séries em destaque...</span>
@@ -411,7 +411,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
               <span>Falha ao carregar séries: {seriesError}</span>
             </div>
             <button
-              onClick={() => fetchSeriesStreams()}
+              onClick={() => { fetchSeriesStreams().catch(() => {}); }}
               className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
