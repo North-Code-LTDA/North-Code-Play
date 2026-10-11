@@ -244,9 +244,49 @@ export function useFavorites(overrideCredentials?: XtreamCredentials | null) {
     [accountKey, favorites]
   );
 
+  const toggleGroupFavorites = useCallback(
+    (streamIdsToRemove: (string | number)[], itemToAdd?: FavoriteItem): boolean => {
+      if (!accountKey) {
+        setFavoriteError('Não foi possível salvar os favoritos neste dispositivo. Tente novamente.');
+        return false;
+      }
+
+      // Fresh read to verify storage access
+      const readRes = readStoredFavorites(accountKey);
+      if (!readRes.success) {
+        setFavoriteError('Não foi possível salvar os favoritos neste dispositivo. Tente novamente.');
+        return false;
+      }
+
+      const current = readRes.items;
+      const removeSet = new Set(streamIdsToRemove.map((id) => String(id)));
+
+      // Remove any favorite items whose id is in removeSet and type is live
+      let updated = current.filter(
+        (fav) => !(fav && fav.type === 'live' && removeSet.has(String(fav.id)))
+      );
+
+      // If adding a favorite for the group
+      if (itemToAdd && itemToAdd.id !== undefined && itemToAdd.type) {
+        updated = [itemToAdd, ...updated];
+      }
+
+      const ok = saveFavoritesForAccount(accountKey, updated);
+      if (!ok) {
+        setFavoriteError('Não foi possível salvar os favoritos neste dispositivo. Tente novamente.');
+        return false;
+      }
+
+      setFavoriteError(null);
+      return true;
+    },
+    [accountKey]
+  );
+
   return {
     favorites,
     toggleFavorite,
+    toggleGroupFavorites,
     isFavorite,
     getFavoritesByType,
     accountKey,

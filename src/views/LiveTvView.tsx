@@ -38,7 +38,8 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   // Group selection & variant selection state
   const [selectedGroup, setSelectedGroup] = useState<LiveChannelGroup | null>(null);
   const [activeVariantStream, setActiveVariantStream] = useState<any | null>(null);
-  const [selectedResolutionMode, setSelectedResolutionMode] = useState<'auto' | ResolutionQuality>('auto');
+  const [selectedResolutionMode, setSelectedResolutionMode] = useState<'auto' | string>('auto');
+  const [attemptTrigger, setAttemptTrigger] = useState(0);
   
   const [displayCount, setDisplayCount] = useState(100);
   
@@ -46,7 +47,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const [epgData, setEpgData] = useState<any[]>([]);
   const [loadingEpg, setLoadingEpg] = useState(false);
 
-  const { favorites, isFavorite, toggleFavorite, favoriteError, clearFavoriteError } = useFavorites();
+  const { favorites, isFavorite, toggleFavorite, toggleGroupFavorites, favoriteError, clearFavoriteError } = useFavorites();
   const [favActionError, setFavActionError] = useState<string | null>(null);
 
   const historyRecords = useAccountPlaybackHistory(credentials);
@@ -56,6 +57,21 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const attemptedStreamIdsRef = useRef<Set<string | number>>(new Set());
   const attemptIdRef = useRef<number>(0);
   const fallbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Reset active attempt and memory when active credentials change
+  useEffect(() => {
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+    attemptIdRef.current++;
+    sessionSuccessfulVariantsRef.current.clear();
+    attemptedStreamIdsRef.current.clear();
+    setSelectedGroup(null);
+    setActiveVariantStream(null);
+    setMiniPlayerUrl('');
+    setMiniPlayerError(null);
+  }, [credentials]);
 
   useEffect(() => {
     if (favActionError) {
@@ -76,10 +92,42 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     }
   };
 
+  // Handle group favorite toggle
+  const handleToggleGroupFavorite = (group: LiveChannelGroup) => {
+    const groupFavIds = group.allStreams
+      .map((s) => String(s.stream_id || s.id))
+      .filter((id) => isFavorite(id, 'live'));
+
+    if (groupFavIds.length > 0) {
+      // Remove all favorited stream IDs belonging to this group in a single atomic operation
+      const ok = toggleGroupFavorites(groupFavIds);
+      if (!ok) {
+        setFavActionError('Não foi possível salvar os favoritos neste dispositivo. Tente novamente.');
+      } else {
+        setFavActionError(null);
+      }
+    } else {
+      // Add one representative favorite
+      const repStream = group.primaryStream;
+      const repId = repStream.stream_id || repStream.id;
+      const ok = toggleGroupFavorites([], {
+        id: repId,
+        name: group.displayName,
+        cover: group.stream_icon || '',
+        type: 'live',
+      });
+      if (!ok) {
+        setFavActionError('Não foi possível salvar os favoritos neste dispositivo. Tente novamente.');
+      } else {
+        setFavActionError(null);
+      }
+    }
+  };
+
   const favoriteChannels = useMemo(() => {
     return favorites
-      .filter(f => f.type === 'live')
-      .map(f => allLiveStreams.find(s => String(s.stream_id || s.id) === String(f.id)))
+      .filter((f) => f.type === 'live')
+      .map((f) => allLiveStreams.find((s) => String(s.stream_id || s.id) === String(f.id)))
       .filter(Boolean);
   }, [favorites, allLiveStreams]);
 
@@ -109,7 +157,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const extendedCategories = useMemo(() => {
     const virtualCats = [
       { category_id: 'nc_recent', category_name: 'Assistidos Recentemente' },
-      { category_id: 'nc_fav', category_name: 'Canais Favoritos' }
+      { category_id: 'nc_fav', category_name: 'Canais Favoritos' },
     ];
     return [...virtualCats, ...liveCategories];
   }, [liveCategories]);
@@ -138,17 +186,18 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   }, [searchQuery]);
 
   const rawFilteredStreams = useMemo(() => {
-    if (searchQuery) {
-      return allLiveStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
-    }
     if (selectedCategoryId === 'nc_recent') return recentChannels;
     if (selectedCategoryId === 'nc_fav') return favoriteChannels;
-
     return liveStreams;
-  }, [searchQuery, selectedCategoryId, recentChannels, favoriteChannels, liveStreams, allLiveStreams]);
+  }, [selectedCategoryId, recentChannels, favoriteChannels, liveStreams]);
 
-  // Groups streams in categories, respecting virtual categories
+  // Groups streams. When searchQuery is active, groups ALL account streams globally.
   const groupedChannels = useMemo(() => {
+    if (searchQuery && searchQuery.trim().length > 0) {
+      const allGroups = groupLiveStreams(allLiveStreams);
+      return filterLiveChannelGroups(allGroups, searchQuery);
+    }
+
     if (selectedCategoryId === 'nc_recent' || selectedCategoryId === 'nc_fav') {
       return rawFilteredStreams.map((stream) => {
         const sId = stream.stream_id || stream.id;
@@ -166,12 +215,8 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       });
     }
 
-    const rawGroups = groupLiveStreams(rawFilteredStreams);
-    if (searchQuery) {
-      return filterLiveChannelGroups(rawGroups, searchQuery);
-    }
-    return rawGroups;
-  }, [rawFilteredStreams, selectedCategoryId, searchQuery]);
+    return groupLiveStreams(rawFilteredStreams);
+  }, [rawFilteredStreams, allLiveStreams, selectedCategoryId, searchQuery]);
 
   const displayedGroups = groupedChannels.slice(0, displayCount);
 
@@ -183,7 +228,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   // Helper to pick next variant in group
   const pickVariantForGroup = useCallback((
     group: LiveChannelGroup,
-    resMode: 'auto' | ResolutionQuality,
+    targetMode: string,
     attemptedSet: Set<string | number>
   ): any | null => {
     if (!group) return null;
@@ -192,32 +237,32 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       return attemptedSet.has(sId) ? null : group.primaryStream;
     }
 
-    if (resMode !== 'auto') {
-      const matchingVariant = group.variants.find((v) => v.resolution === resMode);
-      if (matchingVariant) {
-        const sId = matchingVariant.streamId;
-        if (!attemptedSet.has(sId)) {
-          return matchingVariant.stream;
-        }
+    // Manual mode with specific stream ID or specific resolution
+    if (targetMode !== 'auto') {
+      const specificVariant = group.variants.find(
+        (v) => String(v.streamId) === targetMode || v.label === targetMode || v.resolution === targetMode
+      );
+      if (specificVariant && !attemptedSet.has(specificVariant.streamId)) {
+        return specificVariant.stream;
       }
     }
 
-    // Auto mode: check session memory first
+    // Auto mode or fallback after manual mode failure:
+    // Check session memory first
     const successfulId = sessionSuccessfulVariantsRef.current.get(group.groupId);
     if (successfulId && !attemptedSet.has(successfulId)) {
-      const recordedVariant = group.variants.find((v) => v.streamId === successfulId);
+      const recordedVariant = group.variants.find((v) => String(v.streamId) === String(successfulId));
       if (recordedVariant) {
         return recordedVariant.stream;
       }
     }
 
     // Stability priority: FHD > HD > SD > 4K
-    const stabilityPriority: ResolutionQuality[] = ['FHD', 'HD', 'SD', '4K'];
-    for (const res of stabilityPriority) {
-      const v = group.variants.find((item) => item.resolution === res);
-      if (v) {
-        const sId = v.streamId;
-        if (!attemptedSet.has(sId)) {
+    const resolutionPriority: ResolutionQuality[] = ['FHD', 'HD', 'SD', '4K'];
+    for (const res of resolutionPriority) {
+      const matchingVariants = group.variants.filter((v) => v.resolution === res);
+      for (const v of matchingVariants) {
+        if (!attemptedSet.has(v.streamId)) {
           return v.stream;
         }
       }
@@ -233,10 +278,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     return null;
   }, []);
 
-  // Execute an attempt for a variant
+  // Execute an attempt for a stream/variant
   const startVariantAttempt = useCallback((
     group: LiveChannelGroup,
-    resMode: 'auto' | ResolutionQuality
+    targetMode: string,
+    forcedStream?: any
   ) => {
     if (fallbackTimeoutRef.current) {
       clearTimeout(fallbackTimeoutRef.current);
@@ -244,7 +290,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     }
 
     const currentAttemptId = ++attemptIdRef.current;
-    const targetStream = pickVariantForGroup(group, resMode, attemptedStreamIdsRef.current);
+    const targetStream = forcedStream || pickVariantForGroup(group, targetMode, attemptedStreamIdsRef.current);
 
     if (!targetStream) {
       setMiniPlayerError('Não foi possível carregar nenhuma versão do canal. Verifique a conexão com o servidor.');
@@ -255,6 +301,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     setActiveVariantStream(targetStream);
     setMiniPlayerLoading(true);
     setMiniPlayerError(null);
+    setAttemptTrigger((prev) => prev + 1);
 
     const streamId = targetStream.stream_id || targetStream.id;
 
@@ -272,9 +319,9 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
         fallbackTimeoutRef.current = setTimeout(() => {
           if (attemptIdRef.current !== currentAttemptId) return;
           attemptedStreamIdsRef.current.add(streamId);
-          const nextStream = pickVariantForGroup(group, resMode, attemptedStreamIdsRef.current);
+          const nextStream = pickVariantForGroup(group, targetMode, attemptedStreamIdsRef.current);
           if (nextStream) {
-            startVariantAttempt(group, resMode);
+            startVariantAttempt(group, targetMode, nextStream);
           } else {
             setMiniPlayerError('Não foi possível carregar nenhuma versão do canal (Tempo limite esgotado).');
             setMiniPlayerLoading(false);
@@ -301,15 +348,26 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   }, [startVariantAttempt]);
 
   // Handle manual resolution mode change
-  const handleSelectResolutionMode = useCallback((mode: 'auto' | ResolutionQuality) => {
+  const handleSelectResolutionMode = useCallback((variant: any | 'auto') => {
     if (!selectedGroup) return;
-    setSelectedResolutionMode(mode);
     attemptedStreamIdsRef.current.clear();
-    startVariantAttempt(selectedGroup, mode);
+
+    if (variant === 'auto') {
+      setSelectedResolutionMode('auto');
+      startVariantAttempt(selectedGroup, 'auto');
+    } else {
+      const vId = String(variant.stream_id || variant.id || variant.streamId);
+      setSelectedResolutionMode(vId);
+      startVariantAttempt(selectedGroup, vId, variant);
+    }
   }, [selectedGroup, startVariantAttempt]);
 
   // Handle playback success callback
-  const handlePlaybackSuccess = useCallback(() => {
+  const handlePlaybackSuccess = useCallback((attemptId?: number) => {
+    if (attemptId !== undefined && attemptId !== attemptIdRef.current) {
+      return; // Discard stale callback
+    }
+
     if (fallbackTimeoutRef.current) {
       clearTimeout(fallbackTimeoutRef.current);
       fallbackTimeoutRef.current = null;
@@ -325,7 +383,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   }, [selectedGroup, activeVariantStream, credentials]);
 
   // Handle playback final error callback
-  const handlePlaybackFinalError = useCallback((errorMsg: string) => {
+  const handlePlaybackFinalError = useCallback((errorMsg: string, attemptId?: number) => {
+    if (attemptId !== undefined && attemptId !== attemptIdRef.current) {
+      return; // Discard stale callback
+    }
+
     if (fallbackTimeoutRef.current) {
       clearTimeout(fallbackTimeoutRef.current);
       fallbackTimeoutRef.current = null;
@@ -339,7 +401,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     if (selectedGroup) {
       const nextStream = pickVariantForGroup(selectedGroup, selectedResolutionMode, attemptedStreamIdsRef.current);
       if (nextStream) {
-        startVariantAttempt(selectedGroup, selectedResolutionMode);
+        startVariantAttempt(selectedGroup, selectedResolutionMode, nextStream);
         return;
       }
     }
@@ -514,6 +576,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                     const isSelected = selectedGroup?.groupId === group.groupId;
                     const primaryStream = group.primaryStream;
                     const primaryId = primaryStream.stream_id || primaryStream.id;
+                    const groupFav = group.allStreams.some((s) => isFavorite(s.stream_id || s.id, 'live'));
 
                     return (
                       <button
@@ -549,7 +612,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                                 {group.variants.length} versões
                               </span>
                               <span className="truncate opacity-75">
-                                {group.variants.map((v) => v.resolution).join(' · ')}
+                                {group.variants.map((v) => v.label).join(' · ')}
                               </span>
                             </div>
                           )}
@@ -558,11 +621,15 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                         <div 
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleToggleFavorite({ id: primaryId, name: group.displayName, cover: group.stream_icon || '', type: 'live' });
+                            if (group.isGrouped) {
+                              handleToggleGroupFavorite(group);
+                            } else {
+                              handleToggleFavorite({ id: primaryId, name: group.displayName, cover: group.stream_icon || '', type: 'live' });
+                            }
                           }}
                           className="p-2 shrink-0 text-nc-text-secondary hover:text-white"
                         >
-                           <Heart className={`w-4 h-4 ${isFavorite(primaryId, 'live') ? 'fill-nc-primary text-nc-primary' : ''}`} />
+                           <Heart className={`w-4 h-4 ${groupFav ? 'fill-nc-primary text-nc-primary' : ''}`} />
                         </div>
                       </button>
                     );
@@ -648,19 +715,19 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                        </button>
                        {selectedGroup.variants.map((v) => {
                          const activeId = activeVariantStream?.stream_id || activeVariantStream?.id;
-                         const isCurrentActive = activeId === v.streamId;
+                         const isCurrentActive = String(activeId) === String(v.streamId);
                          return (
                            <button
                              type="button"
                              key={v.streamId}
-                             onClick={() => handleSelectResolutionMode(v.resolution)}
+                             onClick={() => handleSelectResolutionMode(v.stream)}
                              className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors shrink-0 flex items-center gap-1.5 ${
                                isCurrentActive
                                  ? 'bg-nc-primary/20 text-nc-primary border border-nc-primary/50 font-bold'
                                  : 'bg-nc-bg-input hover:bg-nc-border/60 text-nc-text-secondary hover:text-white'
                              }`}
                            >
-                             <span>{v.resolution}</span>
+                             <span>{v.label}</span>
                              {isCurrentActive && <span className="w-1.5 h-1.5 rounded-full bg-nc-primary animate-pulse" />}
                            </button>
                          );
@@ -707,6 +774,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                    programTitle={epgData && epgData.length > 0 && epgData[0] ? (decodeBase64(epgData[0].title) || undefined) : undefined}
                    contentType="live"
                    streamId={activeVariantStream?.stream_id || activeVariantStream?.id || selectedGroup.groupId}
+                   attemptTrigger={attemptTrigger}
                    onBack={handleCloseChannel}
                    embedded={true}
                    isLoading={miniPlayerLoading}

@@ -21,8 +21,8 @@ interface UsePlaybackSessionOptions {
   credentials?: AccountIdentity | null;
   onRetry?: () => void;
   retryTrigger?: number;
-  onPlaybackSuccess?: () => void;
-  onPlaybackFinalError?: (errorMessage: string) => void;
+  onPlaybackSuccess?: (attemptId?: number) => void;
+  onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
 }
 
 export function usePlaybackSession({
@@ -307,7 +307,7 @@ export function usePlaybackSession({
       if (sessionIdRef.current !== currentSessionId) return;
       if (!hasReportedSuccess) {
         hasReportedSuccess = true;
-        onPlaybackSuccessRef.current?.();
+        onPlaybackSuccessRef.current?.(currentSessionId);
       }
     };
 
@@ -315,7 +315,7 @@ export function usePlaybackSession({
       if (sessionIdRef.current !== currentSessionId) return;
       if (!hasReportedFinalError) {
         hasReportedFinalError = true;
-        onPlaybackFinalErrorRef.current?.(msg);
+        onPlaybackFinalErrorRef.current?.(msg, currentSessionId);
       }
     };
 

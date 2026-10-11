@@ -22,6 +22,7 @@ export function VideoPlayer({
   embedded = false,
   startAt,
   streamId,
+  attemptTrigger: externalAttemptTrigger = 0,
   onNext,
   onPrevious,
   isLoading: externalLoading = false,
@@ -47,6 +48,7 @@ export function VideoPlayer({
 
   // Retry trigger for internal engine re-attachment
   const [retryTrigger, setRetryTrigger] = useState(0);
+  const combinedRetryTrigger = externalAttemptTrigger + retryTrigger;
 
   // Inactivity controls visibility
   const [isControlsVisible, setIsControlsVisible] = useState(true);
@@ -67,7 +69,7 @@ export function VideoPlayer({
     streamId,
     credentials,
     onRetry,
-    retryTrigger,
+    retryTrigger: combinedRetryTrigger,
     onPlaybackSuccess,
     onPlaybackFinalError,
   });

@@ -1060,8 +1060,10 @@ async function runPlayerBackAndScrollNavigationTests() {
   );
 
   // Clicar na categoria Notícias para exibir a lista de canais
+  const { formatCategoryLabel } = await import('../src/utils/categoryLabel');
+  const targetCategoryText = formatCategoryLabel('Notícias', 'live');
   const categoryBtn = Array.from(container.querySelectorAll('.custom-scrollbar button')).find(
-    (b) => b.textContent?.includes('Notícias')
+    (b) => b.textContent?.trim() === targetCategoryText || b.textContent?.includes('NOTÍCIAS')
   ) as any as HTMLButtonElement;
   assert(categoryBtn, 'Botão da categoria Notícias deve estar presente');
   await act(async () => {
@@ -1433,11 +1435,12 @@ async function runCategoryLabelAndChannelGroupTests() {
 
   // Testes de Agrupamento
   const mockStreams = [
-    { stream_id: 1, name: 'Telecine Action 4K', category_id: '10' },
-    { stream_id: 2, name: 'Telecine Action FHD', category_id: '10' },
-    { stream_id: 3, name: 'Telecine Action HD', category_id: '10' },
-    { stream_id: 4, name: 'Telecine Action SD', category_id: '10' },
-    { stream_id: 5, name: 'HBO HD', category_id: '10' },
+    { stream_id: 10, name: 'Telecine Action 4K', category_id: '10', epg_channel_id: 'tc_action' },
+    { stream_id: 11, name: 'Telecine Action FHD', category_id: '10', epg_channel_id: 'tc_action' },
+    { stream_id: 12, name: 'Telecine Action HD', category_id: '10', epg_channel_id: 'tc_action' },
+    { stream_id: 13, name: 'Telecine Action HD', category_id: '10', epg_channel_id: 'tc_action' }, // Duplicado HD
+    { stream_id: 14, name: 'Telecine Action SD', category_id: '10', epg_channel_id: 'tc_action' },
+    { stream_id: 20, name: 'HBO HD', category_id: '10', epg_channel_id: 'hbo' },
   ];
 
   const groups = groupLiveStreams(mockStreams);
@@ -1446,13 +1449,22 @@ async function runCategoryLabelAndChannelGroupTests() {
   const group1 = groups.find((g) => g.displayName === 'Telecine Action');
   assert(group1, 'Grupo Telecine Action encontrado');
   assert.strictEqual(group1.isGrouped, true);
-  assert.strictEqual(group1.variants.length, 4);
+  // Preserva todas as 5 streams no grupo, incluindo os dois HDs distintos (stream_id 12 e 13)
+  assert.strictEqual(group1.variants.length, 5, 'Todos os 5 streams originais devem estar preservados nas variantes');
+  assert.strictEqual(group1.allStreams.length, 5);
 
   const group2 = groups.find((g) => g.displayName === 'HBO HD');
   assert(group2, 'Item HBO HD mantido com nome original');
   assert.strictEqual(group2.isGrouped, false);
 
-  console.log('✅ Testes de rótulos de categorias e agrupamento de canais aprovados!');
+  // Teste de Busca
+  const { filterLiveChannelGroups } = await import('../src/utils/liveChannelGroups');
+  const searchResults = filterLiveChannelGroups(groups, '4K');
+  assert.strictEqual(searchResults.length, 1, 'Busca por 4K encontra o grupo Telecine Action');
+  assert.strictEqual(searchResults[0].displayName, 'Telecine Action');
+  assert.strictEqual(searchResults[0].variants.length, 5, 'A busca preserva todas as versões do grupo');
+
+  console.log('✅ Testes de rótulos de categorias, busca global e agrupamento de canais aprovados!');
 }
 
 async function main() {

@@ -50,11 +50,12 @@ export interface VideoPlayerProps {
   embedded?: boolean;
   startAt?: number;
   streamId?: string | number;
+  attemptTrigger?: number;
   onNext?: () => void;
   onPrevious?: () => void;
   isLoading?: boolean;
   errorMessage?: string | null;
   onRetry?: () => void;
-  onPlaybackSuccess?: () => void;
-  onPlaybackFinalError?: (errorMessage: string) => void;
+  onPlaybackSuccess?: (attemptId?: number) => void;
+  onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
 }

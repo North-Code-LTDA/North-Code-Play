@@ -4,18 +4,19 @@ export interface ChannelVariant {
   resolution: ResolutionQuality;
   stream: any;
   streamId: string | number;
+  label: string;
 }
 
 export interface LiveChannelGroup {
-  groupId: string; // Stable unique ID for React key
-  displayName: string; // Preserves original case of baseName
+  groupId: string; // Stable ID based on category, EPG, and normalized base name
+  displayName: string; // Preserves casing of baseName
   category_id: string | number;
   epg_channel_id?: string;
   stream_icon?: string;
-  isGrouped: boolean; // true if group has >= 2 distinct resolutions
-  variants: ChannelVariant[]; // Variants present in this group
-  primaryStream: any; // First stream or default stream
-  allStreams: any[]; // All original stream objects
+  isGrouped: boolean;
+  variants: ChannelVariant[]; // Contains ALL streams matching resolution suffixes
+  primaryStream: any;
+  allStreams: any[];
 }
 
 export interface ParsedSuffixResult {
@@ -30,7 +31,6 @@ export interface ParsedSuffixResult {
  * - Recognizes ONLY the last token separated by at least one space: 4K, FHD, HD, or SD (case-insensitive).
  * - Base name is everything before that last space, trimmed and whitespace-normalized.
  * - Requires non-empty base name.
- * - Does NOT treat "HDMI", "4Kids", "Canal HD 2", "HD+", "Full HD" as variants.
  */
 export function parseChannelVariantSuffix(streamName: string | undefined | null): ParsedSuffixResult {
   if (!streamName || typeof streamName !== 'string') {
@@ -78,9 +78,9 @@ export function parseChannelVariantSuffix(streamName: string | undefined | null)
 }
 
 /**
- * Groups a list of live stream objects by category and base channel name
+ * Groups a list of live stream objects by category, EPG channel ID, and base channel name
  * when at least 2 distinct resolutions (4K, FHD, HD, SD) exist for that base name.
- * Streams with differing non-empty epg_channel_id are not grouped together.
+ * Preserves ALL streams with distinct IDs inside variants and allStreams.
  */
 export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
   if (!Array.isArray(streams) || streams.length === 0) {
@@ -90,7 +90,7 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
   // Map to hold candidate buckets: key -> streams array
   const buckets = new Map<
     string,
-    { baseName: string; categoryId: string | number; streams: { stream: any; parsed: ParsedSuffixResult }[] }
+    { baseName: string; categoryId: string | number; epgId: string; streams: { stream: any; parsed: ParsedSuffixResult }[] }
   >();
   const streamToBucketKey = new Map<any, string>();
 
@@ -100,12 +100,13 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
 
     if (parsed.isVariant && parsed.resolution) {
       const epgId = stream?.epg_channel_id ? String(stream.epg_channel_id).trim() : '';
-      const bucketKey = `${catId}_${parsed.normalizedBaseName}_${epgId}`;
+      const bucketKey = `${catId}_${epgId}_${parsed.normalizedBaseName}`;
 
       if (!buckets.has(bucketKey)) {
         buckets.set(bucketKey, {
           baseName: parsed.baseName,
           categoryId: catId,
+          epgId,
           streams: [],
         });
       }
@@ -127,31 +128,43 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
 
       const bucket = buckets.get(bucketKey)!;
 
-      // Collect unique resolutions in this bucket
-      const resMap = new Map<ResolutionQuality, any>();
+      // Count unique resolutions in this bucket
+      const resSet = new Set<ResolutionQuality>();
       for (const item of bucket.streams) {
-        if (item.parsed.resolution && !resMap.has(item.parsed.resolution)) {
-          resMap.set(item.parsed.resolution, item.stream);
+        if (item.parsed.resolution) {
+          resSet.add(item.parsed.resolution);
         }
       }
 
       // Group ONLY if at least 2 distinct resolutions exist!
-      if (resMap.size >= 2) {
+      if (resSet.size >= 2) {
         processedBucketKeys.add(bucketKey);
 
-        const variants: ChannelVariant[] = [];
         const allBucketStreams = bucket.streams.map((i) => i.stream);
         const icon = allBucketStreams.find((s) => s.stream_icon)?.stream_icon || stream.stream_icon;
-        const epgId = allBucketStreams.find((s) => s.epg_channel_id)?.epg_channel_id || stream.epg_channel_id;
+        const epgId = bucket.epgId;
 
-        // Add variants in standard resolution order
-        for (const res of ['4K', 'FHD', 'HD', 'SD'] as ResolutionQuality[]) {
-          const matchingStream = resMap.get(res);
-          if (matchingStream) {
+        // Build variants array preserving ALL distinct streams
+        const variants: ChannelVariant[] = [];
+        const resCounts = new Map<ResolutionQuality, number>();
+
+        // Order by standard resolution priority: FHD, HD, SD, 4K
+        const resolutionPriority: ResolutionQuality[] = ['FHD', 'HD', 'SD', '4K'];
+        for (const res of resolutionPriority) {
+          const matchingItems = bucket.streams.filter((item) => item.parsed.resolution === res);
+          for (let i = 0; i < matchingItems.length; i++) {
+            const s = matchingItems[i].stream;
+            const sId = s.stream_id || s.id;
+            const count = (resCounts.get(res) || 0) + 1;
+            resCounts.set(res, count);
+
+            const label = matchingItems.length > 1 ? `${res} (${count})` : res;
+
             variants.push({
               resolution: res,
-              stream: matchingStream,
-              streamId: matchingStream.stream_id || matchingStream.id,
+              stream: s,
+              streamId: sId,
+              label,
             });
           }
         }
@@ -163,8 +176,9 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
         if (!primary) primary = variants.find((v) => v.resolution === '4K')?.stream;
         if (!primary) primary = stream;
 
-        const firstStreamId = primary.stream_id || primary.id || stream.stream_id || stream.id;
-        const groupId = `group_${bucket.categoryId}_${bucketKey}_${firstStreamId}`;
+        // Stable groupId based on category, EPG, and normalized base name
+        const cleanBase = bucket.streams[0].parsed.normalizedBaseName.replace(/[^a-z0-9]/g, '_');
+        const groupId = `group_${bucket.categoryId}_${epgId || 'noepg'}_${cleanBase}`;
 
         result.push({
           groupId,
@@ -182,7 +196,7 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
       }
     }
 
-    // Single item
+    // Single item (either no resolution variant, or only 1 resolution variant in bucket)
     const streamId = stream.stream_id || stream.id;
     result.push({
       groupId: `single_${stream.category_id || 'default'}_${streamId}`,
