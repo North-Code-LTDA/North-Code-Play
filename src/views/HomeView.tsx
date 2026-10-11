@@ -10,6 +10,118 @@ import { buildDirectMediaUrl } from '../utils/mediaUtils';
 import { sortByYearAndRating } from '../utils/catalogRanking';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 
+/**
+ * Padroniza apenas o rótulo visível de categorias (TV, Filmes, Séries).
+ * Remove tags repetitivas ([BR], |BR|, 4K, emojis, separadores),
+ * normaliza caixa alta para Title Case mantendo siglas conhecidas (HBO, ESPN, 4K, HD, etc.)
+ * e preserva integralmente os identificadores e dados originais.
+ */
+export function formatCategoryLabel(
+  rawName: string | undefined | null,
+  domain?: 'live' | 'vod' | 'series'
+): string {
+  if (!rawName || typeof rawName !== 'string') return '';
+  const trimmed = rawName.trim();
+  if (!trimmed) return '';
+
+  // Preserva categorias virtuais internas do app
+  if (
+    trimmed === 'Assistidos Recentemente' ||
+    trimmed === 'Canais Favoritos' ||
+    trimmed === 'Filmes Favoritos' ||
+    trimmed === 'Séries Favoritas' ||
+    trimmed === 'Todos' ||
+    trimmed === 'Todas'
+  ) {
+    return trimmed;
+  }
+
+  let text = trimmed;
+
+  // 1. Substitui underscores excessivos por espaços
+  text = text.replace(/_+/g, ' ');
+
+  // 2. Remove emojis e símbolos decorativos de listas IPTV
+  text = text.replace(
+    /[\p{Extended_Pictographic}\p{Emoji_Presentation}★☆⚡►◄🔥✨🎬📺🍿🔴🟢👉💎👑✔️✓•*~=]/gu,
+    ' '
+  );
+
+  // 3. Remove tags de país/idioma ou qualidade no início: [BR], |BR|, (BR), BR -, BR:, 4K |, FHD -, HD |
+  text = text.replace(
+    /^[\[|\(]?(?:BR|PT|BRA|USA|EN|ES|LAT|4K|UHD|FHD|HD|SD|H265|HEVC)[\]|\)]?[\s\-_|:]*/i,
+    ' '
+  );
+  text = text.replace(
+    /^[\[|\(]?(?:BR|PT|BRA|USA|EN|ES|LAT|4K|UHD|FHD|HD|SD|H265|HEVC)[\]|\)]?[\s\-_|:]*/i,
+    ' '
+  );
+
+  // 4. Remove prefixo redundante do domínio quando acompanhado de separador (ex: "FILMES |", "SÉRIES -", "CANAIS :")
+  if (domain === 'vod') {
+    const stripped = text.replace(
+      /^[\s\-_|:]*(?:FILMES?|MOVIES?)[\s\-_|:]+(?:DE\s+|DA\s+|DO\s+)?/i,
+      ''
+    );
+    if (stripped.trim() && !/^\d{4}$|^\d+h$/i.test(stripped.trim())) {
+      text = stripped;
+    }
+  } else if (domain === 'series') {
+    const stripped = text.replace(
+      /^[\s\-_|:]*(?:S[EÉ]RIES?|SERIADOS?)[\s\-_|:]+(?:DE\s+|DA\s+|DO\s+)?/i,
+      ''
+    );
+    if (stripped.trim() && !/^\d{4}$|^\d+h$/i.test(stripped.trim())) {
+      text = stripped;
+    }
+  } else if (domain === 'live') {
+    const stripped = text.replace(
+      /^[\s\-_|:]*(?:CANAIS|CANAL|CHANNELS?|TV)[\s\-_|:]+(?:DE\s+|DA\s+|DO\s+)?/i,
+      ''
+    );
+    if (stripped.trim() && !/^\d{4}$|^\d+h$/i.test(stripped.trim())) {
+      text = stripped;
+    }
+  }
+
+  // 5. Remove pontuações e separadores residuais nas pontas
+  text = text.replace(/^[\s\-_|:•►◄★⚡✨🔥*~=/\\]+|[\s\-_|:•►◄★⚡✨🔥*~=/\\]+$/g, '');
+  text = text.replace(/\s+/g, ' ').trim();
+
+  if (!text) return trimmed;
+
+  // 6. Converte para Title Case se estiver tudo em caixa alta
+  const letters = text.replace(/[^a-zA-ZÀ-ÿ]/g, '');
+  const isAllUpper = letters.length > 0 && letters === letters.toUpperCase();
+
+  const ACRONYMS = new Set([
+    '4K', 'HD', 'FHD', 'SD', 'UHD', 'HBO', 'BBC', 'ESPN', 'PFC', 'PPV', 'UFC',
+    'FOX', 'MAX', 'TNT', 'MTV', 'CNN', 'SBT', 'GLOBO', 'DAZN', 'NBA', 'NFL',
+    'WWE', 'TLC', 'FX', 'AXN', 'TC', 'AI', 'BR', 'USA', 'UK', 'VIP', '24H', '3D',
+    'VOD', 'TV'
+  ]);
+
+  const LOWER_WORDS = new Set([
+    'de', 'da', 'do', 'das', 'dos', 'e', 'em', 'na', 'no', 'nas', 'nos',
+    'para', 'por', 'com', 'a', 'o', 'as', 'os'
+  ]);
+
+  if (isAllUpper) {
+    const words = text.split(' ');
+    text = words
+      .map((w, index) => {
+        const upper = w.toUpperCase();
+        if (ACRONYMS.has(upper)) return upper;
+        const lower = w.toLowerCase();
+        if (index > 0 && LOWER_WORDS.has(lower)) return lower;
+        return lower.charAt(0).toUpperCase() + lower.slice(1);
+      })
+      .join(' ');
+  }
+
+  return text || trimmed;
+}
+
 interface HomeViewProps {
   onPlay: (
     url: string,
@@ -163,7 +275,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
       if (itemsInCat.length >= 4) {
         rows.push({
           categoryId: String(cat.category_id),
-          title: `Filmes: ${cat.category_name}`,
+          title: `Filmes: ${formatCategoryLabel(cat.category_name, 'vod')}`,
           items: sortByYearAndRating(itemsInCat),
         });
       }
@@ -193,7 +305,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
       if (itemsInCat.length >= 4) {
         rows.push({
           categoryId: String(cat.category_id),
-          title: `Séries: ${cat.category_name}`,
+          title: `Séries: ${formatCategoryLabel(cat.category_name, 'series')}`,
           items: sortByYearAndRating(itemsInCat),
         });
       }
@@ -246,6 +358,22 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   // Combine VOD and Series for Hero banner
   const contentForHero = [...allVodStreams, ...allSeriesStreams];
+
+  // Unified initial opening experience after login when all catalogs are still empty
+  const isInitialCatalogLoading = Boolean(
+    credentials &&
+    allLiveStreams.length === 0 &&
+    allVodStreams.length === 0 &&
+    allSeriesStreams.length === 0 &&
+    !searchQuery &&
+    (liveCatalogStatus === 'loading' ||
+     liveCatalogStatus === 'idle' ||
+     vodCatalogStatus === 'loading' ||
+     vodCatalogStatus === 'idle' ||
+     seriesCatalogStatus === 'loading' ||
+     seriesCatalogStatus === 'idle') &&
+    !(liveCatalogStatus === 'error' && vodCatalogStatus === 'error' && seriesCatalogStatus === 'error')
+  );
 
   return (
     <div className="flex flex-col w-full h-full overflow-y-auto overflow-x-hidden">
@@ -334,100 +462,131 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
           </div>
         )}
         
-        {/* Live TV Section: Discrete loading, Error with Retry, or Content */}
-        {(liveCatalogStatus === 'loading' || (credentials && liveCatalogStatus === 'idle')) && allLiveStreams.length === 0 && (
-          <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
-            <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
-            <span>Carregando canais ao vivo...</span>
-          </div>
-        )}
-
-        {liveCatalogStatus === 'error' && allLiveStreams.length === 0 && (
-          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-red-400">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar canais ao vivo: {liveError}</span>
+        {/* Unified initial opening visual after login */}
+        {isInitialCatalogLoading ? (
+          <div className="w-full py-10 md:py-16 px-4 flex flex-col items-center justify-center text-center animate-in fade-in duration-500">
+            <div className="relative mb-5">
+              <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-white/[0.04] border border-nc-border/60 flex items-center justify-center shadow-2xl backdrop-blur-sm">
+                <Loader2 className="w-8 h-8 sm:w-10 sm:h-10 animate-spin text-nc-primary" />
+              </div>
+              <div className="absolute inset-0 bg-white/[0.06] blur-2xl rounded-full pointer-events-none" />
             </div>
-            <button
-              onClick={() => { fetchLiveStreams().catch(() => {}); }}
-              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
-            </button>
-          </div>
-        )}
 
-        {filteredLive.length > 0 && (
-          <HorizontalRow 
-             title="Canais Ao Vivo"
-             items={filteredLive.slice(0, displayCount.live)}
-             type="live"
-             onItemClick={handlePlayLive}
-          />
-        )}
-        
-        {/* Movies Section: Discrete loading, Error with Retry, or Content */}
-        {(vodCatalogStatus === 'loading' || (credentials && vodCatalogStatus === 'idle')) && allVodStreams.length === 0 && (
-          <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
-            <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
-            <span>Carregando filmes em destaque...</span>
-          </div>
-        )}
+            <h2 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">
+              Carregando sua programação
+            </h2>
+            <p className="text-sm text-nc-text-secondary mt-2 max-w-md">
+              Sincronizando canais ao vivo, filmes e séries para {credentials?.playlistName || 'sua lista'}...
+            </p>
 
-        {vodCatalogStatus === 'error' && allVodStreams.length === 0 && (
-          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-red-400">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar filmes: {vodError}</span>
+            {/* Responsive skeleton placeholder grid matching rows */}
+            <div className="w-full max-w-4xl mt-8 grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 sm:gap-4 opacity-40 pointer-events-none">
+              {Array.from({ length: 6 }).map((_, idx) => (
+                <div
+                  key={idx}
+                  className="aspect-[2/3] rounded-xl bg-white/[0.03] border border-nc-border/40 animate-pulse"
+                />
+              ))}
             </div>
-            <button
-              onClick={() => { fetchVodStreams().catch(() => {}); }}
-              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
-            </button>
           </div>
-        )}
+        ) : (
+          <>
+            {/* Live TV Section: Discrete loading, Error with Retry, or Content */}
+            {(liveCatalogStatus === 'loading' || (credentials && liveCatalogStatus === 'idle')) && allLiveStreams.length === 0 && (
+              <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
+                <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
+                <span>Carregando canais ao vivo...</span>
+              </div>
+            )}
 
-        {filteredVod.length > 0 && (
-          <HorizontalRow 
-             title="Filmes em Destaque"
-             items={filteredVod.slice(0, displayCount.vod)}
-             type="vod"
-             onItemClick={(item) => setSelectedMovie(item)}
-          />
-        )}
-        
-        {/* Series Section: Discrete loading, Error with Retry, or Content */}
-        {(seriesCatalogStatus === 'loading' || (credentials && seriesCatalogStatus === 'idle')) && allSeriesStreams.length === 0 && (
-          <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
-            <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
-            <span>Carregando séries em destaque...</span>
-          </div>
-        )}
+            {liveCatalogStatus === 'error' && allLiveStreams.length === 0 && (
+              <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2 text-red-400">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <span>Falha ao carregar canais ao vivo: {liveError}</span>
+                </div>
+                <button
+                  onClick={() => { fetchLiveStreams().catch(() => {}); }}
+                  className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+                </button>
+              </div>
+            )}
 
-        {seriesCatalogStatus === 'error' && allSeriesStreams.length === 0 && (
-          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-red-400">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar séries: {seriesError}</span>
-            </div>
-            <button
-              onClick={() => { fetchSeriesStreams().catch(() => {}); }}
-              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
-            </button>
-          </div>
-        )}
+            {filteredLive.length > 0 && (
+              <HorizontalRow 
+                 title="Canais Ao Vivo"
+                 items={filteredLive.slice(0, displayCount.live)}
+                 type="live"
+                 onItemClick={handlePlayLive}
+              />
+            )}
+            
+            {/* Movies Section: Discrete loading, Error with Retry, or Content */}
+            {(vodCatalogStatus === 'loading' || (credentials && vodCatalogStatus === 'idle')) && allVodStreams.length === 0 && (
+              <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
+                <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
+                <span>Carregando filmes em destaque...</span>
+              </div>
+            )}
 
-        {filteredSeries.length > 0 && (
-          <HorizontalRow 
-             title="Séries em Destaque"
-             items={filteredSeries.slice(0, displayCount.series)}
-             type="series"
-             onItemClick={(item) => setSelectedSeries(item)}
-          />
+            {vodCatalogStatus === 'error' && allVodStreams.length === 0 && (
+              <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2 text-red-400">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <span>Falha ao carregar filmes: {vodError}</span>
+                </div>
+                <button
+                  onClick={() => { fetchVodStreams().catch(() => {}); }}
+                  className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+                </button>
+              </div>
+            )}
+
+            {filteredVod.length > 0 && (
+              <HorizontalRow 
+                 title="Filmes em Destaque"
+                 items={filteredVod.slice(0, displayCount.vod)}
+                 type="vod"
+                 onItemClick={(item) => setSelectedMovie(item)}
+              />
+            )}
+            
+            {/* Series Section: Discrete loading, Error with Retry, or Content */}
+            {(seriesCatalogStatus === 'loading' || (credentials && seriesCatalogStatus === 'idle')) && allSeriesStreams.length === 0 && (
+              <div className="w-full flex items-center gap-2 py-4 px-2 text-nc-text-secondary text-sm">
+                <Loader2 className="w-4 h-4 animate-spin text-nc-primary" />
+                <span>Carregando séries em destaque...</span>
+              </div>
+            )}
+
+            {seriesCatalogStatus === 'error' && allSeriesStreams.length === 0 && (
+              <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2 text-red-400">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <span>Falha ao carregar séries: {seriesError}</span>
+                </div>
+                <button
+                  onClick={() => { fetchSeriesStreams().catch(() => {}); }}
+                  className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+                </button>
+              </div>
+            )}
+
+            {filteredSeries.length > 0 && (
+              <HorizontalRow 
+                 title="Séries em Destaque"
+                 items={filteredSeries.slice(0, displayCount.series)}
+                 type="series"
+                 onItemClick={(item) => setSelectedSeries(item)}
+              />
+            )}
+          </>
         )}
 
         {/* Dynamic Category Rows */}

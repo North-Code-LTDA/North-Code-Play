@@ -6,6 +6,7 @@ import { MovieDetails } from '../components/MovieDetails';
 import { useFavorites } from '../hooks/useFavorites';
 import { MediaImage } from '../components/MediaImage';
 import { useAccountPlaybackHistory } from '../utils/playbackHistory';
+import { formatCategoryLabel } from './HomeView';
 
 
 interface MoviesViewProps {
@@ -192,7 +193,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                   onClick={() => handleSelectCategory(cat.category_id)}
                   className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors truncate ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
                 >
-                  {cat.category_name}
+                  {formatCategoryLabel(cat.category_name, 'vod')}
                 </button>
               ))}
             </>
@@ -218,7 +219,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
               onClick={() => handleSelectCategory(cat.category_id)}
               className={`shrink-0 snap-center px-4 py-2 rounded-full text-sm transition-colors whitespace-nowrap ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
             >
-              {cat.category_name}
+              {formatCategoryLabel(cat.category_name, 'vod')}
             </button>
           ))}
         </div>
@@ -239,7 +240,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
               <div className="mb-6">
                 <h1 className="text-2xl font-semibold text-white">
                   {selectedCategoryId 
-                     ? extendedCategories.find(c => c.category_id === selectedCategoryId)?.category_name 
+                     ? formatCategoryLabel(extendedCategories.find(c => c.category_id === selectedCategoryId)?.category_name, 'vod') 
                      : 'Carregando...'}
                 </h1>
                 <p className="text-nc-text-secondary text-sm mt-1">

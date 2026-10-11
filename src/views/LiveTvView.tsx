@@ -8,6 +8,7 @@ import { MediaImage } from '../components/MediaImage';
 import { XtreamService } from '../services/xtreamService';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
+import { formatCategoryLabel } from './HomeView';
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -278,7 +279,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                     }}
                     className="w-full text-left px-4 py-3 rounded-xl text-sm transition-colors truncate text-nc-text-secondary hover:bg-nc-bg-input hover:text-white"
                   >
-                    {cat.category_name}
+                    {formatCategoryLabel(cat.category_name, 'live')}
                   </button>
                 ))
               )}
@@ -299,7 +300,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                 </button>
               )}
               <h2 className="text-lg font-semibold text-white truncate">
-                {searchQuery ? `Busca: ${searchQuery}` : activeCategory?.category_name}
+                {searchQuery ? `Busca: ${searchQuery}` : formatCategoryLabel(activeCategory?.category_name, 'live')}
               </h2>
             </div>
             
