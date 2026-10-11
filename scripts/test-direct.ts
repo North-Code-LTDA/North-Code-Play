@@ -110,14 +110,6 @@ import { LiveTvView } from '../src/views/LiveTvView';
 import { XtreamProvider, XtreamContext } from '../src/context/XtreamContext';
 import { XtreamService } from '../src/services/xtreamService';
 import { Home } from '../src/pages/Home';
-import { formatCategoryLabel } from '../src/utils/categoryLabel';
-import {
-  parseChannelSuffix,
-  groupLiveStreams,
-  searchMatchesGroup,
-  getInitialVariant,
-  STABILITY_ORDER,
-} from '../src/utils/liveChannelGroups';
 
 const origGetItem = windowInstance.localStorage.getItem;
 const origSetItem = windowInstance.localStorage.setItem;
@@ -1069,7 +1061,7 @@ async function runPlayerBackAndScrollNavigationTests() {
 
   // Clicar na categoria Notícias para exibir a lista de canais
   const categoryBtn = Array.from(container.querySelectorAll('.custom-scrollbar button')).find(
-    (b) => b.textContent?.toUpperCase().includes('NOTÍCIAS') || b.textContent?.includes('Notícias')
+    (b) => b.textContent?.includes('Notícias')
   ) as any as HTMLButtonElement;
   assert(categoryBtn, 'Botão da categoria Notícias deve estar presente');
   await act(async () => {
@@ -1206,7 +1198,7 @@ async function runPlayerBackAndScrollNavigationTests() {
 
   // Selecionar categoria Ação com cards de filmes
   const acaoCatBtn = Array.from(container.querySelectorAll('aside button')).find(
-    (b) => b.textContent?.toUpperCase().includes('AÇÃO') || b.textContent?.includes('Ação')
+    (b) => b.textContent?.includes('Ação')
   ) as any as HTMLButtonElement;
   assert(acaoCatBtn, 'Botão da categoria Ação');
   await act(async () => {
@@ -1347,7 +1339,7 @@ async function runPlayerBackAndScrollNavigationTests() {
 
   // Selecionar categoria Comédia com cards de séries
   const comediaCatBtn = Array.from(container.querySelectorAll('aside button')).find(
-    (b) => b.textContent?.toUpperCase().includes('COMÉDIA') || b.textContent?.includes('Comédia')
+    (b) => b.textContent?.includes('Comédia')
   ) as any as HTMLButtonElement;
   assert(comediaCatBtn, 'Botão da categoria Comédia');
   await act(async () => {
@@ -1413,102 +1405,6 @@ async function runPlayerBackAndScrollNavigationTests() {
   console.log('✅ Todos os testes de botão Voltar, isolamento e preservação de scroll aprovados com sucesso!');
 }
 
-function runCategoryUppercaseAndLiveChannelGroupTests() {
-  console.log('\n--- 6. Testes de Categorias em Caixa Alta e Agrupamento de Canais de TV ---');
-
-  // 1. formatCategoryLabel
-  console.log('Caso 1: Formatação de categorias em caixa alta e remoção de prefixo CANAIS');
-  assert.strictEqual(formatCategoryLabel('CANAIS · TELECINE', 'live'), 'TELECINE');
-  assert.strictEqual(formatCategoryLabel('Canais | Esportes', 'live'), 'ESPORTES');
-  assert.strictEqual(formatCategoryLabel('CANAIS', 'live'), 'CANAIS');
-  assert.strictEqual(formatCategoryLabel('CANAIS 4K', 'live'), 'CANAIS 4K');
-  assert.strictEqual(formatCategoryLabel('CANALIS', 'live'), 'CANALIS');
-  assert.strictEqual(formatCategoryLabel('Canais: Esportes', 'live'), 'ESPORTES');
-  assert.strictEqual(formatCategoryLabel('Canais.Esportes', 'live'), 'ESPORTES');
-  assert.strictEqual(formatCategoryLabel('Filmes de Ação', 'vod'), 'FILMES DE AÇÃO');
-  assert.strictEqual(formatCategoryLabel('Séries de Comédia', 'series'), 'SÉRIES DE COMÉDIA');
-  assert.strictEqual(formatCategoryLabel('Assistidos Recentemente', 'live'), 'ASSISTIDOS RECENTEMENTE');
-  assert.strictEqual(formatCategoryLabel('Canais Favoritos', 'live'), 'CANAIS FAVORITOS');
-  assert.strictEqual(formatCategoryLabel(null), 'GERAL');
-
-  // 2. parseChannelSuffix
-  console.log('Caso 2: Detecção exata do sufixo de resolução');
-  assert.deepStrictEqual(parseChannelSuffix('Telecine Action 4K'), { baseName: 'Telecine Action', resolution: '4K' });
-  assert.deepStrictEqual(parseChannelSuffix('Telecine Action FHD'), { baseName: 'Telecine Action', resolution: 'FHD' });
-  assert.deepStrictEqual(parseChannelSuffix('Telecine Action HD'), { baseName: 'Telecine Action', resolution: 'HD' });
-  assert.deepStrictEqual(parseChannelSuffix('Telecine Action SD'), { baseName: 'Telecine Action', resolution: 'SD' });
-  assert.deepStrictEqual(parseChannelSuffix('Telecine Action fhd'), { baseName: 'Telecine Action', resolution: 'FHD' });
-  assert.strictEqual(parseChannelSuffix('HDMI'), null);
-  assert.strictEqual(parseChannelSuffix('4Kids'), null);
-  assert.strictEqual(parseChannelSuffix('Canal HD 2'), null);
-  assert.strictEqual(parseChannelSuffix('HD+'), null);
-  assert.deepStrictEqual(parseChannelSuffix('Telecine Action Full HD'), { baseName: 'Telecine Action Full', resolution: 'HD' });
-
-  // 3. groupLiveStreams
-  console.log('Caso 3: Agrupamento estável de variantes na categoria de TV');
-  const mockTvStreams = [
-    { stream_id: 101, name: 'Telecine Action 4K', category_id: 1, stream_icon: 'icon1.png' },
-    { stream_id: 102, name: 'Telecine Action FHD', category_id: 1, stream_icon: 'icon2.png' },
-    { stream_id: 103, name: 'Telecine Action HD', category_id: 1, stream_icon: 'icon3.png' },
-    { stream_id: 104, name: 'Telecine Action SD', category_id: 1, stream_icon: 'icon4.png' },
-    { stream_id: 105, name: 'HBO HD', category_id: 1 },
-    { stream_id: 106, name: 'Globo RJ HD', category_id: 1, epg_channel_id: 'globo.rj' },
-    { stream_id: 107, name: 'Globo RJ FHD', category_id: 1, epg_channel_id: 'globo.rj' },
-    { stream_id: 108, name: 'Globo SP HD', category_id: 1, epg_channel_id: 'globo.sp' },
-    { stream_id: 109, name: 'Globo SP FHD', category_id: 1, epg_channel_id: 'globo.sp' },
-    { stream_id: 110, name: 'Canal Espelho HD', category_id: 1 },
-    { stream_id: 111, name: 'Canal Espelho HD', category_id: 1 },
-  ];
-
-  const grouped = groupLiveStreams(mockTvStreams, '1');
-  assert.strictEqual(grouped[0].name, 'Telecine Action');
-  assert.strictEqual(grouped[0].isGroup, true);
-  assert.strictEqual(grouped[0].variants.length, 4);
-  assert.deepStrictEqual(grouped[0].variants.map((v) => v.resolution), ['FHD', 'HD', 'SD', '4K']);
-
-  // HBO HD tem apenas uma resolução reconhecida: não agrupa como multi-variante
-  const hboItem = grouped.find((g) => g.primaryStream.stream_id === 105);
-  assert(hboItem, 'HBO HD deve estar presente');
-  assert.strictEqual(hboItem.isGroup, false);
-  assert.strictEqual(hboItem.name, 'HBO HD');
-
-  // Globo RJ e Globo SP não se unem por terem epg_channel_id diferentes
-  const globoRj = grouped.find((g) => g.name === 'Globo RJ');
-  const globoSp = grouped.find((g) => g.name === 'Globo SP');
-  assert(globoRj && globoRj.isGroup, 'Globo RJ agrupado');
-  assert(globoSp && globoSp.isGroup, 'Globo SP agrupado');
-  assert.notStrictEqual(globoRj.id, globoSp.id, 'Globo RJ e Globo SP devem ser grupos distintos');
-
-  // Espelhos da mesma resolução não são ocultados
-  const mirrors = grouped.filter((g) => g.name === 'Canal Espelho HD');
-  assert.strictEqual(mirrors.length, 2, 'Dois canais espelho de mesma resolução devem continuar visíveis');
-
-  // Categorias virtuais não agrupam
-  const favGrouped = groupLiveStreams(mockTvStreams, 'nc_fav');
-  assert.strictEqual(favGrouped.length, mockTvStreams.length);
-  assert(favGrouped.every((g) => !g.isGroup));
-
-  // 4. searchMatchesGroup
-  console.log('Caso 4: Busca encontra grupo pelo nome-base ou por variante completa');
-  assert.strictEqual(searchMatchesGroup(grouped[0], 'Telecine'), true);
-  assert.strictEqual(searchMatchesGroup(grouped[0], 'Action FHD'), true);
-  assert.strictEqual(searchMatchesGroup(grouped[0], '4K'), true);
-  assert.strictEqual(searchMatchesGroup(grouped[0], 'Discovery'), false);
-
-  // 5. getInitialVariant
-  console.log('Caso 5: Priorização inicial da variante por estabilidade, sucesso ou manual');
-  const initDefault = getInitialVariant(grouped[0]);
-  assert.strictEqual(initDefault.resolution, 'FHD', 'FHD deve ser o padrão de estabilidade');
-
-  const initFromSuccess = getInitialVariant(grouped[0], 'auto', 'HD');
-  assert.strictEqual(initFromSuccess.resolution, 'HD', 'HD deve ser priorizado se teve sucesso anterior');
-
-  const initManual4K = getInitialVariant(grouped[0], '4K');
-  assert.strictEqual(initManual4K.resolution, '4K', 'Escolha manual 4K deve ser respeitada');
-
-  console.log('✅ Todos os testes de categorias em caixa alta e canais agrupados por resolução aprovados!');
-}
-
 async function main() {
   console.log('🚀 INICIANDO VALIDAÇÃO COMPLETA DOS FAVORITOS SIMPLES E REGRESSÕES\n');
   runDirectUrlTests();
@@ -1516,7 +1412,6 @@ async function main() {
   await runPlayerVolumeRateAndSessionTests();
   await runPlayerControlsStabilityAndAutoHideTests();
   await runPlayerBackAndScrollNavigationTests();
-  runCategoryUppercaseAndLiveChannelGroupTests();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
 }
 
