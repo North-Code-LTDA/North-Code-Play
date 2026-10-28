@@ -10,7 +10,11 @@ export function getNavMode(): NavMode {
 }
 
 export function setNavMode(mode: NavMode): void {
-  if (currentNavMode === mode && typeof document !== 'undefined' && document.documentElement.dataset.navMode === mode) {
+  if (
+    currentNavMode === mode &&
+    typeof document !== 'undefined' &&
+    document.documentElement.dataset.navMode === mode
+  ) {
     return;
   }
   currentNavMode = mode;
@@ -38,7 +42,10 @@ export function pushFocusMemory(element?: HTMLElement | null): void {
       ? document.activeElement
       : null);
   if (target && target !== document.body && target !== document.documentElement) {
-    focusMemoryStack.push(target);
+    // Avoid pushing duplicate consecutive references of the exact same element
+    if (focusMemoryStack[focusMemoryStack.length - 1] !== target) {
+      focusMemoryStack.push(target);
+    }
   }
 }
 
@@ -57,7 +64,135 @@ export function clearFocusMemory(): void {
   focusMemoryStack.length = 0;
 }
 
-export function focusElementSafely(el: HTMLElement | null | undefined): boolean {
+export function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
+  let curr = el?.parentElement || null;
+  while (curr && curr !== document.body && curr !== document.documentElement) {
+    if (curr.getAttribute('data-scroll-container') === 'true') {
+      return curr;
+    }
+    const cls = typeof curr.className === 'string' ? curr.className : '';
+    if (cls.includes('overflow-y-auto') || cls.includes('overflow-y-scroll')) {
+      return curr;
+    }
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      try {
+        const oy = window.getComputedStyle(curr).overflowY;
+        if (oy === 'auto' || oy === 'scroll') {
+          return curr;
+        }
+      } catch {}
+    }
+    curr = curr.parentElement;
+  }
+  return null;
+}
+
+/**
+ * Scrolls the appropriate vertical and horizontal containers when an element receives focus.
+ * When focusing an element marked with data-scroll-top-anchor="true", resets scrollContainer.scrollTop = 0
+ * so the real top of the view/modal (HeroBanner, MovieDetails title, SeriesDetails title/synopsis) is revealed.
+ */
+export function ensureElementScrolledIntoView(
+  el: HTMLElement,
+  direction?: SpatialDirection
+): void {
+  if (!el || !el.isConnected) return;
+
+  // 1. Horizontal row container scroll
+  const rowContainer = el.closest<HTMLElement>('[data-nav-row="true"]');
+  if (rowContainer && rowContainer !== el) {
+    const rowRect = rowContainer.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    if (rowRect.width > 0 && elRect.width > 0) {
+      const padX = 16;
+      if (elRect.left < rowRect.left + padX) {
+        rowContainer.scrollLeft = Math.max(
+          0,
+          rowContainer.scrollLeft + (elRect.left - rowRect.left) - padX
+        );
+      } else if (elRect.right > rowRect.right - padX) {
+        rowContainer.scrollLeft = Math.max(
+          0,
+          rowContainer.scrollLeft + (elRect.right - rowRect.right) + padX
+        );
+      }
+    }
+  }
+
+  // 2. Vertical scroll container
+  const scrollContainer = findScrollContainer(el);
+  if (scrollContainer) {
+    const topAnchor = el.closest<HTMLElement>('[data-scroll-top-anchor="true"]');
+    if (topAnchor && scrollContainer.contains(topAnchor)) {
+      scrollContainer.scrollTop = 0;
+      return;
+    }
+
+    const blockCandidate =
+      el.closest<HTMLElement>('[data-scroll-block="true"]') ||
+      el.closest<HTMLElement>('[data-nav-row="true"]') ||
+      el;
+    const targetBlock =
+      blockCandidate && scrollContainer.contains(blockCandidate) && blockCandidate !== scrollContainer
+        ? blockCandidate
+        : el;
+
+    const containerRect = scrollContainer.getBoundingClientRect();
+    const blockRect = targetBlock.getBoundingClientRect();
+
+    if (containerRect.height > 0 && blockRect.height > 0) {
+      const padY = 24;
+      if (blockRect.top < containerRect.top + padY) {
+        scrollContainer.scrollTop = Math.max(
+          0,
+          scrollContainer.scrollTop + (blockRect.top - containerRect.top) - padY
+        );
+      } else if (blockRect.bottom > containerRect.bottom - padY) {
+        if (direction === 'up' || blockRect.height > containerRect.height - padY * 2) {
+          scrollContainer.scrollTop = Math.max(
+            0,
+            scrollContainer.scrollTop + (blockRect.top - containerRect.top) - padY
+          );
+        } else {
+          scrollContainer.scrollTop = Math.max(
+            0,
+            scrollContainer.scrollTop + (blockRect.bottom - containerRect.bottom) + padY
+          );
+        }
+      }
+      return;
+    }
+
+    // Fallback for simulated DOM environments where getBoundingClientRect() returns 0x0
+    if (direction === 'down') {
+      const offsetTop = (targetBlock as any).offsetTop;
+      if (typeof offsetTop === 'number' && offsetTop > 0) {
+        scrollContainer.scrollTop = offsetTop;
+      } else {
+        scrollContainer.scrollTop = (scrollContainer.scrollTop || 0) + 120;
+      }
+    } else if (direction === 'up') {
+      const offsetTop = (targetBlock as any).offsetTop;
+      if (typeof offsetTop === 'number' && offsetTop > 0) {
+        scrollContainer.scrollTop = offsetTop;
+      } else {
+        scrollContainer.scrollTop = Math.max(0, (scrollContainer.scrollTop || 0) - 120);
+      }
+    }
+    return;
+  }
+
+  try {
+    if (typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  } catch {}
+}
+
+export function focusElementSafely(
+  el: HTMLElement | null | undefined,
+  direction?: SpatialDirection
+): boolean {
   if (!el || !el.isConnected) return false;
   try {
     el.focus({ preventScroll: true });
@@ -68,11 +203,7 @@ export function focusElementSafely(el: HTMLElement | null | undefined): boolean 
       return false;
     }
   }
-  try {
-    if (typeof el.scrollIntoView === 'function') {
-      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }
-  } catch {}
+  ensureElementScrolledIntoView(el, direction);
   return true;
 }
 
@@ -107,7 +238,11 @@ export function isElementFocusable(el: HTMLElement): boolean {
     if (
       cls.includes('invisible') ||
       cls.includes('pointer-events-none') ||
-      (/(?:^|\s)hidden(?:\s|$)/.test(cls) && !cls.includes('md:flex') && !cls.includes('md:block') && !cls.includes('sm:inline'))
+      /(?:^|\s)opacity-0(?:\s|$)/.test(cls) ||
+      (/(?:^|\s)hidden(?:\s|$)/.test(cls) &&
+        !cls.includes('md:flex') &&
+        !cls.includes('md:block') &&
+        !cls.includes('sm:inline'))
     ) {
       return false;
     }
@@ -115,7 +250,7 @@ export function isElementFocusable(el: HTMLElement): boolean {
     if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
       try {
         const style = window.getComputedStyle(curr);
-        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        if (style.display === 'none' || style.visibility === 'hidden') {
           return false;
         }
       } catch {}
@@ -172,10 +307,198 @@ function getLogicalRow(el: HTMLElement): HTMLElement | null {
   return el.closest<HTMLElement>('[data-nav-row], [data-nav-group]');
 }
 
+function getLogicalGrid(el: HTMLElement): HTMLElement | null {
+  return el.closest<HTMLElement>('[data-nav-grid="true"]');
+}
+
+interface ZoneBlock {
+  type: 'row' | 'grid' | 'item';
+  container: HTMLElement;
+  items: HTMLElement[];
+}
+
+function buildZoneBlocks(zoneCandidates: HTMLElement[]): ZoneBlock[] {
+  const blocks: ZoneBlock[] = [];
+
+  for (const el of zoneCandidates) {
+    const row = getLogicalRow(el);
+    if (row) {
+      const prev = blocks[blocks.length - 1];
+      if (prev && prev.type === 'row' && prev.container === row) {
+        prev.items.push(el);
+      } else {
+        blocks.push({ type: 'row', container: row, items: [el] });
+      }
+      continue;
+    }
+
+    const grid = getLogicalGrid(el);
+    if (grid) {
+      const prev = blocks[blocks.length - 1];
+      if (prev && prev.type === 'grid' && prev.container === grid) {
+        prev.items.push(el);
+      } else {
+        blocks.push({ type: 'grid', container: grid, items: [el] });
+      }
+      continue;
+    }
+
+    blocks.push({ type: 'item', container: el, items: [el] });
+  }
+
+  return blocks;
+}
+
+function pickBestItemInBlock(
+  current: HTMLElement,
+  block: ZoneBlock,
+  hasRealGeometry: boolean
+): HTMLElement {
+  if (block.items.length === 1) {
+    return block.items[0];
+  }
+
+  // If moving into a horizontal row or group, prefer horizontally aligned item that is visible in the row
+  if (hasRealGeometry) {
+    const currRect = current.getBoundingClientRect();
+    const cx = currRect.left + currRect.width / 2;
+
+    let pool = block.items;
+    if (block.type === 'row') {
+      const rowRect = block.container.getBoundingClientRect();
+      if (rowRect.width > 0) {
+        const visibleInRow = block.items.filter((item) => {
+          const r = item.getBoundingClientRect();
+          return r.right > rowRect.left + 4 && r.left < rowRect.right - 4;
+        });
+        if (visibleInRow.length > 0) {
+          pool = visibleInRow;
+        }
+      }
+    }
+
+    let best = pool[0];
+    let bestDist = Infinity;
+    for (const item of pool) {
+      const r = item.getBoundingClientRect();
+      const ix = r.left + r.width / 2;
+      const dist = Math.abs(ix - cx);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = item;
+      }
+    }
+    return best;
+  }
+
+  return block.items[0];
+}
+
+function findNextInGridBlock(
+  current: HTMLElement,
+  gridItems: HTMLElement[],
+  direction: SpatialDirection,
+  hasRealGeometry: boolean
+): HTMLElement | null {
+  const idx = gridItems.indexOf(current);
+  if (idx === -1) return null;
+
+  if (hasRealGeometry) {
+    const currentRect = current.getBoundingClientRect();
+    const cx = currentRect.left + currentRect.width / 2;
+    const cy = currentRect.top + currentRect.height / 2;
+
+    let best: HTMLElement | null = null;
+    let bestScore = Infinity;
+
+    for (const item of gridItems) {
+      if (item === current) continue;
+      const r = item.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+
+      const tx = r.left + r.width / 2;
+      const ty = r.top + r.height / 2;
+      const dx = tx - cx;
+      const dy = ty - cy;
+      const sameRow = Math.abs(dy) < Math.max(currentRect.height, r.height) * 0.5;
+      const overlapX =
+        Math.max(0, Math.min(currentRect.right, r.right) - Math.max(currentRect.left, r.left)) > 0;
+
+      if (direction === 'right' && sameRow && dx > 4) {
+        const score = dx + Math.abs(dy) * 2;
+        if (score < bestScore) {
+          bestScore = score;
+          best = item;
+        }
+      } else if (direction === 'left' && sameRow && dx < -4) {
+        const score = -dx + Math.abs(dy) * 2;
+        if (score < bestScore) {
+          bestScore = score;
+          best = item;
+        }
+      } else if (direction === 'down' && !sameRow && dy > 4) {
+        const crossPenalty = overlapX ? Math.abs(dx) * 0.2 : Math.abs(dx) * 2.5;
+        const score = dy + crossPenalty;
+        if (score < bestScore) {
+          bestScore = score;
+          best = item;
+        }
+      } else if (direction === 'up' && !sameRow && dy < -4) {
+        const crossPenalty = overlapX ? Math.abs(dx) * 0.2 : Math.abs(dx) * 2.5;
+        const score = -dy + crossPenalty;
+        if (score < bestScore) {
+          bestScore = score;
+          best = item;
+        }
+      }
+    }
+
+    return best;
+  }
+
+  // Structural fallback in headless DOM (0x0 rects)
+  if (direction === 'right' || direction === 'down') {
+    return idx < gridItems.length - 1 ? gridItems[idx + 1] : null;
+  }
+  if (direction === 'left' || direction === 'up') {
+    return idx > 0 ? gridItems[idx - 1] : null;
+  }
+  return null;
+}
+
+function pickPreferredZoneEntry(
+  candidates: HTMLElement[],
+  targetZone: string
+): HTMLElement | null {
+  const zoneItems = candidates.filter((c) => getLogicalZone(c) === targetZone);
+  if (zoneItems.length === 0) return null;
+
+  if (targetZone === 'categories') {
+    const selectedChannel = zoneItems.find(
+      (c) => c.getAttribute('data-live-channel-selected') === 'true'
+    );
+    if (selectedChannel) return selectedChannel;
+
+    const selectedCat = zoneItems.find(
+      (c) => c.getAttribute('data-category-selected') === 'true'
+    );
+    if (selectedCat) return selectedCat;
+  }
+
+  if (targetZone === 'sidebar') {
+    const activeSidebar = zoneItems.find(
+      (c) => c.getAttribute('data-sidebar-active') === 'true'
+    );
+    if (activeSidebar) return activeSidebar;
+  }
+
+  return zoneItems[0];
+}
+
 /**
  * Moves focus in the requested direction ('up' | 'down' | 'left' | 'right').
- * Supports both real 2D bounding-box geometry (Chromium / Android TV WebView)
- * and structural DOM-zone navigation when bounding rects are 0x0 (e.g. happy-dom tests).
+ * Follows visual/DOM zone structure so vertical navigation inside content scrolls through rows
+ * and never jumps accidentally to the sidebar or search bar.
  */
 export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | null {
   if (typeof document === 'undefined') return null;
@@ -190,9 +513,12 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       : null;
 
   if (!activeEl || !candidates.includes(activeEl)) {
+    const contentCandidates = candidates.filter((c) => getLogicalZone(c) === 'content');
     const first =
-      candidates.find((c) => c.getAttribute('data-autofocus') === 'true') || candidates[0];
-    focusElementSafely(first);
+      candidates.find((c) => c.getAttribute('data-autofocus') === 'true') ||
+      contentCandidates[0] ||
+      candidates[0];
+    focusElementSafely(first, direction);
     return first;
   }
 
@@ -206,202 +532,207 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       return r.width > 0 && r.height > 0 && (r.left !== activeRect.left || r.top !== activeRect.top);
     });
 
-  if (hasRealGeometry) {
-    const nextByGeometry = findNextByGeometry(activeEl, activeRect, candidates, direction);
-    if (nextByGeometry) {
-      focusElementSafely(nextByGeometry);
-      return nextByGeometry;
+  const currentZone = getLogicalZone(activeEl);
+  const currentRow = getLogicalRow(activeEl);
+  const currentGrid = getLogicalGrid(activeEl);
+  const sameZoneCandidates = candidates.filter((c) => getLogicalZone(c) === currentZone);
+
+  // ---------------------------------------------------------------------------
+  // VERTICAL NAVIGATION ('up' | 'down')
+  // ---------------------------------------------------------------------------
+  if (direction === 'up' || direction === 'down') {
+    const blocks = buildZoneBlocks(sameZoneCandidates);
+    const bIdx = blocks.findIndex((b) => b.items.includes(activeEl));
+
+    if (bIdx !== -1) {
+      const currentBlock = blocks[bIdx];
+
+      // 1. If inside a grid block, first try moving vertically within the grid
+      if (currentBlock.type === 'grid') {
+        const nextInGrid = findNextInGridBlock(activeEl, currentBlock.items, direction, hasRealGeometry);
+        if (nextInGrid) {
+          focusElementSafely(nextInGrid, direction);
+          return nextInGrid;
+        }
+      }
+
+      // 2. Move to the adjacent block within the SAME zone
+      const targetBlockIdx = direction === 'down' ? bIdx + 1 : bIdx - 1;
+      if (targetBlockIdx >= 0 && targetBlockIdx < blocks.length) {
+        const targetBlock = blocks[targetBlockIdx];
+        const nextEl = pickBestItemInBlock(activeEl, targetBlock, hasRealGeometry);
+        focusElementSafely(nextEl, direction);
+        return nextEl;
+      }
+    }
+
+    // 3. At the vertical boundary of the current zone:
+    if (direction === 'up') {
+      // Ensure scroll container is fully scrolled to top (0) before leaving the zone
+      const scrollContainer = findScrollContainer(activeEl);
+      if (scrollContainer && scrollContainer.scrollTop > 0) {
+        scrollContainer.scrollTop = 0;
+        return activeEl;
+      }
+
+      // Deliberate transition to header (search input) ONLY when at the very top of content or categories
+      if (currentZone === 'content' || currentZone === 'categories') {
+        const headerTarget = pickPreferredZoneEntry(candidates, 'header');
+        if (headerTarget) {
+          focusElementSafely(headerTarget, direction);
+          return headerTarget;
+        }
+      }
+
+      return activeEl;
+    }
+
+    if (direction === 'down') {
+      // From header (search input), move down into content (or categories if content is empty)
+      if (currentZone === 'header') {
+        const contentTarget = pickPreferredZoneEntry(candidates, 'content');
+        if (contentTarget) {
+          focusElementSafely(contentTarget, direction);
+          return contentTarget;
+        }
+        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+        if (categoriesTarget) {
+          focusElementSafely(categoriesTarget, direction);
+          return categoriesTarget;
+        }
+      }
+
+      return activeEl;
     }
   }
 
-  const nextByStructure = findNextByStructure(activeEl, candidates, direction);
-  if (nextByStructure) {
-    focusElementSafely(nextByStructure);
-    return nextByStructure;
+  // ---------------------------------------------------------------------------
+  // HORIZONTAL NAVIGATION ('left' | 'right')
+  // ---------------------------------------------------------------------------
+  if (direction === 'left' || direction === 'right') {
+    // 1. Inside an explicit horizontal row (data-nav-row / data-nav-group)
+    if (currentRow) {
+      const rowItems = candidates.filter((c) => getLogicalRow(c) === currentRow);
+      const idxInRow = rowItems.indexOf(activeEl);
+
+      if (direction === 'right') {
+        if (idxInRow >= 0 && idxInRow < rowItems.length - 1) {
+          const nextInRow = rowItems[idxInRow + 1];
+          focusElementSafely(nextInRow, direction);
+          return nextInRow;
+        }
+        // At right end of a row in categories (e.g. LiveTvView channel row fav button), allow moving right to content
+        if (currentZone === 'categories') {
+          const contentTarget = pickPreferredZoneEntry(candidates, 'content');
+          if (contentTarget) {
+            focusElementSafely(contentTarget, direction);
+            return contentTarget;
+          }
+        }
+        return activeEl;
+      }
+
+      if (direction === 'left') {
+        if (idxInRow > 0) {
+          const prevInRow = rowItems[idxInRow - 1];
+          focusElementSafely(prevInRow, direction);
+          return prevInRow;
+        }
+        // At left boundary of row (idxInRow === 0): deliberate zone transition
+        if (currentZone === 'content') {
+          const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+          if (categoriesTarget) {
+            focusElementSafely(categoriesTarget, direction);
+            return categoriesTarget;
+          }
+          const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+          if (sidebarTarget) {
+            focusElementSafely(sidebarTarget, direction);
+            return sidebarTarget;
+          }
+        } else if (currentZone === 'categories') {
+          const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+          if (sidebarTarget) {
+            focusElementSafely(sidebarTarget, direction);
+            return sidebarTarget;
+          }
+        }
+        return activeEl;
+      }
+    }
+
+    // 2. Inside a CSS Grid (data-nav-grid="true")
+    if (currentGrid) {
+      const gridItems = sameZoneCandidates.filter((c) => getLogicalGrid(c) === currentGrid);
+      const nextInGrid = findNextInGridBlock(activeEl, gridItems, direction, hasRealGeometry);
+      if (nextInGrid) {
+        focusElementSafely(nextInGrid, direction);
+        return nextInGrid;
+      }
+
+      if (direction === 'left') {
+        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+        if (categoriesTarget) {
+          focusElementSafely(categoriesTarget, direction);
+          return categoriesTarget;
+        }
+        const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+        if (sidebarTarget) {
+          focusElementSafely(sidebarTarget, direction);
+          return sidebarTarget;
+        }
+      }
+      return activeEl;
+    }
+
+    // 3. Standalone items in sidebar, categories, header, or modal
+    if (direction === 'right') {
+      if (currentZone === 'sidebar') {
+        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+        if (categoriesTarget) {
+          focusElementSafely(categoriesTarget, direction);
+          return categoriesTarget;
+        }
+        const contentTarget = pickPreferredZoneEntry(candidates, 'content');
+        if (contentTarget) {
+          focusElementSafely(contentTarget, direction);
+          return contentTarget;
+        }
+        const headerTarget = pickPreferredZoneEntry(candidates, 'header');
+        if (headerTarget) {
+          focusElementSafely(headerTarget, direction);
+          return headerTarget;
+        }
+      } else if (currentZone === 'categories') {
+        const contentTarget = pickPreferredZoneEntry(candidates, 'content');
+        if (contentTarget) {
+          focusElementSafely(contentTarget, direction);
+          return contentTarget;
+        }
+      }
+    }
+
+    if (direction === 'left') {
+      if (currentZone === 'content' || currentZone === 'header') {
+        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+        if (categoriesTarget) {
+          focusElementSafely(categoriesTarget, direction);
+          return categoriesTarget;
+        }
+        const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+        if (sidebarTarget) {
+          focusElementSafely(sidebarTarget, direction);
+          return sidebarTarget;
+        }
+      } else if (currentZone === 'categories') {
+        const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+        if (sidebarTarget) {
+          focusElementSafely(sidebarTarget, direction);
+          return sidebarTarget;
+        }
+      }
+    }
   }
 
   return activeEl;
-}
-
-function findNextByGeometry(
-  current: HTMLElement,
-  currentRect: DOMRect,
-  candidates: HTMLElement[],
-  direction: SpatialDirection
-): HTMLElement | null {
-  const cx = currentRect.left + currentRect.width / 2;
-  const cy = currentRect.top + currentRect.height / 2;
-  const currentRow = getLogicalRow(current);
-  const currentZone = getLogicalZone(current);
-
-  let bestCandidate: HTMLElement | null = null;
-  let bestScore = Infinity;
-
-  for (const candidate of candidates) {
-    if (candidate === current) continue;
-    const rect = candidate.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
-
-    const tx = rect.left + rect.width / 2;
-    const ty = rect.top + rect.height / 2;
-    const dx = tx - cx;
-    const dy = ty - cy;
-
-    let primaryDist = 0;
-    let crossDist = 0;
-    let isValidDirection = false;
-
-    const overlapX =
-      Math.max(0, Math.min(currentRect.right, rect.right) - Math.max(currentRect.left, rect.left)) > 0;
-    const overlapY =
-      Math.max(0, Math.min(currentRect.bottom, rect.bottom) - Math.max(currentRect.top, rect.top)) > 0;
-
-    switch (direction) {
-      case 'right':
-        if (dx > 4 && (overlapY || Math.abs(dy) < Math.max(currentRect.height, rect.height) * 2.5 || getLogicalZone(candidate) !== currentZone)) {
-          isValidDirection = true;
-          primaryDist = Math.max(0, rect.left - currentRect.right);
-          if (primaryDist === 0) primaryDist = dx;
-          crossDist = overlapY ? Math.abs(dy) * 0.25 : Math.abs(dy) * 2.5;
-        }
-        break;
-      case 'left':
-        if (dx < -4 && (overlapY || Math.abs(dy) < Math.max(currentRect.height, rect.height) * 2.5 || getLogicalZone(candidate) !== currentZone)) {
-          isValidDirection = true;
-          primaryDist = Math.max(0, currentRect.left - rect.right);
-          if (primaryDist === 0) primaryDist = -dx;
-          crossDist = overlapY ? Math.abs(dy) * 0.25 : Math.abs(dy) * 2.5;
-        }
-        break;
-      case 'down':
-        if (dy > 4) {
-          isValidDirection = true;
-          primaryDist = Math.max(0, rect.top - currentRect.bottom);
-          if (primaryDist === 0) primaryDist = dy;
-          crossDist = overlapX ? Math.abs(dx) * 0.2 : Math.abs(dx) * 1.5;
-        }
-        break;
-      case 'up':
-        if (dy < -4) {
-          isValidDirection = true;
-          primaryDist = Math.max(0, currentRect.top - rect.bottom);
-          if (primaryDist === 0) primaryDist = -dy;
-          crossDist = overlapX ? Math.abs(dx) * 0.2 : Math.abs(dx) * 1.5;
-        }
-        break;
-    }
-
-    if (!isValidDirection) continue;
-
-    let zonePenalty = 0;
-    const candidateRow = getLogicalRow(candidate);
-    const candidateZone = getLogicalZone(candidate);
-
-    if ((direction === 'left' || direction === 'right') && currentRow && candidateRow === currentRow) {
-      zonePenalty = -150;
-    } else if (candidateZone !== currentZone) {
-      if ((direction === 'up' || direction === 'down') && currentZone === 'sidebar') {
-        zonePenalty = 2000;
-      } else {
-        zonePenalty = 120;
-      }
-    }
-
-    const score = primaryDist + crossDist + zonePenalty;
-    if (score < bestScore) {
-      bestScore = score;
-      bestCandidate = candidate;
-    }
-  }
-
-  return bestCandidate;
-}
-
-function findNextByStructure(
-  current: HTMLElement,
-  candidates: HTMLElement[],
-  direction: SpatialDirection
-): HTMLElement | null {
-  const currentIdx = candidates.indexOf(current);
-  if (currentIdx === -1) return candidates[0] || null;
-
-  const currentZone = getLogicalZone(current);
-  const currentRow = getLogicalRow(current);
-
-  if (direction === 'right') {
-    if (currentRow) {
-      const rowItems = candidates.filter((c) => getLogicalRow(c) === currentRow);
-      const idxInRow = rowItems.indexOf(current);
-      if (idxInRow >= 0 && idxInRow < rowItems.length - 1) {
-        return rowItems[idxInRow + 1];
-      }
-    }
-    if (currentZone === 'sidebar') {
-      const nonSidebar = candidates.find((c) => getLogicalZone(c) !== 'sidebar');
-      if (nonSidebar) return nonSidebar;
-    }
-    if (currentZone === 'categories') {
-      const nextZoneItem = candidates.find(
-        (c) => getLogicalZone(c) !== 'sidebar' && getLogicalZone(c) !== 'categories'
-      );
-      if (nextZoneItem) return nextZoneItem;
-    }
-    return candidates[Math.min(candidates.length - 1, currentIdx + 1)];
-  }
-
-  if (direction === 'left') {
-    if (currentRow) {
-      const rowItems = candidates.filter((c) => getLogicalRow(c) === currentRow);
-      const idxInRow = rowItems.indexOf(current);
-      if (idxInRow > 0) {
-        return rowItems[idxInRow - 1];
-      }
-    }
-    if (currentZone !== 'sidebar') {
-      const categoriesItem = candidates.find((c) => getLogicalZone(c) === 'categories');
-      if (categoriesItem && currentZone !== 'categories') {
-        return categoriesItem;
-      }
-      const sidebarItem = candidates.find((c) => getLogicalZone(c) === 'sidebar');
-      if (sidebarItem) {
-        return sidebarItem;
-      }
-    }
-    return candidates[Math.max(0, currentIdx - 1)];
-  }
-
-  if (direction === 'down') {
-    if (currentRow) {
-      // Try moving to the next row or next element outside the current horizontal row
-      for (let i = currentIdx + 1; i < candidates.length; i++) {
-        if (getLogicalRow(candidates[i]) !== currentRow) {
-          return candidates[i];
-        }
-      }
-    }
-    const zoneItems = candidates.filter((c) => getLogicalZone(c) === currentZone);
-    const idxInZone = zoneItems.indexOf(current);
-    if (idxInZone >= 0 && idxInZone < zoneItems.length - 1) {
-      return zoneItems[idxInZone + 1];
-    }
-    return candidates[Math.min(candidates.length - 1, currentIdx + 1)];
-  }
-
-  if (direction === 'up') {
-    if (currentRow) {
-      for (let i = currentIdx - 1; i >= 0; i--) {
-        if (getLogicalRow(candidates[i]) !== currentRow) {
-          return candidates[i];
-        }
-      }
-    }
-    const zoneItems = candidates.filter((c) => getLogicalZone(c) === currentZone);
-    const idxInZone = zoneItems.indexOf(current);
-    if (idxInZone > 0) {
-      return zoneItems[idxInZone - 1];
-    }
-    return candidates[Math.max(0, currentIdx - 1)];
-  }
-
-  return null;
 }

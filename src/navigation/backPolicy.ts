@@ -13,7 +13,7 @@ export interface BackHandlerEntry {
  * - FULLSCREEN_PLAYER (90): Embedded fullscreen preview or standalone VideoPlayer
  * - DETAILS_MODAL (80): MovieDetails, SeriesDetails
  * - DRAWER_MENU (70): Mobile navigation drawer
- * - VIEW_INTERNAL (60): LiveTvView active channel / channel list -> categories
+ * - VIEW_INTERNAL (60): LiveTvView active channel / channel list -> categories, MoviesView/SeriesView content -> categories
  * - SECTION_TO_HOME (50): Internal section (live, movies, series, favorites, config) -> inicio
  */
 export const BACK_PRIORITY = {
@@ -27,6 +27,15 @@ export const BACK_PRIORITY = {
 
 let sequenceCounter = 0;
 const handlers = new Map<string, BackHandlerEntry>();
+let centralBackPolicyAttached = false;
+
+export function setCentralBackPolicyAttached(attached: boolean): void {
+  centralBackPolicyAttached = attached;
+}
+
+export function isCentralBackPolicyAttached(): boolean {
+  return centralBackPolicyAttached;
+}
 
 export function registerBackHandler(
   id: string,

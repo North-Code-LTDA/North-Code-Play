@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Play, X, ChevronLeft, Loader2, Heart, AlertCircle, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
@@ -9,7 +9,14 @@ import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { MediaImage } from './MediaImage';
 
 import { getItemProgress, recordPlaybackPosition, clearItemProgress } from '../utils/playbackHistory';
-import { useBackHandler, BACK_PRIORITY, pushFocusMemory, popFocusMemory } from '../navigation';
+import {
+  useBackHandler,
+  BACK_PRIORITY,
+  pushFocusMemory,
+  popFocusMemory,
+  getNavMode,
+  focusElementSafely,
+} from '../navigation';
 
 interface SeriesDetailsProps {
   key?: React.Key;
@@ -34,16 +41,26 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   const [playError, setPlayError] = useState<string | null>(null);
   const [failedEpisode, setFailedEpisode] = useState<{ episode: any; startAt: number } | null>(null);
   const [favActionError, setFavActionError] = useState<string | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const favoriteBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     pushFocusMemory(document.activeElement as HTMLElement | null);
   }, [seriesId]);
 
+  useEffect(() => {
+    if (!loadingInfo && seriesInfo && getNavMode() === 'remote' && favoriteBtnRef.current) {
+      focusElementSafely(favoriteBtnRef.current);
+    }
+  }, [loadingInfo, seriesInfo]);
+
   const handleClose = () => {
     onClose();
-    setTimeout(() => {
-      popFocusMemory();
-    }, 20);
+    if (!popFocusMemory()) {
+      setTimeout(() => {
+        popFocusMemory();
+      }, 0);
+    }
   };
 
   useBackHandler(
@@ -121,6 +138,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   };
 
   const executePlay = (episode: any, startAt: number = 0) => {
+    pushFocusMemory(document.activeElement as HTMLElement | null);
     // Associate episode with parent series ID in active account's history
     recordPlaybackPosition(credentials, {
       id: episode.id,
@@ -199,7 +217,11 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       className="absolute inset-0 z-[60] bg-nc-bg/95 backdrop-blur-xl flex flex-col overflow-hidden w-full h-full"
     >
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-nc-border/50 bg-black/50 shrink-0">
+      <div
+        data-nav-row="true"
+        data-scroll-top-anchor="true"
+        className="flex items-center justify-between p-4 border-b border-nc-border/50 bg-black/50 shrink-0"
+      >
         <button 
           onClick={handleClose}
           className="flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors"
@@ -212,6 +234,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
         </h2>
         <button 
           onClick={handleClose}
+          aria-label="Fechar"
           className="p-2 hover:bg-white/10 rounded-full transition-colors"
         >
           <X className="w-5 h-5" />
@@ -219,7 +242,11 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-6">
+      <div
+        ref={scrollContainerRef}
+        data-scroll-container="true"
+        className="flex-1 overflow-y-auto custom-scrollbar p-6"
+      >
         {loadingInfo ? (
           <div className="flex flex-col items-center justify-center h-64 text-nc-text-secondary">
             <Loader2 className="w-10 h-10 animate-spin mb-4 text-nc-primary" />
@@ -228,7 +255,10 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
         ) : seriesInfo ? (
           <div className="flex flex-col gap-8 mx-auto w-full">
             {/* Hero & Info Section */}
-            <div className="relative w-full rounded-2xl overflow-hidden bg-black shrink-0 flex flex-col min-h-[400px] md:min-h-[500px]">
+            <div
+              data-scroll-top-anchor="true"
+              className="relative w-full rounded-2xl overflow-hidden bg-black shrink-0 flex flex-col min-h-[400px] md:min-h-[500px]"
+            >
                <div className="absolute inset-0 bg-black z-0">
                  {(() => {
                    const backdropSource = normalizeImageSource(seriesInfo.info?.backdrop_path);
@@ -271,17 +301,30 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                           </span>
                         )}
                      </div>
-                     <p className="text-gray-300 text-sm md:text-base leading-relaxed line-clamp-3 max-w-3xl mb-6">
-                       {seriesInfo.info?.plot || 'Sinopse não disponível.'}
-                     </p>
+                     <div
+                       tabIndex={0}
+                       role="region"
+                       aria-label="Sinopse da série"
+                       data-nav-item="true"
+                       data-synopsis-focus="true"
+                       data-scroll-top-anchor="true"
+                       className="rounded-xl p-2 -m-2 mb-4 max-w-3xl focus:outline-none transition-colors"
+                     >
+                       <p className="text-gray-300 text-sm md:text-base leading-relaxed">
+                         {seriesInfo.info?.plot || 'Sinopse não disponível.'}
+                       </p>
+                     </div>
                      <button 
+                       ref={favoriteBtnRef}
+                       data-autofocus="true"
+                       data-scroll-top-anchor="true"
                        onClick={() => handleToggleFavorite({
                          id: seriesId,
                          name: seriesInfo.info?.name || seriesName,
                          cover: normalizeImageSource(seriesInfo.info?.cover) || normalizeImageSource(seriesCover) || '',
                          type: 'series'
                        })}
-                       className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors w-fit font-medium text-white shadow-xl"
+                       className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors w-fit font-medium text-white shadow-xl mt-2"
                      >
                        <Heart className={`w-5 h-5 ${isFavorite(seriesId, 'series') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
                        {isFavorite(seriesId, 'series') ? 'Favoritado' : 'Adicionar aos Favoritos'}
@@ -313,7 +356,11 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                   {/* Season Tabs */}
               {seriesInfo.episodes && Object.keys(seriesInfo.episodes).length > 0 ? (
                 <>
-                  <div data-nav-row="true" className="overflow-x-auto custom-scrollbar flex gap-2 pb-4 mb-4 border-b border-nc-border/50 shrink-0">
+                  <div
+                    data-nav-row="true"
+                    data-scroll-block="true"
+                    className="overflow-x-auto custom-scrollbar flex gap-2 pb-4 mb-4 border-b border-nc-border/50 shrink-0"
+                  >
                     {Object.keys(seriesInfo.episodes).map((seasonNum) => (
                       <button
                         key={seasonNum}
@@ -334,6 +381,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                         tabIndex={0}
                         role="button"
                         data-nav-item="true"
+                        data-scroll-block="true"
                         aria-label={episode.title || `Episódio ${episode.episode_num}`}
                         whileHover={{ scale: 1.01 }}
                         whileTap={{ scale: 0.99 }}
@@ -463,6 +511,9 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                   document.exitFullscreen().catch(err => console.log('Fullscreen exit error:', err));
                 }
                 setPlayingEpisodeData(null);
+                if (!popFocusMemory()) {
+                  setTimeout(() => popFocusMemory(), 0);
+                }
               }}
               onNext={hasNext ? handleNextEpisode : undefined}
               onPrevious={hasPrev ? handlePreviousEpisode : undefined}

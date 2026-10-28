@@ -9,7 +9,13 @@ import { PlayerSettingsMenu } from './player/PlayerSettingsMenu';
 import { PlayerDiagnosticsModal } from './player/PlayerDiagnosticsModal';
 import { registerPlayer, setActivePlayer, isPlayerActive } from './player/playerRegistry';
 import { XtreamContext } from '../context/XtreamContext';
-import { useBackHandler, BACK_PRIORITY, getNavMode, focusElementSafely } from '../navigation';
+import {
+  useBackHandler,
+  BACK_PRIORITY,
+  getNavMode,
+  focusElementSafely,
+  isCentralBackPolicyAttached,
+} from '../navigation';
 
 export type { VideoPlayerProps };
 
@@ -378,6 +384,14 @@ export function VideoPlayer({
 
     if (embedded && isFs) {
       await toggleFullscreen();
+      if (getNavMode() === 'remote' && typeof document !== 'undefined') {
+        const selectedChannelBtn = document.querySelector<HTMLButtonElement>(
+          'button[data-live-channel-selected="true"]'
+        );
+        if (selectedChannelBtn) {
+          focusElementSafely(selectedChannelBtn);
+        }
+      }
       return;
     }
 
@@ -446,6 +460,8 @@ export function VideoPlayer({
   // Keyboard shortcuts active only when no form or interactive control is focused
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+
       const activeEl = document.activeElement as HTMLElement | null;
       if (activeEl) {
         const tagName = activeEl.tagName;
@@ -533,14 +549,17 @@ export function VideoPlayer({
           session.setVolume(session.volume - 0.1);
           break;
         case 'Escape':
-          if (showSettings) {
-            setShowSettings(false);
-          } else if (showDiagnostics) {
-            setShowDiagnostics(false);
-          } else if (isFullscreen || isVisuallyExpanded) {
-            toggleFullscreen();
-          } else if (!embedded && onBack) {
-            onBack();
+          if (!isCentralBackPolicyAttached()) {
+            e.preventDefault();
+            if (showSettings) {
+              setShowSettings(false);
+            } else if (showDiagnostics) {
+              setShowDiagnostics(false);
+            } else if (isFullscreen || isVisuallyExpanded) {
+              toggleFullscreen();
+            } else if (!embedded && onBack) {
+              onBack();
+            }
           }
           break;
         default:

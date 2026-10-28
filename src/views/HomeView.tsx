@@ -250,44 +250,52 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
   const contentForHero = [...allVodStreams, ...allSeriesStreams];
 
   return (
-    <div className="flex flex-col w-full h-full overflow-y-auto overflow-x-hidden">
-      <HeroBanner 
-        items={contentForHero}
-        onPlay={(item) => {
-          if (item.stream_type === 'movie' || item.stream_id) {
-            handlePlayVod(item);
-          } else {
-            setSelectedSeries(item);
-          }
-        }}
-        onInfo={(item) => {
-          if (item.stream_type === 'movie' || item.stream_id) {
-            setSelectedMovie(item);
-          } else {
-            setSelectedSeries(item);
-          }
-        }}
-      />
+    <div
+      data-nav-zone="content"
+      data-scroll-container="true"
+      className="flex flex-col w-full h-full overflow-y-auto overflow-x-hidden"
+    >
+      <div data-scroll-top-anchor="true" className="w-full shrink-0">
+        <HeroBanner 
+          items={contentForHero}
+          onPlay={(item) => {
+            if (item.stream_type === 'movie' || item.stream_id) {
+              handlePlayVod(item);
+            } else {
+              setSelectedSeries(item);
+            }
+          }}
+          onInfo={(item) => {
+            if (item.stream_type === 'movie' || item.stream_id) {
+              setSelectedMovie(item);
+            } else {
+              setSelectedSeries(item);
+            }
+          }}
+        />
+      </div>
 
       <div className="px-6 md:px-12 pb-12 gap-8 flex flex-col relative z-20 mt-4 md:mt-8 lg:mt-16 xl:mt-24 shrink-0">
         {/* Continue Watching Row */}
         {continueWatching.length > 0 && (
-          <HorizontalRow 
-             title="Continuar Assistindo"
-             items={continueWatching}
-             type="vod"
-             onItemClick={(item) => {
-               if (typeof item.rowKey === 'string' && item.rowKey.startsWith('series_')) {
-                 setSelectedSeries(item);
-               } else if (typeof item.rowKey === 'string' && item.rowKey.startsWith('movie_')) {
-                 setSelectedMovie(item);
-               } else if (item.stream_type === 'movie' || (item.stream_id && !item.series_id)) {
-                 setSelectedMovie(item);
-               } else {
-                 setSelectedSeries(item);
-               }
-             }}
-          />
+          <div data-scroll-block="true" className="w-full">
+            <HorizontalRow 
+               title="Continuar Assistindo"
+               items={continueWatching}
+               type="vod"
+               onItemClick={(item) => {
+                 if (typeof item.rowKey === 'string' && item.rowKey.startsWith('series_')) {
+                   setSelectedSeries(item);
+                 } else if (typeof item.rowKey === 'string' && item.rowKey.startsWith('movie_')) {
+                   setSelectedMovie(item);
+                 } else if (item.stream_type === 'movie' || (item.stream_id && !item.series_id)) {
+                   setSelectedMovie(item);
+                 } else {
+                   setSelectedSeries(item);
+                 }
+               }}
+            />
+          </div>
         )}
 
         {/* Specific Category Error Banners */}
@@ -367,12 +375,14 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         )}
 
         {filteredLive.length > 0 && (
-          <HorizontalRow 
-             title="Canais Ao Vivo"
-             items={filteredLive.slice(0, displayCount.live)}
-             type="live"
-             onItemClick={handlePlayLive}
-          />
+          <div data-scroll-block="true" className="w-full">
+            <HorizontalRow 
+               title="Canais Ao Vivo"
+               items={filteredLive.slice(0, displayCount.live)}
+               type="live"
+               onItemClick={handlePlayLive}
+            />
+          </div>
         )}
         
         {/* Movies Section: Discrete loading, Error with Retry, or Content */}
@@ -406,12 +416,14 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         )}
 
         {filteredVod.length > 0 && (
-          <HorizontalRow 
-             title="Filmes em Destaque"
-             items={filteredVod.slice(0, displayCount.vod)}
-             type="vod"
-             onItemClick={(item) => setSelectedMovie(item)}
-          />
+          <div data-scroll-block="true" className="w-full">
+            <HorizontalRow 
+               title="Filmes em Destaque"
+               items={filteredVod.slice(0, displayCount.vod)}
+               type="vod"
+               onItemClick={(item) => setSelectedMovie(item)}
+            />
+          </div>
         )}
         
         {/* Series Section: Discrete loading, Error with Retry, or Content */}
@@ -445,17 +457,19 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         )}
 
         {filteredSeries.length > 0 && (
-          <HorizontalRow 
-             title="Séries em Destaque"
-             items={filteredSeries.slice(0, displayCount.series)}
-             type="series"
-             onItemClick={(item) => setSelectedSeries(item)}
-          />
+          <div data-scroll-block="true" className="w-full">
+            <HorizontalRow 
+               title="Séries em Destaque"
+               items={filteredSeries.slice(0, displayCount.series)}
+               type="series"
+               onItemClick={(item) => setSelectedSeries(item)}
+            />
+          </div>
         )}
 
         {/* Dynamic Category Rows */}
         {!searchQuery && dynamicVodCategoryRows.map((row) => (
-          <div key={row.categoryId} className="w-full">
+          <div key={row.categoryId} data-scroll-block="true" className="w-full">
             <HorizontalRow 
               title={row.title}
               items={row.items.slice(0, displayCount.vod)}
@@ -466,7 +480,7 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
         ))}
 
         {!searchQuery && dynamicSeriesCategoryRows.map((row) => (
-          <div key={row.categoryId} className="w-full">
+          <div key={row.categoryId} data-scroll-block="true" className="w-full">
             <HorizontalRow 
               title={row.title}
               items={row.items.slice(0, displayCount.series)}

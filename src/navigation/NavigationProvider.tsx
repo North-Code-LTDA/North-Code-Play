@@ -7,7 +7,7 @@ import {
   moveSpatialFocus,
   SpatialDirection,
 } from './spatialNav';
-import { executeBackAction } from './backPolicy';
+import { executeBackAction, setCentralBackPolicyAttached } from './backPolicy';
 import { attachCapacitorBackAdapter } from './capacitorBackAdapter';
 
 interface NavigationContextValue {
@@ -58,6 +58,7 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   useEffect(() => {
+    setCentralBackPolicyAttached(true);
     const detachCapacitor = attachCapacitorBackAdapter();
 
     const handlePointerDown = () => {
@@ -111,12 +112,15 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
         }
 
         // Check if an active VideoPlayer without focused controls should handle seek/volume in desktop mode
-        const playerSurface = activeEl?.closest?.('[data-player-container="true"]');
         const isBodyOrUnfocused =
           !activeEl || activeEl === document.body || activeEl === document.documentElement;
         const activePlayerExists = document.querySelector('[data-player-active-shortcuts="true"]');
 
-        if (isBodyOrUnfocused && activePlayerExists && !document.querySelector('[data-focus-scope="modal"]:not([data-player-container="true"])')) {
+        if (
+          isBodyOrUnfocused &&
+          activePlayerExists &&
+          !document.querySelector('[data-focus-scope="modal"]:not([data-player-container="true"])')
+        ) {
           // Let VideoPlayer's own shortcut handler process Arrow keys when no button/card is focused
           return;
         }
@@ -130,6 +134,7 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
       if (e.key === 'Enter' || e.key === 'NumpadEnter') {
         if (!activeEl || activeEl === document.body || activeEl === document.documentElement) return;
 
+        setNavMode('remote');
         const tag = activeEl.tagName;
 
         // If user is actively editing a non-readOnly input/textarea/select, let native form behavior work
@@ -160,6 +165,7 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
     window.addEventListener('keydown', handleKeyDown, false);
 
     return () => {
+      setCentralBackPolicyAttached(false);
       detachCapacitor();
       window.removeEventListener('pointerdown', handlePointerDown, true);
       window.removeEventListener('keydown', handleKeyDown, false);

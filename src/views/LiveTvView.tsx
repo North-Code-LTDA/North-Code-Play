@@ -16,7 +16,12 @@ import {
   LiveChannelGroup,
   ResolutionQuality,
 } from '../utils/liveChannelGroups';
-import { useBackHandler, BACK_PRIORITY } from '../navigation';
+import {
+  useBackHandler,
+  BACK_PRIORITY,
+  getNavMode,
+  focusElementSafely,
+} from '../navigation';
 
 export const AUTO_RESOLUTION_PRIORITY: ResolutionQuality[] = ['SD', 'HD', 'FHD', '4K'];
 
@@ -147,6 +152,16 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const attemptedStreamIdsRef = useRef<Set<string | number>>(new Set());
   const attemptIdRef = useRef<number>(0);
   const fallbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // References for D-pad focus and scroll preservation between categories, channels, and preview
+  const viewRootRef = useRef<HTMLDivElement>(null);
+  const categoriesListRef = useRef<HTMLDivElement>(null);
+  const categoriesScrollTopRef = useRef<number>(0);
+  const originCategoryIdRef = useRef<string>('nc_recent');
+  const lastPointerDownTimeRef = useRef<number>(0);
+  const pendingChannelEntryFocusRef = useRef<boolean>(false);
+  const pendingCategoryRestoreFocusRef = useRef<string | null>(null);
+  const pendingChannelRestoreFocusRef = useRef<string | null>(null);
 
   // Reset active attempt and memory when active credentials change
   useEffect(() => {
@@ -469,8 +484,15 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     startVariantAttempt(selectedGroup, selectedResolutionMode);
   }, [selectedGroup, selectedResolutionMode, startVariantAttempt]);
 
+  const shouldApplyProgrammaticFocus = useCallback(() => {
+    const isRecentPointer =
+      getNavMode() === 'pointer' && Date.now() - lastPointerDownTimeRef.current < 250;
+    return !isRecentPointer;
+  }, []);
+
   // Close channel/player
   const handleCloseChannel = useCallback(() => {
+    const closedGroupId = selectedGroup?.groupId || null;
     if (fallbackTimeoutRef.current) {
       clearTimeout(fallbackTimeoutRef.current);
       fallbackTimeoutRef.current = null;
@@ -482,7 +504,96 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     setMiniPlayerLoading(false);
     setMiniPlayerError(null);
     setIsMobilePlayerOpen(false);
-  }, []);
+
+    if (closedGroupId && shouldApplyProgrammaticFocus()) {
+      pendingChannelRestoreFocusRef.current = closedGroupId;
+      const root = viewRootRef.current || document.body;
+      const channelBtns = Array.from(
+        root.querySelectorAll('button[data-live-channel-id]')
+      ) as HTMLButtonElement[];
+      const targetBtn = channelBtns.find(
+        (b) => b.getAttribute('data-live-channel-id') === closedGroupId
+      );
+      if (targetBtn) {
+        focusElementSafely(targetBtn);
+        pendingChannelRestoreFocusRef.current = null;
+      }
+    }
+  }, [selectedGroup, shouldApplyProgrammaticFocus]);
+
+  const handleReturnToCategories = useCallback(() => {
+    if (shouldApplyProgrammaticFocus()) {
+      pendingCategoryRestoreFocusRef.current =
+        originCategoryIdRef.current || String(selectedCategoryId || 'nc_recent');
+    }
+    setLeftPaneView('categories');
+  }, [selectedCategoryId, shouldApplyProgrammaticFocus]);
+
+  // Focus first channel (or "Voltar às Categorias" while loading/empty) after entering channels view
+  useEffect(() => {
+    if (leftPaneView !== 'channels') return;
+
+    if (pendingChannelRestoreFocusRef.current) {
+      const targetId = pendingChannelRestoreFocusRef.current;
+      const root = viewRootRef.current || document.body;
+      const channelBtns = Array.from(
+        root.querySelectorAll('button[data-live-channel-id]')
+      ) as HTMLButtonElement[];
+      const targetBtn = channelBtns.find((b) => b.getAttribute('data-live-channel-id') === targetId);
+      if (targetBtn) {
+        focusElementSafely(targetBtn);
+        pendingChannelRestoreFocusRef.current = null;
+        return;
+      }
+    }
+
+    if (!pendingChannelEntryFocusRef.current) return;
+
+    const root = viewRootRef.current || document.body;
+    const firstChannelBtn = root.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement | null;
+    if (firstChannelBtn) {
+      focusElementSafely(firstChannelBtn);
+      pendingChannelEntryFocusRef.current = false;
+      return;
+    }
+
+    const backToCatsBtn = root.querySelector(
+      'button[data-live-back-to-categories="true"]'
+    ) as HTMLButtonElement | null;
+    if (backToCatsBtn) {
+      focusElementSafely(backToCatsBtn);
+    }
+    if (liveCatalogStatus !== 'loading') {
+      pendingChannelEntryFocusRef.current = false;
+    }
+  }, [leftPaneView, displayedGroups.length, liveCatalogStatus, selectedGroup]);
+
+  // Restore categories scrollTop and origin category button focus when returning to categories view
+  useEffect(() => {
+    if (leftPaneView !== 'categories') return;
+
+    if (categoriesListRef.current) {
+      categoriesListRef.current.scrollTop = categoriesScrollTopRef.current;
+    }
+
+    if (pendingCategoryRestoreFocusRef.current) {
+      const targetCatId = pendingCategoryRestoreFocusRef.current;
+      pendingCategoryRestoreFocusRef.current = null;
+      const root = categoriesListRef.current || viewRootRef.current || document.body;
+      const catBtns = Array.from(
+        root.querySelectorAll('button[data-live-category-id]')
+      ) as HTMLButtonElement[];
+      const targetBtn =
+        catBtns.find((b) => b.getAttribute('data-live-category-id') === targetCatId) || catBtns[0];
+      if (targetBtn) {
+        const savedScroll = categoriesScrollTopRef.current;
+        focusElementSafely(targetBtn);
+        if (categoriesListRef.current) {
+          categoriesListRef.current.scrollTop = savedScroll;
+        }
+      }
+    }
+  }, [leftPaneView, extendedCategories.length]);
 
   // Register LiveTvView internal Back handler (close active channel preview or return from channels to categories)
   useBackHandler(
@@ -494,7 +605,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
         return true;
       }
       if (leftPaneView === 'channels' && !searchQuery) {
-        setLeftPaneView('categories');
+        handleReturnToCategories();
         return true;
       }
       return false;
@@ -557,7 +668,13 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const activeCategory = extendedCategories.find(c => c.category_id === selectedCategoryId);
 
   return (
-    <div className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg">
+    <div
+      ref={viewRootRef}
+      onPointerDownCapture={() => {
+        lastPointerDownTimeRef.current = Date.now();
+      }}
+      className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg"
+    >
       {/* Left Pane: Categories or Channels */}
       <div
         data-nav-zone="categories"
@@ -570,7 +687,14 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
             <div className="p-4 border-b border-nc-border/50 bg-nc-bg shrink-0">
               <h2 className="text-sm font-semibold text-white uppercase tracking-wider">CATEGORIAS DE TV</h2>
             </div>
-            <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar">
+            <div
+              ref={categoriesListRef}
+              data-scroll-container="true"
+              onScroll={(e) => {
+                categoriesScrollTopRef.current = e.currentTarget.scrollTop;
+              }}
+              className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar"
+            >
               {liveCategoriesError && liveCategories.length === 0 && (
                 <div className="p-3 mb-2 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-2">
                   <p className="text-xs text-red-400">{liveCategoriesError}</p>
@@ -591,7 +715,17 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                 extendedCategories.map((cat) => (
                   <button
                     key={cat.category_id}
+                    type="button"
+                    data-live-category-id={String(cat.category_id)}
+                    data-category-selected={selectedCategoryId === cat.category_id ? 'true' : 'false'}
                     onClick={() => {
+                      if (categoriesListRef.current) {
+                        categoriesScrollTopRef.current = categoriesListRef.current.scrollTop;
+                      }
+                      originCategoryIdRef.current = String(cat.category_id);
+                      if (shouldApplyProgrammaticFocus()) {
+                        pendingChannelEntryFocusRef.current = true;
+                      }
                       setSelectedCategoryId(cat.category_id);
                       setLeftPaneView('channels');
                     }}
@@ -611,7 +745,9 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
             <div className="p-4 border-b border-nc-border/50 bg-nc-bg shrink-0 flex flex-col gap-2">
               {!searchQuery && (
                 <button 
-                  onClick={() => setLeftPaneView('categories')}
+                  type="button"
+                  data-live-back-to-categories="true"
+                  onClick={handleReturnToCategories}
                   className="flex items-center gap-2 text-nc-text-secondary hover:text-white text-sm w-fit transition-colors"
                 >
                   <ArrowLeft className="w-4 h-4" /> Voltar às Categorias
@@ -622,7 +758,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
               </h2>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+            <div data-scroll-container="true" className="flex-1 overflow-y-auto p-2 custom-scrollbar">
               {liveError && rawFilteredStreams.length === 0 ? (
                 <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-3 my-4">
                   <p className="text-sm text-red-400">{liveError}</p>
@@ -655,6 +791,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                       <div
                         key={group.groupId}
                         data-nav-row="true"
+                        data-scroll-block="true"
                         className={`w-full flex items-center gap-1 rounded-xl transition-colors border ${
                           isSelected
                             ? 'bg-nc-primary/10 border-nc-primary/30'
@@ -663,7 +800,15 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                       >
                         <button
                           type="button"
-                          onClick={() => handleSelectGroup(group)}
+                          data-live-channel-btn="true"
+                          data-live-channel-id={group.groupId}
+                          data-live-channel-selected={isSelected ? 'true' : 'false'}
+                          onClick={(e) => {
+                            if (shouldApplyProgrammaticFocus()) {
+                              focusElementSafely(e.currentTarget);
+                            }
+                            handleSelectGroup(group);
+                          }}
                           className="w-full flex items-center gap-3 p-2 rounded-xl transition-colors flex-1 min-w-0 text-left"
                         >
                           <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden relative">
@@ -733,7 +878,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       </div>
 
       {/* Right Pane: Player & EPG */}
-      <div className={`flex-1 min-w-0 flex-col w-full h-auto md:h-full overflow-visible md:overflow-y-auto bg-nc-bg flex ${!isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
+      <div data-nav-zone="content" className={`flex-1 min-w-0 flex-col w-full h-auto md:h-full overflow-visible md:overflow-y-auto bg-nc-bg flex ${!isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
         {selectedGroup ? (
           <div className="flex flex-col w-full h-auto md:h-full overflow-visible md:overflow-y-auto">
              {/* Mobile Back Button */}

@@ -45,12 +45,15 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const [savedProgress, setSavedProgress] = useState(0);
   const [favActionError, setFavActionError] = useState<string | null>(null);
   const primaryActionRef = useRef<HTMLButtonElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const handleClose = useCallback(() => {
     onClose();
-    setTimeout(() => {
-      popFocusMemory();
-    }, 0);
+    if (!popFocusMemory()) {
+      setTimeout(() => {
+        popFocusMemory();
+      }, 0);
+    }
   }, [onClose]);
 
   useEffect(() => {
@@ -250,9 +253,16 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
       )}
 
       {/* Scrolling Content */}
-      <div className="absolute inset-0 z-10 overflow-y-auto custom-scrollbar flex flex-col">
+      <div
+        ref={scrollContainerRef}
+        data-scroll-container="true"
+        className="absolute inset-0 z-10 overflow-y-auto custom-scrollbar flex flex-col"
+      >
         {/* Hero Section */}
-        <div className="relative w-full min-h-[50vh] md:min-h-[65vh] shrink-0 z-10 flex flex-col justify-end">
+        <div
+          data-scroll-top-anchor="true"
+          className="relative w-full min-h-[50vh] md:min-h-[65vh] shrink-0 z-10 flex flex-col justify-end"
+        >
           <div className="absolute inset-0 bg-black z-0">
             {rawCover && (
               <MediaImage 
@@ -272,6 +282,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
           <button 
             onClick={handleClose}
             aria-label="Voltar"
+            data-scroll-top-anchor="true"
             className="absolute top-6 left-6 p-3 bg-black/40 hover:bg-black/60 backdrop-blur-md rounded-full text-white transition-colors z-[60] cursor-pointer"
           >
             <ArrowLeft className="w-6 h-6" />
@@ -309,7 +320,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
               )}
             </div>
 
-            <div data-nav-row="true" className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
+            <div data-nav-row="true" data-scroll-top-anchor="true" className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
               <button 
                 ref={primaryActionRef}
                 data-autofocus="true"
@@ -342,7 +353,27 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
       <div className="p-6 md:p-12 pt-4 flex-1 z-10 relative">
         <div className="max-w-4xl grid grid-cols-1 md:grid-cols-3 gap-8 bg-nc-bg/40 backdrop-blur-md p-8 rounded-3xl border border-white/5">
           <div className="md:col-span-2 space-y-6">
-            <div>
+            <div
+              tabIndex={0}
+              role="region"
+              aria-label="Sinopse do filme"
+              data-nav-item="true"
+              data-synopsis-focus="true"
+              data-scroll-block="true"
+              onKeyDown={(e) => {
+                const scroller = scrollContainerRef.current;
+                if (!scroller) return;
+                if (e.key === 'ArrowDown') {
+                  const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+                  if (scroller.scrollTop < maxScroll - 4) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    scroller.scrollTop = Math.min(maxScroll, scroller.scrollTop + 120);
+                  }
+                }
+              }}
+              className="rounded-2xl p-3 -m-3 focus:outline-none transition-colors"
+            >
               <p className="text-gray-200 text-lg leading-relaxed mix-blend-plus-lighter drop-shadow-md">
                 {info.plot || 'Sinopse não disponível.'}
               </p>

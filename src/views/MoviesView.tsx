@@ -7,6 +7,12 @@ import { useFavorites } from '../hooks/useFavorites';
 import { MediaImage } from '../components/MediaImage';
 import { useAccountPlaybackHistory } from '../utils/playbackHistory';
 import { formatCategoryLabel } from '../utils/categoryLabel';
+import {
+  useBackHandler,
+  BACK_PRIORITY,
+  focusElementSafely,
+  isElementFocusable,
+} from '../navigation';
 
 
 interface MoviesViewProps {
@@ -37,10 +43,46 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
 
   const historyRecords = useAccountPlaybackHistory(credentials);
 
+  const viewRootRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevCategoryRef = useRef<string | undefined>(selectedCategoryId);
   const prevSearchRef = useRef<string>(searchQuery);
+
+  // Back policy: when focus is inside the movies content area (and no details/player modal is open),
+  // first Back focuses the currently selected category without changing category, scrollTop, or view.
+  useBackHandler(
+    'movies-content-to-category',
+    BACK_PRIORITY.VIEW_INTERNAL,
+    () => {
+      if (selectedMovie) return false;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (!activeEl || !mainRef.current || !mainRef.current.contains(activeEl)) {
+        return false;
+      }
+      if (activeEl.closest('[data-nav-zone="categories"]')) {
+        return false;
+      }
+
+      const root = viewRootRef.current || document.body;
+      const categoryBtns = (
+        Array.from(
+          root.querySelectorAll('[data-nav-zone="categories"] button[data-category-id]')
+        ) as HTMLButtonElement[]
+      ).filter((btn) => isElementFocusable(btn));
+
+      const targetBtn =
+        categoryBtns.find((btn) => btn.getAttribute('data-category-id') === String(selectedCategoryId)) ||
+        categoryBtns[0];
+
+      if (targetBtn) {
+        focusElementSafely(targetBtn);
+        return true;
+      }
+      return false;
+    },
+    !selectedMovie
+  );
 
   const handleSelectCategory = (catId: string) => {
     if (catId === selectedCategoryId) return; // Do not reset scroll if same category is clicked
@@ -162,7 +204,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
   const displayedStreams = filteredStreams.slice(0, displayCount);
 
   return (
-    <div className="flex flex-1 overflow-hidden h-full relative">
+    <div ref={viewRootRef} className="flex flex-1 overflow-hidden h-full relative">
       {/* Sidebar - Categories */}
       <aside data-nav-zone="categories" className="hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
         <div className="p-4 border-b border-nc-border/50">
@@ -192,6 +234,8 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                 <button
                   key={cat.category_id}
                   type="button"
+                  data-category-id={String(cat.category_id)}
+                  data-category-selected={selectedCategoryId === cat.category_id ? 'true' : 'false'}
                   onClick={() => handleSelectCategory(cat.category_id)}
                   className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors truncate ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
                 >
@@ -204,9 +248,9 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
       </aside>
 
       {/* Main Content - Streams Grid */}
-      <main ref={mainRef} data-nav-zone="content" className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
+      <main ref={mainRef} data-nav-zone="content" data-scroll-container="true" className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
         {/* Mobile Categories Navbar */}
-        <div data-nav-row="true" className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
+        <div data-nav-zone="categories" data-nav-row="true" className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
           {vodCategoriesError && vodCategories.length === 0 && (
             <button
               type="button"
@@ -220,6 +264,8 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
             <button
               key={cat.category_id}
               type="button"
+              data-category-id={String(cat.category_id)}
+              data-category-selected={selectedCategoryId === cat.category_id ? 'true' : 'false'}
               onClick={() => handleSelectCategory(cat.category_id)}
               className={`shrink-0 snap-center px-4 py-2 rounded-full text-sm transition-colors whitespace-nowrap ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
             >
@@ -264,7 +310,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                  </div>
               ) : (
                 <>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                  <div data-nav-grid="true" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                    {displayedStreams.map((stream, idx) => (
                      <motion.div
                        key={stream.stream_id}
