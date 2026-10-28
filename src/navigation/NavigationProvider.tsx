@@ -9,6 +9,7 @@ import {
 } from './spatialNav';
 import { executeBackAction, setCentralBackPolicyAttached } from './backPolicy';
 import { attachCapacitorBackAdapter } from './capacitorBackAdapter';
+import { syncDocumentDisplayAttributes } from '../platform/tvEnvironment';
 
 interface NavigationContextValue {
   navMode: NavMode;
@@ -52,6 +53,7 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
   const [navMode, setNavModeState] = useState<NavMode>(() => getNavMode());
 
   useEffect(() => {
+    syncDocumentDisplayAttributes();
     return subscribeNavMode((mode) => {
       setNavModeState(mode);
     });

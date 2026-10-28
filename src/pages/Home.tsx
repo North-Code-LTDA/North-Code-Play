@@ -342,17 +342,17 @@ function HomeContent({ credentials }: { credentials: any }) {
         </AnimatePresence>
 
         {/* Sidebar - Desktop */}
-        <aside data-nav-zone="sidebar" className="hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-[100dvh] sticky top-0 shrink-0">
-          <div className="p-6">
+        <aside data-nav-zone="sidebar" className="nc-tv-sidebar hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-[100dvh] sticky top-0 shrink-0">
+          <div className="nc-tv-sidebar-logo p-6">
             <Logo className="scale-90 origin-left" />
           </div>
           
-          <div className="flex-1 px-4 py-2 space-y-2 overflow-y-auto custom-scrollbar">
+          <div className="nc-tv-sidebar-nav flex-1 px-4 py-2 space-y-2 overflow-y-auto custom-scrollbar flex flex-col">
             {renderNavItems()}
           </div>
 
-          <div className="p-4 border-t border-nc-border/50 mt-auto shrink-0">
-            <div className="flex items-center gap-3 px-4 py-3 mb-2">
+          <div className="nc-tv-sidebar-footer p-4 border-t border-nc-border/50 mt-auto shrink-0">
+            <div className="flex items-center gap-3 px-4 py-2.5 mb-1.5">
               <div className="w-9 h-9 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0 overflow-hidden border border-nc-border">
                 {credentials.avatar ? (
                   <MediaImage 
@@ -372,12 +372,12 @@ function HomeContent({ credentials }: { credentials: any }) {
             </div>
             <button 
               onClick={handleLogout}
-              className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
+              className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
             >
               <LogOut className="w-5 h-5" />
               <span>Sair</span>
             </button>
-            <div className="mt-3 pt-2 border-t border-nc-border/30 text-center">
+            <div className="mt-2.5 pt-2 border-t border-nc-border/30 text-center">
               <span className="text-[10px] font-mono text-nc-text-secondary/60">
                 v{APP_VERSION} ({APP_COMMIT.slice(0, 7)})
               </span>
@@ -478,7 +478,7 @@ function HomeContent({ credentials }: { credentials: any }) {
         <div className="flex-1 overflow-hidden flex flex-col relative w-full h-full">
           {/* Top Search Bar */}
           {currentView !== 'config' && (
-            <div data-nav-zone="header" className="w-full shrink-0 p-4 md:px-8 border-b border-nc-border/30 bg-nc-bg/80 backdrop-blur-lg flex items-center justify-center z-[40]">
+            <div data-nav-zone="header" className="nc-tv-header w-full shrink-0 p-4 md:px-8 border-b border-nc-border/30 bg-nc-bg/80 backdrop-blur-lg flex items-center justify-center z-[40]">
               <div className="relative w-full max-w-md">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-nc-text-secondary" />
                 <input 

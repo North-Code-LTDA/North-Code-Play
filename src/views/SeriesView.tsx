@@ -210,7 +210,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
   return (
     <div ref={viewRootRef} className="flex flex-1 overflow-hidden h-full">
       {/* Sidebar - Categories */}
-      <aside data-nav-zone="categories" className="hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
+      <aside data-nav-zone="categories" className="nc-tv-category-pane hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
         <div className="p-4 border-b border-nc-border/50">
           <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de Séries</h2>
         </div>
@@ -241,7 +241,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
                   data-category-id={String(cat.category_id)}
                   data-category-selected={selectedCategoryId === cat.category_id ? 'true' : 'false'}
                   onClick={() => handleSelectCategory(cat.category_id)}
-                  className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors truncate ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
+                  className={`nc-tv-category-btn w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors line-clamp-2 whitespace-normal break-words leading-snug ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
                 >
                   {formatCategoryLabel(cat.category_name, 'series')}
                 </button>
@@ -278,7 +278,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
           ))}
         </div>
 
-        <div className="p-6 flex-1">
+        <div className="nc-tv-content-pad p-6 flex-1">
           {seriesError && (
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 text-red-500 rounded-xl flex items-center justify-between">
               <span>{seriesError}</span>
@@ -314,7 +314,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
              </div>
           ) : (
             <>
-              <div data-nav-grid="true" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+              <div data-nav-grid="true" className="nc-tv-media-grid grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                {displayedStreams.map((stream, idx) => (
                  <motion.div
                    key={stream.series_id}

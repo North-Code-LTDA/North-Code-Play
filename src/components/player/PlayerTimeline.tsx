@@ -7,7 +7,9 @@ interface PlayerTimelineProps {
   bufferedRanges: BufferedTimeRange[];
   isLive: boolean;
   liveEdgeDistance?: number;
+  isVisible?: boolean;
   onSeek: (time: number) => void;
+  onUserInteraction?: () => void;
   formatTime: (seconds: number) => string;
 }
 
@@ -17,7 +19,9 @@ export function PlayerTimeline({
   bufferedRanges,
   isLive,
   liveEdgeDistance = 0,
+  isVisible = true,
   onSeek,
+  onUserInteraction,
   formatTime,
 }: PlayerTimelineProps) {
   const barRef = useRef<HTMLDivElement>(null);
@@ -27,6 +31,7 @@ export function PlayerTimeline({
 
   const effectiveDuration = duration > 0 && isFinite(duration) ? duration : 0;
   const progressPercent = effectiveDuration > 0 ? Math.min(100, Math.max(0, (currentTime / effectiveDuration) * 100)) : 0;
+  const canSeek = effectiveDuration > 0 && isVisible;
 
   const calculateTimeFromEvent = useCallback(
     (e: React.MouseEvent | MouseEvent | React.TouchEvent | TouchEvent | React.PointerEvent): number => {
@@ -56,6 +61,7 @@ export function PlayerTimeline({
   const handlePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
     if (effectiveDuration <= 0) return;
+    onUserInteraction?.();
     setIsDragging(true);
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -67,6 +73,7 @@ export function PlayerTimeline({
   const handlePointerMove = (e: React.PointerEvent) => {
     e.stopPropagation();
     if (isDragging && effectiveDuration > 0) {
+      onUserInteraction?.();
       const targetTime = calculateTimeFromEvent(e);
       onSeek(targetTime);
     }
@@ -104,31 +111,43 @@ export function PlayerTimeline({
   return (
     <div
       ref={barRef}
+      data-nav-row="player-timeline"
+      data-player-control="timeline"
       onClick={handleClick}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onFocus={() => onUserInteraction?.()}
       role="slider"
       aria-label="Linha do tempo"
       aria-valuenow={Math.floor(currentTime)}
       aria-valuemin={0}
       aria-valuemax={Math.floor(effectiveDuration)}
-      tabIndex={0}
+      aria-disabled={!canSeek}
+      tabIndex={canSeek ? 0 : -1}
       onKeyDown={(e) => {
         if (e.key === 'ArrowLeft') {
+          e.preventDefault();
           e.stopPropagation();
-          onSeek(Math.max(0, currentTime - 5));
+          onUserInteraction?.();
+          if (effectiveDuration > 0) {
+            onSeek(Math.max(0, currentTime - 10));
+          }
         } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
           e.stopPropagation();
-          onSeek(Math.min(effectiveDuration, currentTime + 5));
+          onUserInteraction?.();
+          if (effectiveDuration > 0) {
+            onSeek(Math.min(effectiveDuration, currentTime + 10));
+          }
         }
       }}
-      className="relative w-full h-4 flex items-center cursor-pointer group py-1 select-none touch-none focus:outline-none focus:ring-1 focus:ring-nc-primary rounded"
+      className="relative w-full h-5 flex items-center cursor-pointer group py-1 px-1 select-none touch-none focus:outline-none rounded-lg"
     >
       {/* Background Track */}
-      <div className="relative w-full h-1 group-hover:h-2 bg-white/20 rounded-full transition-all duration-150 overflow-hidden">
+      <div className="relative w-full h-1.5 group-hover:h-2 group-focus:h-2 bg-white/25 rounded-full transition-all duration-150 overflow-hidden">
         {/* Buffered Ranges */}
         {effectiveDuration > 0 &&
           bufferedRanges.map((range, idx) => {
@@ -153,7 +172,7 @@ export function PlayerTimeline({
 
       {/* Scrubber Thumb */}
       <div
-        className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-nc-primary rounded-full shadow-lg scale-0 group-hover:scale-100 transition-transform duration-150 pointer-events-none"
+        className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-nc-primary rounded-full shadow-lg scale-0 group-hover:scale-100 group-focus:scale-100 transition-transform duration-150 pointer-events-none"
         style={{ left: `${progressPercent}%` }}
       />
 

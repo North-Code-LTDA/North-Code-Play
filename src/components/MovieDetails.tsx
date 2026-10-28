@@ -72,6 +72,11 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     () => {
       if (showResumeModal) {
         setShowResumeModal(false);
+        if (primaryActionRef.current) {
+          setTimeout(() => {
+            if (primaryActionRef.current) focusElementSafely(primaryActionRef.current);
+          }, 0);
+        }
         return true;
       }
       return false;
@@ -127,12 +132,6 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     fetchInfo();
   }, [credentials, streamId]);
 
-  const requestFullscreen = () => {
-    if (document.documentElement.requestFullscreen) {
-      document.documentElement.requestFullscreen().catch((e) => console.log(e));
-    }
-  };
-
   const executePlay = (startAt: number = 0) => {
     if (startAt === 0) {
       clearItemProgress(credentials, 'movie', streamId);
@@ -143,9 +142,13 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
         positionSec: startAt,
       });
     }
-    requestFullscreen();
     if (!credentials) return;
     try {
+      // Restore focus target to the primary Assistir button before mounting VideoPlayer
+      // so closing the player returns focus to Assistir inside MovieDetails
+      if (primaryActionRef.current) {
+        focusElementSafely(primaryActionRef.current);
+      }
       // Use real container_extension from movie_data or info
       const rawExt = movieData?.container_extension || info?.container_extension || "mp4";
       const ext = String(rawExt).trim().replace(/^\./, "");
@@ -154,8 +157,8 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
         streamId,
         containerExtension: ext,
       });
-      onPlay(mediaUrl, streamName, startAt, streamId, 'movie');
       setShowResumeModal(false);
+      onPlay(mediaUrl, streamName, startAt, streamId, 'movie');
     } catch (err: any) {
       setError(err.message || 'Erro ao preparar vídeo.');
     }
@@ -395,6 +398,13 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
             <div className="flex flex-col gap-3 w-full">
               <button
                 data-autofocus="true"
+                ref={(el) => {
+                  if (el && getNavMode() === 'remote' && document.activeElement !== el) {
+                    setTimeout(() => {
+                      if (el.isConnected) focusElementSafely(el);
+                    }, 0);
+                  }
+                }}
                 onClick={() => executePlay(savedProgress)}
                 className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
               >
@@ -407,7 +417,14 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
                 Assistir do Início
               </button>
               <button
-                onClick={() => setShowResumeModal(false)}
+                onClick={() => {
+                  setShowResumeModal(false);
+                  if (primaryActionRef.current) {
+                    setTimeout(() => {
+                      if (primaryActionRef.current) focusElementSafely(primaryActionRef.current);
+                    }, 0);
+                  }
+                }}
                 className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
               >
                 Cancelar

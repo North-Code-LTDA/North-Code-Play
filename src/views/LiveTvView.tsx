@@ -944,7 +944,7 @@ export function LiveTvView({
       {/* Left Pane: Categories or Channels */}
       <div
         data-nav-zone="categories"
-        className={`w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/20 h-full shrink-0 flex ${isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}
+        className={`nc-tv-category-pane w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/20 h-full shrink-0 flex ${isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}
       >
         
         {/* Categories View */}
@@ -998,7 +998,7 @@ export function LiveTvView({
                       setSelectedCategoryId(cat.category_id);
                       setLeftPaneView('channels');
                     }}
-                    className="w-full text-left px-4 py-3 rounded-xl text-sm transition-colors truncate text-nc-text-secondary hover:bg-nc-bg-input hover:text-white"
+                    className="nc-tv-category-btn w-full text-left px-4 py-2.5 rounded-xl text-sm transition-colors line-clamp-2 whitespace-normal break-words leading-snug text-nc-text-secondary hover:bg-nc-bg-input hover:text-white"
                   >
                     {formatCategoryLabel(cat.category_name, 'live')}
                   </button>
@@ -1295,7 +1295,7 @@ export function LiveTvView({
                    <Loader2 className="w-8 h-8 animate-spin text-nc-primary" />
                  </div>
                ) : epgData && epgData.length > 0 ? (
-                 <div className="space-y-3 relative before:absolute before:inset-0 before:ml-[3.5rem] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-nc-border/50 before:to-transparent pb-8">
+                 <div className="nc-tv-epg-timeline space-y-3 relative before:absolute before:inset-0 before:ml-[3.5rem] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-nc-border/50 before:to-transparent pb-8">
                    {epgData.map((prog: any, idx: number) => {
                      const startStr = formatEpgTime(prog?.start);
                      const endStr = formatEpgTime(prog?.end);
@@ -1303,14 +1303,14 @@ export function LiveTvView({
                      const description = decodeBase64(prog?.description);
 
                      return (
-                       <div key={idx} className="relative flex items-start justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
+                       <div key={idx} className="nc-tv-epg-row relative flex items-start justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
                          {/* Timeline Marker */}
-                         <div className={`flex items-center justify-center w-8 h-8 rounded-full border-2 bg-nc-bg shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 shadow absolute left-[3.5rem] md:left-1/2 -translate-x-1/2 top-4 md:top-1/2 md:-translate-y-1/2 transition-colors ${idx === 0 ? 'border-nc-primary text-nc-primary' : 'border-nc-border/50 text-nc-text-secondary'}`}>
+                         <div className={`nc-tv-epg-marker flex items-center justify-center w-8 h-8 rounded-full border-2 bg-nc-bg shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 shadow absolute left-[3.5rem] md:left-1/2 -translate-x-1/2 top-4 md:top-1/2 md:-translate-y-1/2 transition-colors ${idx === 0 ? 'border-nc-primary text-nc-primary' : 'border-nc-border/50 text-nc-text-secondary'}`}>
                             <div className={`w-2.5 h-2.5 rounded-full ${idx === 0 ? 'bg-nc-primary' : 'bg-transparent'}`}></div>
                          </div>
                          
                          {/* EPG Card */}
-                         <div className="w-[calc(100%-4.5rem)] md:w-[calc(50%-2.5rem)] ml-[4.5rem] md:ml-0 p-4 rounded-xl border border-nc-border/50 bg-nc-bg-card hover:bg-nc-bg-input transition-colors">
+                         <div className="nc-tv-epg-card w-[calc(100%-4.5rem)] md:w-[calc(50%-2.5rem)] ml-[4.5rem] md:ml-0 p-4 rounded-xl border border-nc-border/50 bg-nc-bg-card hover:bg-nc-bg-input transition-colors">
                            <div className="flex flex-col gap-1">
                              {startStr && endStr && (
                                <div className={`text-xs font-semibold uppercase tracking-wider ${idx === 0 ? 'text-nc-primary' : 'text-nc-text-secondary'}`}>

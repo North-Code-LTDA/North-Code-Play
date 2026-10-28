@@ -4,12 +4,61 @@ interface CapacitorListenerHandle {
   remove?: () => Promise<void> | void;
 }
 
+export interface NativeBackBridgeStatus {
+  bridgeType: 'appmint' | 'capacitor' | 'cordova-backbutton' | 'none';
+  label: string;
+  active: boolean;
+}
+
+let activeBridgeType: NativeBackBridgeStatus['bridgeType'] = 'none';
+
+export function getNativeBackBridgeStatus(): NativeBackBridgeStatus {
+  if (typeof window !== 'undefined') {
+    try {
+      const w = window as any;
+      if (w.AppMint && typeof w.AppMint.setBackHandler === 'function') {
+        return {
+          bridgeType: 'appmint',
+          label: 'AppMint.setBackHandler (WebToApk)',
+          active: activeBridgeType === 'appmint',
+        };
+      }
+      if (w.Capacitor?.Plugins?.App && typeof w.Capacitor.Plugins.App.addListener === 'function') {
+        return {
+          bridgeType: 'capacitor',
+          label: 'Capacitor App.backButton',
+          active: activeBridgeType === 'capacitor',
+        };
+      }
+    } catch {
+      // Ignore bridge inspection errors
+    }
+  }
+
+  if (activeBridgeType === 'cordova-backbutton') {
+    return {
+      bridgeType: 'cordova-backbutton',
+      label: 'Ausente (Fallback document backbutton ativo)',
+      active: false,
+    };
+  }
+
+  return {
+    bridgeType: 'none',
+    label: 'Ausente',
+    active: false,
+  };
+}
+
 /**
- * Attaches a runtime listener to Capacitor Android's hardware/system Back button
- * without requiring @capacitor/app in package.json.
- * Falls back to Cordova/WebView 'backbutton' document event when applicable.
- * At root screen (when executeBackAction() returns false), delegates to App.exitApp()
- * without ever clearing credentials or logging the user out.
+ * Attaches a runtime listener to Android TV / APK hardware/system Back button:
+ * 1. Prioritizes window.AppMint.setBackHandler (WebToApk official synchronous API):
+ *    - Executes executeBackAction() synchronously.
+ *    - Returns true when consumed internally (player, modal, submenu, details, channels, categories, section).
+ *    - Returns false when no internal layer consumes Back (root screen), allowing host exit confirmation.
+ *    - Cleans up via setBackHandler(null) on teardown and avoids attaching duplicate listeners.
+ * 2. Falls back to Capacitor App.addListener('backButton') or Cordova/WebView 'backbutton'
+ *    ONLY when AppMint.setBackHandler is not present.
  */
 export function attachCapacitorBackAdapter(): () => void {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -17,8 +66,44 @@ export function attachCapacitorBackAdapter(): () => void {
   }
 
   let removed = false;
+  const w = window as any;
+
+  // 1. Official WebToApk / AppMint synchronous Back handler
+  try {
+    if (w.AppMint && typeof w.AppMint.setBackHandler === 'function') {
+      const appMintHandler = (): boolean => {
+        if (removed) return false;
+        try {
+          return Boolean(executeBackAction());
+        } catch (err) {
+          console.warn('AppMint back handler error:', err);
+          return false;
+        }
+      };
+
+      w.AppMint.setBackHandler(appMintHandler);
+      activeBridgeType = 'appmint';
+
+      return () => {
+        removed = true;
+        activeBridgeType = 'none';
+        try {
+          if (w.AppMint && typeof w.AppMint.setBackHandler === 'function') {
+            w.AppMint.setBackHandler(null);
+          }
+        } catch {
+          // Ignore teardown errors
+        }
+      };
+    }
+  } catch {
+    // Fall through to Capacitor / document fallback if AppMint access throws
+  }
+
+  // 2. Fallback: Capacitor App plugin or document 'backbutton' (only when AppMint is absent)
   let pluginListenerHandle: CapacitorListenerHandle | null = null;
   let pendingPromise: Promise<CapacitorListenerHandle> | null = null;
+  let capacitorAttached = false;
 
   const handleNativeBack = (ev?: any) => {
     if (removed) return;
@@ -39,12 +124,14 @@ export function attachCapacitorBackAdapter(): () => void {
     }
   };
 
-  const cap = (window as any).Capacitor;
+  const cap = w.Capacitor;
   const appPlugin = cap?.Plugins?.App;
 
   if (appPlugin && typeof appPlugin.addListener === 'function') {
     try {
       const maybePromise = appPlugin.addListener('backButton', handleNativeBack);
+      capacitorAttached = true;
+      activeBridgeType = 'capacitor';
       if (maybePromise && typeof maybePromise.then === 'function') {
         pendingPromise = maybePromise;
         maybePromise
@@ -66,11 +153,17 @@ export function attachCapacitorBackAdapter(): () => void {
     handleNativeBack(e);
   };
 
-  document.addEventListener('backbutton', onDocumentBackButton, false);
+  if (!capacitorAttached) {
+    document.addEventListener('backbutton', onDocumentBackButton, false);
+    activeBridgeType = 'cordova-backbutton';
+  }
 
   return () => {
     removed = true;
-    document.removeEventListener('backbutton', onDocumentBackButton, false);
+    activeBridgeType = 'none';
+    if (!capacitorAttached) {
+      document.removeEventListener('backbutton', onDocumentBackButton, false);
+    }
     if (pluginListenerHandle && typeof pluginListenerHandle.remove === 'function') {
       try {
         pluginListenerHandle.remove();
@@ -87,3 +180,4 @@ export function attachCapacitorBackAdapter(): () => void {
     }
   };
 }
+

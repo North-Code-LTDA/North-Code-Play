@@ -157,43 +157,50 @@ export function VideoPlayer({
     };
   }, []);
 
-  // Inactivity timer: hide control bars after 3 seconds of playing or buffering (if playback already started)
-  const resetInactivityTimer = useCallback(() => {
-    setIsControlsVisible(true);
+  const pendingFocusControlRef = useRef<string | null>(null);
+
+  const focusPlayerControl = useCallback((controlName: string) => {
+    const root = containerRef.current;
+    if (!root) return false;
+    const target =
+      root.querySelector<HTMLElement>(`[data-player-control="${controlName}"]`) ||
+      root.querySelector<HTMLElement>('[data-player-control="play-pause"]') ||
+      root.querySelector<HTMLElement>('[data-player-control="back"]');
+    if (target) {
+      focusElementSafely(target);
+      return true;
+    }
+    return false;
+  }, []);
+
+  // Inactivity timer: hide control bars after inactivity while playing (unless settings/diagnostics/error are open)
+  const scheduleAutoHide = useCallback(() => {
     if (idleTimeoutRef.current) {
       clearTimeout(idleTimeoutRef.current);
+      idleTimeoutRef.current = null;
     }
-
-    const isAccessibleKeyboardFocus = Boolean(
-      containerRef.current &&
-        document.activeElement &&
-        containerRef.current.contains(document.activeElement) &&
-        (isKeyboardNavigatingRef.current ||
-          (typeof (document.activeElement as any).matches === 'function' &&
-            (document.activeElement as any).matches(':focus-visible')))
-    );
 
     const canAutoHide =
       (session.isPlaying || (hasStartedPlaying && session.isBuffering)) &&
       !showSettings &&
       !showDiagnostics &&
-      !activeError &&
-      !isAccessibleKeyboardFocus;
+      !activeError;
 
     if (canAutoHide) {
+      const delayMs = getNavMode() === 'remote' ? 4500 : 3000;
       idleTimeoutRef.current = setTimeout(() => {
         setIsControlsVisible(false);
+        isKeyboardNavigatingRef.current = false;
         if (
           containerRef.current &&
           document.activeElement &&
-          containerRef.current.contains(document.activeElement) &&
-          !isKeyboardNavigatingRef.current
+          containerRef.current.contains(document.activeElement)
         ) {
           try {
             (document.activeElement as HTMLElement)?.blur();
           } catch {}
         }
-      }, 3000);
+      }, delayMs);
     }
   }, [
     session.isPlaying,
@@ -203,59 +210,20 @@ export function VideoPlayer({
     showDiagnostics,
     activeError,
   ]);
+
+  const resetInactivityTimer = useCallback(() => {
+    setIsControlsVisible(true);
+    scheduleAutoHide();
+  }, [scheduleAutoHide]);
 
   // Synchronize timer with state changes only while controls are currently visible
   useEffect(() => {
     if (!isControlsVisible) return;
-
-    if (idleTimeoutRef.current) {
-      clearTimeout(idleTimeoutRef.current);
-    }
-
-    const isAccessibleKeyboardFocus = Boolean(
-      containerRef.current &&
-        document.activeElement &&
-        containerRef.current.contains(document.activeElement) &&
-        (isKeyboardNavigatingRef.current ||
-          (typeof (document.activeElement as any).matches === 'function' &&
-            (document.activeElement as any).matches(':focus-visible')))
-    );
-
-    const canAutoHide =
-      (session.isPlaying || (hasStartedPlaying && session.isBuffering)) &&
-      !showSettings &&
-      !showDiagnostics &&
-      !activeError &&
-      !isAccessibleKeyboardFocus;
-
-    if (canAutoHide) {
-      idleTimeoutRef.current = setTimeout(() => {
-        setIsControlsVisible(false);
-        if (
-          containerRef.current &&
-          document.activeElement &&
-          containerRef.current.contains(document.activeElement) &&
-          !isKeyboardNavigatingRef.current
-        ) {
-          try {
-            (document.activeElement as HTMLElement)?.blur();
-          } catch {}
-        }
-      }, 3000);
-    }
-
+    scheduleAutoHide();
     return () => {
       if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
     };
-  }, [
-    isControlsVisible,
-    session.isPlaying,
-    session.isBuffering,
-    hasStartedPlaying,
-    showSettings,
-    showDiagnostics,
-    activeError,
-  ]);
+  }, [isControlsVisible, scheduleAutoHide]);
 
   // Fullscreen toggle: container requestFullscreen or visual expansion fallback
   const toggleFullscreen = useCallback(async () => {
@@ -279,7 +247,7 @@ export function VideoPlayer({
 
     if (isFs || isVisuallyExpanded) {
       try {
-        if (document.fullscreenElement || (document as any).webkitFullscreenElement) {
+        if (isCurrentContainerFs) {
           if (document.exitFullscreen) {
             await document.exitFullscreen();
           } else if ((document as any).webkitExitFullscreen) {
@@ -342,28 +310,50 @@ export function VideoPlayer({
     }
   }, [fullscreenRequestTrigger, isFullscreen, isVisuallyExpanded, toggleFullscreen]);
 
-  // Clean exit fullscreen on unmount if element was in fullscreen
+  // Clean exit fullscreen on unmount ONLY if fullscreen belongs to this player instance
   useEffect(() => {
+    const container = containerRef.current;
     return () => {
-      if (typeof document !== 'undefined' && document.fullscreenElement) {
-        try {
-          if (document.exitFullscreen) {
-            document.exitFullscreen().catch(() => {});
-          }
-        } catch {}
+      if (typeof document !== 'undefined') {
+        const fsEl =
+          document.fullscreenElement ||
+          (document as any).webkitFullscreenElement ||
+          (document as any).mozFullScreenElement ||
+          (document as any).msFullscreenElement;
+        if (container && fsEl && (fsEl === container || container.contains(fsEl as Node))) {
+          try {
+            if (document.exitFullscreen) {
+              document.exitFullscreen().catch(() => {});
+            } else if ((document as any).webkitExitFullscreen) {
+              (document as any).webkitExitFullscreen();
+            }
+          } catch {}
+        }
       }
     };
   }, []);
+
+  const closeSettingsMenu = useCallback(() => {
+    setShowSettings(false);
+    pendingFocusControlRef.current = 'settings';
+    resetInactivityTimer();
+  }, [resetInactivityTimer]);
+
+  const closeDiagnosticsModal = useCallback(() => {
+    setShowDiagnostics(false);
+    pendingFocusControlRef.current = 'diagnostics';
+    resetInactivityTimer();
+  }, [resetInactivityTimer]);
 
   // Back action: in embedded mode in fullscreen, first click exits fullscreen back to preview without unmounting video
   const handleBack = useCallback(async () => {
     setActivePlayer(playerId);
     if (showSettings) {
-      setShowSettings(false);
+      closeSettingsMenu();
       return;
     }
     if (showDiagnostics) {
-      setShowDiagnostics(false);
+      closeDiagnosticsModal();
       return;
     }
 
@@ -398,7 +388,18 @@ export function VideoPlayer({
     if (onBack) {
       onBack();
     }
-  }, [playerId, embedded, isFullscreen, isVisuallyExpanded, showSettings, showDiagnostics, toggleFullscreen, onBack]);
+  }, [
+    playerId,
+    embedded,
+    isFullscreen,
+    isVisuallyExpanded,
+    showSettings,
+    showDiagnostics,
+    closeSettingsMenu,
+    closeDiagnosticsModal,
+    toggleFullscreen,
+    onBack,
+  ]);
 
   // Register Back handlers in centralized Back policy stack
   useBackHandler(
@@ -406,11 +407,11 @@ export function VideoPlayer({
     BACK_PRIORITY.SUB_MODAL,
     () => {
       if (showSettings) {
-        setShowSettings(false);
+        closeSettingsMenu();
         return true;
       }
       if (showDiagnostics) {
-        setShowDiagnostics(false);
+        closeDiagnosticsModal();
         return true;
       }
       return false;
@@ -446,7 +447,7 @@ export function VideoPlayer({
   }, []);
 
   // Controls bars are visible if:
-  // - explicitly visible (e.g. within 3s of interaction)
+  // - explicitly visible (e.g. within inactivity window)
   // - before playback begins (!hasStartedPlaying)
   // - during pause (when video has started but is not playing and not loading/buffering)
   // - when settings or diagnostics modal is open
@@ -456,6 +457,97 @@ export function VideoPlayer({
     (!session.isPlaying && !isCurrentlyLoading && !session.isBuffering) ||
     showSettings ||
     showDiagnostics;
+
+  // Move focus into the player when entering full-layer mode so focus NEVER remains on 'Assistir' or episode card behind the player
+  useEffect(() => {
+    if (!isPlayerInFullLayer) return;
+    setIsControlsVisible(true);
+    scheduleAutoHide();
+
+    const timer = setTimeout(() => {
+      const root = containerRef.current;
+      if (!root) return;
+
+      // Ensure background trigger button (Assistir / Episode card) never keeps focus behind the player
+      if (document.activeElement instanceof HTMLElement && !root.contains(document.activeElement)) {
+        try {
+          document.activeElement.blur();
+        } catch {}
+      }
+
+      if (getNavMode() === 'remote') {
+        if (activeError && !isCurrentlyLoading) {
+          const retryBtn = root.querySelector<HTMLElement>('[data-player-error-primary="true"]');
+          if (retryBtn) {
+            focusElementSafely(retryBtn);
+            return;
+          }
+        }
+        focusPlayerControl('play-pause');
+      }
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [isPlayerInFullLayer, focusPlayerControl, scheduleAutoHide]);
+
+  // Focus error overlay primary button when an error appears in remote mode
+  useEffect(() => {
+    if (!activeError || isCurrentlyLoading || !isPlayerInFullLayer) return;
+    if (getNavMode() !== 'remote') return;
+    const timer = setTimeout(() => {
+      const retryBtn = containerRef.current?.querySelector<HTMLElement>(
+        '[data-player-error-primary="true"]'
+      );
+      if (retryBtn) {
+        focusElementSafely(retryBtn);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [activeError, isCurrentlyLoading, isPlayerInFullLayer]);
+
+  // Apply pending focus request (e.g. after waking hidden controls or closing Settings/Diagnostics modal)
+  useEffect(() => {
+    if (!areBarsVisible || showSettings || showDiagnostics) return;
+    if (!pendingFocusControlRef.current) return;
+
+    const targetControl = pendingFocusControlRef.current;
+    pendingFocusControlRef.current = null;
+
+    const timer = setTimeout(() => {
+      focusPlayerControl(targetControl);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [areBarsVisible, showSettings, showDiagnostics, focusPlayerControl]);
+
+  // Capture-phase listener: when full-layer player controls are hidden, first remote/arrow/OK key reveals controls and focuses Play/Pause without firing other actions
+  useEffect(() => {
+    if (!isPlayerInFullLayer || areBarsVisible || showSettings || showDiagnostics || activeError) {
+      return;
+    }
+
+    const handleWakeKeyCapture = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const isWakeKey =
+        e.key === 'Enter' ||
+        e.key === 'NumpadEnter' ||
+        e.key === 'ArrowUp' ||
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowLeft' ||
+        e.key === 'ArrowRight';
+
+      if (!isWakeKey) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      pendingFocusControlRef.current = 'play-pause';
+      resetInactivityTimer();
+    };
+
+    window.addEventListener('keydown', handleWakeKeyCapture, true);
+    return () => {
+      window.removeEventListener('keydown', handleWakeKeyCapture, true);
+    };
+  }, [isPlayerInFullLayer, areBarsVisible, showSettings, showDiagnostics, activeError, resetInactivityTimer]);
 
   // Keyboard shortcuts active only when no form or interactive control is focused
   useEffect(() => {
@@ -490,26 +582,6 @@ export function VideoPlayer({
 
       // Multiple instances check: only the active, fullscreen, or focused player receives shortcuts
       if (!isPlayerActive(playerId, isCurrentFs, isFocused)) {
-        return;
-      }
-
-      // In remote D-pad mode when fullscreen/standalone player has hidden bars, wake up bars and focus Play/Pause
-      if (
-        getNavMode() === 'remote' &&
-        (isCurrentFs || !embedded) &&
-        !areBarsVisible &&
-        (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key.startsWith('Arrow'))
-      ) {
-        e.preventDefault();
-        resetInactivityTimer();
-        setTimeout(() => {
-          const playBtn = containerRef.current?.querySelector<HTMLButtonElement>(
-            'button[aria-label="Pausar"], button[aria-label="Reproduzir"]'
-          );
-          if (playBtn) {
-            focusElementSafely(playBtn);
-          }
-        }, 0);
         return;
       }
 
@@ -552,9 +624,9 @@ export function VideoPlayer({
           if (!isCentralBackPolicyAttached()) {
             e.preventDefault();
             if (showSettings) {
-              setShowSettings(false);
+              closeSettingsMenu();
             } else if (showDiagnostics) {
-              setShowDiagnostics(false);
+              closeDiagnosticsModal();
             } else if (isFullscreen || isVisuallyExpanded) {
               toggleFullscreen();
             } else if (!embedded && onBack) {
@@ -583,22 +655,23 @@ export function VideoPlayer({
     toggleFullscreen,
     showSettings,
     showDiagnostics,
+    closeSettingsMenu,
+    closeDiagnosticsModal,
     isFullscreen,
     isVisuallyExpanded,
     embedded,
     onBack,
-    areBarsVisible,
   ]);
 
   const handleContainerClick = () => {
     setActivePlayer(playerId);
     // If settings or diagnostics open, close them
     if (showSettings) {
-      setShowSettings(false);
+      closeSettingsMenu();
       return;
     }
     if (showDiagnostics) {
-      setShowDiagnostics(false);
+      closeDiagnosticsModal();
       return;
     }
 
@@ -684,18 +757,27 @@ export function VideoPlayer({
         onToggleMute={session.toggleMute}
         onToggleFullscreen={toggleFullscreen}
         onTogglePiP={togglePiP}
-        onOpenSettings={() => setShowSettings((p) => !p)}
-        onOpenDiagnostics={() => setShowDiagnostics((p) => !p)}
+        onOpenSettings={() => {
+          setShowDiagnostics(false);
+          setShowSettings((p) => !p);
+          resetInactivityTimer();
+        }}
+        onOpenDiagnostics={() => {
+          setShowSettings(false);
+          setShowDiagnostics((p) => !p);
+          resetInactivityTimer();
+        }}
         onBack={onBack ? handleBack : undefined}
         onNext={onNext}
         onPrevious={onPrevious}
+        onUserInteraction={resetInactivityTimer}
         hasPiP={hasPiP}
       />
 
       {/* Settings Menu Overlay */}
       <PlayerSettingsMenu
         isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
+        onClose={closeSettingsMenu}
         isLive={session.isLive}
         qualities={session.qualities}
         currentQuality={session.currentQuality}
@@ -715,7 +797,7 @@ export function VideoPlayer({
       {/* Diagnostics Modal Overlay */}
       <PlayerDiagnosticsModal
         isOpen={showDiagnostics}
-        onClose={() => setShowDiagnostics(false)}
+        onClose={closeDiagnosticsModal}
         streamUrl={streamUrl}
         contentType={session.isLive ? 'live' : contentType || 'movie'}
         transport={session.inferredTransport}
@@ -736,21 +818,28 @@ export function VideoPlayer({
             {activeError}
           </p>
 
-          <div className="flex flex-wrap gap-3 justify-center">
+          <div data-nav-row="player-error" className="flex flex-wrap gap-3 justify-center">
             <button
+              type="button"
+              data-player-error-primary="true"
               onClick={handleRetry}
               className="px-5 py-2.5 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center gap-2 text-sm cursor-pointer"
             >
               <RefreshCw className="w-4 h-4" /> Tentar Novamente
             </button>
             <button
-              onClick={() => setShowDiagnostics(true)}
+              type="button"
+              onClick={() => {
+                setShowDiagnostics(true);
+                resetInactivityTimer();
+              }}
               className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white font-medium rounded-xl transition-colors border border-nc-border/40 flex items-center gap-2 text-sm cursor-pointer"
             >
               <Wrench className="w-4 h-4 text-nc-primary" /> Diagnóstico
             </button>
             {onBack && (
               <button
+                type="button"
                 onClick={onBack}
                 className="px-5 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary hover:text-white font-medium rounded-xl transition-colors border border-nc-border/50 text-sm cursor-pointer flex items-center gap-1.5"
               >

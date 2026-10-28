@@ -247,7 +247,6 @@ export function isElementFocusable(el: HTMLElement): boolean {
     const cls = typeof curr.className === 'string' ? curr.className : '';
     if (
       cls.includes('invisible') ||
-      cls.includes('pointer-events-none') ||
       /(?:^|\s)opacity-0(?:\s|$)/.test(cls) ||
       (/(?:^|\s)hidden(?:\s|$)/.test(cls) &&
         !cls.includes('md:flex') &&
@@ -366,6 +365,13 @@ function pickBestItemInBlock(
 ): HTMLElement {
   if (block.items.length === 1) {
     return block.items[0];
+  }
+
+  if (current.getAttribute('role') === 'slider') {
+    const primaryTarget = block.items.find(
+      (item) => item.getAttribute('data-player-primary') === 'true'
+    );
+    return primaryTarget || block.items[0];
   }
 
   // If moving into a horizontal row or group, prefer horizontally aligned item that is visible in the row

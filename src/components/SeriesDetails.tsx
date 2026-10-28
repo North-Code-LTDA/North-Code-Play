@@ -43,6 +43,35 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   const [favActionError, setFavActionError] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const favoriteBtnRef = useRef<HTMLButtonElement>(null);
+  const lastEpisodeIdRef = useRef<string | null>(null);
+  const savedEpisodeScrollTopRef = useRef<number>(0);
+
+  const restoreEpisodeFocus = () => {
+    const targetEpisodeId = lastEpisodeIdRef.current;
+    const savedScroll = savedEpisodeScrollTopRef.current;
+    const restore = () => {
+      if (scrollContainerRef.current && savedScroll > 0) {
+        scrollContainerRef.current.scrollTop = savedScroll;
+      }
+      if (targetEpisodeId && scrollContainerRef.current) {
+        const epEl = scrollContainerRef.current.querySelector<HTMLElement>(
+          `[data-episode-id="${CSS.escape(targetEpisodeId)}"]`
+        );
+        if (epEl) {
+          focusElementSafely(epEl);
+          if (scrollContainerRef.current && savedScroll > 0) {
+            scrollContainerRef.current.scrollTop = savedScroll;
+          }
+          return true;
+        }
+      }
+      return popFocusMemory();
+    };
+
+    if (!restore()) {
+      setTimeout(restore, 0);
+    }
+  };
 
   useEffect(() => {
     pushFocusMemory(document.activeElement as HTMLElement | null);
@@ -69,10 +98,12 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     () => {
       if (playError) {
         setPlayError(null);
+        restoreEpisodeFocus();
         return true;
       }
       if (showResumeModal) {
         setShowResumeModal(false);
+        restoreEpisodeFocus();
         return true;
       }
       return false;
@@ -131,14 +162,21 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
     fetchInfo();
   }, [credentials, seriesId]);
 
-  const requestFullscreen = () => {
-    if (document.documentElement.requestFullscreen) {
-      document.documentElement.requestFullscreen().catch((e) => console.log(e));
-    }
-  };
-
   const executePlay = (episode: any, startAt: number = 0) => {
-    pushFocusMemory(document.activeElement as HTMLElement | null);
+    if (episode?.id !== undefined && episode?.id !== null) {
+      lastEpisodeIdRef.current = String(episode.id);
+    }
+    if (scrollContainerRef.current) {
+      savedEpisodeScrollTopRef.current = scrollContainerRef.current.scrollTop;
+    }
+    const epEl =
+      lastEpisodeIdRef.current && scrollContainerRef.current
+        ? scrollContainerRef.current.querySelector<HTMLElement>(
+            `[data-episode-id="${CSS.escape(lastEpisodeIdRef.current)}"]`
+          )
+        : null;
+    pushFocusMemory(epEl || (document.activeElement as HTMLElement | null));
+
     // Associate episode with parent series ID in active account's history
     recordPlaybackPosition(credentials, {
       id: episode.id,
@@ -151,7 +189,6 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       clearItemProgress(credentials, 'episode', episode.id);
     }
 
-    requestFullscreen();
     if (!credentials) return;
     try {
       setPlayError(null);
@@ -196,6 +233,12 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   };
 
   const handlePlayEpisodeClick = (episode: any) => {
+    if (episode?.id !== undefined && episode?.id !== null) {
+      lastEpisodeIdRef.current = String(episode.id);
+    }
+    if (scrollContainerRef.current) {
+      savedEpisodeScrollTopRef.current = scrollContainerRef.current.scrollTop;
+    }
     const progress = getItemProgress(credentials, 'episode', episode.id);
     if (progress > 30) {
       setSavedProgress(progress);
@@ -380,6 +423,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                         tabIndex={0}
                         role="button"
                         data-nav-item="true"
+                        data-episode-id={String(episode.id)}
                         data-scroll-block="true"
                         aria-label={episode.title || `Episódio ${episode.episode_num}`}
                         whileHover={{ scale: 1.01 }}
@@ -429,6 +473,14 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
             <div className="flex flex-col gap-3 w-full">
               <button
                 type="button"
+                data-autofocus="true"
+                ref={(el) => {
+                  if (el && getNavMode() === 'remote' && document.activeElement !== el) {
+                    setTimeout(() => {
+                      if (el.isConnected) focusElementSafely(el);
+                    }, 0);
+                  }
+                }}
                 onClick={() => executePlay(selectedEpisode, savedProgress)}
                 className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
               >
@@ -443,7 +495,10 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
               </button>
               <button
                 type="button"
-                onClick={() => setShowResumeModal(false)}
+                onClick={() => {
+                  setShowResumeModal(false);
+                  restoreEpisodeFocus();
+                }}
                 className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
               >
                 Cancelar
@@ -464,10 +519,11 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
             <p className="text-gray-400 text-xs mb-6">
               A transmissão foi solicitada diretamente ao provedor. O endereço pode estar inacessível ou o formato requerer compatibilidade no navegador.
             </p>
-            <div className="flex gap-3 w-full">
+            <div data-nav-row="true" className="flex gap-3 w-full">
               {failedEpisode && (
                 <button
                   type="button"
+                  data-autofocus="true"
                   onClick={() => executePlay(failedEpisode.episode, failedEpisode.startAt)}
                   className="flex-1 py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center justify-center gap-2"
                 >
@@ -476,7 +532,10 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
               )}
               <button
                 type="button"
-                onClick={() => setPlayError(null)}
+                onClick={() => {
+                  setPlayError(null);
+                  restoreEpisodeFocus();
+                }}
                 className="flex-1 py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/50"
               >
                 Fechar
@@ -506,13 +565,8 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
               startAt={playingEpisodeData.startAt}
               streamId={playingEpisodeData.episode.id}
               onBack={() => {
-                if (document.fullscreenElement) {
-                  document.exitFullscreen().catch(err => console.log('Fullscreen exit error:', err));
-                }
                 setPlayingEpisodeData(null);
-                if (!popFocusMemory()) {
-                  setTimeout(() => popFocusMemory(), 0);
-                }
+                restoreEpisodeFocus();
               }}
               onNext={hasNext ? handleNextEpisode : undefined}
               onPrevious={hasPrev ? handlePreviousEpisode : undefined}

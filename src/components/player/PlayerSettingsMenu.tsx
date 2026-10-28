@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useId } from 'react';
 import {
   Check,
   ChevronRight,
@@ -11,6 +11,11 @@ import {
 } from 'lucide-react';
 import { QualityLevel, MediaTrackInfo, BufferProfileKey } from './types';
 import { BUFFER_PROFILES } from './profiles';
+import {
+  useBackHandler,
+  BACK_PRIORITY,
+  focusElementSafely,
+} from '../../navigation';
 
 interface PlayerSettingsMenuProps {
   isOpen: boolean;
@@ -52,8 +57,62 @@ export function PlayerSettingsMenu({
   onSelectBufferProfile,
 }: PlayerSettingsMenuProps) {
   const [activeSubMenu, setActiveSubMenu] = useState<SubMenuType>('main');
+  const menuContainerRef = useRef<HTMLDivElement>(null);
+  const lastMainItemRef = useRef<SubMenuType | null>(null);
+  const menuId = useId();
+
+  useEffect(() => {
+    if (isOpen) {
+      setActiveSubMenu('main');
+      lastMainItemRef.current = null;
+    }
+  }, [isOpen]);
+
+  useBackHandler(
+    `player-settings-submenu-${menuId}`,
+    BACK_PRIORITY.SUB_MODAL + 1,
+    () => {
+      if (isOpen && activeSubMenu !== 'main') {
+        setActiveSubMenu('main');
+        return true;
+      }
+      return false;
+    },
+    isOpen && activeSubMenu !== 'main'
+  );
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const timer = setTimeout(() => {
+      const root = menuContainerRef.current;
+      if (!root) return;
+
+      if (activeSubMenu === 'main' && lastMainItemRef.current) {
+        const originBtn = root.querySelector<HTMLElement>(
+          `button[data-settings-item="${lastMainItemRef.current}"]`
+        );
+        if (originBtn) {
+          focusElementSafely(originBtn);
+          return;
+        }
+      }
+
+      const firstOption =
+        root.querySelector<HTMLElement>('[data-settings-list="true"] button') ||
+        root.querySelector<HTMLElement>('button');
+      if (firstOption) {
+        focusElementSafely(firstOption);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [isOpen, activeSubMenu]);
 
   if (!isOpen) return null;
+
+  const openSubMenu = (sub: SubMenuType) => {
+    lastMainItemRef.current = sub;
+    setActiveSubMenu(sub);
+  };
 
   const speedOptions = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
@@ -74,29 +133,36 @@ export function PlayerSettingsMenu({
 
   return (
     <div
+      ref={menuContainerRef}
       data-focus-scope="modal"
       className="absolute bottom-12 sm:bottom-14 right-2 sm:right-4 z-40 w-[min(18rem,calc(100%-1rem))] max-h-[calc(100%-3rem)] flex flex-col bg-nc-bg-card/95 border border-nc-border/80 backdrop-blur-xl rounded-xl sm:rounded-2xl shadow-2xl overflow-hidden p-2.5 sm:p-3 text-white text-xs select-none animate-in fade-in zoom-in-95 duration-150"
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
       {/* Top Header */}
-      <div className="flex items-center justify-between pb-2 mb-2 border-b border-nc-border/40 px-1 shrink-0">
+      <div
+        data-nav-row="settings-header"
+        className="flex items-center justify-between pb-2 mb-2 border-b border-nc-border/40 px-1 shrink-0"
+      >
         {activeSubMenu === 'main' ? (
           <span className="font-semibold text-sm flex items-center gap-1.5 text-white">
             <Sliders className="w-4 h-4 text-nc-primary" /> Configurações
           </span>
         ) : (
           <button
+            type="button"
             onClick={() => setActiveSubMenu('main')}
-            className="text-nc-text-secondary hover:text-white flex items-center gap-1 text-xs font-medium cursor-pointer"
+            className="text-nc-text-secondary hover:text-white flex items-center gap-1 text-xs font-medium cursor-pointer px-1.5 py-1 rounded-lg"
           >
             ← Voltar
           </button>
         )}
         <button
+          type="button"
           onClick={onClose}
           className="p-1 hover:bg-white/10 rounded-full text-nc-text-secondary hover:text-white cursor-pointer"
           title="Fechar"
+          aria-label="Fechar configurações"
         >
           <X className="w-4 h-4" />
         </button>
@@ -104,11 +170,17 @@ export function PlayerSettingsMenu({
 
       {/* Main Menu */}
       {activeSubMenu === 'main' && (
-        <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5">
+        <div
+          data-settings-list="true"
+          data-scroll-container="true"
+          className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5"
+        >
           {/* Quality option if real levels available */}
           {qualities.length > 0 && (
             <button
-              onClick={() => setActiveSubMenu('quality')}
+              type="button"
+              data-settings-item="quality"
+              onClick={() => openSubMenu('quality')}
               className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
             >
               <div className="flex items-center gap-2">
@@ -125,7 +197,9 @@ export function PlayerSettingsMenu({
           {/* Audio tracks if available */}
           {audioTracks.length > 1 && (
             <button
-              onClick={() => setActiveSubMenu('audio')}
+              type="button"
+              data-settings-item="audio"
+              onClick={() => openSubMenu('audio')}
               className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
             >
               <div className="flex items-center gap-2">
@@ -142,7 +216,9 @@ export function PlayerSettingsMenu({
           {/* Subtitles if available */}
           {subtitleTracks.length > 0 && (
             <button
-              onClick={() => setActiveSubMenu('subtitles')}
+              type="button"
+              data-settings-item="subtitles"
+              onClick={() => openSubMenu('subtitles')}
               className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
             >
               <div className="flex items-center gap-2">
@@ -159,7 +235,9 @@ export function PlayerSettingsMenu({
           {/* Speed option (only for VOD / Series) */}
           {!isLive && (
             <button
-              onClick={() => setActiveSubMenu('speed')}
+              type="button"
+              data-settings-item="speed"
+              onClick={() => openSubMenu('speed')}
               className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
             >
               <div className="flex items-center gap-2">
@@ -175,7 +253,9 @@ export function PlayerSettingsMenu({
 
           {/* Buffer Profile */}
           <button
-            onClick={() => setActiveSubMenu('profile')}
+            type="button"
+            data-settings-item="profile"
+            onClick={() => openSubMenu('profile')}
             className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
           >
             <div className="flex items-center gap-2">
@@ -192,8 +272,13 @@ export function PlayerSettingsMenu({
 
       {/* Quality Submenu */}
       {activeSubMenu === 'quality' && (
-        <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5">
+        <div
+          data-settings-list="true"
+          data-scroll-container="true"
+          className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5"
+        >
           <button
+            type="button"
             onClick={() => {
               onSelectQuality(-1);
               setActiveSubMenu('main');
@@ -205,6 +290,7 @@ export function PlayerSettingsMenu({
           </button>
           {qualities.map((q) => (
             <button
+              type="button"
               key={q.id}
               onClick={() => {
                 onSelectQuality(q.id);
@@ -221,9 +307,14 @@ export function PlayerSettingsMenu({
 
       {/* Audio Submenu */}
       {activeSubMenu === 'audio' && (
-        <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5">
+        <div
+          data-settings-list="true"
+          data-scroll-container="true"
+          className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5"
+        >
           {audioTracks.map((tr) => (
             <button
+              type="button"
               key={tr.id}
               onClick={() => {
                 onSelectAudioTrack(tr.id);
@@ -240,8 +331,13 @@ export function PlayerSettingsMenu({
 
       {/* Subtitles Submenu */}
       {activeSubMenu === 'subtitles' && (
-        <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5">
+        <div
+          data-settings-list="true"
+          data-scroll-container="true"
+          className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5"
+        >
           <button
+            type="button"
             onClick={() => {
               onSelectSubtitleTrack(-1);
               setActiveSubMenu('main');
@@ -253,6 +349,7 @@ export function PlayerSettingsMenu({
           </button>
           {subtitleTracks.map((st) => (
             <button
+              type="button"
               key={st.id}
               onClick={() => {
                 onSelectSubtitleTrack(st.id);
@@ -269,9 +366,14 @@ export function PlayerSettingsMenu({
 
       {/* Speed Submenu */}
       {activeSubMenu === 'speed' && (
-        <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5">
+        <div
+          data-settings-list="true"
+          data-scroll-container="true"
+          className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5"
+        >
           {speedOptions.map((rate) => (
             <button
+              type="button"
               key={rate}
               onClick={() => {
                 onSelectPlaybackRate(rate);
@@ -288,9 +390,14 @@ export function PlayerSettingsMenu({
 
       {/* Buffer Profile Submenu */}
       {activeSubMenu === 'profile' && (
-        <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-2 pr-0.5">
+        <div
+          data-settings-list="true"
+          data-scroll-container="true"
+          className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-2 pr-0.5"
+        >
           {Object.values(BUFFER_PROFILES).map((p) => (
             <button
+              type="button"
               key={p.key}
               onClick={() => {
                 onSelectBufferProfile(p.key);

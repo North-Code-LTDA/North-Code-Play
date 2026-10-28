@@ -96,7 +96,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
   const bgImage = currentItem.stream_icon || currentItem.cover || normalizeImageSource(currentItem.backdrop_path);
 
   return (
-    <div className="relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden">
+    <div className="nc-tv-hero relative w-full min-h-[60vh] md:min-h-[75vh] flex flex-col justify-end py-16 md:pt-32 md:pb-24 shrink-0 px-6 md:px-12 bg-nc-bg overflow-hidden">
       <AnimatePresence mode="popLayout">
         <motion.div
           key={currentItem.stream_id || currentItem.name}
@@ -129,7 +129,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.5 }}
           >
-            <h1 className="text-4xl md:text-5xl lg:text-7xl font-bold text-white tracking-tight drop-shadow-lg break-words whitespace-normal text-wrap">
+            <h1 className="nc-tv-hero-title text-4xl md:text-5xl lg:text-7xl font-bold text-white tracking-tight drop-shadow-lg break-words whitespace-normal text-wrap">
               {currentItem.name}
             </h1>
             

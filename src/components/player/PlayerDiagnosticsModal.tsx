@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { Wrench, Copy, Check, X, ShieldAlert, Cpu } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Wrench, Copy, Check, X, ShieldAlert } from 'lucide-react';
 import { PlaybackStats, PlayerContentType, PlayerTransport } from './types';
+import { focusElementSafely } from '../../navigation';
 
 interface PlayerDiagnosticsModalProps {
   isOpen: boolean;
@@ -20,6 +21,17 @@ export function PlayerDiagnosticsModal({
   stats,
 }: PlayerDiagnosticsModalProps) {
   const [copied, setCopied] = useState(false);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const timer = setTimeout(() => {
+      if (closeBtnRef.current) {
+        focusElementSafely(closeBtnRef.current);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -53,19 +65,25 @@ export function PlayerDiagnosticsModal({
       }}
     >
       <div
+        data-scroll-container="true"
         className="bg-nc-bg-card border border-nc-border rounded-2xl p-6 max-w-lg w-full shadow-2xl flex flex-col gap-4 text-left max-h-[90vh] overflow-y-auto custom-scrollbar select-text text-white"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-nc-border/50 pb-3">
+        <div
+          data-nav-row="diagnostics-header"
+          className="flex items-center justify-between border-b border-nc-border/50 pb-3"
+        >
           <div className="flex items-center gap-2">
             <Wrench className="w-5 h-5 text-nc-primary" />
             <h3 className="text-base font-bold">Diagnóstico Técnico da Reprodução</h3>
           </div>
           <button
+            type="button"
             onClick={onClose}
             className="p-1.5 hover:bg-white/10 rounded-full text-nc-text-secondary hover:text-white cursor-pointer"
             title="Fechar"
+            aria-label="Fechar diagnóstico"
           >
             <X className="w-4 h-4" />
           </button>
@@ -76,10 +94,14 @@ export function PlayerDiagnosticsModal({
           <span className="font-semibold text-nc-text-secondary block">
             URL Direta da Mídia (sem proxies):
           </span>
-          <div className="flex items-center gap-2 bg-nc-bg-input p-2.5 rounded-xl border border-nc-border/40 font-mono text-[11px] text-gray-300 break-all select-all">
+          <div
+            data-nav-row="diagnostics-url"
+            className="flex items-center gap-2 bg-nc-bg-input p-2.5 rounded-xl border border-nc-border/40 font-mono text-[11px] text-gray-300 break-all select-all"
+          >
             <span className="flex-1">{streamUrl || 'Nenhuma URL ativa'}</span>
             {streamUrl && (
               <button
+                type="button"
                 onClick={copyUrl}
                 className="p-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-white shrink-0 cursor-pointer flex items-center gap-1 text-xs"
                 title="Copiar URL para testar no VLC"
@@ -154,8 +176,11 @@ export function PlayerDiagnosticsModal({
           </p>
         </div>
 
-        <div className="flex justify-end pt-1">
+        <div data-nav-row="diagnostics-footer" className="flex justify-end pt-1">
           <button
+            ref={closeBtnRef}
+            type="button"
+            data-autofocus="true"
             onClick={onClose}
             className="px-4 py-2 bg-nc-bg-input hover:bg-white/10 text-white rounded-xl border border-nc-border/50 text-xs font-medium cursor-pointer"
           >

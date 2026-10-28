@@ -1,9 +1,60 @@
 import React, { useEffect, useState } from 'react';
-import { Settings, User, Server, Calendar, Loader2, GitCommit, Globe, Radio, ShieldCheck } from 'lucide-react';
+import {
+  Settings,
+  User,
+  Server,
+  Calendar,
+  Loader2,
+  GitCommit,
+  Globe,
+  Radio,
+  ShieldCheck,
+  Tv,
+  Monitor,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 import { motion } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { APP_VERSION, APP_COMMIT } from '../version';
+import {
+  useTvPresentation,
+  DisplayModePreference,
+  TvDensityPreference,
+} from '../platform/tvEnvironment';
+import { getNativeBackBridgeStatus } from '../navigation';
+
+interface ScreenMetrics {
+  innerWidth: number;
+  innerHeight: number;
+  devicePixelRatio: number;
+  vvWidth: number | null;
+  vvHeight: number | null;
+  vvScale: number | null;
+}
+
+function readScreenMetrics(): ScreenMetrics {
+  if (typeof window === 'undefined') {
+    return {
+      innerWidth: 0,
+      innerHeight: 0,
+      devicePixelRatio: 1,
+      vvWidth: null,
+      vvHeight: null,
+      vvScale: null,
+    };
+  }
+  const vv = window.visualViewport;
+  return {
+    innerWidth: Math.round(window.innerWidth),
+    innerHeight: Math.round(window.innerHeight),
+    devicePixelRatio: Number((window.devicePixelRatio || 1).toFixed(2)),
+    vvWidth: vv ? Math.round(vv.width) : null,
+    vvHeight: vv ? Math.round(vv.height) : null,
+    vvScale: vv ? Number((vv.scale || 1).toFixed(2)) : null,
+  };
+}
 
 export function ConfigView() {
   const { credentials } = useXtreamContext();
@@ -11,6 +62,33 @@ export function ConfigView() {
   const [serverInfo, setServerInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showScreenDiagnostics, setShowScreenDiagnostics] = useState(false);
+  const [screenMetrics, setScreenMetrics] = useState<ScreenMetrics>(() => readScreenMetrics());
+
+  const {
+    modePreference,
+    density,
+    effectiveMode,
+    origin,
+    webToApkTv,
+    setModePreference,
+    setDensity,
+  } = useTvPresentation();
+
+  const nativeBackBridge = getNativeBackBridgeStatus();
+
+  useEffect(() => {
+    const handleResize = () => {
+      setScreenMetrics(readScreenMetrics());
+    };
+    window.addEventListener('resize', handleResize);
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      vv?.removeEventListener('resize', handleResize);
+    };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -50,64 +128,171 @@ export function ConfigView() {
   const allowedFormats: string[] =
     accountInfo?.allowed_output_formats || credentials?.allowed_output_formats || [];
 
+  const displayModes: { id: DisplayModePreference; label: string; desc: string }[] = [
+    { id: 'auto', label: 'Automática', desc: 'Detecta Android TV via WebToApk.isTv()' },
+    { id: 'tv', label: 'TV', desc: 'Força proporções otimizadas para TV' },
+    { id: 'default', label: 'Padrão', desc: 'Mantém layout original de desktop/mobile' },
+  ];
+
+  const tvDensities: { id: TvDensityPreference; label: string; desc: string }[] = [
+    { id: 'compact', label: 'Compacta', desc: 'Mais itens visíveis na tela da TV' },
+    { id: 'normal', label: 'Padrão', desc: 'Equilíbrio ideal para Android TV' },
+    { id: 'comfortable', label: 'Confortável', desc: 'Elementos ligeiramente maiores' },
+  ];
+
+  const formatWebToApkStatus = () => {
+    if (!webToApkTv.available) return 'Indisponível neste ambiente';
+    return webToApkTv.detected ? 'true (Android TV detectada)' : 'false (Dispositivo não-TV)';
+  };
+
+  const formatBackBridgeStatus = () => {
+    return nativeBackBridge.label;
+  };
+
   return (
-    <div className="w-full h-full flex flex-col items-center justify-start p-6 md:p-12 overflow-y-auto custom-scrollbar">
+    <div
+      data-scroll-container="true"
+      className="w-full h-full flex flex-col items-center justify-start p-6 md:p-10 overflow-y-auto custom-scrollbar"
+    >
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-2xl bg-nc-bg-card border border-nc-border/50 rounded-2xl p-6 md:p-8 shadow-2xl mb-8"
+        className="w-full max-w-3xl bg-nc-bg-card border border-nc-border/50 rounded-2xl p-6 md:p-8 shadow-2xl mb-8"
       >
-        <div className="flex items-center gap-4 mb-8 border-b border-nc-border/50 pb-6">
+        <div className="flex items-center gap-4 mb-6 border-b border-nc-border/50 pb-5">
           <div className="p-3 bg-nc-bg-input rounded-xl text-nc-primary">
-            <Settings className="w-8 h-8" />
+            <Settings className="w-7 h-7" />
           </div>
           <div>
-            <h2 className="text-2xl font-bold text-white">Configurações & Diagnóstico</h2>
+            <h2 className="text-xl md:text-2xl font-bold text-white">Configurações & Diagnóstico</h2>
             <p className="text-nc-text-secondary text-sm">
-              Gerencie suas credenciais e verifique os detalhes de conexão direta com o provedor
+              Ajuste o modo de apresentação para TV e verifique os detalhes da conta e do ambiente
             </p>
           </div>
         </div>
 
+        {/* Presentation & TV Proportions Section */}
+        <div className="mb-8 pb-6 border-b border-nc-border/50 space-y-5">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h3 className="text-lg font-medium text-white flex items-center gap-2">
+              <Tv className="w-5 h-5 text-nc-primary" /> Apresentação e Proporções da Interface
+            </h3>
+            <span className="text-xs px-2.5 py-1 rounded-md bg-nc-bg-input border border-nc-border/60 text-gray-300">
+              Ativo: <strong className="text-white">{effectiveMode === 'tv' ? 'Modo TV' : 'Modo Padrão'}</strong>{' '}
+              ({origin === 'auto' ? 'Automático' : 'Manual'})
+            </span>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">
+              Apresentação
+            </label>
+            <div
+              data-nav-row="config-display-mode"
+              className="grid grid-cols-1 sm:grid-cols-3 gap-2.5"
+            >
+              {displayModes.map((opt) => {
+                const isSelected = modePreference === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    data-nav-item="true"
+                    onClick={() => setModePreference(opt.id)}
+                    className={`text-left p-3.5 rounded-xl border transition-colors ${
+                      isSelected
+                        ? 'bg-nc-primary/15 border-nc-primary text-white'
+                        : 'bg-nc-bg-input/70 border-nc-border/40 text-gray-300 hover:bg-nc-bg-input hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-sm">{opt.label}</span>
+                      {isSelected && (
+                        <span className="w-2 h-2 rounded-full bg-nc-primary shrink-0" />
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1 leading-snug">{opt.desc}</p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">
+              Densidade no modo TV
+            </label>
+            <div
+              data-nav-row="config-tv-density"
+              className="grid grid-cols-1 sm:grid-cols-3 gap-2.5"
+            >
+              {tvDensities.map((opt) => {
+                const isSelected = density === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    data-nav-item="true"
+                    onClick={() => setDensity(opt.id)}
+                    className={`text-left p-3.5 rounded-xl border transition-colors ${
+                      isSelected
+                        ? 'bg-nc-primary/15 border-nc-primary text-white'
+                        : 'bg-nc-bg-input/70 border-nc-border/40 text-gray-300 hover:bg-nc-bg-input hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-sm">{opt.label}</span>
+                      {isSelected && (
+                        <span className="w-2 h-2 rounded-full bg-nc-primary shrink-0" />
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1 leading-snug">{opt.desc}</p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
         {loading ? (
-          <div className="flex flex-col items-center justify-center py-12 text-nc-text-secondary">
+          <div className="flex flex-col items-center justify-center py-10 text-nc-text-secondary">
             <Loader2 className="w-10 h-10 animate-spin mb-4 text-nc-primary" />
             <p>Carregando informações da conta...</p>
           </div>
         ) : error ? (
-          <div className="flex flex-col items-center justify-center py-12 text-red-400 text-center">
+          <div className="flex flex-col items-center justify-center py-10 text-red-400 text-center">
             <p>{error}</p>
           </div>
         ) : (
-          <div className="space-y-6">
+          <div className="space-y-5">
             <h3 className="text-lg font-medium text-white mb-2">Informações da Conta</h3>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-nc-bg-input rounded-xl p-5 border border-nc-border/50 flex items-start gap-4">
-                <User className="w-6 h-6 text-nc-text-secondary mt-1 shrink-0" />
+              <div className="bg-nc-bg-input rounded-xl p-4 border border-nc-border/50 flex items-start gap-3.5">
+                <User className="w-5 h-5 text-nc-text-secondary mt-1 shrink-0" />
                 <div className="overflow-hidden">
-                  <p className="text-sm text-nc-text-secondary">Usuário Logado</p>
-                  <p className="font-semibold text-white truncate text-lg mt-0.5">
+                  <p className="text-xs text-nc-text-secondary">Usuário Logado</p>
+                  <p className="font-semibold text-white truncate text-base mt-0.5">
                     {credentials?.username || 'Desconhecido'}
                   </p>
                 </div>
               </div>
 
-              <div className="bg-nc-bg-input rounded-xl p-5 border border-nc-border/50 flex items-start gap-4">
-                <Server className="w-6 h-6 text-nc-text-secondary mt-1 shrink-0" />
+              <div className="bg-nc-bg-input rounded-xl p-4 border border-nc-border/50 flex items-start gap-3.5">
+                <Server className="w-5 h-5 text-nc-text-secondary mt-1 shrink-0" />
                 <div className="overflow-hidden w-full">
-                  <p className="text-sm text-nc-text-secondary">URL do Servidor</p>
-                  <p className="font-semibold text-white truncate text-lg mt-0.5 w-full">
+                  <p className="text-xs text-nc-text-secondary">URL do Servidor</p>
+                  <p className="font-semibold text-white truncate text-base mt-0.5 w-full">
                     {credentials?.serverUrl || 'Desconhecido'}
                   </p>
                 </div>
               </div>
 
-              <div className="bg-nc-bg-input rounded-xl p-5 border border-nc-border/50 flex items-start gap-4 md:col-span-2">
-                <Calendar className="w-6 h-6 text-nc-text-secondary mt-1 shrink-0" />
+              <div className="bg-nc-bg-input rounded-xl p-4 border border-nc-border/50 flex items-start gap-3.5 md:col-span-2">
+                <Calendar className="w-5 h-5 text-nc-text-secondary mt-1 shrink-0" />
                 <div className="overflow-hidden">
-                  <p className="text-sm text-nc-text-secondary">Validade da Assinatura</p>
-                  <p className="font-semibold text-white truncate text-lg mt-0.5 text-nc-primary">
+                  <p className="text-xs text-nc-text-secondary">Validade da Assinatura</p>
+                  <p className="font-semibold text-white truncate text-base mt-0.5 text-nc-primary">
                     {formatDate(accountInfo?.exp_date)}
                   </p>
                 </div>
@@ -115,7 +300,7 @@ export function ConfigView() {
             </div>
 
             {accountInfo?.status && (
-              <div className="mt-4 flex items-center gap-2 text-sm text-nc-text-secondary">
+              <div className="mt-3 flex items-center gap-2 text-sm text-nc-text-secondary">
                 <span className="relative flex h-3 w-3">
                   <span
                     className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
@@ -141,9 +326,64 @@ export function ConfigView() {
 
         {/* Build & Diagnostics Section */}
         <div className="mt-8 pt-6 border-t border-nc-border/50 space-y-4">
-          <h3 className="text-lg font-medium text-white flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-nc-primary" /> Arquitetura & Diagnóstico
-          </h3>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h3 className="text-lg font-medium text-white flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-nc-primary" /> Arquitetura & Diagnóstico
+            </h3>
+            <button
+              type="button"
+              data-nav-row="config-diagnostics-toggle"
+              data-nav-item="true"
+              onClick={() => setShowScreenDiagnostics((prev) => !prev)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nc-bg-input border border-nc-border/60 text-xs font-medium text-gray-200 hover:text-white hover:border-white/40 transition-colors"
+            >
+              <Monitor className="w-3.5 h-3.5 text-nc-primary" />
+              <span>{showScreenDiagnostics ? 'Ocultar diagnóstico da tela' : 'Ver diagnóstico da tela'}</span>
+              {showScreenDiagnostics ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+
+          {showScreenDiagnostics && (
+            <div className="bg-nc-bg-input/80 rounded-xl p-4 border border-nc-border/50 space-y-3 text-xs">
+              <div className="font-semibold text-white text-sm flex items-center gap-2 border-b border-nc-border/40 pb-2">
+                <Monitor className="w-4 h-4 text-nc-primary" /> Diagnóstico da Tela e Ambiente
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <span className="text-gray-400 block">Modo de Apresentação Efetivo</span>
+                  <span className="text-white font-mono">
+                    {effectiveMode === 'tv' ? 'TV' : 'Padrão'} ({origin === 'auto' ? 'Automático' : 'Manual'}) — Densidade: {density}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400 block">Detecção Nativa (WebToApk.isTv)</span>
+                  <span className="text-white font-mono">{formatWebToApkStatus()}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 block">Viewport CSS (innerWidth × innerHeight)</span>
+                  <span className="text-white font-mono">
+                    {screenMetrics.innerWidth} × {screenMetrics.innerHeight} px
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400 block">Device Pixel Ratio (DPR)</span>
+                  <span className="text-white font-mono">{screenMetrics.devicePixelRatio}x</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 block">Visual Viewport</span>
+                  <span className="text-white font-mono">
+                    {screenMetrics.vvWidth !== null && screenMetrics.vvHeight !== null
+                      ? `${screenMetrics.vvWidth} × ${screenMetrics.vvHeight} px (scale: ${screenMetrics.vvScale ?? 1})`
+                      : 'Indisponível'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400 block">Integração Nativa de Voltar</span>
+                  <span className="text-white font-mono">{formatBackBridgeStatus()}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
             <div className="bg-nc-bg-input/60 rounded-xl p-4 border border-nc-border/30">
@@ -196,3 +436,4 @@ export function ConfigView() {
     </div>
   );
 }
+
