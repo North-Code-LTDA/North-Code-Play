@@ -44,6 +44,20 @@
   }
 }
 
+html[data-nav-mode="remote"] button,
+html[data-nav-mode="remote"] input,
+html[data-nav-mode="remote"] select,
+html[data-nav-mode="remote"] textarea,
+html[data-nav-mode="remote"] a,
+html[data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]),
+html[data-nav-mode="remote"] [data-nav-item="true"] {
+  transition:
+    outline-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    outline-offset 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 html[data-nav-mode="remote"] button:focus,
 html[data-nav-mode="remote"] input:focus,
 html[data-nav-mode="remote"] select:focus,
@@ -53,6 +67,39 @@ html[data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]):focus,
 html[data-nav-mode="remote"] [data-nav-item="true"]:focus {
   outline: 2px solid #ffffff !important;
   outline-offset: 2px !important;
-  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.85) !important;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.85), 0 8px 20px -4px rgba(255, 255, 255, 0.18) !important;
 }
+
+html[data-nav-mode="remote"] [data-nav-item="true"]:focus {
+  transform: translateZ(0) scale(1.015);
+}
+
+html[data-nav-mode="remote"] [data-scroll-container="true"],
+html[data-nav-mode="remote"] [data-nav-row="true"],
+html[data-nav-mode="remote"] [data-synopsis-focus="true"] {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-nav-mode="remote"] button,
+  html[data-nav-mode="remote"] input,
+  html[data-nav-mode="remote"] select,
+  html[data-nav-mode="remote"] textarea,
+  html[data-nav-mode="remote"] a,
+  html[data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]),
+  html[data-nav-mode="remote"] [data-nav-item="true"] {
+    transition: none !important;
+  }
+
+  html[data-nav-mode="remote"] [data-nav-item="true"]:focus {
+    transform: none !important;
+  }
+
+  html[data-nav-mode="remote"] [data-scroll-container="true"],
+  html[data-nav-mode="remote"] [data-nav-row="true"],
+  html[data-nav-mode="remote"] [data-synopsis-focus="true"] {
+    scroll-behavior: auto !important;
+  }
+}
+
 

@@ -360,19 +360,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
               data-nav-item="true"
               data-synopsis-focus="true"
               data-scroll-block="true"
-              onKeyDown={(e) => {
-                const scroller = scrollContainerRef.current;
-                if (!scroller) return;
-                if (e.key === 'ArrowDown') {
-                  const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-                  if (scroller.scrollTop < maxScroll - 4) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    scroller.scrollTop = Math.min(maxScroll, scroller.scrollTop + 120);
-                  }
-                }
-              }}
-              className="rounded-2xl p-3 -m-3 focus:outline-none transition-colors"
+              className="rounded-2xl p-3 -m-3 max-h-56 md:max-h-72 overflow-y-auto custom-scrollbar focus:outline-none transition-colors"
             >
               <p className="text-gray-200 text-lg leading-relaxed mix-blend-plus-lighter drop-shadow-md">
                 {info.plot || 'Sinopse não disponível.'}

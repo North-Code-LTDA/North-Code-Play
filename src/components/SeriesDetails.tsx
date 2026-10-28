@@ -256,7 +256,6 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
           <div className="flex flex-col gap-8 mx-auto w-full">
             {/* Hero & Info Section */}
             <div
-              data-scroll-top-anchor="true"
               className="relative w-full rounded-2xl overflow-hidden bg-black shrink-0 flex flex-col min-h-[400px] md:min-h-[500px]"
             >
                <div className="absolute inset-0 bg-black z-0">
@@ -308,7 +307,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                        data-nav-item="true"
                        data-synopsis-focus="true"
                        data-scroll-top-anchor="true"
-                       className="rounded-xl p-2 -m-2 mb-4 max-w-3xl focus:outline-none transition-colors"
+                       className="rounded-xl p-2 -m-2 mb-4 max-w-3xl max-h-48 md:max-h-64 overflow-y-auto custom-scrollbar focus:outline-none transition-colors"
                      >
                        <p className="text-gray-300 text-sm md:text-base leading-relaxed">
                          {seriesInfo.info?.plot || 'Sinopse não disponível.'}
@@ -317,7 +316,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                      <button 
                        ref={favoriteBtnRef}
                        data-autofocus="true"
-                       data-scroll-top-anchor="true"
+                       data-scroll-block="true"
                        onClick={() => handleToggleFavorite({
                          id: seriesId,
                          name: seriesInfo.info?.name || seriesName,
@@ -374,7 +373,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                   </div>
 
                   {/* Episodes List */}
-                  <div className="flex flex-col gap-3">
+                  <div data-nav-zone="episodes" className="flex flex-col gap-3">
                     {selectedSeason && seriesInfo.episodes[selectedSeason]?.map((episode: any) => (
                       <motion.div
                         key={episode.id}

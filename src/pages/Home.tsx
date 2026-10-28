@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { VideoPlayer } from '../components/VideoPlayer';
 
 import { HomeView } from '../views/HomeView';
-import { LiveTvView } from '../views/LiveTvView';
+import { LiveTvView, LiveChannelLaunchIntent } from '../views/LiveTvView';
 import { MoviesView } from '../views/MoviesView';
 import { SeriesView } from '../views/SeriesView';
 import { ConfigView } from '../views/ConfigView';
@@ -23,6 +23,9 @@ import {
   BACK_PRIORITY,
   pushFocusMemory,
   popFocusMemory,
+  getNavMode,
+  focusElementSafely,
+  isElementFocusable,
 } from '../navigation';
 
 export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
@@ -32,6 +35,11 @@ function HomeContent({ credentials }: { credentials: any }) {
   const navMode = useNavigationMode();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [currentView, setCurrentView] = useState<ViewType>('inicio');
+  const [liveLaunchIntent, setLiveLaunchIntent] = useState<LiveChannelLaunchIntent | null>(null);
+  const liveLaunchReqCounterRef = useRef(0);
+  const pendingReturnFocusViewRef = useRef<ViewType | null>(null);
+  const lastPointerDownTimeRef = useRef<number>(0);
+  const homeRootRef = useRef<HTMLDivElement>(null);
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const [activeVideo, setActiveVideo] = useState<{
     url: string;
@@ -84,6 +92,12 @@ function HomeContent({ credentials }: { credentials: any }) {
     BACK_PRIORITY.SECTION_TO_HOME,
     () => {
       if (currentView !== 'inicio') {
+        const previousView = currentView;
+        const isRecentPointer =
+          getNavMode() === 'pointer' && Date.now() - lastPointerDownTimeRef.current < 250;
+        if (!isRecentPointer && getNavMode() === 'remote') {
+          pendingReturnFocusViewRef.current = previousView;
+        }
         setCurrentView('inicio');
         setSearchQuery('');
         return true;
@@ -92,6 +106,41 @@ function HomeContent({ credentials }: { credentials: any }) {
     },
     currentView !== 'inicio'
   );
+
+  // Restore focus to the corresponding section button in the sidebar (or mobile menu button) after returning to Início via Back
+  useEffect(() => {
+    if (currentView !== 'inicio' || !pendingReturnFocusViewRef.current) return;
+    const returnedFromView = pendingReturnFocusViewRef.current;
+    pendingReturnFocusViewRef.current = null;
+
+    if (getNavMode() !== 'remote') return;
+
+    const root = homeRootRef.current || document.body;
+    const desktopSidebarBtns = Array.from(
+      root.querySelectorAll(
+        `aside[data-nav-zone="sidebar"] button[data-sidebar-nav-id="${returnedFromView}"]`
+      )
+    ) as HTMLButtonElement[];
+
+    const isMobileViewport =
+      typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 768;
+
+    const visibleSidebarBtn = !isMobileViewport
+      ? desktopSidebarBtns.find((btn) => isElementFocusable(btn))
+      : undefined;
+
+    if (visibleSidebarBtn) {
+      focusElementSafely(visibleSidebarBtn);
+      return;
+    }
+
+    const mobileMenuBtn = root.querySelector(
+      'button[data-mobile-menu-trigger="true"]'
+    ) as HTMLButtonElement | null;
+    if (mobileMenuBtn && isElementFocusable(mobileMenuBtn)) {
+      focusElementSafely(mobileMenuBtn);
+    }
+  }, [currentView]);
 
   // Overlay state & context consumption
   const {
@@ -178,30 +227,47 @@ function HomeContent({ credentials }: { credentials: any }) {
     });
   };
 
+  const handleSelectLiveFromHome = (stream: any) => {
+    const reqId = ++liveLaunchReqCounterRef.current;
+    const sId = stream?.stream_id ?? stream?.id ?? '';
+    setLiveLaunchIntent({
+      streamId: sId,
+      requestId: reqId,
+      categoryId: stream?.category_id ? String(stream.category_id) : undefined,
+      streamSnapshot: stream,
+    });
+    setCurrentView('live');
+    setIsMobileMenuOpen(false);
+  };
+
+  const handleConsumeLiveIntent = (reqId: number) => {
+    setLiveLaunchIntent((prev) => (prev && prev.requestId === reqId ? null : prev));
+  };
+
   const renderNavItems = () => (
     <>
-      <button data-sidebar-active={currentView === 'inicio' ? 'true' : 'false'} onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'inicio' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button data-sidebar-nav-id="inicio" data-sidebar-active={currentView === 'inicio' ? 'true' : 'false'} onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'inicio' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <HomeIcon className="w-5 h-5" />
         <span>Início</span>
       </button>
-      <button data-sidebar-active={currentView === 'live' ? 'true' : 'false'} onClick={() => { setCurrentView('live'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'live' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button data-sidebar-nav-id="live" data-sidebar-active={currentView === 'live' ? 'true' : 'false'} onClick={() => { setCurrentView('live'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'live' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Tv className="w-5 h-5" />
         <span>TV ao Vivo</span>
       </button>
-      <button data-sidebar-active={currentView === 'movies' ? 'true' : 'false'} onClick={() => { setCurrentView('movies'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'movies' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button data-sidebar-nav-id="movies" data-sidebar-active={currentView === 'movies' ? 'true' : 'false'} onClick={() => { setCurrentView('movies'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'movies' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Film className="w-5 h-5" />
         <span>Filmes</span>
       </button>
-      <button data-sidebar-active={currentView === 'series' ? 'true' : 'false'} onClick={() => { setCurrentView('series'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'series' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button data-sidebar-nav-id="series" data-sidebar-active={currentView === 'series' ? 'true' : 'false'} onClick={() => { setCurrentView('series'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'series' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <PlaySquare className="w-5 h-5" />
         <span>Séries</span>
       </button>
-      <button data-sidebar-active={currentView === 'favorites' ? 'true' : 'false'} onClick={() => { setCurrentView('favorites'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'favorites' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button data-sidebar-nav-id="favorites" data-sidebar-active={currentView === 'favorites' ? 'true' : 'false'} onClick={() => { setCurrentView('favorites'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'favorites' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Heart className="w-5 h-5" />
         <span>Meus Favoritos</span>
       </button>
       <div className="h-4" />
-      <button data-sidebar-active={currentView === 'config' ? 'true' : 'false'} onClick={() => { setCurrentView('config'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button data-sidebar-nav-id="config" data-sidebar-active={currentView === 'config' ? 'true' : 'false'} onClick={() => { setCurrentView('config'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <Settings className="w-5 h-5" />
         <span>Configurações</span>
       </button>
@@ -211,9 +277,22 @@ function HomeContent({ credentials }: { credentials: any }) {
   const renderView = () => {
     switch (currentView) {
       case 'inicio':
-        return <HomeView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
+        return (
+          <HomeView
+            onPlay={handlePlay}
+            onSelectLiveChannel={handleSelectLiveFromHome}
+            searchQuery={debouncedSearchQuery}
+          />
+        );
       case 'live':
-        return <LiveTvView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
+        return (
+          <LiveTvView
+            onPlay={handlePlay}
+            searchQuery={debouncedSearchQuery}
+            initialChannelIntent={liveLaunchIntent}
+            onConsumeChannelIntent={handleConsumeLiveIntent}
+          />
+        );
       case 'movies':
         return <MoviesView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
       case 'series':
@@ -223,13 +302,23 @@ function HomeContent({ credentials }: { credentials: any }) {
       case 'config':
         return <ConfigView />;
       default:
-        return <HomeView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
+        return (
+          <HomeView
+            onPlay={handlePlay}
+            onSelectLiveChannel={handleSelectLiveFromHome}
+            searchQuery={debouncedSearchQuery}
+          />
+        );
     }
   };
 
   return (
     <>
       <div
+        ref={homeRootRef}
+        onPointerDownCapture={() => {
+          lastPointerDownTimeRef.current = Date.now();
+        }}
         className="h-[100dvh] bg-nc-bg flex flex-col md:flex-row w-full overflow-hidden"
         inert={isOverlayActive ? true : undefined}
       >
@@ -303,6 +392,7 @@ function HomeContent({ credentials }: { credentials: any }) {
         <header className="md:hidden sticky top-0 w-full h-16 border-b border-nc-border/50 bg-black/80 backdrop-blur-xl z-[45] flex items-center justify-between px-4 shrink-0">
           <Logo className="scale-75 origin-left" />
           <button 
+            data-mobile-menu-trigger="true"
             onClick={(e) => {
               pushFocusMemory(e.currentTarget);
               setIsMobileMenuOpen(true);

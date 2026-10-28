@@ -1785,7 +1785,9 @@ async function runDpadNavigationAndBackPolicyTests() {
     const all = [
       { stream_id: 101, name: 'Canal Teste 1 SD', category_id: '1' },
       { stream_id: 102, name: 'Canal Teste 2 SD', category_id: '1' },
-      { stream_id: 103, name: 'Canal Esporte SD', category_id: '2' },
+      { stream_id: 103, name: 'Canal Esporte SD', category_id: '2', epg_channel_id: 'esporte.br' },
+      { stream_id: 104, name: 'Canal Esporte HD', category_id: '2', epg_channel_id: 'esporte.br' },
+      { stream_id: 105, name: 'Canal Noticias Unico', category_id: '2' },
     ];
     if (catId) return all.filter((s) => s.category_id === String(catId));
     return all;
@@ -1850,6 +1852,8 @@ async function runDpadNavigationAndBackPolicyTests() {
   };
 
   window.localStorage.setItem(CREDENTIALS_KEY, JSON.stringify(testCreds));
+  const historyStorageKey = 'northcode_playback_history_http://server.tv:8080_navUser';
+  window.localStorage.removeItem(historyStorageKey);
 
   const container = document.createElement('div');
   document.body.appendChild(container);
@@ -2036,11 +2040,10 @@ async function runDpadNavigationAndBackPolicyTests() {
   );
 
   // =========================================================================
-  // CRITÉRIOS C, E & G: Filmes (MoviesView), MovieDetails (sinopse + topo) e VideoPlayer Escape único
+  // CRITÉRIOS C, E, G & REQ 3/4: Filmes (MoviesView), MovieDetails (sinopse longa + topo), VideoPlayer Escape único e retorno ao botão Filmes na sidebar
   // =========================================================================
-  const sidebarButtons = Array.from(container.querySelectorAll('aside button')) as HTMLButtonElement[];
-  const filmesNavBtn = sidebarButtons.find((b) => b.textContent?.includes('Filmes'));
-  assert(filmesNavBtn, 'Botão Filmes na barra lateral deve existir');
+  const filmesNavBtn = container.querySelector('button[data-sidebar-nav-id="movies"]') as HTMLButtonElement;
+  assert(filmesNavBtn, 'Botão Filmes na barra lateral (data-sidebar-nav-id="movies") deve existir');
 
   await act(async () => {
     filmesNavBtn.focus();
@@ -2084,7 +2087,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   const activeModalScope = document.querySelector('[data-focus-scope="modal"]') as HTMLElement;
   assert(activeModalScope, 'MovieDetails aberto deve expor data-focus-scope="modal"');
 
-  // CRITÉRIO E: Em MovieDetails, verificar foco inicial no botão Assistir, descer para a sinopse e subir de volta ao topo (scrollTop = 0)
+  // CRITÉRIO E & REQ 4: Em MovieDetails, verificar foco inicial no botão Assistir, descer para a sinopse longa, rolar com ArrowDown/ArrowUp e subir de volta ao topo (scrollTop = 0)
   const movieDetailsScroll = activeModalScope.querySelector('[data-scroll-container="true"]') as HTMLElement;
   assert(movieDetailsScroll, 'MovieDetails deve possuir container rolável com data-scroll-container="true"');
 
@@ -2110,10 +2113,31 @@ async function runDpadNavigationAndBackPolicyTests() {
     'ArrowDown a partir de Assistir em MovieDetails deve focar a sinopse para leitura'
   );
 
-  // Simular rolagem para baixo durante leitura da sinopse
+  // REQ 4 (MovieDetails): Simular sinopse longa (scrollHeight > clientHeight) e verificar rolagem progressiva por ArrowDown e ArrowUp
+  Object.defineProperty(movieSynopsisEl, 'scrollHeight', { value: 420, configurable: true });
+  Object.defineProperty(movieSynopsisEl, 'clientHeight', { value: 150, configurable: true });
+  movieSynopsisEl.scrollTop = 0;
+
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(document.activeElement, movieSynopsisEl, 'ArrowDown com texto restante na sinopse do filme deve manter foco na sinopse');
+  assert.strictEqual(movieSynopsisEl.scrollTop, 120, '1º ArrowDown na sinopse longa do filme deve avançar scrollTop em 120px');
+
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(document.activeElement, movieSynopsisEl, 'ArrowUp com scrollTop > 0 na sinopse do filme deve manter foco na sinopse');
+  assert.strictEqual(movieSynopsisEl.scrollTop, 0, 'ArrowUp na sinopse do filme deve voltar scrollTop para 0');
+
+  // Simular rolagem da página para baixo durante leitura da sinopse
   movieDetailsScroll.scrollTop = 260;
 
-  // ArrowUp a partir da sinopse deve retornar à linha do botão Assistir (sem pular direto para Voltar) e zerar scrollTop = 0
+  // Agora que movieSynopsisEl.scrollTop === 0, o próximo ArrowUp deve retornar à linha do botão Assistir e zerar movieDetailsScroll.scrollTop = 0
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
@@ -2122,7 +2146,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   assert.strictEqual(
     document.activeElement,
     moviePlayBtn,
-    'ArrowUp a partir da sinopse deve retornar ao botão Assistir (e não saltar direto para Voltar)'
+    'ArrowUp a partir do topo da sinopse deve retornar ao botão Assistir (e não saltar direto para Voltar)'
   );
   assert.strictEqual(
     movieDetailsScroll.scrollTop,
@@ -2211,24 +2235,30 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Voltar da grade para a categoria não deve resetar o scrollTop da grade de Filmes'
   );
 
-  // CRITÉRIO C (Parte 3 - Filmes): Com foco já nas categorias, próximo Escape volta para Início
+  // CRITÉRIO C (Parte 3 - Filmes) & REQ 3: Com foco já nas categorias, próximo Escape volta para Início e foca o botão Filmes na sidebar
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
+    await new Promise((resolve) => setTimeout(resolve, 20));
   });
 
   assert(
     !container.textContent?.includes('Categorias de Filmes'),
     'Voltar quando o foco já está nas categorias de Filmes deve retornar à tela inicial (Início)'
   );
+  const filmesSidebarAfterReturn = container.querySelector('button[data-sidebar-nav-id="movies"]') as HTMLButtonElement;
+  assert.strictEqual(
+    document.activeElement,
+    filmesSidebarAfterReturn,
+    'REQ 3: Ao voltar de Filmes para Início com Escape/Voltar, o foco deve ir para o botão Filmes na barra lateral'
+  );
 
   // =========================================================================
-  // CRITÉRIOS C & F: Séries (SeriesView) e SeriesDetails (sinopse sem line-clamp-3 + topo)
+  // CRITÉRIOS C, F & REQ 3/4: Séries (SeriesView) e SeriesDetails (sinopse longa com rolagem progressiva + retorno à sidebar)
   // =========================================================================
-  const seriesSidebarBtns = Array.from(container.querySelectorAll('aside button')) as HTMLButtonElement[];
-  const seriesNavBtn = seriesSidebarBtns.find((b) => b.textContent?.includes('Séries'));
-  assert(seriesNavBtn, 'Botão Séries na barra lateral deve existir');
+  const seriesNavBtn = container.querySelector('button[data-sidebar-nav-id="series"]') as HTMLButtonElement;
+  assert(seriesNavBtn, 'Botão Séries na barra lateral (data-sidebar-nav-id="series") deve existir');
 
   await act(async () => {
     seriesNavBtn.focus();
@@ -2273,11 +2303,113 @@ async function runDpadNavigationAndBackPolicyTests() {
 
   const seriesDetailsScroll = seriesModalScope.querySelector('[data-scroll-container="true"]') as HTMLElement;
   const seriesSynopsisEl = seriesModalScope.querySelector('[role="region"][aria-label="Sinopse da série"]') as HTMLElement;
+  const seriesFavBtn = seriesModalScope.querySelector('button[data-scroll-block="true"]') as HTMLButtonElement;
+  const seriesBackBtn = seriesModalScope.querySelector('[data-scroll-top-anchor="true"] button') as HTMLButtonElement;
   assert(seriesDetailsScroll, 'SeriesDetails deve possuir container rolável com data-scroll-container="true"');
   assert(seriesSynopsisEl, 'Sinopse da série deve ser uma região focável com aria-label="Sinopse da série"');
+  assert(seriesFavBtn, 'Botão Favoritar em SeriesDetails deve existir como bloco abaixo da sinopse');
   assert(
     !seriesSynopsisEl.className.includes('line-clamp'),
     'A sinopse em SeriesDetails NÃO deve ter truncamento permanente line-clamp-3 (Critério F)'
+  );
+
+  // REQ 4 (SeriesDetails): Simular sinopse longa (scrollHeight = 500, clientHeight = 150, maxScroll = 350)
+  Object.defineProperty(seriesSynopsisEl, 'scrollHeight', { value: 500, configurable: true });
+  Object.defineProperty(seriesSynopsisEl, 'clientHeight', { value: 150, configurable: true });
+  seriesSynopsisEl.scrollTop = 0;
+
+  await act(async () => {
+    seriesSynopsisEl.focus();
+  });
+  assert.strictEqual(document.activeElement, seriesSynopsisEl, 'Foco posicionado na sinopse da série');
+
+  // 1º ArrowDown: rola 0 -> 120 e mantém foco na sinopse
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(document.activeElement, seriesSynopsisEl, '1º ArrowDown na sinopse longa da série deve manter foco na sinopse');
+  assert.strictEqual(seriesSynopsisEl.scrollTop, 120, '1º ArrowDown deve avançar scrollTop para 120');
+
+  // 2º ArrowDown: rola 120 -> 240 e mantém foco na sinopse
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(document.activeElement, seriesSynopsisEl, '2º ArrowDown na sinopse longa da série deve manter foco na sinopse');
+  assert.strictEqual(seriesSynopsisEl.scrollTop, 240, '2º ArrowDown deve avançar scrollTop para 240');
+
+  // 3º ArrowDown: rola 240 -> 350 (limite final) e mantém foco na sinopse
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(document.activeElement, seriesSynopsisEl, '3º ArrowDown ao atingir o limite da sinopse ainda mantém foco na sinopse');
+  assert.strictEqual(seriesSynopsisEl.scrollTop, 350, '3º ArrowDown deve atingir o limite máximo scrollTop = 350');
+
+  // Simular que o container externo também rolou parcialmente
+  seriesDetailsScroll.scrollTop = 140;
+
+  // 4º ArrowDown (já no limite 350): passa o foco para o botão Adicionar aos Favoritos SEM resetar scrollTop para 0
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(
+    document.activeElement,
+    seriesFavBtn,
+    'Após chegar ao fim da sinopse da série, o próximo ArrowDown deve mover o foco para o botão Favoritar'
+  );
+  assert.strictEqual(
+    seriesDetailsScroll.scrollTop,
+    140,
+    'Mover o foco da sinopse para Favoritar NÃO deve resetar seriesDetailsScroll.scrollTop para 0 prematuramente'
+  );
+
+  // Subir de volta para a sinopse e testar subida gradual com ArrowUp (350 -> 230 -> 110 -> 0)
+  await act(async () => {
+    seriesSynopsisEl.focus();
+  });
+  assert.strictEqual(seriesSynopsisEl.scrollTop, 350, 'Sinopse ainda está no final (350) ao retomar foco');
+
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(document.activeElement, seriesSynopsisEl, '1º ArrowUp a partir do fim da sinopse deve manter foco na sinopse');
+  assert.strictEqual(seriesSynopsisEl.scrollTop, 230, '1º ArrowUp deve reduzir scrollTop de 350 para 230');
+
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(document.activeElement, seriesSynopsisEl, '2º ArrowUp na sinopse deve manter foco na sinopse');
+  assert.strictEqual(seriesSynopsisEl.scrollTop, 110, '2º ArrowUp deve reduzir scrollTop de 230 para 110');
+
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(document.activeElement, seriesSynopsisEl, '3º ArrowUp ao atingir o topo 0 ainda mantém foco na sinopse');
+  assert.strictEqual(seriesSynopsisEl.scrollTop, 0, '3º ArrowUp deve atingir scrollTop = 0');
+
+  // 4º ArrowUp (já em scrollTop === 0): entrega o foco para o botão Voltar no cabeçalho
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(
+    document.activeElement,
+    seriesBackBtn,
+    'Quando scrollTop da sinopse chega a 0, o próximo ArrowUp deve mover o foco para o botão Voltar no topo'
   );
 
   // Navegar até a lista de episódios abaixo e simular rolagem para baixo
@@ -2289,7 +2421,12 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
   seriesDetailsScroll.scrollTop = 420;
 
-  // Subir com ArrowUp desde o primeiro episódio: deve passar pela temporada e chegar à sinopse/topo zerando scrollTop = 0
+  // Subir com ArrowUp desde o primeiro episódio: deve passar pela temporada, favoritar e chegar à sinopse zerando scrollTop = 0
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+    );
+  });
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
@@ -2304,15 +2441,15 @@ async function runDpadNavigationAndBackPolicyTests() {
   assert.strictEqual(
     document.activeElement,
     seriesSynopsisEl,
-    'Subir com ArrowUp em SeriesDetails a partir das temporadas deve focar a sinopse no topo'
+    'Subir com ArrowUp em SeriesDetails a partir dos episódios deve focar a sinopse no topo'
   );
   assert.strictEqual(
     seriesDetailsScroll.scrollTop,
     0,
-    'Atingir a sinopse/topo em SeriesDetails com ArrowUp deve zerar scrollTop = 0 para revelar título e sinopse completos'
+    'Atingir a sinopse em SeriesDetails com ArrowUp deve zerar scrollTop = 0 para revelar título e início da sinopse'
   );
 
-  // Fechar SeriesDetails com Escape -> foco volta ao card de série -> Escape volta para categoria Drama -> Escape volta ao Início
+  // Fechar SeriesDetails com Escape -> foco volta ao card de série -> Escape volta para categoria Drama -> Escape volta ao Início e foca botão Séries na sidebar
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -2336,18 +2473,24 @@ async function runDpadNavigationAndBackPolicyTests() {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
+    await new Promise((resolve) => setTimeout(resolve, 20));
   });
   assert(
     !container.textContent?.includes('Categorias de Séries'),
     'Voltar a partir das categorias de Séries deve retornar ao Início'
   );
+  const seriesSidebarAfterReturn = container.querySelector('button[data-sidebar-nav-id="series"]') as HTMLButtonElement;
+  assert.strictEqual(
+    document.activeElement,
+    seriesSidebarAfterReturn,
+    'REQ 3: Ao voltar de Séries para Início com Escape/Voltar, o foco deve ir para o botão Séries na barra lateral'
+  );
 
   // =========================================================================
-  // CRITÉRIO D: TV ao Vivo (LiveTvView) — foco automático nos canais e sequência Voltar passo a passo
+  // CRITÉRIO D & REQ 1/3: TV ao Vivo (LiveTvView) — troca de categoria A -> B sem perder foco, atraso de rede e sequência Voltar
   // =========================================================================
-  const liveSidebarBtns = Array.from(container.querySelectorAll('aside button')) as HTMLButtonElement[];
-  const liveNavBtn = liveSidebarBtns.find((b) => b.textContent?.includes('TV ao Vivo'));
-  assert(liveNavBtn, 'Botão TV ao Vivo na barra lateral deve existir');
+  const liveNavBtn = container.querySelector('button[data-sidebar-nav-id="live"]') as HTMLButtonElement;
+  assert(liveNavBtn, 'Botão TV ao Vivo na barra lateral (data-sidebar-nav-id="live") deve existir');
 
   await act(async () => {
     liveNavBtn.focus();
@@ -2363,7 +2506,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   const abertosCatBtn = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
   assert(abertosCatBtn, 'Botão da categoria Abertos (id=1) deve existir na TV ao Vivo');
 
-  // Ativar categoria Abertos com Enter (em modo remote)
+  // Ativar categoria A (Abertos, id=1) com Enter (em modo remote)
   await act(async () => {
     abertosCatBtn.focus();
     windowInstance.dispatchEvent(
@@ -2372,14 +2515,89 @@ async function runDpadNavigationAndBackPolicyTests() {
     await new Promise((resolve) => setTimeout(resolve, 30));
   });
 
-  // Deve ter trocado para a lista de canais e focado automaticamente o primeiro canal
-  const channelButtons = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
-  assert(channelButtons.length >= 2, 'Lista de canais da categoria Abertos deve conter os canais agrupados');
+  // Deve ter trocado para a lista de canais da categoria 1 e focado automaticamente o primeiro canal de A
+  const channelButtonsCatA = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
+  assert(channelButtonsCatA.length >= 2, 'Lista de canais da categoria Abertos deve conter os canais agrupados');
+  assert.strictEqual(
+    channelButtonsCatA[0].getAttribute('data-live-channel-category-id'),
+    '1',
+    'Primeiro canal exibido em Abertos deve pertencer à categoria 1'
+  );
   assert.strictEqual(
     document.activeElement,
-    channelButtons[0],
-    'Ao escolher uma categoria na TV ao Vivo por teclado/controle, o foco deve ir automaticamente para o primeiro canal'
+    channelButtonsCatA[0],
+    'Ao escolher a categoria A (Abertos) por teclado/controle, o foco deve ir automaticamente para o primeiro canal de A'
   );
+
+  // REQ 1: Voltar às categorias e abrir a categoria B (Esportes, id=2) simulando atraso no fetchLiveStreams
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+  const esportesCatBtn = container.querySelector('button[data-live-category-id="2"]') as HTMLButtonElement;
+  assert(esportesCatBtn, 'Botão da categoria Esportes (id=2) deve existir na TV ao Vivo');
+
+  // Configurar fetchLiveStreams da categoria 2 com pequeno atraso para validar que nenhum canal antigo da categoria 1 é focado ou renderizado
+  const originalGetLiveStreams = (XtreamService as any).getLiveStreams;
+  (XtreamService as any).getLiveStreams = async (creds: any, catId?: string) => {
+    if (String(catId) === '2') {
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    return originalGetLiveStreams(creds, catId);
+  };
+
+  await act(async () => {
+    esportesCatBtn.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
+  });
+
+  // Imediatamente após abrir a categoria 2, NUNCA deve existir botão renderizado da categoria 1
+  const renderedCat1ButtonsInCat2 = container.querySelectorAll('button[data-live-channel-category-id="1"]');
+  assert.strictEqual(
+    renderedCat1ButtonsInCat2.length,
+    0,
+    'REQ 1: Ao abrir a categoria B (Esportes), nenhum canal da categoria A (Abertos) pode continuar renderizado'
+  );
+
+  // Aguardar resolução de getLiveStreams(cat=2)
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  });
+  (XtreamService as any).getLiveStreams = originalGetLiveStreams;
+
+  const channelButtonsCatB = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
+  assert(channelButtonsCatB.length >= 2, 'Categoria B (Esportes) deve exibir seus canais após carregamento');
+  assert.strictEqual(
+    channelButtonsCatB[0].getAttribute('data-live-channel-category-id'),
+    '2',
+    'Canais exibidos em Esportes devem pertencer à categoria 2'
+  );
+  assert.strictEqual(
+    document.activeElement,
+    channelButtonsCatB[0],
+    'REQ 1: Ao abrir a categoria B após passar pela categoria A, o foco deve estar no primeiro canal de B (nunca em body ou sidebar)'
+  );
+
+  // Voltar para categorias e reabrir categoria A (Abertos) para testar fluxo de preview -> fullscreen -> categorias -> Início
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+  const abertosCatBtnAgain = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
+  await act(async () => {
+    abertosCatBtnAgain.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  const channelButtons = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
+  assert.strictEqual(document.activeElement, channelButtons[0], 'Foco no primeiro canal de Abertos');
 
   // ArrowDown deve mover para o segundo canal da lista
   await act(async () => {
@@ -2493,15 +2711,105 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
-  // 4º Escape (na lista de categorias da TV ao Vivo): volta para Início
+  // 4º Escape (na lista de categorias da TV ao Vivo): volta para Início e foca o botão TV ao Vivo na sidebar (REQ 3)
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  assert(
+    container.querySelector('[data-scroll-top-anchor="true"]') !== null,
+    '4º Escape a partir das categorias da TV ao Vivo deve retornar à tela Início'
+  );
+  const liveSidebarAfterReturn = container.querySelector('button[data-sidebar-nav-id="live"]') as HTMLButtonElement;
+  assert.strictEqual(
+    document.activeElement,
+    liveSidebarAfterReturn,
+    'REQ 3: Ao voltar de TV ao Vivo para Início com Escape/Voltar, o foco deve ir para o botão TV ao Vivo na barra lateral'
+  );
+
+  // =========================================================================
+  // REQ 2: Cards de "Canais Ao Vivo" na Home usam o fluxo funcional de LiveTvView (m3u8, SD -> HD, fallback e histórico só no sucesso)
+  // =========================================================================
+  window.localStorage.removeItem(historyStorageKey);
+
+  // Na HomeView, encontrar a fileira "Canais Ao Vivo" e clicar no card "Canal Esporte HD" (stream_id 104, que pertence ao grupo Canal Esporte com SD=103 e HD=104)
+  const homeLiveCards = Array.from(container.querySelectorAll('[data-nav-row="true"] [data-nav-item="true"]')) as HTMLElement[];
+  const esporteHomeCard = homeLiveCards.find((el) => el.textContent?.includes('Canal Esporte HD'));
+  assert(esporteHomeCard, 'Card "Canal Esporte HD" deve existir na fileira Canais Ao Vivo da Home');
+
+  await act(async () => {
+    esporteHomeCard.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+
+  // Deve ter aberto LiveTvView com o grupo "Canal Esporte" selecionado e iniciado pela variante SD (stream_id 103) em formato .m3u8 (nunca .ts fixo)
+  const liveVideoFromHome = container.querySelector('video') as HTMLVideoElement;
+  assert(liveVideoFromHome, 'Clicar em um canal ao vivo na Home deve abrir o player de preview da LiveTvView');
+  assert(
+    liveVideoFromHome.src.includes('/live/navUser/navPassword/103.m3u8'),
+    `REQ 2: Canal aberto pela Home deve usar .m3u8 (allowed_output_formats) e iniciar pela variante SD (103), mas obteve: ${liveVideoFromHome.src}`
+  );
+  assert(
+    !liveVideoFromHome.src.endsWith('.ts'),
+    'REQ 2: Canal aberto pela Home NÃO deve forçar URL .ts quando m3u8 é suportado'
+  );
+
+  // Antes da confirmação de reprodução (playing), o histórico NÃO deve ter registrado o canal
+  const historyBeforeSuccess = JSON.parse(window.localStorage.getItem(historyStorageKey) || '[]');
+  assert.strictEqual(
+    historyBeforeSuccess.length,
+    0,
+    'REQ 2: O histórico de reprodução NÃO deve ser gravado apenas pelo clique na Home antes da reprodução funcionar'
+  );
+
+  // Simular sucesso de reprodução (evento 'playing' no <video>) e verificar que agora o histórico é gravado
+  await act(async () => {
+    liveVideoFromHome.dispatchEvent(new (windowInstance as any).Event('playing'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  const historyAfterSuccess = JSON.parse(window.localStorage.getItem(historyStorageKey) || '[]');
+  assert(
+    historyAfterSuccess.some((item: any) => String(item.id) === '103' && item.type === 'live'),
+    'REQ 2: O histórico deve registrar o canal somente após confirmação de sucesso (playing) na LiveTvView'
+  );
+
+  // Sequência de Voltar após abrir canal pela Home: preview -> canais -> categorias -> Início (com foco no botão TV ao Vivo da sidebar)
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+  assert.strictEqual(container.querySelector('video'), null, '1º Escape após abrir canal pela Home fecha o preview');
+
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
   assert(
+    container.querySelector('button[data-live-category-id="2"]') !== null,
+    '2º Escape após abrir canal pela Home volta para a lista de categorias da TV ao Vivo'
+  );
+
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  assert(
     container.querySelector('[data-scroll-top-anchor="true"]') !== null,
-    '4º Escape a partir das categorias da TV ao Vivo deve retornar à tela Início'
+    '3º Escape após abrir canal pela Home retorna ao Início'
+  );
+  assert.strictEqual(
+    document.activeElement,
+    container.querySelector('button[data-sidebar-nav-id="live"]'),
+    '3º Escape retorna o foco para o botão TV ao Vivo na barra lateral'
   );
 
   // 4. Ponte de runtime do Capacitor (backButton) na raiz chama App.exitApp() e NUNCA faz logout
@@ -2556,7 +2864,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
   document.body.removeChild(container);
 
-  console.log('✅ Testes de navegação por controle/teclado (Critérios A a H), foco, rolagem e política de Voltar aprovados!');
+  console.log('✅ Testes de navegação por controle/teclado (Critérios A a H + Requisitos 1 a 5), foco, rolagem e política de Voltar aprovados!');
 }
 
 async function main() {

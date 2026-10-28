@@ -111,12 +111,26 @@ export function selectChannelVariantForAttempt(
   return null;
 }
 
+export interface LiveChannelLaunchIntent {
+  streamId: string | number;
+  requestId: number;
+  categoryId?: string;
+  streamSnapshot?: any;
+}
+
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
   searchQuery?: string;
+  initialChannelIntent?: LiveChannelLaunchIntent | null;
+  onConsumeChannelIntent?: (requestId: number) => void;
 }
 
-export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
+export function LiveTvView({
+  onPlay,
+  searchQuery = '',
+  initialChannelIntent = null,
+  onConsumeChannelIntent,
+}: LiveTvViewProps) {
   const { 
     liveCategories, liveStreams, allLiveStreams, fetchLiveStreams, 
     loadingLive, liveError, liveCategoriesError, liveCategoriesStatus,
@@ -128,6 +142,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const [isMobilePlayerOpen, setIsMobilePlayerOpen] = useState(false);
 
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>('nc_recent');
+  const [loadingCategoryId, setLoadingCategoryId] = useState<string | null>(null);
   
   // Group selection & variant selection state
   const [selectedGroup, setSelectedGroup] = useState<LiveChannelGroup | null>(null);
@@ -159,9 +174,10 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const categoriesScrollTopRef = useRef<number>(0);
   const originCategoryIdRef = useRef<string>('nc_recent');
   const lastPointerDownTimeRef = useRef<number>(0);
-  const pendingChannelEntryFocusRef = useRef<boolean>(false);
+  const pendingChannelEntryCategoryRef = useRef<string | null>(null);
   const pendingCategoryRestoreFocusRef = useRef<string | null>(null);
   const pendingChannelRestoreFocusRef = useRef<string | null>(null);
+  const consumedIntentRequestIdRef = useRef<number | null>(null);
 
   // Reset active attempt and memory when active credentials change
   useEffect(() => {
@@ -276,10 +292,24 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
   // Load streams when category is selected
   useEffect(() => {
+    let isCurrent = true;
     if (selectedCategoryId && selectedCategoryId !== 'nc_recent' && selectedCategoryId !== 'nc_fav') {
-      fetchLiveStreams(selectedCategoryId);
+      const targetCat = String(selectedCategoryId);
+      setLoadingCategoryId(targetCat);
+      Promise.resolve(fetchLiveStreams(selectedCategoryId))
+        .catch(() => {})
+        .finally(() => {
+          if (isCurrent) {
+            setLoadingCategoryId((prev) => (prev === targetCat ? null : prev));
+          }
+        });
+    } else {
+      setLoadingCategoryId(null);
     }
     setDisplayCount(100);
+    return () => {
+      isCurrent = false;
+    };
   }, [selectedCategoryId, fetchLiveStreams]);
 
   // Handle Search query override
@@ -290,11 +320,42 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     }
   }, [searchQuery]);
 
+  // Strictly filter streams by selectedCategoryId for real categories so stale liveStreams from a previous category are never rendered or focused
   const rawFilteredStreams = useMemo(() => {
+    if (!selectedCategoryId) return [];
     if (selectedCategoryId === 'nc_recent') return recentChannels;
     if (selectedCategoryId === 'nc_fav') return favoriteChannels;
-    return liveStreams;
-  }, [selectedCategoryId, recentChannels, favoriteChannels, liveStreams]);
+
+    const targetCatId = String(selectedCategoryId);
+    const matchingFromLive = liveStreams.filter(
+      (s) => s && String(s.category_id) === targetCatId
+    );
+    if (matchingFromLive.length > 0) {
+      return matchingFromLive;
+    }
+    if (allLiveStreams.length > 0) {
+      return allLiveStreams.filter(
+        (s) => s && String(s.category_id) === targetCatId
+      );
+    }
+    return [];
+  }, [selectedCategoryId, recentChannels, favoriteChannels, liveStreams, allLiveStreams]);
+
+  const isRealCategory = Boolean(
+    selectedCategoryId &&
+      selectedCategoryId !== 'nc_recent' &&
+      selectedCategoryId !== 'nc_fav'
+  );
+
+  const isCategoryChannelsLoading = Boolean(
+    !searchQuery &&
+      isRealCategory &&
+      rawFilteredStreams.length === 0 &&
+      (loadingCategoryId === String(selectedCategoryId) ||
+        loadingLive ||
+        liveCatalogStatus === 'loading' ||
+        liveCatalogStatus === 'idle')
+  );
 
   // Groups streams. When searchQuery is active, groups ALL account streams globally.
   const groupedChannels = useMemo(() => {
@@ -402,6 +463,18 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
 
   // Handle group click: 1st OK starts channel in preview; 2nd OK on already-selected active channel expands to fullscreen without restarting stream
   const handleSelectGroup = useCallback((group: LiveChannelGroup) => {
+    // Prevent starting a channel from a stale category when a real category is active
+    if (
+      !searchQuery &&
+      selectedCategoryId &&
+      selectedCategoryId !== 'nc_recent' &&
+      selectedCategoryId !== 'nc_fav' &&
+      group.category_id !== undefined &&
+      String(group.category_id) !== String(selectedCategoryId)
+    ) {
+      return;
+    }
+
     if (selectedGroup && selectedGroup.groupId === group.groupId && !miniPlayerError && miniPlayerUrl) {
       setIsMobilePlayerOpen(true);
       setFullscreenRequestTrigger((prev) => prev + 1);
@@ -412,7 +485,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     attemptedStreamIdsRef.current.clear();
     setIsMobilePlayerOpen(true);
     startVariantAttempt(group, 'auto');
-  }, [selectedGroup, miniPlayerError, miniPlayerUrl, startVariantAttempt]);
+  }, [searchQuery, selectedCategoryId, selectedGroup, miniPlayerError, miniPlayerUrl, startVariantAttempt]);
 
   // Handle manual resolution mode change
   const handleSelectResolutionMode = useCallback((variant: any | 'auto') => {
@@ -490,6 +563,131 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     return !isRecentPointer;
   }, []);
 
+  // Consume launch intent from Home ("Canais Ao Vivo" row) exactly once per requestId
+  useEffect(() => {
+    if (!initialChannelIntent) return;
+    if (consumedIntentRequestIdRef.current === initialChannelIntent.requestId) return;
+
+    const catalogEmpty = allLiveStreams.length === 0 && liveStreams.length === 0;
+    if (
+      catalogEmpty &&
+      (liveCatalogStatus === 'loading' || liveCatalogStatus === 'idle' || loadingLive)
+    ) {
+      return;
+    }
+
+    consumedIntentRequestIdRef.current = initialChannelIntent.requestId;
+    onConsumeChannelIntent?.(initialChannelIntent.requestId);
+
+    const rawStreamId = initialChannelIntent.streamId;
+    const targetIdStr =
+      rawStreamId !== undefined && rawStreamId !== null ? String(rawStreamId).trim() : '';
+
+    const sourcePool = allLiveStreams.length > 0 ? allLiveStreams : liveStreams;
+    const matchedStream = targetIdStr
+      ? sourcePool.find((s) => s && String(s.stream_id ?? s.id) === targetIdStr)
+      : null;
+
+    if (matchedStream) {
+      const catId = matchedStream.category_id ? String(matchedStream.category_id) : 'nc_recent';
+      originCategoryIdRef.current = catId;
+      setSelectedCategoryId(catId);
+      setLeftPaneView('channels');
+
+      const catStreams =
+        catId !== 'nc_recent' && catId !== 'nc_fav'
+          ? sourcePool.filter((s) => s && String(s.category_id) === catId)
+          : [matchedStream];
+      const groupsInCat = groupLiveStreams(catStreams.length > 0 ? catStreams : [matchedStream]);
+      const targetGroup =
+        groupsInCat.find((g) =>
+          g.allStreams.some((s) => String(s.stream_id ?? s.id) === targetIdStr)
+        ) ||
+        ({
+          groupId: `single_direct_${targetIdStr}`,
+          displayName: matchedStream.name || 'Canal ao Vivo',
+          category_id: matchedStream.category_id,
+          epg_channel_id: matchedStream.epg_channel_id,
+          stream_icon: matchedStream.stream_icon,
+          isGrouped: false,
+          variants: [],
+          primaryStream: matchedStream,
+          allStreams: [matchedStream],
+        } as LiveChannelGroup);
+
+      pendingChannelEntryCategoryRef.current = null;
+      if (shouldApplyProgrammaticFocus()) {
+        pendingChannelRestoreFocusRef.current = targetGroup.groupId;
+      }
+
+      setSelectedGroup(targetGroup);
+      setSelectedResolutionMode('auto');
+      attemptedStreamIdsRef.current.clear();
+      setIsMobilePlayerOpen(true);
+      startVariantAttempt(targetGroup, 'auto');
+      return;
+    }
+
+    // Invalid stream_id or stream not found in account catalog: open recoverable error state in LiveTvView preview
+    const fallbackCatId =
+      initialChannelIntent.categoryId &&
+      liveCategories.some((c) => String(c.category_id) === String(initialChannelIntent.categoryId))
+        ? String(initialChannelIntent.categoryId)
+        : liveCategories[0]?.category_id
+          ? String(liveCategories[0].category_id)
+          : 'nc_recent';
+
+    originCategoryIdRef.current = fallbackCatId;
+    setSelectedCategoryId(fallbackCatId);
+    setLeftPaneView('channels');
+    pendingChannelEntryCategoryRef.current = null;
+
+    const snap = initialChannelIntent.streamSnapshot || {};
+    const fallbackGroup: LiveChannelGroup = {
+      groupId: `invalid_intent_${initialChannelIntent.requestId}`,
+      displayName: snap.name || 'Canal Indisponível',
+      category_id: snap.category_id || fallbackCatId,
+      epg_channel_id: snap.epg_channel_id,
+      stream_icon: snap.stream_icon || '',
+      isGrouped: false,
+      variants: [],
+      primaryStream: {
+        ...snap,
+        stream_id: targetIdStr || '',
+        name: snap.name || 'Canal Indisponível',
+      },
+      allStreams: [],
+    };
+
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+    attemptIdRef.current++;
+    setSelectedGroup(fallbackGroup);
+    setActiveVariantStream(fallbackGroup.primaryStream);
+    setSelectedResolutionMode('auto');
+    attemptedStreamIdsRef.current.clear();
+    setIsMobilePlayerOpen(true);
+    setMiniPlayerUrl('');
+    setMiniPlayerLoading(false);
+    setMiniPlayerError(
+      !targetIdStr
+        ? 'Identificador do canal inválido para reprodução.'
+        : 'Canal não encontrado no catálogo atual da conta.'
+    );
+  }, [
+    initialChannelIntent,
+    allLiveStreams,
+    liveStreams,
+    liveCategories,
+    liveCatalogStatus,
+    loadingLive,
+    onConsumeChannelIntent,
+    shouldApplyProgrammaticFocus,
+    startVariantAttempt,
+  ]);
+
   // Close channel/player
   const handleCloseChannel = useCallback(() => {
     const closedGroupId = selectedGroup?.groupId || null;
@@ -511,9 +709,9 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       const channelBtns = Array.from(
         root.querySelectorAll('button[data-live-channel-id]')
       ) as HTMLButtonElement[];
-      const targetBtn = channelBtns.find(
-        (b) => b.getAttribute('data-live-channel-id') === closedGroupId
-      );
+      const targetBtn =
+        channelBtns.find((b) => b.getAttribute('data-live-channel-id') === closedGroupId) ||
+        channelBtns[0];
       if (targetBtn) {
         focusElementSafely(targetBtn);
         pendingChannelRestoreFocusRef.current = null;
@@ -522,6 +720,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   }, [selectedGroup, shouldApplyProgrammaticFocus]);
 
   const handleReturnToCategories = useCallback(() => {
+    pendingChannelEntryCategoryRef.current = null;
     if (shouldApplyProgrammaticFocus()) {
       pendingCategoryRestoreFocusRef.current =
         originCategoryIdRef.current || String(selectedCategoryId || 'nc_recent');
@@ -529,7 +728,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     setLeftPaneView('categories');
   }, [selectedCategoryId, shouldApplyProgrammaticFocus]);
 
-  // Focus first channel (or "Voltar às Categorias" while loading/empty) after entering channels view
+  // Focus first channel of the active category (or "Voltar às Categorias" while loading/empty) after entering channels view
   useEffect(() => {
     if (leftPaneView !== 'channels') return;
 
@@ -539,21 +738,44 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
       const channelBtns = Array.from(
         root.querySelectorAll('button[data-live-channel-id]')
       ) as HTMLButtonElement[];
-      const targetBtn = channelBtns.find((b) => b.getAttribute('data-live-channel-id') === targetId);
+      const targetBtn =
+        channelBtns.find((b) => b.getAttribute('data-live-channel-id') === targetId) ||
+        channelBtns[0];
       if (targetBtn) {
         focusElementSafely(targetBtn);
         pendingChannelRestoreFocusRef.current = null;
         return;
       }
+      if (!isCategoryChannelsLoading && liveCatalogStatus !== 'loading') {
+        const backToCatsBtn = root.querySelector(
+          'button[data-live-back-to-categories="true"]'
+        ) as HTMLButtonElement | null;
+        if (backToCatsBtn) {
+          focusElementSafely(backToCatsBtn);
+        }
+        pendingChannelRestoreFocusRef.current = null;
+      }
     }
 
-    if (!pendingChannelEntryFocusRef.current) return;
+    if (!pendingChannelEntryCategoryRef.current) return;
+
+    const currentCatStr = String(selectedCategoryId || '');
+    if (pendingChannelEntryCategoryRef.current !== currentCatStr) {
+      // Category changed (e.g. rapid A -> B): replace stale A focus target with B
+      pendingChannelEntryCategoryRef.current = currentCatStr;
+    }
 
     const root = viewRootRef.current || document.body;
-    const firstChannelBtn = root.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement | null;
-    if (firstChannelBtn) {
-      focusElementSafely(firstChannelBtn);
-      pendingChannelEntryFocusRef.current = false;
+    const channelBtns = Array.from(
+      root.querySelectorAll('button[data-live-channel-btn="true"]')
+    ) as HTMLButtonElement[];
+    const firstMatchingChannelBtn = channelBtns.find(
+      (btn) => btn.getAttribute('data-live-channel-category-id') === currentCatStr
+    );
+
+    if (firstMatchingChannelBtn) {
+      focusElementSafely(firstMatchingChannelBtn);
+      pendingChannelEntryCategoryRef.current = null;
       return;
     }
 
@@ -563,10 +785,17 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     if (backToCatsBtn) {
       focusElementSafely(backToCatsBtn);
     }
-    if (liveCatalogStatus !== 'loading') {
-      pendingChannelEntryFocusRef.current = false;
+    if (!isCategoryChannelsLoading && liveCatalogStatus !== 'loading') {
+      pendingChannelEntryCategoryRef.current = null;
     }
-  }, [leftPaneView, displayedGroups.length, liveCatalogStatus, selectedGroup]);
+  }, [
+    leftPaneView,
+    selectedCategoryId,
+    displayedGroups,
+    isCategoryChannelsLoading,
+    liveCatalogStatus,
+    selectedGroup,
+  ]);
 
   // Restore categories scrollTop and origin category button focus when returning to categories view
   useEffect(() => {
@@ -722,9 +951,12 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                       if (categoriesListRef.current) {
                         categoriesScrollTopRef.current = categoriesListRef.current.scrollTop;
                       }
-                      originCategoryIdRef.current = String(cat.category_id);
+                      const targetCatId = String(cat.category_id);
+                      originCategoryIdRef.current = targetCatId;
                       if (shouldApplyProgrammaticFocus()) {
-                        pendingChannelEntryFocusRef.current = true;
+                        pendingChannelEntryCategoryRef.current = targetCatId;
+                      } else {
+                        pendingChannelEntryCategoryRef.current = null;
                       }
                       setSelectedCategoryId(cat.category_id);
                       setLeftPaneView('channels');

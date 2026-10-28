@@ -24,10 +24,11 @@ interface HomeViewProps {
     onNext?: () => void,
     onPrevious?: () => void
   ) => void;
+  onSelectLiveChannel?: (stream: any) => void;
   searchQuery?: string;
 }
 
-export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
+export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: HomeViewProps) {
   const { 
     liveStreams, vodStreams, seriesStreams, 
     allLiveStreams, allVodStreams, allSeriesStreams,
@@ -208,17 +209,18 @@ export function HomeView({ onPlay, searchQuery = '' }: HomeViewProps) {
 
   const handlePlayLive = (stream: any) => {
     if (!credentials) return;
+    if (onSelectLiveChannel) {
+      onSelectLiveChannel(stream);
+      return;
+    }
     try {
+      const streamId = stream?.stream_id ?? stream?.id;
       const url = buildDirectMediaUrl(credentials, {
         type: 'live',
-        streamId: stream.stream_id,
-        containerExtension: 'ts',
+        streamId,
+        allowedOutputFormats: credentials?.allowed_output_formats,
       });
-      recordPlaybackPosition(credentials, {
-        id: stream.stream_id,
-        type: 'live',
-      });
-      onPlay(url, stream.name, 0, stream.stream_id, 'live', stream.name, stream.epg_title || stream.name);
+      onPlay(url, stream.name, 0, streamId, 'live', stream.name, stream.epg_title || stream.name);
     } catch (err: any) {
       console.error('Erro ao iniciar canal ao vivo:', err.message);
       setHomePlayError(err?.message || 'Falha ao iniciar canal.');

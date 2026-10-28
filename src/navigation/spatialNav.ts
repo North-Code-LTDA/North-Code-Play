@@ -116,6 +116,16 @@ export function ensureElementScrolledIntoView(
           rowContainer.scrollLeft + (elRect.right - rowRect.right) + padX
         );
       }
+    } else if (direction === 'left' || direction === 'right') {
+      const rowItems = Array.from(
+        rowContainer.querySelectorAll<HTMLElement>('[data-nav-item="true"], button')
+      );
+      const idx = rowItems.indexOf(el);
+      if (idx === 0) {
+        rowContainer.scrollLeft = 0;
+      } else if (idx > 0) {
+        rowContainer.scrollLeft = idx * 160;
+      }
     }
   }
 
@@ -495,6 +505,66 @@ function pickPreferredZoneEntry(
   return zoneItems[0];
 }
 
+function tryScrollFocusedSynopsis(
+  activeEl: HTMLElement,
+  direction: 'up' | 'down'
+): boolean {
+  if (activeEl.getAttribute('data-synopsis-focus') !== 'true') {
+    return false;
+  }
+  const step = 120;
+
+  // 1. Check if the synopsis element itself is scrollable (scrollHeight > clientHeight)
+  const selfMaxScroll = Math.max(0, (activeEl.scrollHeight || 0) - (activeEl.clientHeight || 0));
+  if (selfMaxScroll > 2) {
+    if (direction === 'down' && activeEl.scrollTop < selfMaxScroll - 2) {
+      activeEl.scrollTop = Math.min(selfMaxScroll, activeEl.scrollTop + step);
+      return true;
+    }
+    if (direction === 'up' && activeEl.scrollTop > 2) {
+      activeEl.scrollTop = Math.max(0, activeEl.scrollTop - step);
+      return true;
+    }
+  }
+
+  // 2. Check if the enclosing scrollContainer has scrollable range for the synopsis
+  const scrollContainer = findScrollContainer(activeEl);
+  if (scrollContainer) {
+    const containerMaxScroll = Math.max(
+      0,
+      (scrollContainer.scrollHeight || 0) - (scrollContainer.clientHeight || 0)
+    );
+    if (containerMaxScroll > 2) {
+      const cRect = scrollContainer.getBoundingClientRect();
+      const aRect = activeEl.getBoundingClientRect();
+      const hasRects = cRect.height > 0 && aRect.height > 0;
+
+      if (direction === 'down') {
+        const synopsisStillBelowViewport = hasRects
+          ? aRect.bottom > cRect.bottom - 16
+          : true;
+        if (synopsisStillBelowViewport && scrollContainer.scrollTop < containerMaxScroll - 2) {
+          const delta = hasRects
+            ? Math.min(step, Math.ceil(aRect.bottom - (cRect.bottom - 16)))
+            : step;
+          scrollContainer.scrollTop = Math.min(
+            containerMaxScroll,
+            scrollContainer.scrollTop + Math.max(1, delta)
+          );
+          return true;
+        }
+      } else if (direction === 'up') {
+        if (scrollContainer.scrollTop > 2) {
+          scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop - step);
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 /**
  * Moves focus in the requested direction ('up' | 'down' | 'left' | 'right').
  * Follows visual/DOM zone structure so vertical navigation inside content scrolls through rows
@@ -541,6 +611,11 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
   // VERTICAL NAVIGATION ('up' | 'down')
   // ---------------------------------------------------------------------------
   if (direction === 'up' || direction === 'down') {
+    // 0. If currently focused on a scrollable synopsis region, scroll it progressively before moving focus
+    if (tryScrollFocusedSynopsis(activeEl, direction)) {
+      return activeEl;
+    }
+
     const blocks = buildZoneBlocks(sameZoneCandidates);
     const bIdx = blocks.findIndex((b) => b.items.includes(activeEl));
 
