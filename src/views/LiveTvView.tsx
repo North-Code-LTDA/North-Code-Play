@@ -733,6 +733,10 @@ export function LiveTvView({
     if (leftPaneView !== 'channels') return;
 
     if (pendingChannelRestoreFocusRef.current) {
+      if (!shouldApplyProgrammaticFocus()) {
+        pendingChannelRestoreFocusRef.current = null;
+        return;
+      }
       const targetId = pendingChannelRestoreFocusRef.current;
       const root = viewRootRef.current || document.body;
       const channelBtns = Array.from(
@@ -746,7 +750,7 @@ export function LiveTvView({
         pendingChannelRestoreFocusRef.current = null;
         return;
       }
-      if (!isCategoryChannelsLoading && liveCatalogStatus !== 'loading') {
+      if (!isCategoryChannelsLoading && liveCatalogStatus !== 'loading' && liveCatalogStatus !== 'idle') {
         const backToCatsBtn = root.querySelector(
           'button[data-live-back-to-categories="true"]'
         ) as HTMLButtonElement | null;
@@ -759,6 +763,11 @@ export function LiveTvView({
 
     if (!pendingChannelEntryCategoryRef.current) return;
 
+    if (!shouldApplyProgrammaticFocus()) {
+      pendingChannelEntryCategoryRef.current = null;
+      return;
+    }
+
     const currentCatStr = String(selectedCategoryId || '');
     if (pendingChannelEntryCategoryRef.current !== currentCatStr) {
       // Category changed (e.g. rapid A -> B): replace stale A focus target with B
@@ -766,12 +775,28 @@ export function LiveTvView({
     }
 
     const root = viewRootRef.current || document.body;
+    const activeEl = document.activeElement as HTMLElement | null;
+
+    // If user already deliberately moved focus away (e.g. to another control, channel, sidebar, or header), do not steal focus
+    if (
+      activeEl &&
+      activeEl !== document.body &&
+      activeEl !== document.documentElement &&
+      activeEl.getAttribute('data-live-back-to-categories') !== 'true' &&
+      !activeEl.hasAttribute('data-live-category-id')
+    ) {
+      pendingChannelEntryCategoryRef.current = null;
+      return;
+    }
+
     const channelBtns = Array.from(
       root.querySelectorAll('button[data-live-channel-btn="true"]')
     ) as HTMLButtonElement[];
-    const firstMatchingChannelBtn = channelBtns.find(
-      (btn) => btn.getAttribute('data-live-channel-category-id') === currentCatStr
-    );
+    const firstMatchingChannelBtn = isRealCategory
+      ? channelBtns.find(
+          (btn) => btn.getAttribute('data-live-channel-category-id') === currentCatStr
+        )
+      : channelBtns[0];
 
     if (firstMatchingChannelBtn) {
       focusElementSafely(firstMatchingChannelBtn);
@@ -779,22 +804,33 @@ export function LiveTvView({
       return;
     }
 
+    const isStillLoading =
+      isCategoryChannelsLoading ||
+      liveCatalogStatus === 'loading' ||
+      liveCatalogStatus === 'idle';
+
     const backToCatsBtn = root.querySelector(
       'button[data-live-back-to-categories="true"]'
     ) as HTMLButtonElement | null;
-    if (backToCatsBtn) {
+    if (backToCatsBtn && (!activeEl || activeEl === document.body || !root.contains(activeEl))) {
       focusElementSafely(backToCatsBtn);
     }
-    if (!isCategoryChannelsLoading && liveCatalogStatus !== 'loading') {
+
+    if (!isStillLoading) {
+      if (backToCatsBtn) {
+        focusElementSafely(backToCatsBtn);
+      }
       pendingChannelEntryCategoryRef.current = null;
     }
   }, [
     leftPaneView,
     selectedCategoryId,
+    isRealCategory,
     displayedGroups,
     isCategoryChannelsLoading,
     liveCatalogStatus,
     selectedGroup,
+    shouldApplyProgrammaticFocus,
   ]);
 
   // Restore categories scrollTop and origin category button focus when returning to categories view
@@ -901,6 +937,7 @@ export function LiveTvView({
       ref={viewRootRef}
       onPointerDownCapture={() => {
         lastPointerDownTimeRef.current = Date.now();
+        pendingChannelEntryCategoryRef.current = null;
       }}
       className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg"
     >
@@ -1002,11 +1039,11 @@ export function LiveTvView({
                     Tentar novamente
                   </button>
                 </div>
-              ) : liveCatalogStatus === 'loading' && rawFilteredStreams.length === 0 ? (
+              ) : (isCategoryChannelsLoading || liveCatalogStatus === 'loading') && rawFilteredStreams.length === 0 ? (
                  <div className="flex items-center justify-center py-10">
                    <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
                  </div>
-              ) : liveCatalogStatus === 'ready' && !liveError && groupedChannels.length === 0 ? (
+              ) : !isCategoryChannelsLoading && liveCatalogStatus === 'ready' && !liveError && groupedChannels.length === 0 ? (
                  <div className="flex flex-col items-center justify-center py-10 text-nc-text-secondary">
                    <TvMinimalPlay className="w-12 h-12 mb-4 opacity-20" />
                    <p className="text-sm">Nenhum canal encontrado.</p>
@@ -1034,6 +1071,7 @@ export function LiveTvView({
                           type="button"
                           data-live-channel-btn="true"
                           data-live-channel-id={group.groupId}
+                          data-live-channel-category-id={String(group.category_id ?? '')}
                           data-live-channel-selected={isSelected ? 'true' : 'false'}
                           onClick={(e) => {
                             if (shouldApplyProgrammaticFocus()) {

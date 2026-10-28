@@ -37,7 +37,6 @@ function HomeContent({ credentials }: { credentials: any }) {
   const [currentView, setCurrentView] = useState<ViewType>('inicio');
   const [liveLaunchIntent, setLiveLaunchIntent] = useState<LiveChannelLaunchIntent | null>(null);
   const liveLaunchReqCounterRef = useRef(0);
-  const pendingReturnFocusViewRef = useRef<ViewType | null>(null);
   const lastPointerDownTimeRef = useRef<number>(0);
   const homeRootRef = useRef<HTMLDivElement>(null);
   const [logoutError, setLogoutError] = useState<string | null>(null);
@@ -86,18 +85,51 @@ function HomeContent({ credentials }: { credentials: any }) {
     isMobileMenuOpen
   );
 
-  // Back policy: 3) Return from internal section to 'inicio' (never logs out!)
+  // Back policy: 3) From categories of live/movies/series, focus the corresponding sidebar button while keeping the section open;
+  // on a subsequent Back (when focus is already on the sidebar or outside categories), return to 'inicio' (never logs out!)
   useBackHandler(
     'home-section-to-inicio',
     BACK_PRIORITY.SECTION_TO_HOME,
     () => {
       if (currentView !== 'inicio') {
-        const previousView = currentView;
         const isRecentPointer =
           getNavMode() === 'pointer' && Date.now() - lastPointerDownTimeRef.current < 250;
-        if (!isRecentPointer && getNavMode() === 'remote') {
-          pendingReturnFocusViewRef.current = previousView;
+
+        if (
+          !isRecentPointer &&
+          (currentView === 'live' || currentView === 'movies' || currentView === 'series')
+        ) {
+          const activeEl = document.activeElement as HTMLElement | null;
+          if (activeEl && activeEl.closest('[data-nav-zone="categories"]')) {
+            const root = homeRootRef.current || document.body;
+            const desktopSidebarBtns = Array.from(
+              root.querySelectorAll(
+                `aside[data-nav-zone="sidebar"] button[data-sidebar-nav-id="${currentView}"]`
+              )
+            ) as HTMLButtonElement[];
+
+            const isMobileViewport =
+              typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 768;
+
+            const visibleSidebarBtn = !isMobileViewport
+              ? desktopSidebarBtns.find((btn) => isElementFocusable(btn))
+              : undefined;
+
+            if (visibleSidebarBtn) {
+              focusElementSafely(visibleSidebarBtn);
+              return true;
+            }
+
+            const mobileMenuBtn = root.querySelector(
+              'button[data-mobile-menu-trigger="true"]'
+            ) as HTMLButtonElement | null;
+            if (mobileMenuBtn && isElementFocusable(mobileMenuBtn)) {
+              focusElementSafely(mobileMenuBtn);
+              return true;
+            }
+          }
         }
+
         setCurrentView('inicio');
         setSearchQuery('');
         return true;
@@ -106,41 +138,6 @@ function HomeContent({ credentials }: { credentials: any }) {
     },
     currentView !== 'inicio'
   );
-
-  // Restore focus to the corresponding section button in the sidebar (or mobile menu button) after returning to Início via Back
-  useEffect(() => {
-    if (currentView !== 'inicio' || !pendingReturnFocusViewRef.current) return;
-    const returnedFromView = pendingReturnFocusViewRef.current;
-    pendingReturnFocusViewRef.current = null;
-
-    if (getNavMode() !== 'remote') return;
-
-    const root = homeRootRef.current || document.body;
-    const desktopSidebarBtns = Array.from(
-      root.querySelectorAll(
-        `aside[data-nav-zone="sidebar"] button[data-sidebar-nav-id="${returnedFromView}"]`
-      )
-    ) as HTMLButtonElement[];
-
-    const isMobileViewport =
-      typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 768;
-
-    const visibleSidebarBtn = !isMobileViewport
-      ? desktopSidebarBtns.find((btn) => isElementFocusable(btn))
-      : undefined;
-
-    if (visibleSidebarBtn) {
-      focusElementSafely(visibleSidebarBtn);
-      return;
-    }
-
-    const mobileMenuBtn = root.querySelector(
-      'button[data-mobile-menu-trigger="true"]'
-    ) as HTMLButtonElement | null;
-    if (mobileMenuBtn && isElementFocusable(mobileMenuBtn)) {
-      focusElementSafely(mobileMenuBtn);
-    }
-  }, [currentView]);
 
   // Overlay state & context consumption
   const {
