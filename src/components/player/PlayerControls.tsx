@@ -116,9 +116,11 @@ export function PlayerControls({
   const handleControlClick = (e: React.MouseEvent, action: () => void) => {
     e.stopPropagation();
     action();
-    try {
-      (e.currentTarget as HTMLElement)?.blur();
-    } catch {}
+    if (typeof document !== 'undefined' && document.documentElement.dataset.navMode !== 'remote') {
+      try {
+        (e.currentTarget as HTMLElement)?.blur();
+      } catch {}
+    }
   };
 
   const stopProp = (e: React.SyntheticEvent) => {

@@ -168,7 +168,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
   return (
     <div className="flex flex-1 overflow-hidden h-full">
       {/* Sidebar - Categories */}
-      <aside className="hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
+      <aside data-nav-zone="categories" className="hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
         <div className="p-4 border-b border-nc-border/50">
           <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de Séries</h2>
         </div>
@@ -177,6 +177,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
             <div className="p-3 mb-2 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-2">
               <p className="text-xs text-red-400">{seriesCategoriesError}</p>
               <button
+                type="button"
                 onClick={() => fetchSeriesCategories()}
                 className="flex items-center gap-1.5 px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg text-xs font-medium transition-colors"
               >
@@ -194,6 +195,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
               {extendedCategories.map((cat) => (
                 <button
                   key={cat.category_id}
+                  type="button"
                   onClick={() => handleSelectCategory(cat.category_id)}
                   className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors truncate ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
                 >
@@ -206,11 +208,12 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
       </aside>
 
       {/* Main Content - Streams Grid */}
-      <main ref={mainRef} className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
+      <main ref={mainRef} data-nav-zone="content" className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
         {/* Mobile Categories Navbar */}
-        <div className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
+        <div data-nav-row="true" className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
           {seriesCategoriesError && seriesCategories.length === 0 && (
             <button
+              type="button"
               onClick={() => fetchSeriesCategories()}
               className="shrink-0 snap-center px-4 py-2 rounded-full text-sm bg-red-500/20 text-red-300 font-medium flex items-center gap-1.5"
             >
@@ -220,6 +223,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
           {extendedCategories.map((cat) => (
             <button
               key={cat.category_id}
+              type="button"
               onClick={() => handleSelectCategory(cat.category_id)}
               className={`shrink-0 snap-center px-4 py-2 rounded-full text-sm transition-colors whitespace-nowrap ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
             >
@@ -233,6 +237,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 text-red-500 rounded-xl flex items-center justify-between">
               <span>{seriesError}</span>
               <button
+                type="button"
                 onClick={() => fetchSeriesStreams(selectedCategoryId)}
                 className="ml-4 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-white rounded-lg text-xs font-medium transition-colors"
               >
@@ -267,6 +272,10 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
                {displayedStreams.map((stream, idx) => (
                  <motion.div
                    key={stream.series_id}
+                   tabIndex={0}
+                   role="button"
+                   data-nav-item="true"
+                   aria-label={stream.name}
                    whileHover={{ scale: 1.05 }}
                    whileTap={{ scale: 0.95 }}
                    onClick={() => handleSeriesClick(stream)}

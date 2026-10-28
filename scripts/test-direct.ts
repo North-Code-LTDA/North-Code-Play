@@ -1200,7 +1200,7 @@ async function runPlayerBackAndScrollNavigationTests() {
 
   // Selecionar categoria Ação com cards de filmes
   const acaoCatBtn = Array.from(container.querySelectorAll('aside button')).find(
-    (b) => b.textContent?.includes('Ação')
+    (b) => b.textContent?.toUpperCase().includes('AÇÃO')
   ) as any as HTMLButtonElement;
   assert(acaoCatBtn, 'Botão da categoria Ação');
   await act(async () => {
@@ -1341,7 +1341,7 @@ async function runPlayerBackAndScrollNavigationTests() {
 
   // Selecionar categoria Comédia com cards de séries
   const comediaCatBtn = Array.from(container.querySelectorAll('aside button')).find(
-    (b) => b.textContent?.includes('Comédia')
+    (b) => b.textContent?.toUpperCase().includes('COMÉDIA')
   ) as any as HTMLButtonElement;
   assert(comediaCatBtn, 'Botão da categoria Comédia');
   await act(async () => {
@@ -1514,7 +1514,7 @@ async function runAttemptIdPropagationAndStaleCallbackTests() {
 
   // Simula evento 'playing' nativo do elemento <video>
   await act(async () => {
-    video.dispatchEvent(new Event('playing'));
+    video.dispatchEvent(new windowInstance.Event('playing') as unknown as Event);
   });
 
   assert.strictEqual(
@@ -1534,7 +1534,7 @@ async function runAttemptIdPropagationAndStaleCallbackTests() {
 
   // Emitir evento para a nova tentativa 6
   await act(async () => {
-    video.dispatchEvent(new Event('playing'));
+    video.dispatchEvent(new windowInstance.Event('playing') as unknown as Event);
   });
 
   assert.strictEqual(
@@ -1551,6 +1551,468 @@ async function runAttemptIdPropagationAndStaleCallbackTests() {
   console.log('✅ Testes de propagação de ID de tentativa e estabilidade do player aprovados!');
 }
 
+async function runLiveTvSdPriorityAndFallbackTests() {
+  console.log('\n--- 8. Testes de Prioridade SD -> HD -> FHD -> 4K e Fallback na TV ao Vivo ---');
+  const { groupLiveStreams } = await import('../src/utils/liveChannelGroups');
+  const { AUTO_RESOLUTION_PRIORITY, selectChannelVariantForAttempt } = await import('../src/views/LiveTvView');
+
+  // 1. Validar constante de prioridade automática SD -> HD -> FHD -> 4K
+  assert.deepStrictEqual(
+    AUTO_RESOLUTION_PRIORITY,
+    ['SD', 'HD', 'FHD', '4K'],
+    'Prioridade automática deve ser estritamente SD -> HD -> FHD -> 4K'
+  );
+
+  // 2. Grupo com 4K, FHD, HD e SD começa no modo automático por SD (tanto em primaryStream quanto em selectChannelVariantForAttempt)
+  const fullGroupStreams = [
+    { stream_id: 400, name: 'Discovery Channel 4K', category_id: '10', epg_channel_id: 'disc' },
+    { stream_id: 300, name: 'Discovery Channel FHD', category_id: '10', epg_channel_id: 'disc' },
+    { stream_id: 200, name: 'Discovery Channel HD', category_id: '10', epg_channel_id: 'disc' },
+    { stream_id: 100, name: 'Discovery Channel SD', category_id: '10', epg_channel_id: 'disc' },
+  ];
+
+  const groupedFull = groupLiveStreams(fullGroupStreams);
+  assert.strictEqual(groupedFull.length, 1, 'Deve agrupar em 1 canal');
+  const discGroup = groupedFull[0];
+  assert.strictEqual(
+    discGroup.primaryStream.stream_id,
+    100,
+    'primaryStream do grupo deve priorizar SD (stream_id 100)'
+  );
+
+  // 3. Falha sequencial em SD avança para HD, depois FHD, depois 4K, sem repetir streams já tentados
+  const triedFull = new Set<string | number>();
+  const attempt1 = selectChannelVariantForAttempt(discGroup, 'auto', triedFull);
+  assert(attempt1, 'Primeira tentativa automática deve encontrar variante');
+  assert.strictEqual(attempt1.stream_id, 100, '1ª tentativa deve ser SD (100)');
+  triedFull.add(attempt1.stream_id);
+
+  const attempt2 = selectChannelVariantForAttempt(discGroup, 'auto', triedFull);
+  assert(attempt2, 'Segunda tentativa após falha de SD deve encontrar variante');
+  assert.strictEqual(attempt2.stream_id, 200, '2ª tentativa após falha de SD deve ser HD (200)');
+  triedFull.add(attempt2.stream_id);
+
+  const attempt3 = selectChannelVariantForAttempt(discGroup, 'auto', triedFull);
+  assert(attempt3, 'Terceira tentativa após falha de HD deve encontrar variante');
+  assert.strictEqual(attempt3.stream_id, 300, '3ª tentativa após falha de HD deve ser FHD (300)');
+  triedFull.add(attempt3.stream_id);
+
+  const attempt4 = selectChannelVariantForAttempt(discGroup, 'auto', triedFull);
+  assert(attempt4, 'Quarta tentativa após falha de FHD deve encontrar variante');
+  assert.strictEqual(attempt4.stream_id, 400, '4ª tentativa após falha de FHD deve ser 4K (400)');
+  triedFull.add(attempt4.stream_id);
+
+  const attempt5 = selectChannelVariantForAttempt(discGroup, 'auto', triedFull);
+  assert.strictEqual(attempt5, null, 'Após esgotar SD, HD, FHD e 4K, deve retornar null sem repetir variantes');
+
+  // 4. Grupo sem SD (ex.: apenas HD e FHD) começa por HD
+  const noSdStreams = [
+    { stream_id: 502, name: 'ESPN FHD', category_id: '20', epg_channel_id: 'espn' },
+    { stream_id: 501, name: 'ESPN HD', category_id: '20', epg_channel_id: 'espn' },
+  ];
+  const groupedNoSd = groupLiveStreams(noSdStreams);
+  assert.strictEqual(groupedNoSd.length, 1);
+  const espnGroup = groupedNoSd[0];
+  assert.strictEqual(espnGroup.primaryStream.stream_id, 501, 'Sem SD disponível, primaryStream deve iniciar em HD');
+
+  const espnTried = new Set<string | number>();
+  const espnFirst = selectChannelVariantForAttempt(espnGroup, 'auto', espnTried);
+  assert(espnFirst);
+  assert.strictEqual(espnFirst.stream_id, 501, 'Sem SD disponível, 1ª tentativa automática deve ser HD (501)');
+  espnTried.add(espnFirst.stream_id);
+
+  const espnSecond = selectChannelVariantForAttempt(espnGroup, 'auto', espnTried);
+  assert(espnSecond);
+  assert.strictEqual(espnSecond.stream_id, 502, '2ª tentativa sem SD deve ser FHD (502)');
+
+  // 5. Seleção manual de HD ou FHD tenta primeiro todas as entradas dessa resolução e só depois faz fallback automático (SD -> HD -> FHD -> 4K)
+  const multiHdStreams = [
+    { stream_id: 604, name: 'SporTV 4K', category_id: '20', epg_channel_id: 'sportv' },
+    { stream_id: 603, name: 'SporTV FHD', category_id: '20', epg_channel_id: 'sportv' },
+    { stream_id: 601, name: 'SporTV HD', category_id: '20', epg_channel_id: 'sportv' },
+    { stream_id: 602, name: 'SporTV HD', category_id: '20', epg_channel_id: 'sportv' },
+    { stream_id: 600, name: 'SporTV SD', category_id: '20', epg_channel_id: 'sportv' },
+  ];
+  const sportvGroup = groupLiveStreams(multiHdStreams)[0];
+  const triedManual = new Set<string | number>();
+
+  const m1 = selectChannelVariantForAttempt(sportvGroup, '601', triedManual);
+  assert.strictEqual(m1?.stream_id, 601, '1ª tentativa manual deve ser o stream HD selecionado (601)');
+  triedManual.add(601);
+
+  const m2 = selectChannelVariantForAttempt(sportvGroup, '601', triedManual);
+  assert.strictEqual(m2?.stream_id, 602, '2ª tentativa manual deve tentar o outro stream HD disponível (602)');
+  triedManual.add(602);
+
+  const m3 = selectChannelVariantForAttempt(sportvGroup, '601', triedManual);
+  assert.strictEqual(m3?.stream_id, 600, 'Após esgotar HD manual, fallback automático deve iniciar por SD (600)');
+  triedManual.add(600);
+
+  const m4 = selectChannelVariantForAttempt(sportvGroup, '601', triedManual);
+  assert.strictEqual(m4?.stream_id, 603, 'Em seguida avança para FHD (603)');
+  triedManual.add(603);
+
+  const m5 = selectChannelVariantForAttempt(sportvGroup, '601', triedManual);
+  assert.strictEqual(m5?.stream_id, 604, 'E por último 4K (604)');
+
+  // 6. Teste integrado na UI de LiveTvView: início em SD, fallback em erro, e 2º OK no mesmo canal entra em tela cheia sem recriar <video>
+  const testCreds: XtreamCredentials = {
+    serverUrl: 'http://server.tv:8080',
+    username: 'testUser',
+    password: 'testPassword',
+    allowed_output_formats: ['m3u8', 'ts'],
+  };
+
+  const mockLiveContext: any = {
+    credentials: testCreds,
+    liveCategories: [{ category_id: 'cat_1', category_name: 'Documentários' }],
+    liveStreams: fullGroupStreams.map((s) => ({ ...s, category_id: 'cat_1' })),
+    allLiveStreams: fullGroupStreams.map((s) => ({ ...s, category_id: 'cat_1' })),
+    vodCategories: [],
+    vodStreams: [],
+    allVodStreams: [],
+    seriesCategories: [],
+    seriesStreams: [],
+    allSeriesStreams: [],
+    loadingLive: false,
+    loadingVod: false,
+    loadingSeries: false,
+    error: null,
+    fetchLiveStreams: async () => {},
+    fetchVodStreams: async () => {},
+    fetchSeriesStreams: async () => {},
+  };
+
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  await act(async () => {
+    root.render(
+      React.createElement(
+        XtreamContext.Provider,
+        { value: mockLiveContext },
+        React.createElement(LiveTvView, { onPlay: () => {} })
+      )
+    );
+  });
+
+  // Selecionar categoria Documentários
+  const docCatBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+    b.textContent?.toUpperCase().includes('DOCUMENTÁRIOS')
+  ) as HTMLButtonElement;
+  assert(docCatBtn, 'Botão da categoria Documentários encontrado');
+  await act(async () => {
+    docCatBtn.click();
+  });
+
+  // Clicar no canal agrupado Discovery Channel
+  const channelBtn = container.querySelector('button.w-full.flex.items-center') as HTMLButtonElement;
+  assert(channelBtn, 'Botão do canal Discovery Channel encontrado');
+
+  await act(async () => {
+    channelBtn.click();
+  });
+
+  const videoEl = container.querySelector('video') as HTMLVideoElement;
+  assert(videoEl, 'Elemento <video> montado após 1º clique/OK no canal');
+  assert(
+    container.textContent?.includes('SD'),
+    'Player deve iniciar automaticamente na variante SD'
+  );
+
+  // Confirmar que 2º clique/OK no mesmo canal já ativo solicita tela cheia sem desmontar <video> nem reiniciar tentativa
+  currentFullscreenElement = null;
+  const loadCountBeforeSecondOk = videoLoadCallCount;
+
+  await act(async () => {
+    channelBtn.click();
+  });
+
+  const videoElAfterSecondOk = container.querySelector('video') as HTMLVideoElement;
+  assert.strictEqual(videoElAfterSecondOk, videoEl, '2º OK no mesmo canal NÃO deve desmontar o elemento <video>');
+  assert.strictEqual(
+    videoLoadCallCount,
+    loadCountBeforeSecondOk,
+    '2º OK no mesmo canal NÃO deve recarregar a transmissão'
+  );
+  assert(
+    currentFullscreenElement !== null,
+    '2º OK no mesmo canal já em reprodução deve abrir tela cheia no player'
+  );
+
+  await act(async () => {
+    await (windowInstance.document as any).exitFullscreen();
+    root.unmount();
+  });
+  document.body.removeChild(container);
+
+  console.log('✅ Testes de prioridade SD -> HD -> FHD -> 4K, fallback e 2º OK para tela cheia aprovados!');
+}
+
+async function runDpadNavigationAndBackPolicyTests() {
+  console.log('\n--- 9. Testes de Navegação por Controle/Teclado (D-pad) e Política Central de Voltar ---');
+  const {
+    NavigationProvider,
+    getNavMode,
+    setNavMode,
+    executeBackAction,
+    clearAllBackHandlersForTest,
+    attachCapacitorBackAdapter,
+  } = await import('../src/navigation');
+
+  clearAllBackHandlersForTest();
+
+  // Mock XtreamService endpoints so initial loading overlay finishes immediately
+  (XtreamService as any).authenticate = async () => ({
+    user_info: { auth: 1, status: 'Active' },
+    server_info: { allowed_output_formats: ['m3u8', 'ts'] },
+  });
+  (XtreamService as any).getLiveCategories = async () => [{ category_id: '1', category_name: 'Abertos' }];
+  (XtreamService as any).getVodCategories = async () => [{ category_id: '10', category_name: 'Ação' }];
+  (XtreamService as any).getSeriesCategories = async () => [{ category_id: '20', category_name: 'Drama' }];
+  (XtreamService as any).getLiveStreams = async () => [
+    { stream_id: 101, name: 'Canal Teste SD', category_id: '1' },
+  ];
+  (XtreamService as any).getVodStreams = async () => [
+    { stream_id: 201, name: 'Filme Ação 1', category_id: '10', stream_icon: '' },
+  ];
+  (XtreamService as any).getSeries = async () => [
+    { series_id: 301, name: 'Série Drama 1', category_id: '20', cover: '' },
+  ];
+
+  const testCreds: XtreamCredentials = {
+    serverUrl: 'http://server.tv:8080',
+    username: 'navUser',
+    password: 'navPassword',
+    allowed_output_formats: ['m3u8', 'ts'],
+  };
+
+  window.localStorage.setItem(CREDENTIALS_KEY, JSON.stringify(testCreds));
+
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  await act(async () => {
+    root.render(
+      React.createElement(
+        MemoryRouter,
+        { initialEntries: ['/home'] },
+        React.createElement(NavigationProvider, null, React.createElement(Home))
+      )
+    );
+  });
+
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  // 1. Pressionar tecla direcional ativa o modo de navegação 'remote' e focaliza elemento visível
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    );
+  });
+
+  assert.strictEqual(getNavMode(), 'remote', 'Tecla direcional deve ativar navMode = remote');
+  assert.strictEqual(
+    document.documentElement.getAttribute('data-nav-mode'),
+    'remote',
+    'Elemento <html> deve receber data-nav-mode="remote" para exibir foco branco de alto contraste'
+  );
+  assert(
+    document.activeElement && document.activeElement !== document.body,
+    'Um elemento interativo visível deve receber foco ao navegar com setas'
+  );
+
+  // 2. Campo de busca no topo fica readOnly durante passagem por setas e só edita ao pressionar Enter
+  const searchInput = container.querySelector('input[placeholder*="Pesquisar"]') as HTMLInputElement;
+  assert(searchInput, 'Campo de busca deve existir no cabeçalho');
+  assert.strictEqual(
+    searchInput.readOnly,
+    true,
+    'No modo remote, o input de busca deve permanecer readOnly até o usuário pressionar OK/Enter'
+  );
+
+  await act(async () => {
+    searchInput.focus();
+    searchInput.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }) as unknown as Event
+    );
+  });
+
+  assert.strictEqual(
+    searchInput.getAttribute('data-search-editing'),
+    'true',
+    'Pressionar Enter sobre o input de busca deve ativar o modo de edição (data-search-editing="true")'
+  );
+  assert.strictEqual(searchInput.readOnly, false, 'Em modo de edição, readOnly deve ser false');
+
+  // Pressionar Escape/Voltar sai do modo de edição da busca sem deslogar
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+
+  assert.strictEqual(
+    searchInput.getAttribute('data-search-editing'),
+    'false',
+    'Pressionar Escape deve sair do modo de edição da busca'
+  );
+  assert(
+    window.localStorage.getItem(CREDENTIALS_KEY) !== null,
+    'Sair da edição de busca com Voltar NUNCA deve remover credenciais'
+  );
+
+  // 3. Navegar para uma seção (ex.: Filmes) via botão da sidebar, abrir MovieDetails com Enter, verificar escopo de foco modal e retornar
+  const sidebarButtons = Array.from(container.querySelectorAll('aside button')) as HTMLButtonElement[];
+  const filmesNavBtn = sidebarButtons.find((b) => b.textContent?.includes('Filmes'));
+  assert(filmesNavBtn, 'Botão Filmes na barra lateral deve existir');
+
+  await act(async () => {
+    filmesNavBtn.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
+  });
+
+  assert(
+    container.textContent?.includes('Categorias de Filmes'),
+    'Enter no item Filmes da sidebar deve abrir a seção de Filmes'
+  );
+
+  // Selecionar a categoria Ação por Enter e focar o card do filme
+  const catButtons = Array.from(container.querySelectorAll('[data-nav-zone="categories"] button')) as HTMLButtonElement[];
+  const acaoBtn = catButtons.find((b) => b.textContent?.toUpperCase().includes('AÇÃO'));
+  assert(acaoBtn, 'Botão da categoria Ação em Filmes deve existir');
+
+  await act(async () => {
+    acaoBtn.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
+  });
+
+  const movieCard = container.querySelector('[data-nav-zone="content"] [data-nav-item="true"]') as HTMLElement;
+  assert(movieCard, 'Card de filme focável com data-nav-item="true" deve existir');
+
+  await act(async () => {
+    movieCard.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const activeModalScope = document.querySelector('[data-focus-scope="modal"]') as HTMLElement;
+  assert(activeModalScope, 'MovieDetails aberto deve expor data-focus-scope="modal"');
+
+  // Com MovieDetails aberto, navegar por setas deve manter foco estritamente dentro do modal
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    );
+  });
+  assert(
+    activeModalScope.contains(document.activeElement),
+    'Enquanto MovieDetails estiver aberto, o foco direcional deve permanecer confinado ao modal'
+  );
+
+  // Primeiro Escape fecha MovieDetails e restaura o foco ao card de filme que o abriu
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+
+  assert.strictEqual(
+    document.querySelector('[data-focus-scope="modal"]'),
+    null,
+    'Primeiro Escape deve fechar MovieDetails'
+  );
+  assert.strictEqual(
+    document.activeElement,
+    movieCard,
+    'Ao fechar MovieDetails com Voltar, o foco deve ser restaurado para o card que o abriu'
+  );
+
+  // Segundo Escape na seção de Filmes deve voltar para Início sem fazer logout
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+
+  assert(
+    !container.textContent?.includes('Categorias de Filmes'),
+    'Voltar a partir da seção Filmes deve retornar à tela inicial (Início)'
+  );
+  assert(
+    window.localStorage.getItem(CREDENTIALS_KEY) !== null,
+    'Voltar da seção para Início NUNCA deve deslogar o usuário'
+  );
+
+  // 4. Ponte de runtime do Capacitor (backButton) na raiz chama App.exitApp() e NUNCA faz logout
+  let exitAppCalled = false;
+  let backListenerCallback: ((ev: any) => void) | null = null;
+
+  (windowInstance as any).Capacitor = {
+    Plugins: {
+      App: {
+        addListener: (eventName: string, cb: (ev: any) => void) => {
+          if (eventName === 'backButton') {
+            backListenerCallback = cb;
+          }
+          return {
+            remove: () => {
+              backListenerCallback = null;
+            },
+          };
+        },
+        exitApp: () => {
+          exitAppCalled = true;
+        },
+      },
+    },
+  };
+
+  const detachCap = attachCapacitorBackAdapter();
+  assert(backListenerCallback !== null, 'Adaptador Capacitor deve registrar listener para backButton');
+
+  // Disparar backButton na raiz (Início sem modal aberto)
+  await act(async () => {
+    backListenerCallback!({ canGoBack: false });
+  });
+
+  assert.strictEqual(exitAppCalled, true, 'Na tela raiz, o botão Voltar do Android deve invocar App.exitApp()');
+  assert(
+    window.localStorage.getItem(CREDENTIALS_KEY) !== null,
+    'Mesmo ao sair do app na raiz, as credenciais NUNCA devem ser removidas (proibido logout no Voltar)'
+  );
+
+  detachCap();
+  delete (windowInstance as any).Capacitor;
+
+  // 5. Movimento de ponteiro alterna de volta para 'pointer' sem quebrar cliques
+  await act(async () => {
+    windowInstance.dispatchEvent(new (windowInstance as any).PointerEvent('pointerdown', { bubbles: true }));
+  });
+  assert.strictEqual(getNavMode(), 'pointer', 'Evento pointerdown deve alternar navMode para pointer');
+
+  await act(async () => {
+    root.unmount();
+  });
+  document.body.removeChild(container);
+
+  console.log('✅ Testes de navegação por controle/teclado, foco, busca, modais e política de Voltar aprovados!');
+}
+
 async function main() {
   console.log('🚀 INICIANDO VALIDAÇÃO COMPLETA DOS FAVORITOS SIMPLES E REGRESSÕES\n');
   runDirectUrlTests();
@@ -1560,6 +2022,8 @@ async function main() {
   await runPlayerBackAndScrollNavigationTests();
   await runCategoryLabelAndChannelGroupTests();
   await runAttemptIdPropagationAndStaleCallbackTests();
+  await runLiveTvSdPriorityAndFallbackTests();
+  await runDpadNavigationAndBackPolicyTests();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
 }
 
@@ -1567,4 +2031,5 @@ main().catch((err) => {
   console.error('\n❌ ERRO NA EXECUÇÃO DOS TESTES:', err);
   process.exit(1);
 });
+
 

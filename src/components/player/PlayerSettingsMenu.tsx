@@ -74,6 +74,7 @@ export function PlayerSettingsMenu({
 
   return (
     <div
+      data-focus-scope="modal"
       className="absolute bottom-12 sm:bottom-14 right-2 sm:right-4 z-40 w-[min(18rem,calc(100%-1rem))] max-h-[calc(100%-3rem)] flex flex-col bg-nc-bg-card/95 border border-nc-border/80 backdrop-blur-xl rounded-xl sm:rounded-2xl shadow-2xl overflow-hidden p-2.5 sm:p-3 text-white text-xs select-none animate-in fade-in zoom-in-95 duration-150"
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}

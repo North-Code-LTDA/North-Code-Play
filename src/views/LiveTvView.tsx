@@ -16,6 +16,95 @@ import {
   LiveChannelGroup,
   ResolutionQuality,
 } from '../utils/liveChannelGroups';
+import { useBackHandler, BACK_PRIORITY } from '../navigation';
+
+export const AUTO_RESOLUTION_PRIORITY: ResolutionQuality[] = ['SD', 'HD', 'FHD', '4K'];
+
+/**
+ * Selects the next channel variant stream to attempt.
+ * - In 'auto' mode: strictly follows SD -> HD -> FHD -> 4K priority (lowest to highest resolution),
+ *   skipping streams already present in attemptedSet. Within the same resolution tier, prefers a
+ *   previously successful stream from session memory if available and untried.
+ * - In manual mode: tries the explicitly chosen variant first, then any other untried stream of the
+ *   same chosen resolution, and finally falls back to remaining resolutions in SD -> HD -> FHD -> 4K order.
+ */
+export function selectChannelVariantForAttempt(
+  group: LiveChannelGroup,
+  targetMode: string,
+  attemptedSet: Set<string | number>,
+  sessionSuccessfulStreamId?: string | number
+): any | null {
+  if (!group) return null;
+  if (!group.isGrouped || group.variants.length === 0) {
+    const sId = group.primaryStream.stream_id || group.primaryStream.id;
+    return attemptedSet.has(sId) ? null : group.primaryStream;
+  }
+
+  // 1. Manual mode handling:
+  if (targetMode !== 'auto') {
+    const selectedVariant = group.variants.find(
+      (v) => String(v.streamId) === targetMode || v.label === targetMode || v.resolution === targetMode
+    );
+
+    const targetResolution = selectedVariant ? selectedVariant.resolution : (targetMode as ResolutionQuality);
+
+    // First priority in manual mode: try the specific chosen stream if not yet attempted
+    if (selectedVariant && !attemptedSet.has(selectedVariant.streamId)) {
+      return selectedVariant.stream;
+    }
+
+    // Second priority: try other untried streams of the SAME chosen resolution in original order
+    const sameResVariants = group.variants.filter((v) => v.resolution === targetResolution);
+    for (const v of sameResVariants) {
+      if (!attemptedSet.has(v.streamId)) {
+        return v.stream;
+      }
+    }
+
+    // Third priority: fallback to other resolutions in automatic priority order SD > HD > FHD > 4K
+    for (const res of AUTO_RESOLUTION_PRIORITY) {
+      if (res === targetResolution) continue;
+      const otherVariants = group.variants.filter((v) => v.resolution === res);
+      for (const v of otherVariants) {
+        if (!attemptedSet.has(v.streamId)) {
+          return v.stream;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  // 2. Automatic mode handling: strictly SD -> HD -> FHD -> 4K
+  for (const res of AUTO_RESOLUTION_PRIORITY) {
+    const matchingVariants = group.variants.filter((v) => v.resolution === res);
+    if (matchingVariants.length === 0) continue;
+
+    if (sessionSuccessfulStreamId !== undefined && !attemptedSet.has(sessionSuccessfulStreamId)) {
+      const preferredInTier = matchingVariants.find(
+        (v) => String(v.streamId) === String(sessionSuccessfulStreamId)
+      );
+      if (preferredInTier) {
+        return preferredInTier.stream;
+      }
+    }
+
+    for (const v of matchingVariants) {
+      if (!attemptedSet.has(v.streamId)) {
+        return v.stream;
+      }
+    }
+  }
+
+  // Pick any remaining untried variant in group
+  for (const v of group.variants) {
+    if (!attemptedSet.has(v.streamId)) {
+      return v.stream;
+    }
+  }
+
+  return null;
+}
 
 interface LiveTvViewProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
@@ -40,6 +129,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const [activeVariantStream, setActiveVariantStream] = useState<any | null>(null);
   const [selectedResolutionMode, setSelectedResolutionMode] = useState<'auto' | string>('auto');
   const [attemptTrigger, setAttemptTrigger] = useState(0);
+  const [fullscreenRequestTrigger, setFullscreenRequestTrigger] = useState(0);
   
   const [displayCount, setDisplayCount] = useState(100);
   
@@ -225,84 +315,14 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   const [miniPlayerError, setMiniPlayerError] = useState<string | null>(null);
   const [miniPlayerLoading, setMiniPlayerLoading] = useState(false);
 
-  // Helper to pick next variant in group
+  // Helper to pick next variant in group (SD -> HD -> FHD -> 4K automatic priority)
   const pickVariantForGroup = useCallback((
     group: LiveChannelGroup,
     targetMode: string,
     attemptedSet: Set<string | number>
   ): any | null => {
-    if (!group) return null;
-    if (!group.isGrouped || group.variants.length === 0) {
-      const sId = group.primaryStream.stream_id || group.primaryStream.id;
-      return attemptedSet.has(sId) ? null : group.primaryStream;
-    }
-
-    // 1. Manual mode handling:
-    if (targetMode !== 'auto') {
-      // Find the variant directly selected by user (by streamId, label, or resolution)
-      const selectedVariant = group.variants.find(
-        (v) => String(v.streamId) === targetMode || v.label === targetMode || v.resolution === targetMode
-      );
-
-      const targetResolution = selectedVariant ? selectedVariant.resolution : (targetMode as ResolutionQuality);
-
-      // First priority in manual mode: try the specific chosen stream if not yet attempted
-      if (selectedVariant && !attemptedSet.has(selectedVariant.streamId)) {
-        return selectedVariant.stream;
-      }
-
-      // Second priority: try other untried streams of the SAME chosen resolution in original order
-      const sameResVariants = group.variants.filter((v) => v.resolution === targetResolution);
-      for (const v of sameResVariants) {
-        if (!attemptedSet.has(v.streamId)) {
-          return v.stream;
-        }
-      }
-
-      // Third priority: fallback to other resolutions in standard priority order FHD > HD > SD > 4K
-      const resolutionPriority: ResolutionQuality[] = ['FHD', 'HD', 'SD', '4K'];
-      for (const res of resolutionPriority) {
-        if (res === targetResolution) continue; // already exhausted above
-        const otherVariants = group.variants.filter((v) => v.resolution === res);
-        for (const v of otherVariants) {
-          if (!attemptedSet.has(v.streamId)) {
-            return v.stream;
-          }
-        }
-      }
-
-      return null;
-    }
-
-    // 2. Automatic mode handling:
-    // Check session memory first
-    const successfulId = sessionSuccessfulVariantsRef.current.get(group.groupId);
-    if (successfulId && !attemptedSet.has(successfulId)) {
-      const recordedVariant = group.variants.find((v) => String(v.streamId) === String(successfulId));
-      if (recordedVariant) {
-        return recordedVariant.stream;
-      }
-    }
-
-    // Stability priority: FHD > HD > SD > 4K
-    const resolutionPriority: ResolutionQuality[] = ['FHD', 'HD', 'SD', '4K'];
-    for (const res of resolutionPriority) {
-      const matchingVariants = group.variants.filter((v) => v.resolution === res);
-      for (const v of matchingVariants) {
-        if (!attemptedSet.has(v.streamId)) {
-          return v.stream;
-        }
-      }
-    }
-
-    // Pick any remaining untried variant in group
-    for (const v of group.variants) {
-      if (!attemptedSet.has(v.streamId)) {
-        return v.stream;
-      }
-    }
-
-    return null;
+    const successfulId = group ? sessionSuccessfulVariantsRef.current.get(group.groupId) : undefined;
+    return selectChannelVariantForAttempt(group, targetMode, attemptedSet, successfulId);
   }, []);
 
   // Execute an attempt for a stream/variant
@@ -365,14 +385,19 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     }
   }, [credentials, pickVariantForGroup]);
 
-  // Handle group click
+  // Handle group click: 1st OK starts channel in preview; 2nd OK on already-selected active channel expands to fullscreen without restarting stream
   const handleSelectGroup = useCallback((group: LiveChannelGroup) => {
+    if (selectedGroup && selectedGroup.groupId === group.groupId && !miniPlayerError && miniPlayerUrl) {
+      setIsMobilePlayerOpen(true);
+      setFullscreenRequestTrigger((prev) => prev + 1);
+      return;
+    }
     setSelectedGroup(group);
     setSelectedResolutionMode('auto');
     attemptedStreamIdsRef.current.clear();
     setIsMobilePlayerOpen(true);
     startVariantAttempt(group, 'auto');
-  }, [startVariantAttempt]);
+  }, [selectedGroup, miniPlayerError, miniPlayerUrl, startVariantAttempt]);
 
   // Handle manual resolution mode change
   const handleSelectResolutionMode = useCallback((variant: any | 'auto') => {
@@ -459,6 +484,24 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
     setIsMobilePlayerOpen(false);
   }, []);
 
+  // Register LiveTvView internal Back handler (close active channel preview or return from channels to categories)
+  useBackHandler(
+    'livetv-internal',
+    BACK_PRIORITY.VIEW_INTERNAL,
+    () => {
+      if (selectedGroup) {
+        handleCloseChannel();
+        return true;
+      }
+      if (leftPaneView === 'channels' && !searchQuery) {
+        setLeftPaneView('categories');
+        return true;
+      }
+      return false;
+    },
+    Boolean(selectedGroup || (leftPaneView === 'channels' && !searchQuery))
+  );
+
   // Fetch EPG when active variant stream is selected
   useEffect(() => {
     let isMounted = true;
@@ -516,7 +559,10 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
   return (
     <div className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg">
       {/* Left Pane: Categories or Channels */}
-      <div className={`w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/20 h-full shrink-0 flex ${isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}>
+      <div
+        data-nav-zone="categories"
+        className={`w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/20 h-full shrink-0 flex ${isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}
+      >
         
         {/* Categories View */}
         {leftPaneView === 'categories' && (
@@ -606,46 +652,55 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                     const groupFav = group.allStreams.some((s) => isFavorite(s.stream_id || s.id, 'live'));
 
                     return (
-                      <button
+                      <div
                         key={group.groupId}
-                        onClick={() => handleSelectGroup(group)}
-                        className={`w-full flex items-center gap-3 p-2 rounded-xl transition-colors border ${
-                          isSelected 
-                            ? 'bg-nc-primary/10 border-nc-primary/30' 
+                        data-nav-row="true"
+                        className={`w-full flex items-center gap-1 rounded-xl transition-colors border ${
+                          isSelected
+                            ? 'bg-nc-primary/10 border-nc-primary/30'
                             : 'bg-transparent border-transparent hover:bg-nc-bg-input'
                         }`}
                       >
-                        <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden relative">
-                          <MediaImage
-                            src={group.stream_icon}
-                            serverUrl={credentials?.serverUrl}
-                            alt={group.displayName}
-                            itemId={primaryId}
-                            itemName={group.displayName}
-                            priority={idx < 15}
-                            loading={idx < 15 ? 'eager' : 'lazy'}
-                            className="w-full h-full object-contain p-1"
-                          />
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleSelectGroup(group)}
+                          className="w-full flex items-center gap-3 p-2 rounded-xl transition-colors flex-1 min-w-0 text-left"
+                        >
+                          <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden relative">
+                            <MediaImage
+                              src={group.stream_icon}
+                              serverUrl={credentials?.serverUrl}
+                              alt={group.displayName}
+                              itemId={primaryId}
+                              itemName={group.displayName}
+                              priority={idx < 15}
+                              loading={idx < 15 ? 'eager' : 'lazy'}
+                              className="w-full h-full object-contain p-1"
+                            />
+                          </div>
 
-                        <div className="flex-1 min-w-0 text-left flex flex-col gap-0.5">
-                          <p className={`font-medium text-sm truncate ${isSelected ? 'text-nc-primary' : 'text-white'}`}>
-                            {group.displayName}
-                          </p>
-                          {group.isGrouped && (
-                            <div className="flex items-center gap-1.5 text-[10px] text-nc-text-secondary overflow-hidden">
-                              <span className="inline-flex items-center gap-0.5 font-semibold text-nc-primary/90 bg-nc-primary/10 px-1.5 py-0.5 rounded border border-nc-primary/20">
-                                <Layers className="w-2.5 h-2.5" />
-                                {group.variants.length} versões
-                              </span>
-                              <span className="truncate opacity-75">
-                                {group.variants.map((v) => v.label).join(' · ')}
-                              </span>
-                            </div>
-                          )}
-                        </div>
+                          <div className="flex-1 min-w-0 text-left flex flex-col gap-0.5">
+                            <p className={`font-medium text-sm truncate ${isSelected ? 'text-nc-primary' : 'text-white'}`}>
+                              {group.displayName}
+                            </p>
+                            {group.isGrouped && (
+                              <div className="flex items-center gap-1.5 text-[10px] text-nc-text-secondary overflow-hidden">
+                                <span className="inline-flex items-center gap-0.5 font-semibold text-nc-primary/90 bg-nc-primary/10 px-1.5 py-0.5 rounded border border-nc-primary/20">
+                                  <Layers className="w-2.5 h-2.5" />
+                                  {group.variants.length} versões
+                                </span>
+                                <span className="truncate opacity-75">
+                                  {group.variants.map((v) => v.label).join(' · ')}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </button>
 
-                        <div 
+                        <button
+                          type="button"
+                          aria-label={groupFav ? 'Remover canal dos favoritos' : 'Favoritar canal'}
+                          title={groupFav ? 'Remover dos favoritos' : 'Favoritar canal'}
                           onClick={(e) => {
                             e.stopPropagation();
                             if (group.isGrouped) {
@@ -654,11 +709,11 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                               handleToggleFavorite({ id: primaryId, name: group.displayName, cover: group.stream_icon || '', type: 'live' });
                             }
                           }}
-                          className="p-2 shrink-0 text-nc-text-secondary hover:text-white"
+                          className="p-2.5 mr-1 rounded-xl shrink-0 text-nc-text-secondary hover:text-white transition-colors"
                         >
-                           <Heart className={`w-4 h-4 ${groupFav ? 'fill-nc-primary text-nc-primary' : ''}`} />
-                        </div>
-                      </button>
+                          <Heart className={`w-4 h-4 ${groupFav ? 'fill-nc-primary text-nc-primary' : ''}`} />
+                        </button>
+                      </div>
                     );
                   })}
                   
@@ -728,7 +783,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                  {selectedGroup.isGrouped && selectedGroup.variants.length > 0 && (
                    <div className="w-full p-3 bg-nc-bg-card/70 border border-nc-border/50 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-sm">
                      <span className="text-xs font-semibold text-white/90 shrink-0">Versão do canal:</span>
-                     <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar w-full sm:w-auto">
+                     <div data-nav-row="true" className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar w-full sm:w-auto">
                        <button
                          type="button"
                          onClick={() => handleSelectResolutionMode('auto')}
@@ -802,6 +857,7 @@ export function LiveTvView({ onPlay, searchQuery = '' }: LiveTvViewProps) {
                    contentType="live"
                    streamId={activeVariantStream?.stream_id || activeVariantStream?.id || selectedGroup.groupId}
                    attemptTrigger={attemptTrigger}
+                   fullscreenRequestTrigger={fullscreenRequestTrigger}
                    onBack={handleCloseChannel}
                    embedded={true}
                    isLoading={miniPlayerLoading}

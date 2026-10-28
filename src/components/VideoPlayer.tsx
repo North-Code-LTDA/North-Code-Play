@@ -9,6 +9,7 @@ import { PlayerSettingsMenu } from './player/PlayerSettingsMenu';
 import { PlayerDiagnosticsModal } from './player/PlayerDiagnosticsModal';
 import { registerPlayer, setActivePlayer, isPlayerActive } from './player/playerRegistry';
 import { XtreamContext } from '../context/XtreamContext';
+import { useBackHandler, BACK_PRIORITY, getNavMode, focusElementSafely } from '../navigation';
 
 export type { VideoPlayerProps };
 
@@ -23,6 +24,7 @@ export function VideoPlayer({
   startAt,
   streamId,
   attemptTrigger: externalAttemptTrigger = 0,
+  fullscreenRequestTrigger = 0,
   onNext,
   onPrevious,
   isLoading: externalLoading = false,
@@ -165,11 +167,6 @@ export function VideoPlayer({
             (document.activeElement as any).matches(':focus-visible')))
     );
 
-    // Auto-hide bars after 3 seconds:
-    // - during active playback
-    // - OR during a buffering interruption in a video that already started playing
-    // - regardless of buffer profile (including "Mais Estabilidade")
-    // - provided settings/diagnostics modals are not open, no error, and no active keyboard navigation focus
     const canAutoHide =
       (session.isPlaying || (hasStartedPlaying && session.isBuffering)) &&
       !showSettings &&
@@ -180,7 +177,6 @@ export function VideoPlayer({
     if (canAutoHide) {
       idleTimeoutRef.current = setTimeout(() => {
         setIsControlsVisible(false);
-        // Defuse lingering mouse-click focus if retained
         if (
           containerRef.current &&
           document.activeElement &&
@@ -318,6 +314,28 @@ export function VideoPlayer({
     }
   }, [playerId, isVisuallyExpanded, isFullscreen]);
 
+  // Enter fullscreen explicitly when requested by parent (e.g. 2nd OK on already-selected Live TV channel)
+  const prevFsRequestRef = useRef(fullscreenRequestTrigger);
+  useEffect(() => {
+    if (fullscreenRequestTrigger > 0 && fullscreenRequestTrigger !== prevFsRequestRef.current) {
+      prevFsRequestRef.current = fullscreenRequestTrigger;
+      const container = containerRef.current;
+      const fsEl =
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement;
+      const isCurrentContainerFs = Boolean(
+        container &&
+          fsEl &&
+          (fsEl === container || container.contains(fsEl as Node))
+      );
+      if (!isCurrentContainerFs && !isFullscreen && !isVisuallyExpanded) {
+        toggleFullscreen();
+      }
+    }
+  }, [fullscreenRequestTrigger, isFullscreen, isVisuallyExpanded, toggleFullscreen]);
+
   // Clean exit fullscreen on unmount if element was in fullscreen
   useEffect(() => {
     return () => {
@@ -368,6 +386,35 @@ export function VideoPlayer({
     }
   }, [playerId, embedded, isFullscreen, isVisuallyExpanded, showSettings, showDiagnostics, toggleFullscreen, onBack]);
 
+  // Register Back handlers in centralized Back policy stack
+  useBackHandler(
+    `player-submodal-${playerId}`,
+    BACK_PRIORITY.SUB_MODAL,
+    () => {
+      if (showSettings) {
+        setShowSettings(false);
+        return true;
+      }
+      if (showDiagnostics) {
+        setShowDiagnostics(false);
+        return true;
+      }
+      return false;
+    },
+    showSettings || showDiagnostics
+  );
+
+  const isPlayerInFullLayer = Boolean(!embedded || isFullscreen || isVisuallyExpanded);
+  useBackHandler(
+    `player-fullscreen-${playerId}`,
+    BACK_PRIORITY.FULLSCREEN_PLAYER,
+    () => {
+      handleBack();
+      return true;
+    },
+    isPlayerInFullLayer
+  );
+
   // PiP toggle
   const togglePiP = useCallback(async () => {
     const video = videoRef.current;
@@ -384,6 +431,18 @@ export function VideoPlayer({
     }
   }, []);
 
+  // Controls bars are visible if:
+  // - explicitly visible (e.g. within 3s of interaction)
+  // - before playback begins (!hasStartedPlaying)
+  // - during pause (when video has started but is not playing and not loading/buffering)
+  // - when settings or diagnostics modal is open
+  const areBarsVisible =
+    isControlsVisible ||
+    !hasStartedPlaying ||
+    (!session.isPlaying && !isCurrentlyLoading && !session.isBuffering) ||
+    showSettings ||
+    showDiagnostics;
+
   // Keyboard shortcuts active only when no form or interactive control is focused
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -396,8 +455,10 @@ export function VideoPlayer({
           tagName === 'TEXTAREA' ||
           tagName === 'BUTTON' ||
           tagName === 'SELECT' ||
+          role === 'button' ||
           role === 'slider' ||
           role === 'menuitem' ||
+          activeEl.getAttribute('data-nav-item') === 'true' ||
           activeEl.isContentEditable
         ) {
           return;
@@ -413,6 +474,26 @@ export function VideoPlayer({
 
       // Multiple instances check: only the active, fullscreen, or focused player receives shortcuts
       if (!isPlayerActive(playerId, isCurrentFs, isFocused)) {
+        return;
+      }
+
+      // In remote D-pad mode when fullscreen/standalone player has hidden bars, wake up bars and focus Play/Pause
+      if (
+        getNavMode() === 'remote' &&
+        (isCurrentFs || !embedded) &&
+        !areBarsVisible &&
+        (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key.startsWith('Arrow'))
+      ) {
+        e.preventDefault();
+        resetInactivityTimer();
+        setTimeout(() => {
+          const playBtn = containerRef.current?.querySelector<HTMLButtonElement>(
+            'button[aria-label="Pausar"], button[aria-label="Reproduzir"]'
+          );
+          if (playBtn) {
+            focusElementSafely(playBtn);
+          }
+        }, 0);
         return;
       }
 
@@ -487,6 +568,7 @@ export function VideoPlayer({
     isVisuallyExpanded,
     embedded,
     onBack,
+    areBarsVisible,
   ]);
 
   const handleContainerClick = () => {
@@ -518,21 +600,14 @@ export function VideoPlayer({
     }
   };
 
-  // Controls bars are visible if:
-  // - explicitly visible (e.g. within 3s of interaction)
-  // - before playback begins (!hasStartedPlaying)
-  // - during pause (when video has started but is not playing and not loading/buffering)
-  // - when settings or diagnostics modal is open
-  const areBarsVisible =
-    isControlsVisible ||
-    !hasStartedPlaying ||
-    (!session.isPlaying && !isCurrentlyLoading && !session.isBuffering) ||
-    showSettings ||
-    showDiagnostics;
-
   const playerContent = (
     <motion.div
       ref={containerRef}
+      data-player-container="true"
+      data-focus-scope={isPlayerInFullLayer ? 'modal' : undefined}
+      data-player-active-shortcuts={
+        isPlayerActive(playerId, isFullscreen || isVisuallyExpanded, false) ? 'true' : undefined
+      }
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}

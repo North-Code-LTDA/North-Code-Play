@@ -8,6 +8,7 @@ import { SeriesDetails } from '../components/SeriesDetails';
 import { MediaImage } from '../components/MediaImage';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
 import { recordPlaybackPosition } from '../utils/playbackHistory';
+import { useBackHandler, BACK_PRIORITY } from '../navigation';
 
 interface FavoritesViewProps {
   onPlay: (
@@ -34,6 +35,19 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
   const [favPlayError, setFavPlayError] = useState<string | null>(null);
   const [failedFav, setFailedFav] = useState<FavoriteItem | null>(null);
   const [favActionError, setFavActionError] = useState<string | null>(null);
+
+  useBackHandler(
+    'favorites-play-error',
+    BACK_PRIORITY.SUB_MODAL,
+    () => {
+      if (favPlayError) {
+        setFavPlayError(null);
+        return true;
+      }
+      return false;
+    },
+    Boolean(favPlayError)
+  );
 
   useEffect(() => {
     if (favActionError) {
@@ -118,7 +132,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
       </AnimatePresence>
 
       {favPlayError && (
-        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div data-focus-scope="modal" className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-nc-bg border border-red-500/40 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
             <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
               <AlertCircle className="w-7 h-7 text-red-500" />
@@ -128,6 +142,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
             <div className="flex gap-3 w-full">
               {failedFav && (
                 <button
+                  type="button"
                   onClick={() => handlePlayClick(failedFav)}
                   className="flex-1 py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center justify-center gap-2"
                 >
@@ -135,6 +150,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                 </button>
               )}
               <button
+                type="button"
                 onClick={() => setFavPlayError(null)}
                 className="flex-1 py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/50"
               >
@@ -152,8 +168,9 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
           </h1>
         </div>
         
-        <div className="flex gap-2">
+        <div data-nav-row="true" className="flex gap-2">
           <button
+            type="button"
             onClick={() => setFilterType('all')}
             className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
               filterType === 'all'
@@ -164,6 +181,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
             Todos
           </button>
           <button
+            type="button"
             onClick={() => setFilterType('live')}
             className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
               filterType === 'live'
@@ -174,6 +192,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
             Canais
           </button>
           <button
+            type="button"
             onClick={() => setFilterType('movie')}
             className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
               filterType === 'movie'
@@ -184,6 +203,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
             Filmes
           </button>
           <button
+            type="button"
             onClick={() => setFilterType('series')}
             className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
               filterType === 'series'
@@ -214,9 +234,14 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.9 }}
+                data-nav-row="true"
                 className="group relative bg-nc-bg-card border border-nc-border rounded-xl overflow-hidden hover:border-nc-primary/50 transition-colors flex flex-col"
               >
                 <div 
+                  tabIndex={0}
+                  role="button"
+                  data-nav-item="true"
+                  aria-label={fav.name}
                   className="aspect-[2/3] w-full bg-nc-bg-input relative overflow-hidden cursor-pointer"
                   onClick={() => handlePlayClick(fav)}
                 >
@@ -248,8 +273,9 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
                     {fav.name}
                   </span>
                   <button
+                    type="button"
                     onClick={() => handleToggleFavorite(fav)}
-                    className="text-nc-primary hover:scale-110 transition-transform p-1 cursor-pointer shrink-0"
+                    className="text-nc-primary hover:scale-110 transition-transform p-1 cursor-pointer shrink-0 rounded-lg"
                     title="Remover dos favoritos"
                   >
                     <Heart className="w-5 h-5 fill-current" />

@@ -6,6 +6,7 @@ import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from '../components/MediaImage';
 import { safeSaveCredentials } from '../utils/accountUtils';
+import { useBackHandler, BACK_PRIORITY, pushFocusMemory, popFocusMemory } from '../navigation';
 
 const AVATAR_OPTIONS = [
   'https://api.dicebear.com/10.x/fun-emoji/svg?seed=Sophie',
@@ -31,6 +32,20 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   
   const navigate = useNavigate();
+
+  useBackHandler(
+    'login-avatar-picker',
+    BACK_PRIORITY.SUB_MODAL,
+    () => {
+      if (showAvatarPicker) {
+        setShowAvatarPicker(false);
+        popFocusMemory();
+        return true;
+      }
+      return false;
+    },
+    showAvatarPicker
+  );
 
   const handleServerUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -125,7 +140,12 @@ export function Login() {
               <div className="flex gap-3 items-center">
                 <button
                   type="button"
-                  onClick={() => setShowAvatarPicker(!showAvatarPicker)}
+                  onClick={(e) => {
+                    if (!showAvatarPicker) {
+                      pushFocusMemory(e.currentTarget);
+                    }
+                    setShowAvatarPicker(!showAvatarPicker);
+                  }}
                   className="w-[50px] h-[50px] rounded-full overflow-hidden shrink-0 border-2 border-nc-border hover:border-nc-primary transition-colors focus:outline-none bg-black/20"
                 >
                   <MediaImage src={avatar} alt="Avatar" className="w-full h-full object-cover" />
@@ -143,6 +163,7 @@ export function Login() {
               <AnimatePresence>
                 {showAvatarPicker && (
                   <motion.div 
+                    data-focus-scope="modal"
                     initial={{ opacity: 0, scale: 0.95, y: -10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, y: -10 }}
@@ -154,7 +175,11 @@ export function Login() {
                         <button
                           key={opt}
                           type="button"
-                          onClick={() => { setAvatar(opt); setShowAvatarPicker(false); }}
+                          onClick={() => {
+                            setAvatar(opt);
+                            setShowAvatarPicker(false);
+                            popFocusMemory();
+                          }}
                           className={`rounded-full overflow-hidden border-2 transition-all duration-200 ${avatar === opt ? 'border-nc-primary scale-110 shadow-[0_0_15px_rgba(var(--nc-primary),0.3)]' : 'border-transparent hover:border-white/20 hover:bg-white/5'}`}
                         >
                           <MediaImage src={opt} alt="Avatar option" className="w-full h-full object-cover" />

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Play, ArrowLeft, Loader2, Star, Calendar, Clock, Info, Heart, AlertCircle, X } from 'lucide-react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
@@ -6,6 +6,14 @@ import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { MediaImage } from './MediaImage';
 import { getItemProgress, recordPlaybackPosition, clearItemProgress } from '../utils/playbackHistory';
+import {
+  useBackHandler,
+  BACK_PRIORITY,
+  pushFocusMemory,
+  popFocusMemory,
+  getNavMode,
+  focusElementSafely,
+} from '../navigation';
 
 interface MovieDetailsProps {
   key?: React.Key;
@@ -36,6 +44,47 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [savedProgress, setSavedProgress] = useState(0);
   const [favActionError, setFavActionError] = useState<string | null>(null);
+  const primaryActionRef = useRef<HTMLButtonElement>(null);
+
+  const handleClose = useCallback(() => {
+    onClose();
+    setTimeout(() => {
+      popFocusMemory();
+    }, 0);
+  }, [onClose]);
+
+  useEffect(() => {
+    pushFocusMemory();
+  }, []);
+
+  useEffect(() => {
+    if (!loading && getNavMode() === 'remote' && primaryActionRef.current) {
+      focusElementSafely(primaryActionRef.current);
+    }
+  }, [loading]);
+
+  useBackHandler(
+    `movie-resume-${streamId}`,
+    BACK_PRIORITY.SUB_MODAL,
+    () => {
+      if (showResumeModal) {
+        setShowResumeModal(false);
+        return true;
+      }
+      return false;
+    },
+    showResumeModal
+  );
+
+  useBackHandler(
+    `movie-details-${streamId}`,
+    BACK_PRIORITY.DETAILS_MODAL,
+    () => {
+      handleClose();
+      return true;
+    },
+    true
+  );
 
   useEffect(() => {
     if (favActionError) {
@@ -123,7 +172,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
 
   if (loading) {
     return (
-      <div className="absolute inset-0 z-50 bg-nc-bg flex flex-col items-center justify-center">
+      <div data-focus-scope="modal" className="absolute inset-0 z-50 bg-nc-bg flex flex-col items-center justify-center">
         <Loader2 className="w-10 h-10 animate-spin text-nc-primary mb-4" />
         <p className="text-nc-text-secondary">Carregando detalhes...</p>
       </div>
@@ -132,12 +181,12 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
 
   if (error || !info) {
     return (
-      <div className="absolute inset-0 z-50 bg-nc-bg flex flex-col items-center justify-center p-6 text-center">
+      <div data-focus-scope="modal" className="absolute inset-0 z-50 bg-nc-bg flex flex-col items-center justify-center p-6 text-center">
         <Info className="w-12 h-12 text-red-500 mb-4" />
         <h2 className="text-xl font-medium text-white mb-2">Ops, algo deu errado</h2>
         <p className="text-nc-text-secondary mb-6">{error || 'Informações não disponíveis.'}</p>
-        <div className="flex gap-4">
-          <button onClick={onClose} className="px-6 py-2 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg transition-colors">Voltar</button>
+        <div data-nav-row="true" className="flex gap-4">
+          <button ref={primaryActionRef} onClick={handleClose} className="px-6 py-2 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg transition-colors">Voltar</button>
           <button onClick={handlePlay} className="px-6 py-2 bg-nc-primary text-black font-medium rounded-lg transition-colors flex items-center gap-2">
             <Play className="w-4 h-4 fill-black" /> Formatar de qualquer forma
           </button>
@@ -184,7 +233,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const durationText = formatMovieDuration(info.duration);
 
   return (
-    <div className="absolute inset-0 z-[50] bg-nc-bg w-full h-full overflow-hidden">
+    <div data-focus-scope="modal" className="absolute inset-0 z-[50] bg-nc-bg w-full h-full overflow-hidden">
       
       {/* Fixed Page Background */}
       {rawCover && (
@@ -221,7 +270,8 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
           <div className="absolute inset-0 bg-gradient-to-r from-nc-bg via-nc-bg/60 to-transparent z-0" />
           
           <button 
-            onClick={onClose}
+            onClick={handleClose}
+            aria-label="Voltar"
             className="absolute top-6 left-6 p-3 bg-black/40 hover:bg-black/60 backdrop-blur-md rounded-full text-white transition-colors z-[60] cursor-pointer"
           >
             <ArrowLeft className="w-6 h-6" />
@@ -259,8 +309,10 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
               )}
             </div>
 
-            <div className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
+            <div data-nav-row="true" className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
               <button 
+                ref={primaryActionRef}
+                data-autofocus="true"
                 onClick={handlePlay}
                 className="flex items-center gap-3 bg-nc-primary hover:bg-nc-primary/90 text-black px-8 py-3.5 rounded-xl font-semibold w-fit transition-transform active:scale-95"
               >
@@ -277,6 +329,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
                 })}
                 className="flex items-center justify-center p-3.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors"
                 title="Favoritar"
+                aria-label="Favoritar"
               >
                 <Heart className={`w-6 h-6 ${isFavorite(streamId, 'movie') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
               </button>
@@ -314,7 +367,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
       </div>
 
       {showResumeModal && (
-        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div data-focus-scope="modal" className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-nc-bg border border-nc-border/50 rounded-2xl p-6 md:p-8 max-w-sm w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
             <h3 className="text-xl font-bold text-white mb-2">Continuar Assistindo?</h3>
             <p className="text-nc-text-secondary text-sm mb-6">
@@ -322,6 +375,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
             </p>
             <div className="flex flex-col gap-3 w-full">
               <button
+                data-autofocus="true"
                 onClick={() => executePlay(savedProgress)}
                 className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
               >
@@ -371,3 +425,4 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   </div>
   );
 }
+

@@ -17,11 +17,19 @@ import { normalizeServerUrl } from '../utils/mediaUtils';
 import { safeRemoveCredentials } from '../utils/accountUtils';
 import { MediaImage } from '../components/MediaImage';
 import { APP_VERSION, APP_COMMIT } from '../version';
+import {
+  useNavigationMode,
+  useBackHandler,
+  BACK_PRIORITY,
+  pushFocusMemory,
+  popFocusMemory,
+} from '../navigation';
 
 export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
 
 function HomeContent({ credentials }: { credentials: any }) {
   const navigate = useNavigate();
+  const navMode = useNavigationMode();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [currentView, setCurrentView] = useState<ViewType>('inicio');
   const [logoutError, setLogoutError] = useState<string | null>(null);
@@ -37,7 +45,53 @@ function HomeContent({ credentials }: { credentials: any }) {
     onPrevious?: () => void;
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchEditing, setIsSearchEditing] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const debouncedSearchQuery = useDebounce(searchQuery, 500);
+
+  // Back policy: 1) Exit search text editing mode
+  useBackHandler(
+    'home-search-edit',
+    BACK_PRIORITY.SUB_MODAL,
+    () => {
+      if (isSearchEditing) {
+        setIsSearchEditing(false);
+        return true;
+      }
+      return false;
+    },
+    isSearchEditing
+  );
+
+  // Back policy: 2) Close mobile drawer menu
+  useBackHandler(
+    'home-mobile-menu',
+    BACK_PRIORITY.DRAWER_MENU,
+    () => {
+      if (isMobileMenuOpen) {
+        setIsMobileMenuOpen(false);
+        popFocusMemory();
+        return true;
+      }
+      return false;
+    },
+    isMobileMenuOpen
+  );
+
+  // Back policy: 3) Return from internal section to 'inicio' (never logs out!)
+  useBackHandler(
+    'home-section-to-inicio',
+    BACK_PRIORITY.SECTION_TO_HOME,
+    () => {
+      if (currentView !== 'inicio') {
+        setCurrentView('inicio');
+        setSearchQuery('');
+        return true;
+      }
+      return false;
+    },
+    currentView !== 'inicio'
+  );
 
   // Overlay state & context consumption
   const {
@@ -110,6 +164,7 @@ function HomeContent({ credentials }: { credentials: any }) {
     onNext?: () => void,
     onPrevious?: () => void
   ) => {
+    pushFocusMemory();
     setActiveVideo({
       url,
       title,
@@ -123,7 +178,7 @@ function HomeContent({ credentials }: { credentials: any }) {
     });
   };
 
-  const NavItems = () => (
+  const renderNavItems = () => (
     <>
       <button onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'inicio' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
         <HomeIcon className="w-5 h-5" />
@@ -186,7 +241,10 @@ function HomeContent({ credentials }: { credentials: any }) {
               contentType={activeVideo.contentType}
               channelName={activeVideo.channelName}
               programTitle={activeVideo.programTitle}
-              onBack={() => setActiveVideo(null)}
+              onBack={() => {
+                setActiveVideo(null);
+                setTimeout(() => popFocusMemory(), 0);
+              }}
               startAt={activeVideo.startAt}
               streamId={activeVideo.streamId}
               onNext={activeVideo.onNext}
@@ -196,13 +254,13 @@ function HomeContent({ credentials }: { credentials: any }) {
         </AnimatePresence>
 
         {/* Sidebar - Desktop */}
-        <aside className="hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-[100dvh] sticky top-0 shrink-0">
+        <aside data-nav-zone="sidebar" className="hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-[100dvh] sticky top-0 shrink-0">
           <div className="p-6">
             <Logo className="scale-90 origin-left" />
           </div>
           
           <div className="flex-1 px-4 py-2 space-y-2 overflow-y-auto custom-scrollbar">
-            <NavItems />
+            {renderNavItems()}
           </div>
 
           <div className="p-4 border-t border-nc-border/50 mt-auto shrink-0">
@@ -243,7 +301,10 @@ function HomeContent({ credentials }: { credentials: any }) {
         <header className="md:hidden sticky top-0 w-full h-16 border-b border-nc-border/50 bg-black/80 backdrop-blur-xl z-[45] flex items-center justify-between px-4 shrink-0">
           <Logo className="scale-75 origin-left" />
           <button 
-            onClick={() => setIsMobileMenuOpen(true)}
+            onClick={(e) => {
+              pushFocusMemory(e.currentTarget);
+              setIsMobileMenuOpen(true);
+            }}
             className="p-2 text-white"
           >
             <Menu className="w-6 h-6" />
@@ -258,10 +319,14 @@ function HomeContent({ credentials }: { credentials: any }) {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                onClick={() => setIsMobileMenuOpen(false)}
+                onClick={() => {
+                  setIsMobileMenuOpen(false);
+                  popFocusMemory();
+                }}
                 className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-[60]"
               />
               <motion.aside 
+                data-focus-scope="modal"
                 initial={{ x: '-100%' }}
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
@@ -270,12 +335,18 @@ function HomeContent({ credentials }: { credentials: any }) {
               >
                 <div className="p-4 flex items-center justify-between border-b border-nc-border/50">
                   <Logo className="scale-75 origin-left" />
-                  <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 text-nc-text-secondary hover:text-white">
+                  <button
+                    onClick={() => {
+                      setIsMobileMenuOpen(false);
+                      popFocusMemory();
+                    }}
+                    className="p-2 text-nc-text-secondary hover:text-white"
+                  >
                     <X className="w-6 h-6" />
                   </button>
                 </div>
                 <div className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
-                  <NavItems />
+                  {renderNavItems()}
                 </div>
                 <div className="p-4 border-t border-nc-border/50">
                   <div className="flex items-center gap-3 px-4 py-3 mb-2">
@@ -318,13 +389,30 @@ function HomeContent({ credentials }: { credentials: any }) {
         <div className="flex-1 overflow-hidden flex flex-col relative w-full h-full">
           {/* Top Search Bar */}
           {currentView !== 'config' && (
-            <div className="w-full shrink-0 p-4 md:px-8 border-b border-nc-border/30 bg-nc-bg/80 backdrop-blur-lg flex items-center justify-center z-[40]">
+            <div data-nav-zone="header" className="w-full shrink-0 p-4 md:px-8 border-b border-nc-border/30 bg-nc-bg/80 backdrop-blur-lg flex items-center justify-center z-[40]">
               <div className="relative w-full max-w-md">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-nc-text-secondary" />
                 <input 
+                  ref={searchInputRef}
                   type="text" 
+                  readOnly={navMode === 'remote' && !isSearchEditing}
+                  data-search-editing={isSearchEditing ? 'true' : 'false'}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  onPointerDown={() => setIsSearchEditing(true)}
+                  onClick={() => {
+                    if (navMode === 'remote' && !isSearchEditing) {
+                      setIsSearchEditing(true);
+                    }
+                  }}
+                  onBlur={() => setIsSearchEditing(false)}
+                  onKeyDown={(e) => {
+                    if (navMode === 'remote' && !isSearchEditing && (e.key === 'Enter' || e.key === 'NumpadEnter')) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsSearchEditing(true);
+                    }
+                  }}
                   placeholder="Pesquisar..." 
                   className="w-full pl-10 pr-4 py-2.5 bg-nc-bg-input border border-nc-border/50 focus:border-nc-primary rounded-xl text-white outline-none transition-colors"
                 />

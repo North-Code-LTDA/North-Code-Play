@@ -9,6 +9,7 @@ import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { MediaImage } from './MediaImage';
 
 import { getItemProgress, recordPlaybackPosition, clearItemProgress } from '../utils/playbackHistory';
+import { useBackHandler, BACK_PRIORITY, pushFocusMemory, popFocusMemory } from '../navigation';
 
 interface SeriesDetailsProps {
   key?: React.Key;
@@ -33,6 +34,44 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
   const [playError, setPlayError] = useState<string | null>(null);
   const [failedEpisode, setFailedEpisode] = useState<{ episode: any; startAt: number } | null>(null);
   const [favActionError, setFavActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    pushFocusMemory(document.activeElement as HTMLElement | null);
+  }, [seriesId]);
+
+  const handleClose = () => {
+    onClose();
+    setTimeout(() => {
+      popFocusMemory();
+    }, 20);
+  };
+
+  useBackHandler(
+    `series-details-submodal-${seriesId}`,
+    BACK_PRIORITY.SUB_MODAL,
+    () => {
+      if (playError) {
+        setPlayError(null);
+        return true;
+      }
+      if (showResumeModal) {
+        setShowResumeModal(false);
+        return true;
+      }
+      return false;
+    },
+    showResumeModal || Boolean(playError)
+  );
+
+  useBackHandler(
+    `series-details-${seriesId}`,
+    BACK_PRIORITY.DETAILS_MODAL,
+    () => {
+      handleClose();
+      return true;
+    },
+    !playingEpisodeData
+  );
 
   useEffect(() => {
     if (favActionError) {
@@ -156,12 +195,13 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       initial={{ opacity: 0, y: 50 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 50 }}
+      data-focus-scope="modal"
       className="absolute inset-0 z-[60] bg-nc-bg/95 backdrop-blur-xl flex flex-col overflow-hidden w-full h-full"
     >
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-nc-border/50 bg-black/50 shrink-0">
         <button 
-          onClick={onClose}
+          onClick={handleClose}
           className="flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors"
         >
           <ChevronLeft className="w-5 h-5" />
@@ -171,7 +211,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
           {seriesInfo?.info?.name || seriesName}
         </h2>
         <button 
-          onClick={onClose}
+          onClick={handleClose}
           className="p-2 hover:bg-white/10 rounded-full transition-colors"
         >
           <X className="w-5 h-5" />
@@ -273,10 +313,11 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                   {/* Season Tabs */}
               {seriesInfo.episodes && Object.keys(seriesInfo.episodes).length > 0 ? (
                 <>
-                  <div className="overflow-x-auto custom-scrollbar flex gap-2 pb-4 mb-4 border-b border-nc-border/50 shrink-0">
+                  <div data-nav-row="true" className="overflow-x-auto custom-scrollbar flex gap-2 pb-4 mb-4 border-b border-nc-border/50 shrink-0">
                     {Object.keys(seriesInfo.episodes).map((seasonNum) => (
                       <button
                         key={seasonNum}
+                        type="button"
                         onClick={() => setSelectedSeason(seasonNum)}
                         className={`px-6 py-2.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${selectedSeason === seasonNum ? 'bg-nc-primary text-black' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
                       >
@@ -290,6 +331,10 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                     {selectedSeason && seriesInfo.episodes[selectedSeason]?.map((episode: any) => (
                       <motion.div
                         key={episode.id}
+                        tabIndex={0}
+                        role="button"
+                        data-nav-item="true"
+                        aria-label={episode.title || `Episódio ${episode.episode_num}`}
                         whileHover={{ scale: 1.01 }}
                         whileTap={{ scale: 0.99 }}
                         onClick={() => handlePlayEpisode(episode)}
@@ -328,7 +373,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       </div>
 
       {showResumeModal && selectedEpisode && (
-        <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div data-focus-scope="modal" className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-nc-bg border border-nc-border/50 rounded-2xl p-6 md:p-8 max-w-sm w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
             <h3 className="text-xl font-bold text-white mb-2">Continuar Assistindo?</h3>
             <p className="text-nc-text-secondary text-sm mb-6">
@@ -336,18 +381,21 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
             </p>
             <div className="flex flex-col gap-3 w-full">
               <button
+                type="button"
                 onClick={() => executePlay(selectedEpisode, savedProgress)}
                 className="w-full py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:scale-105 active:scale-95"
               >
                 Retomar de {Math.floor(savedProgress / 60)} min
               </button>
               <button
+                type="button"
                 onClick={() => executePlay(selectedEpisode, 0)}
                 className="w-full py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/30"
               >
                 Assistir do Início
               </button>
               <button
+                type="button"
                 onClick={() => setShowResumeModal(false)}
                 className="w-full py-2 mt-2 text-nc-text-secondary hover:text-white transition-colors text-sm"
               >
@@ -359,7 +407,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       )}
 
       {playError && (
-        <div className="absolute inset-0 z-[110] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+        <div data-focus-scope="modal" className="absolute inset-0 z-[110] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-nc-bg border border-red-500/40 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
             <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
               <AlertCircle className="w-7 h-7 text-red-500" />
@@ -372,6 +420,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
             <div className="flex gap-3 w-full">
               {failedEpisode && (
                 <button
+                  type="button"
                   onClick={() => executePlay(failedEpisode.episode, failedEpisode.startAt)}
                   className="flex-1 py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center justify-center gap-2"
                 >
@@ -379,6 +428,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
                 </button>
               )}
               <button
+                type="button"
                 onClick={() => setPlayError(null)}
                 className="flex-1 py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/50"
               >

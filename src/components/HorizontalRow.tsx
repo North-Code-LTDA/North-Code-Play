@@ -29,6 +29,8 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
       <h2 className="text-xl md:text-2xl font-semibold text-white mb-4">{title}</h2>
       <div className="relative w-full">
         <button 
+          type="button"
+          tabIndex={-1}
           onClick={() => scrollByAmount(-300)}
           className="absolute left-0 top-4 bottom-8 w-12 md:w-16 bg-gradient-to-r from-nc-bg via-nc-bg/80 to-transparent z-10 flex items-center justify-start pl-2 md:pl-4 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0"
         >
@@ -37,12 +39,17 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
 
         <div 
           ref={rowRef}
+          data-nav-row="true"
           className="flex flex-row overflow-x-auto overflow-y-hidden scroll-smooth w-full gap-4 pb-8 pt-4 scrollbar-hide"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
         {items.map((item, idx) => (
           <motion.div
             key={item.rowKey || item.stream_id || item.series_id || item.id}
+            tabIndex={0}
+            role="button"
+            data-nav-item="true"
+            aria-label={item.name}
             onClick={() => onItemClick(item)}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -62,7 +69,7 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
                 className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'}`}
               />
               
-              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">
+              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-end p-4">
                 <p className="text-white font-medium text-sm truncate w-full">{item.name}</p>
                 {type !== 'live' && item.rating && item.rating !== "0" && (
                    <p className="absolute top-2 right-2 text-xs text-yellow-500 bg-black/50 px-1 py-0.5 rounded">★ {item.rating}</p>
@@ -74,6 +81,8 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
         </div>
         
         <button 
+          type="button"
+          tabIndex={-1}
           onClick={() => scrollByAmount(300)}
           className="absolute right-0 top-4 bottom-8 w-12 md:w-16 bg-gradient-to-l from-nc-bg via-nc-bg/80 to-transparent z-10 flex items-center justify-end pr-2 md:pr-4 opacity-0 group-hover:opacity-100 transition-opacity"
         >

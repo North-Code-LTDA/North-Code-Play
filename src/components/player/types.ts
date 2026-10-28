@@ -51,6 +51,7 @@ export interface VideoPlayerProps {
   startAt?: number;
   streamId?: string | number;
   attemptTrigger?: number;
+  fullscreenRequestTrigger?: number;
   onNext?: () => void;
   onPrevious?: () => void;
   isLoading?: boolean;
@@ -59,3 +60,4 @@ export interface VideoPlayerProps {
   onPlaybackSuccess?: (attemptId?: number) => void;
   onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
 }
+

@@ -171,10 +171,10 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
           }
         }
 
-        // Primary stream stability priority: FHD > HD > SD > 4K
-        let primary = variants.find((v) => v.resolution === 'FHD')?.stream;
+        // Primary stream automatic priority: SD > HD > FHD > 4K
+        let primary = variants.find((v) => v.resolution === 'SD')?.stream;
         if (!primary) primary = variants.find((v) => v.resolution === 'HD')?.stream;
-        if (!primary) primary = variants.find((v) => v.resolution === 'SD')?.stream;
+        if (!primary) primary = variants.find((v) => v.resolution === 'FHD')?.stream;
         if (!primary) primary = variants.find((v) => v.resolution === '4K')?.stream;
         if (!primary) primary = stream;
 

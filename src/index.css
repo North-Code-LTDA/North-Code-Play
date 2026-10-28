@@ -43,3 +43,16 @@
     scrollbar-width: none;
   }
 }
+
+html[data-nav-mode="remote"] button:focus,
+html[data-nav-mode="remote"] input:focus,
+html[data-nav-mode="remote"] select:focus,
+html[data-nav-mode="remote"] textarea:focus,
+html[data-nav-mode="remote"] a:focus,
+html[data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]):focus,
+html[data-nav-mode="remote"] [data-nav-item="true"]:focus {
+  outline: 2px solid #ffffff !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.85) !important;
+}
+

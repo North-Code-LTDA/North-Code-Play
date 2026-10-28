@@ -45,6 +45,7 @@ export function PlayerDiagnosticsModal({
 
   return (
     <div
+      data-focus-scope="modal"
       className="absolute inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
       onClick={(e) => {
         e.stopPropagation();
