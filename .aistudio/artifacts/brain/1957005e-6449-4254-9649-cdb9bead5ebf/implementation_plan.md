@@ -1,78 +1,88 @@
-# North Code Play — Navegação por Controle/Teclado e Prioridade SD na TV ao Vivo
+# North Code Play — Estabilização Integrada de Navegação, Apresentação Responsiva para TV e Foco
 
-## 1. Visão Geral do Escopo e Decisões Confirmadas
+Entrega integrada para corrigir a entrada e percurso por controle/teclado na tela de Configurações, unificar a navegação entre temporadas e episódios nas Séries, corrigir a visibilidade e rolagem progressiva das sinopses, adaptar os detalhes de filmes e séries a viewports compactas de TV (como `961 × 541`), sincronizar de forma determinística a detecção automática de TV, isolar o foco inicial do player em relação aos submenus de configurações/diagnóstico e equilibrar o ciclo de vida da memória de foco ao assistir episódios.
 
-Esta entrega implementa duas melhorias acopladas de forma limpa à arquitetura atual do **North Code Play**, preservando integralmente o uso por mouse/toque, a persistência de credenciais, favoritos, histórico e a reprodução direta de mídia no navegador:
+## User Review & Critical Decisions
 
-1. **Ponte de Runtime para Android TV / Capacitor (Sem alterar dependências):** A escuta do evento nativo de botão Voltar (`backButton` / `backbutton`) será feita via detecção dinâmica em runtime (`window.Capacitor?.Plugins?.App`), mantendo o `package.json` e o `package-lock.json` intocados.
-2. **Prioridade Automática Estrita `SD → HD → FHD → 4K` na TV ao Vivo:** Tanto a escolha do stream primário do grupo quanto o início e o fallback automático tentarão sempre da resolução mais baixa disponível para a mais alta (`SD`, depois `HD`, `FHD` e `4K`), sem que a memória de sessão pule um stream `SD` ainda não tentado na rodada atual. A seleção manual de resolução permanece prioritária sobre os streams da resolução escolhida.
-3. **Indicador Visual de Foco em Alto Contraste (Sem Escala):** Quando o modo de navegação por controle/teclado estiver ativo (`data-nav-mode="remote"`), o elemento focado exibirá uma borda branca nítida de alto contraste (`2px solid #ffffff` com `outline-offset`) sem transformação de escala (`scale`), evitando cortes de overflow e deslocamentos de layout.
+> [!IMPORTANT]
+> As decisões abaixo consolidam as escolhas confirmadas e os limites arquiteturais obrigatórios para esta entrega.
+
+- **Decisão Confirmada 1 — Retorno em Configurações**: Ao pressionar Voltar (`Escape` / `Back`) com o foco dentro das opções da tela de Configurações (Apresentação, Densidade ou Diagnóstico), o foco retorna ao botão **Configurações** na barra lateral mantendo a seção aberta; um segundo Voltar a partir da barra lateral retorna para **Início**.
+- **Decisão Confirmada 2 — Troca de Temporada em Séries**: Ao selecionar outra temporada com `Enter`/`OK` no controle ou teclado, o foco permanece no botão da temporada selecionada (garantindo que nunca caia em um episódio desmontado), permitindo descer ao primeiro episódio disponível com Seta para Baixo.
+- **Preservação de Escopo**: Nenhuma alteração em serviços de rede, autenticação, catálogo Xtream, URLs de mídia, fallback de canais, histórico, favoritos ou dependências. Sem zoom global (`zoom`), `transform: scale` no app inteiro ou larguras fixas artificiais (`1920px`).
 
 ---
 
-## 2. Arquitetura e Fluxos de Interação
+## 1. Overview & Core Concept
+
+- **What It Does**: Harmoniza o motor de navegação espacial, o gerenciamento de foco por camadas e o layout responsivo do modo TV para que todas as telas — incluindo Configurações, Detalhes de Filmes/Séries e Controles/Submenus do Player — funcionem de forma fluida tanto em televisores Android TV (com viewports CSS reduzidos pelo DPR nativo) quanto em navegadores desktop e móveis.
+- **Target Audience / Persona**: Usuários assistindo conteúdos via controle remoto em Android TV / TV Box (WebView empacotada) e usuários em computadores ou dispositivos móveis utilizando teclado, mouse ou toque.
+- **Key Value**: Elimina armadilhas de foco (como ficar preso na barra lateral ao abrir Configurações, não conseguir entrar nos episódios a partir das temporadas ou perder o foco do menu de qualidade do player) e garante que banners, sinopses e listas de episódios caibam e rolem perfeitamente em telas de TV de baixa altura CSS.
+
+---
+
+## 2. User Experience & Visual Design
+
+- **Key User Flows**:
+  1. **Fluxo de Configurações por Controle/Teclado**: O usuário seleciona **Configurações** na barra lateral e pressiona `Enter`/`OK` (ou Seta Direita). O foco entra uma única vez na opção ativa de **Apresentação** (`Automática`, `TV` ou `Padrão`). Com Cima/Baixo e Esquerda/Direita, percorre **Apresentação**, **Densidade no modo TV** e o botão **Ver diagnóstico da tela**, com rolagem automática que revela o card completo. Pressionar Seta Esquerda na primeira coluna ou Voltar devolve o foco ao item **Configurações** da barra lateral sem fechar a seção.
+  2. **Fluxo de Temporadas, Episódios e Sinopses**: Ao abrir os detalhes de uma série ou filme, o cabeçalho, a sinopse, o botão de favoritos, a faixa horizontal de temporadas e a lista de episódios compartilham o mesmo percurso vertical contínuo. Focar a sinopse posiciona sua caixa na área visível (sem forçar `scrollTop = 0` indevidamente), permitindo ler textos longos com Cima/Baixo antes de avançar para o próximo controle. Da temporada ativa, Seta para Baixo alcança o primeiro episódio; do primeiro episódio, Seta para Cima retorna à temporada ativa.
+  3. **Fluxo de Reprodução de Episódios e Retorno em Camadas**: Ao reproduzir um episódio (ou avançar para próximo/anterior) e fechar o player, o foco e a posição de rolagem retornam exatamente ao episódio assistido usando estado local da tela de detalhes; ao fechar a tela de detalhes, a memória global restaura o foco no card da série na grade principal, sem acúmulo de entradas órfãs.
+  4. **Fluxo de Menus Internos do Player**: Ao abrir **Configurações** ou **Diagnóstico** dentro do player, o temporizador de auto-ocultação é pausado e o efeito de foco inicial do player não é reexecutado, mantendo o foco estável dentro do menu e seus submenus mesmo durante eventos de reprodução ou buffering.
+- **Visual Identity & Theme**:
+  - *Aesthetic Direction*: Interface cinematográfica escura de alto contraste, com superfícies neutras profundas (`--color-nc-bg: #000000`, `--color-nc-bg-card: #141414`, `--color-nc-bg-input: #1a1a1a`) e destaque branco nítido (`#ffffff`) para leitura à distância em TV.
+  - *Typography & Hierarchy*: Tipografia limpa com hierarquia adaptativa em modo TV — títulos de detalhes escalonados proporcionalmente (`clamp(1.35rem, 2.6vw, 2.25rem)`) e metadados em linha com números tabulares (`tabular-nums`).
+  - *Component Styling & Layout*: No modo TV (`data-display-mode="tv"`), os banners de detalhes de filmes e séries reduzem sua altura mínima (`clamp(180px, 38vh, 320px)` conforme a densidade), aplicam `min-w-0` e `min-h-0` na cadeia flex/grid e utilizam grades responsivas (`auto-fill` / `minmax`) calibradas por densidade (`compact`, `normal`, `comfortable`) para nunca estourar horizontalmente nem comprimir a área útil em viewports como `961 × 541`.
+- **Interactive Feedback & Motion**: Contorno de foco branco sólido de alto contraste (`2px solid #ffffff`) sem escala, rolagem suave sincronizada com os limites do contêiner e transições imediatas entre submenus.
+
+---
+
+## 3. Key Product Decisions & Trade-Offs
+
+- **Decision 1 — Unificação da Zona Lógica em Detalhes de Séries**:
+  - *Chosen Approach*: Remover a zona isolada `episodes` da lista de episódios para que cabeçalho, sinopse, favoritos, abas de temporada e episódios participem da mesma progressão vertical de blocos dentro do modal de detalhes, preservando `data-nav-row="true"` nas temporadas.
+  - *Why*: Permite que o navegador espacial transite naturalmente entre a aba de temporada selecionada e o primeiro episódio (e vice-versa) sem listeners manuais em cada item.
+  - *Alternatives Considered*: Adicionar regras de exceção hardcoded para uma zona `episodes` ou listeners individuais por episódio, o que fragmentaria a manutenção.
+- **Decision 2 — Memória de Foco Local para Episódios vs. Global para Modais**:
+  - *Chosen Approach*: Gerenciar o ID do episódio e o `scrollTop` da lista exclusivamente em referências locais da tela de detalhes da série (inclusive quando `scrollTop === 0`), reservando a pilha global `pushFocusMemory`/`popFocusMemory` apenas para a abertura e o fechamento do modal de detalhes em direção ao card da série.
+  - *Why*: Evita que múltiplos episódios assistidos empilhem elementos na memória global ou consumam prematuramente a referência do card da série.
+- **Decision 3 — Ciclo Controlado de Detecção Nativa de TV**:
+  - *Chosen Approach*: Centralizar no `NavigationProvider` e no módulo de ambiente um ciclo idempotente que sincroniza imediatamente na montagem, revalida no retorno de visibilidade/foco da janela (`visibilitychange` / `focus`) e executa um número finito e curto de verificações iniciais caso a ponte `WebToApk.isTv()` seja injetada logo após o carregamento inicial, cancelando tudo no cleanup.
+  - *Why*: Garante que o modo TV entre em vigor automaticamente sem exigir visita à tela de Configurações e sem criar polling infinito.
+
+---
+
+## 4. Technical Architecture & Data Strategy *(Technical Reference)*
+
+- **Architecture & Component Diagram**:
 
 ```
-+-----------------------------------------------------------------------+
-|                    Camada Modular de Navegação                        |
-|  - Detector de Modo: Setas D-Pad -> "remote" | Mouse/Toque -> "pointer"|
-|  - Motor Espacial 2D: Filtra elementos visíveis no escopo ativo       |
-|  - Pilha de Foco & Escopos: Restaura o elemento de origem ao fechar   |
-|  - Política Central de Voltar + Ponte Runtime Capacitor Android       |
-+-----------------------------------------------------------------------+
-          |                                       |
-          v                                       v
-+-----------------------------------+   +-------------------------------+
-|    Fluxos de Telas e Catálogos    |   |  TV ao Vivo & VideoPlayer     |
-|  - Login, Topo, Abas e Busca      |   |  - Ordem Auto: SD->HD->FHD->4K|
-|  - Trilhos Horizontais e Grades   |   |  - 1º OK: Abre no Preview     |
-|  - Detalhes (Filmes / Séries)     |   |  - 2º OK: Expande Tela Cheia  |
-|  - Sem botões aninhados           |   |    (mesmo <video>, sem reload)|
-+-----------------------------------+   +-------------------------------+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                   NavigationProvider & Ambiente de TV                       │
+│  ┌───────────────────────────────────┐  ┌────────────────────────────────┐  │
+│  │ Ciclo de Detecção (tvEnvironment) │  │ Navegador Espacial & BackStack │  │
+│  │ • Preferência: auto | tv | default│  │ • Zonas: sidebar | content     │  │
+│  │ • Sync inicial + visibility/focus │  │ • Blocos verticais & fileiras  │  │
+│  │ • Retry curto finito e idempotente│  │ • Rolagem progressiva sinopse  │  │
+│  └─────────────────┬─────────────────┘  └────────────────┬───────────────┘  │
+└────────────────────┼─────────────────────────────────────┼──────────────────┘
+                     │                                     │
+       ┌─────────────┴─────────────┐         ┌─────────────┴─────────────┐
+       ▼                           ▼         ▼                           ▼
+┌──────────────────────┐  ┌──────────────────────────┐  ┌─────────────────────┐
+│   Tela Principal &   │  │ Detalhes Filmes & Séries │  │    VideoPlayer &    │
+│    Configurações     │  │ • Layout TV responsivo   │  │   Menus Internos    │
+│ • Zona content ativa │  │   (banners adaptativos)  │  │ • Foco de entrada   │
+│ • Autofoco único na  │  │ • Sinopse sem top-anchor │  │   desacoplado de    │
+│   entrada por remoto │  │ • Temporadas ↔ Episódios │  │   scheduleAutoHide  │
+│ • Back → Sidebar     │  │ • Foco local de episódio │  │ • Pausa auto-hide   │
+│   mantendo seção     │  │   + Memória global card  │  │   com menu aberto   │
+└──────────────────────┘  └──────────────────────────┘  └─────────────────────┘
 ```
 
-### 2.1. Navegação Espacial e Gerenciamento de Escopo
-- **Alternância Automática de Modo:** O pressionamento de `ArrowUp`, `ArrowDown`, `ArrowLeft` ou `ArrowRight` ativa `document.documentElement.dataset.navMode = "remote"`. Eventos de `pointerdown` ou `touchstart` retornam imediatamente para `"pointer"`, ocultando o anel de foco de TV durante o uso por mouse ou toque.
-- **Isolamento de Camada Ativa:** O motor espacial avalia apenas elementos interativos visíveis, habilitados e com dimensões reais dentro do escopo superior ativo (modal de detalhes, diálogo de retomada, player em tela cheia, menu móvel ou tela principal). Elementos de fundo ficam inacessíveis às setas enquanto um modal ou tela cheia estiver aberto.
-- **Restauração de Foco e Rolagem Suave:** Ao abrir detalhes de um filme/série ou entrar em tela cheia, o elemento acionador é salvo na pilha de foco e restaurado imediatamente ao fechar. A movimentação por setas utiliza `scrollIntoView({ block: 'nearest', inline: 'nearest' })` para manter o card focado visível sem resetar o scroll da lista de categorias.
-- **Busca Protegida contra Teclado Virtual Acidental:** Ao navegar com as setas pelo cabeçalho, a barra de busca recebe foco primeiro como um botão de acionamento. O campo de edição (`<input>`) só é ativado quando o usuário pressiona `OK`/`Enter` (ou clica com mouse/toque), evitando abrir o teclado virtual da TV durante uma simples passagem pelas abas. `Escape`/`Voltar` sai do modo de edição devolvendo o foco ao controle da busca.
-- **Desaninhamento de Ações Secundárias:** Nos itens da lista de canais ao vivo e nos cards com botão de favorito, o controle principal de seleção e o botão de favoritar são irmãos independentes e focáveis, garantindo que `OK`/`Enter` no favorito nunca dispare a troca de canal ou abertura indevida.
-
-### 2.2. Fluxo de TV ao Vivo (Duplo OK e Prioridade `SD → HD → FHD → 4K`)
-- **Seleção Automática e Fallback:**
-  - Na montagem dos grupos e na função de escolha de variante em modo automático, a ordem de prioridade passa a ser `['SD', 'HD', 'FHD', '4K']`.
-  - Se um canal não possuir `SD`, a tentativa inicia na menor resolução seguinte disponível (`HD`, depois `FHD`, depois `4K`).
-  - Se o stream atual falhar por erro fatal ou atingir o timeout de 28 segundos sem reproduzir, o fallback percorre primeiro os demais streams da mesma resolução ainda não tentados na rodada e, em seguida, sobe para a próxima resolução na ordem `SD → HD → FHD → 4K`, sem repetir streams já tentados.
-  - Na escolha manual de resolução (ex.: `HD`), todos os streams `HD` são tentados antes de recorrer ao fallback automático `SD → HD → FHD → 4K`.
-- **Fluxo de 1º OK (Preview) e 2º OK (Tela Cheia sem Reiniciar):**
-  - Pressionar `OK`/`Enter` em um canal diferente seleciona o grupo e inicia a reprodução no player integrado (preview).
-  - Pressionar `OK`/`Enter` novamente sobre o canal que já está selecionado (ou acionar o botão de expandir do preview) ativa o modo de tela cheia (`isEmbeddedFullscreen`) na mesma instância do `VideoPlayer`, preservando o elemento `<video>` em execução sem chamar `startVariantAttempt` novamente.
-
-### 2.3. Conflito de Atalhos no Player e Política do Botão Voltar
-- **Coordenação no `VideoPlayer`:**
-  - No uso normal em desktop (modo `"pointer"`), os atalhos `ArrowLeft`/`ArrowRight` (seek), `ArrowUp`/`ArrowDown` (volume), `Space`/`Enter`, `F`, `M` e `Escape` continuam funcionando exatamente como hoje.
-  - No modo `"remote"`, quando a barra de controles do player estiver oculta, pressionar `OK`/`Enter` ou qualquer seta revela os controles e posiciona o foco no botão principal (`Play/Pause`). Enquanto os controles estiverem visíveis e o foco estiver nos botões da barra, as setas navegam entre os controles do player (`Voltar`, `Play/Pause`, `Mute`, `Variantes`, `Tela Cheia`) sem disparar seek ou volume simultaneamente.
-- **Hierarquia Centralizada do Botão Voltar (`Escape`, `Backspace` fora de inputs e `backButton` Capacitor):**
-  1. Fechar edição ativa do campo de busca, menu de diagnóstico ou diálogo de confirmação de retomada;
-  2. Sair da tela cheia da TV ao vivo retornando para o modo preview (mantendo o canal tocando);
-  3. Fechar o player em tela cheia de Filme/Série/Episódio ou fechar o modal aberto de `MovieDetails` / `SeriesDetails`, restaurando o foco ao card de origem;
-  4. Fechar o menu móvel lateral ou, na TV ao vivo, retornar o foco da área do player/canais para a coluna de categorias;
-  5. Retornar das abas internas (`live`, `movies`, `series`, `favorites`, `config`) para a aba `inicio`;
-  6. Na raiz (`inicio` ou `Login`), em ambiente nativo Capacitor Android, delegar para `App.exitApp()` — **jamais** executando logout ou limpando credenciais salvas.
-
----
-
-## 3. Estética Visual e Indicador de Foco
-- **Foco Exclusivo para Modo Controle/Teclado:** Escopado a `html[data-nav-mode="remote"]`, qualquer card, aba, categoria, episódio ou botão focado recebe `outline: 2px solid #ffffff`, `outline-offset: 2px` e sombra sutil de contraste (`0 0 0 4px rgba(0, 0, 0, 0.75)`), garantindo leitura imediata a 3 metros de distância sobre fundos escuros ou pôsteres claros.
-- **Estabilidade Geométrica:** Nenhuma animação de escala (`transform: scale`) será aplicada pelo estado de foco, mantendo alinhamento rigoroso nas listas de canais, categorias e trilhos horizontais.
-
----
-
-## 4. Verificação Automatizada Planejada
-- Atualização e execução da suíte de verificação para cobrir:
-  - Prioridade inicial `SD → HD → FHD → 4K` no agrupamento e no fallback automático da TV ao vivo;
-  - Início na menor resolução disponível quando o grupo não tiver `SD`;
-  - Prioridade de todos os streams da resolução escolhida manualmente antes do fallback geral;
-  - Expansão para tela cheia no segundo `OK` sobre o canal ativo e troca de variante mantendo o mesmo elemento `<video>`;
-  - Navegação espacial por setas entre abas, categorias, busca protegida, cards e detalhes com ativação única por `OK`/`Enter`;
-  - Hierarquia do botão Voltar (tela cheia → preview, modal de detalhes → card de origem, seções → início) sem jamais efetuar logout.
+- **Data Model & State**:
+  - **Estado de Apresentação TV**: `{ modePreference: 'auto' | 'tv' | 'default', density: 'compact' | 'normal' | 'comfortable', effectiveMode: 'tv' | 'default', origin: 'auto' | 'manual', webToApkTv: { detected, available } }`, sincronizado com `document.documentElement.dataset` apenas quando houver mudança efetiva de valor.
+  - **Estado de Foco de Episódio (Local à Série)**: `lastEpisodeIdRef` (`string | null`), `savedEpisodeScrollTopRef` (`number | null`, suportando `0`), e `restoreTimerRef` cancelável na desmontagem.
+- **Interactive Component & State Mapping**:
+  - **Entrada e Retorno em Configurações**: O contêiner declara `data-nav-zone="content"`. Na montagem em modo `remote`, um efeito controlado por ref (`hasInitializedFocusRef`) foca uma única vez o botão selecionado em `config-display-mode`. Ao pressionar Voltar com foco em `ConfigView`, o handler de seção em `Home` move o foco para o botão `Configurações` na barra lateral mantendo a tela aberta.
+  - **Rolagem e Visibilidade da Sinopse**: Remove `data-scroll-top-anchor="true"` da sinopse de séries (mantendo-o apenas nos controles de cabeçalho/topo explícito). Ao receber foco, `ensureElementScrolledIntoView` posiciona o bloco da sinopse dentro da área visível do contêiner e `tryScrollFocusedSynopsis` permite rolar internamente ou pelo contêiner pai em passos progressivos até o fim do texto antes de passar ao controle adjacente.
+  - **Estabilidade de Foco no Player**: O efeito de entrada em camada cheia (`isPlayerInFullLayer`) depende apenas da transição real de entrada no player (guardada por ref), sem depender de `scheduleAutoHide`. Abrir `showSettings` ou `showDiagnostics` pausa o timer de inatividade e preserva o foco dentro do menu ativo.

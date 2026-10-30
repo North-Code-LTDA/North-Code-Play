@@ -85,8 +85,8 @@ function HomeContent({ credentials }: { credentials: any }) {
     isMobileMenuOpen
   );
 
-  // Back policy: 3) From categories of live/movies/series, focus the corresponding sidebar button while keeping the section open;
-  // on a subsequent Back (when focus is already on the sidebar or outside categories), return to 'inicio' (never logs out!)
+  // Back policy: 3) From categories of live/movies/series or content of config/favorites, focus the corresponding sidebar button while keeping the section open;
+  // on a subsequent Back (when focus is already on the sidebar or outside), return to 'inicio' (never logs out!)
   useBackHandler(
     'home-section-to-inicio',
     BACK_PRIORITY.SECTION_TO_HOME,
@@ -95,12 +95,16 @@ function HomeContent({ credentials }: { credentials: any }) {
         const isRecentPointer =
           getNavMode() === 'pointer' && Date.now() - lastPointerDownTimeRef.current < 250;
 
-        if (
-          !isRecentPointer &&
-          (currentView === 'live' || currentView === 'movies' || currentView === 'series')
-        ) {
+        if (!isRecentPointer) {
           const activeEl = document.activeElement as HTMLElement | null;
-          if (activeEl && activeEl.closest('[data-nav-zone="categories"]')) {
+          const isInCategories =
+            (currentView === 'live' || currentView === 'movies' || currentView === 'series') &&
+            Boolean(activeEl && activeEl.closest('[data-nav-zone="categories"]'));
+          const isInConfigOrFavoritesContent =
+            (currentView === 'config' || currentView === 'favorites') &&
+            Boolean(activeEl && activeEl.closest('[data-nav-zone="content"]'));
+
+          if (isInCategories || isInConfigOrFavoritesContent) {
             const root = homeRootRef.current || document.body;
             const desktopSidebarBtns = Array.from(
               root.querySelectorAll(
@@ -264,7 +268,28 @@ function HomeContent({ credentials }: { credentials: any }) {
         <span>Meus Favoritos</span>
       </button>
       <div className="h-4" />
-      <button data-sidebar-nav-id="config" data-sidebar-active={currentView === 'config' ? 'true' : 'false'} onClick={() => { setCurrentView('config'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
+      <button
+        data-sidebar-nav-id="config"
+        data-sidebar-active={currentView === 'config' ? 'true' : 'false'}
+        onClick={() => {
+          const alreadyConfig = currentView === 'config';
+          setCurrentView('config');
+          setIsMobileMenuOpen(false);
+          setSearchQuery('');
+          if (alreadyConfig && getNavMode() === 'remote') {
+            const root = homeRootRef.current || document.body;
+            const target =
+              root.querySelector<HTMLElement>(
+                '[data-nav-row="config-display-mode"] button[data-config-selected="true"]'
+              ) ||
+              root.querySelector<HTMLElement>('[data-nav-row="config-display-mode"] button');
+            if (target) {
+              focusElementSafely(target);
+            }
+          }
+        }}
+        className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}
+      >
         <Settings className="w-5 h-5" />
         <span>Configurações</span>
       </button>
@@ -475,7 +500,7 @@ function HomeContent({ credentials }: { credentials: any }) {
         </AnimatePresence>
 
         {/* Main Content */}
-        <div className="flex-1 overflow-hidden flex flex-col relative w-full h-full">
+        <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col relative w-full h-full">
           {/* Top Search Bar */}
           {currentView !== 'config' && (
             <div data-nav-zone="header" className="nc-tv-header w-full shrink-0 p-4 md:px-8 border-b border-nc-border/30 bg-nc-bg/80 backdrop-blur-lg flex items-center justify-center z-[40]">
@@ -508,7 +533,7 @@ function HomeContent({ credentials }: { credentials: any }) {
               </div>
             </div>
           )}
-          <main className="flex-1 flex overflow-hidden relative">
+          <main className="flex-1 min-w-0 min-h-0 flex overflow-hidden relative">
             {renderView()}
           </main>
         </div>

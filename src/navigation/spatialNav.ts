@@ -132,10 +132,21 @@ export function ensureElementScrolledIntoView(
   // 2. Vertical scroll container
   const scrollContainer = findScrollContainer(el);
   if (scrollContainer) {
+    const containerRect = scrollContainer.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
     const topAnchor = el.closest<HTMLElement>('[data-scroll-top-anchor="true"]');
+
     if (topAnchor && scrollContainer.contains(topAnchor)) {
-      scrollContainer.scrollTop = 0;
-      return;
+      if (containerRect.height > 0 && elRect.height > 0) {
+        const elBottomAtTopZero = elRect.bottom - containerRect.top + scrollContainer.scrollTop;
+        if (elBottomAtTopZero <= containerRect.height - 12) {
+          scrollContainer.scrollTop = 0;
+          return;
+        }
+      } else {
+        scrollContainer.scrollTop = 0;
+        return;
+      }
     }
 
     const blockCandidate =
@@ -147,7 +158,6 @@ export function ensureElementScrolledIntoView(
         ? blockCandidate
         : el;
 
-    const containerRect = scrollContainer.getBoundingClientRect();
     const blockRect = targetBlock.getBoundingClientRect();
 
     if (containerRect.height > 0 && blockRect.height > 0) {
@@ -305,7 +315,12 @@ export function getFocusableElements(scopeRoot?: HTMLElement): HTMLElement[] {
 function getLogicalZone(el: HTMLElement): string {
   const zoneEl = el.closest<HTMLElement>('[data-nav-zone]');
   if (zoneEl) {
-    return zoneEl.getAttribute('data-nav-zone') || 'main';
+    const zone = zoneEl.getAttribute('data-nav-zone') || 'main';
+    // Treat 'episodes' as a vertical continuation of the modal flow so Season tabs -> Episodes connect seamlessly
+    if (zone === 'episodes') {
+      return 'main';
+    }
+    return zone;
   }
   if (el.closest('aside')) return 'sidebar';
   if (el.closest('header')) return 'header';
@@ -372,6 +387,22 @@ function pickBestItemInBlock(
       (item) => item.getAttribute('data-player-primary') === 'true'
     );
     return primaryTarget || block.items[0];
+  }
+
+  if (block.type === 'row') {
+    if (block.container.getAttribute('data-nav-season-row') === 'true') {
+      const selectedSeasonBtn = block.items.find(
+        (item) => item.getAttribute('data-season-selected') === 'true'
+      );
+      if (selectedSeasonBtn) return selectedSeasonBtn;
+    }
+    const rowAttr = block.container.getAttribute('data-nav-row');
+    if (rowAttr === 'config-display-mode' || rowAttr === 'config-tv-density') {
+      const selectedConfigBtn = block.items.find(
+        (item) => item.getAttribute('data-config-selected') === 'true'
+      );
+      if (selectedConfigBtn) return selectedConfigBtn;
+    }
   }
 
   // If moving into a horizontal row or group, prefer horizontally aligned item that is visible in the row
@@ -501,6 +532,18 @@ function pickPreferredZoneEntry(
     if (selectedCat) return selectedCat;
   }
 
+  if (targetZone === 'content') {
+    const selectedConfig = zoneItems.find(
+      (c) =>
+        c.closest('[data-nav-row="config-display-mode"]') &&
+        c.getAttribute('data-config-selected') === 'true'
+    );
+    if (selectedConfig) return selectedConfig;
+
+    const autofocusItem = zoneItems.find((c) => c.getAttribute('data-autofocus') === 'true');
+    if (autofocusItem) return autofocusItem;
+  }
+
   if (targetZone === 'sidebar') {
     const activeSidebar = zoneItems.find(
       (c) => c.getAttribute('data-sidebar-active') === 'true'
@@ -533,7 +576,7 @@ function tryScrollFocusedSynopsis(
     }
   }
 
-  // 2. Check if the enclosing scrollContainer has scrollable range for the synopsis
+  // 2. Check if the enclosing scrollContainer needs to scroll to reveal the clipped synopsis region itself
   const scrollContainer = findScrollContainer(activeEl);
   if (scrollContainer) {
     const containerMaxScroll = Math.max(
@@ -546,13 +589,9 @@ function tryScrollFocusedSynopsis(
       const hasRects = cRect.height > 0 && aRect.height > 0;
 
       if (direction === 'down') {
-        const synopsisStillBelowViewport = hasRects
-          ? aRect.bottom > cRect.bottom - 16
-          : true;
+        const synopsisStillBelowViewport = hasRects ? aRect.bottom > cRect.bottom - 16 : false;
         if (synopsisStillBelowViewport && scrollContainer.scrollTop < containerMaxScroll - 2) {
-          const delta = hasRects
-            ? Math.min(step, Math.ceil(aRect.bottom - (cRect.bottom - 16)))
-            : step;
+          const delta = Math.min(step, Math.ceil(aRect.bottom - (cRect.bottom - 16)));
           scrollContainer.scrollTop = Math.min(
             containerMaxScroll,
             scrollContainer.scrollTop + Math.max(1, delta)
@@ -560,8 +599,13 @@ function tryScrollFocusedSynopsis(
           return true;
         }
       } else if (direction === 'up') {
-        if (scrollContainer.scrollTop > 2) {
-          scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop - step);
+        const synopsisStillAboveViewport = hasRects ? aRect.top < cRect.top + 16 : false;
+        if (synopsisStillAboveViewport && scrollContainer.scrollTop > 2) {
+          const delta = Math.min(step, Math.ceil(cRect.top + 16 - aRect.top));
+          scrollContainer.scrollTop = Math.max(
+            0,
+            scrollContainer.scrollTop - Math.max(1, delta)
+          );
           return true;
         }
       }

@@ -46,18 +46,35 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const [favActionError, setFavActionError] = useState<string | null>(null);
   const primaryActionRef = useRef<HTMLButtonElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const originFocusElementRef = useRef<HTMLElement | null>(null);
 
   const handleClose = useCallback(() => {
+    const originEl = originFocusElementRef.current;
     onClose();
-    if (!popFocusMemory()) {
-      setTimeout(() => {
-        popFocusMemory();
-      }, 0);
+    const restoreOrigin = () => {
+      if (popFocusMemory()) {
+        return true;
+      }
+      if (originEl && originEl.isConnected) {
+        focusElementSafely(originEl);
+        return true;
+      }
+      return false;
+    };
+    if (!restoreOrigin()) {
+      setTimeout(restoreOrigin, 0);
     }
   }, [onClose]);
 
   useEffect(() => {
-    pushFocusMemory();
+    const active =
+      typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    if (active && active !== document.body && active !== document.documentElement) {
+      originFocusElementRef.current = active;
+    }
+    pushFocusMemory(active);
   }, []);
 
   useEffect(() => {
@@ -239,7 +256,7 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
   const durationText = formatMovieDuration(info.duration);
 
   return (
-    <div data-focus-scope="modal" className="absolute inset-0 z-[50] bg-nc-bg w-full h-full overflow-hidden">
+    <div data-focus-scope="modal" className="absolute inset-0 z-[50] bg-nc-bg w-full h-full min-w-0 min-h-0 overflow-hidden">
       
       {/* Fixed Page Background */}
       {rawCover && (
@@ -259,12 +276,11 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
       <div
         ref={scrollContainerRef}
         data-scroll-container="true"
-        className="absolute inset-0 z-10 overflow-y-auto custom-scrollbar flex flex-col"
+        className="nc-tv-details-scroll absolute inset-0 z-10 min-w-0 min-h-0 overflow-y-auto custom-scrollbar flex flex-col"
       >
         {/* Hero Section */}
         <div
-          data-scroll-top-anchor="true"
-          className="relative w-full min-h-[50vh] md:min-h-[65vh] shrink-0 z-10 flex flex-col justify-end"
+          className="nc-tv-movie-hero relative w-full min-h-[42vh] md:min-h-[56vh] shrink-0 z-10 flex flex-col justify-end"
         >
           <div className="absolute inset-0 bg-black z-0">
             {rawCover && (
@@ -286,18 +302,18 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
             onClick={handleClose}
             aria-label="Voltar"
             data-scroll-top-anchor="true"
-            className="absolute top-6 left-6 p-3 bg-black/40 hover:bg-black/60 backdrop-blur-md rounded-full text-white transition-colors z-[60] cursor-pointer"
+            className="nc-tv-movie-back absolute top-4 left-4 md:top-6 md:left-6 p-2.5 md:p-3 bg-black/40 hover:bg-black/60 backdrop-blur-md rounded-full text-white transition-colors z-[60] cursor-pointer"
           >
-            <ArrowLeft className="w-6 h-6" />
+            <ArrowLeft className="w-5 h-5 md:w-6 md:h-6" />
           </button>
 
-          <div className="relative z-20 p-6 md:p-12 pt-32">
-            <div className="max-w-4xl">
-            <h1 className="text-3xl md:text-5xl font-bold text-white mb-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
+          <div className="nc-tv-details-hero-inner relative z-20 p-6 md:p-12 pt-20 md:pt-28">
+            <div className="max-w-4xl min-w-0">
+            <h1 className="nc-tv-details-title text-3xl md:text-5xl font-bold text-white mb-3 md:mb-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
               {info.name || streamName}
             </h1>
             
-            <div className="flex items-center gap-4 text-sm md:text-base font-medium text-nc-text-secondary mb-6 animate-in fade-in slide-in-from-bottom-5 duration-700 delay-100">
+            <div className="flex flex-wrap items-center gap-4 text-sm md:text-base font-medium text-nc-text-secondary mb-4 md:mb-6 animate-in fade-in slide-in-from-bottom-5 duration-700 delay-100">
               {info.rating && info.rating !== "0" && (
                 <span className="flex items-center gap-1 text-green-400">
                   <Star className="w-4 h-4 fill-green-400" />
@@ -323,15 +339,15 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
               )}
             </div>
 
-            <div data-nav-row="true" data-scroll-top-anchor="true" className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
+            <div data-nav-row="true" data-scroll-block="true" data-scroll-top-anchor="true" className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
               <button 
                 ref={primaryActionRef}
                 data-autofocus="true"
                 onClick={handlePlay}
-                className="flex items-center gap-3 bg-nc-primary hover:bg-nc-primary/90 text-black px-8 py-3.5 rounded-xl font-semibold w-fit transition-transform active:scale-95"
+                className="nc-tv-details-action flex items-center gap-3 bg-nc-primary hover:bg-nc-primary/90 text-black px-7 md:px-8 py-3 md:py-3.5 rounded-xl font-semibold w-fit transition-transform active:scale-95"
               >
-                <Play className="w-6 h-6 fill-black m-0 p-0" />
-                <span className="text-lg">Assistir</span>
+                <Play className="w-5 h-5 md:w-6 md:h-6 fill-black m-0 p-0" />
+                <span className="text-base md:text-lg">Assistir</span>
               </button>
               
               <button 
@@ -341,11 +357,11 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
                   cover: rawCover || streamIcon || '',
                   type: 'movie'
                 })}
-                className="flex items-center justify-center p-3.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors"
+                className="nc-tv-details-action-icon flex items-center justify-center p-3 md:p-3.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors"
                 title="Favoritar"
                 aria-label="Favoritar"
               >
-                <Heart className={`w-6 h-6 ${isFavorite(streamId, 'movie') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
+                <Heart className={`w-5 h-5 md:w-6 md:h-6 ${isFavorite(streamId, 'movie') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
               </button>
             </div>
           </div>
@@ -353,9 +369,9 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
       </div>
 
       {/* Details Section */}
-      <div className="p-6 md:p-12 pt-4 flex-1 z-10 relative">
-        <div className="max-w-4xl grid grid-cols-1 md:grid-cols-3 gap-8 bg-nc-bg/40 backdrop-blur-md p-8 rounded-3xl border border-white/5">
-          <div className="md:col-span-2 space-y-6">
+      <div className="nc-tv-movie-details-wrap p-6 md:p-12 pt-4 flex-1 z-10 relative min-w-0">
+        <div className="nc-tv-movie-panel max-w-4xl grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 bg-nc-bg/40 backdrop-blur-md p-6 md:p-8 rounded-3xl border border-white/5">
+          <div className="md:col-span-2 space-y-6 min-w-0">
             <div
               tabIndex={0}
               role="region"
@@ -363,15 +379,15 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
               data-nav-item="true"
               data-synopsis-focus="true"
               data-scroll-block="true"
-              className="rounded-2xl p-3 -m-3 max-h-56 md:max-h-72 overflow-y-auto custom-scrollbar focus:outline-none transition-colors"
+              className="nc-tv-details-synopsis rounded-2xl p-3 max-h-52 md:max-h-64 overflow-y-auto custom-scrollbar focus:outline-none transition-colors"
             >
-              <p className="text-gray-200 text-lg leading-relaxed mix-blend-plus-lighter drop-shadow-md">
+              <p className="text-gray-200 text-base md:text-lg leading-relaxed mix-blend-plus-lighter drop-shadow-md">
                 {info.plot || 'Sinopse não disponível.'}
               </p>
             </div>
           </div>
           
-          <div className="space-y-4">
+          <div className="space-y-4 min-w-0">
             {info.director && (
               <div>
                 <span className="text-nc-text-secondary/70 text-sm block">Diretor</span>

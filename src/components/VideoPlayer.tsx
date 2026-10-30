@@ -102,15 +102,17 @@ export function VideoPlayer({
         isKeyboardNavigatingRef.current = true;
       }
     };
-    const handlePointerDown = () => {
+    const handlePointerActivity = () => {
       isKeyboardNavigatingRef.current = false;
     };
 
     window.addEventListener('keydown', handleKeyDown, true);
-    window.addEventListener('pointerdown', handlePointerDown, true);
+    window.addEventListener('pointerdown', handlePointerActivity, true);
+    window.addEventListener('mousemove', handlePointerActivity, true);
     return () => {
       window.removeEventListener('keydown', handleKeyDown, true);
-      window.removeEventListener('pointerdown', handlePointerDown, true);
+      window.removeEventListener('pointerdown', handlePointerActivity, true);
+      window.removeEventListener('mousemove', handlePointerActivity, true);
     };
   }, []);
 
@@ -158,6 +160,19 @@ export function VideoPlayer({
   }, []);
 
   const pendingFocusControlRef = useRef<string | null>(null);
+  const wasInFullLayerRef = useRef(false);
+  const openOverlayRef = useRef({
+    showSettings: false,
+    showDiagnostics: false,
+    hasError: false,
+    isLoading: false,
+  });
+  openOverlayRef.current = {
+    showSettings,
+    showDiagnostics,
+    hasError: Boolean(activeError),
+    isLoading: isCurrentlyLoading,
+  };
 
   const focusPlayerControl = useCallback((controlName: string) => {
     const root = containerRef.current;
@@ -189,6 +204,22 @@ export function VideoPlayer({
     if (canAutoHide) {
       const delayMs = getNavMode() === 'remote' ? 4500 : 3000;
       idleTimeoutRef.current = setTimeout(() => {
+        if (
+          openOverlayRef.current.showSettings ||
+          openOverlayRef.current.showDiagnostics ||
+          openOverlayRef.current.hasError
+        ) {
+          return;
+        }
+        const hasKeyboardFocusInPlayer = Boolean(
+          isKeyboardNavigatingRef.current &&
+            containerRef.current &&
+            document.activeElement &&
+            containerRef.current.contains(document.activeElement)
+        );
+        if (hasKeyboardFocusInPlayer) {
+          return;
+        }
         setIsControlsVisible(false);
         isKeyboardNavigatingRef.current = false;
         if (
@@ -458,15 +489,27 @@ export function VideoPlayer({
     showSettings ||
     showDiagnostics;
 
-  // Move focus into the player when entering full-layer mode so focus NEVER remains on 'Assistir' or episode card behind the player
+  // Move focus into the player ONCE when entering full-layer mode, completely decoupled from scheduleAutoHide and menu/playback state changes
   useEffect(() => {
-    if (!isPlayerInFullLayer) return;
+    if (!isPlayerInFullLayer) {
+      wasInFullLayerRef.current = false;
+      return;
+    }
+    if (wasInFullLayerRef.current) {
+      return;
+    }
+    wasInFullLayerRef.current = true;
     setIsControlsVisible(true);
-    scheduleAutoHide();
 
+    let timerFired = false;
     const timer = setTimeout(() => {
+      timerFired = true;
       const root = containerRef.current;
       if (!root) return;
+
+      if (openOverlayRef.current.showSettings || openOverlayRef.current.showDiagnostics) {
+        return;
+      }
 
       // Ensure background trigger button (Assistir / Episode card) never keeps focus behind the player
       if (document.activeElement instanceof HTMLElement && !root.contains(document.activeElement)) {
@@ -476,7 +519,7 @@ export function VideoPlayer({
       }
 
       if (getNavMode() === 'remote') {
-        if (activeError && !isCurrentlyLoading) {
+        if (openOverlayRef.current.hasError && !openOverlayRef.current.isLoading) {
           const retryBtn = root.querySelector<HTMLElement>('[data-player-error-primary="true"]');
           if (retryBtn) {
             focusElementSafely(retryBtn);
@@ -487,12 +530,18 @@ export function VideoPlayer({
       }
     }, 0);
 
-    return () => clearTimeout(timer);
-  }, [isPlayerInFullLayer, focusPlayerControl, scheduleAutoHide]);
+    return () => {
+      clearTimeout(timer);
+      if (!timerFired) {
+        wasInFullLayerRef.current = false;
+      }
+    };
+  }, [isPlayerInFullLayer, focusPlayerControl]);
 
   // Focus error overlay primary button when an error appears in remote mode
   useEffect(() => {
     if (!activeError || isCurrentlyLoading || !isPlayerInFullLayer) return;
+    if (showSettings || showDiagnostics) return;
     if (getNavMode() !== 'remote') return;
     const timer = setTimeout(() => {
       const retryBtn = containerRef.current?.querySelector<HTMLElement>(
@@ -503,7 +552,7 @@ export function VideoPlayer({
       }
     }, 0);
     return () => clearTimeout(timer);
-  }, [activeError, isCurrentlyLoading, isPlayerInFullLayer]);
+  }, [activeError, isCurrentlyLoading, isPlayerInFullLayer, showSettings, showDiagnostics]);
 
   // Apply pending focus request (e.g. after waking hidden controls or closing Settings/Diagnostics modal)
   useEffect(() => {

@@ -1,6 +1,6 @@
 {
-  "summary":  "Plano de implementação para a camada modular de navegação por controle remoto/teclado (Android TV / Capacitor e Web) e alteração da prioridade automática de variantes da TV ao vivo para SD → HD → FHD → 4K no North Code Play.",
-  "updatedAt":  "2026-10-28T04:36:22.751738084Z",
+  "summary":  "Plano arquitetural e funcional para correcao integrada da navegacao espacial em Configuracoes e Series, visibilidade e rolagem progressiva de sinopses, layout responsivo de TV para viewports compactas, sincronizacao automatica de deteccao de TV, isolamento de foco nos menus do player e equilibrio da memoria de foco em episodios.",
+  "updatedAt":  "2026-10-30T02:50:23.122854861Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

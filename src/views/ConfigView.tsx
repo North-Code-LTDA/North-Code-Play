@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Settings,
   User,
@@ -23,7 +23,11 @@ import {
   DisplayModePreference,
   TvDensityPreference,
 } from '../platform/tvEnvironment';
-import { getNativeBackBridgeStatus } from '../navigation';
+import {
+  getNativeBackBridgeStatus,
+  getNavMode,
+  focusElementSafely,
+} from '../navigation';
 
 interface ScreenMetrics {
   innerWidth: number;
@@ -64,6 +68,8 @@ export function ConfigView() {
   const [error, setError] = useState<string | null>(null);
   const [showScreenDiagnostics, setShowScreenDiagnostics] = useState(false);
   const [screenMetrics, setScreenMetrics] = useState<ScreenMetrics>(() => readScreenMetrics());
+  const containerRef = useRef<HTMLDivElement>(null);
+  const hasInitialFocusedRef = useRef(false);
 
   const {
     modePreference,
@@ -76,6 +82,27 @@ export function ConfigView() {
   } = useTvPresentation();
 
   const nativeBackBridge = getNativeBackBridgeStatus();
+
+  // Transfer focus once on mount when entering ConfigView via keyboard/remote
+  useEffect(() => {
+    if (hasInitialFocusedRef.current) return;
+    hasInitialFocusedRef.current = true;
+
+    if (getNavMode() !== 'remote') return;
+
+    const root = containerRef.current;
+    if (!root) return;
+
+    const target =
+      root.querySelector<HTMLElement>(
+        '[data-nav-row="config-display-mode"] button[data-config-selected="true"]'
+      ) ||
+      root.querySelector<HTMLElement>('[data-nav-row="config-display-mode"] button');
+
+    if (target) {
+      focusElementSafely(target);
+    }
+  }, []);
 
   useEffect(() => {
     const handleResize = () => {
@@ -151,13 +178,15 @@ export function ConfigView() {
 
   return (
     <div
+      ref={containerRef}
+      data-nav-zone="content"
       data-scroll-container="true"
-      className="w-full h-full flex flex-col items-center justify-start p-6 md:p-10 overflow-y-auto custom-scrollbar"
+      className="nc-tv-content-pad w-full h-full min-w-0 min-h-0 flex flex-col items-center justify-start p-4 sm:p-6 md:p-10 overflow-y-auto custom-scrollbar"
     >
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-3xl bg-nc-bg-card border border-nc-border/50 rounded-2xl p-6 md:p-8 shadow-2xl mb-8"
+        className="w-full max-w-3xl bg-nc-bg-card border border-nc-border/50 rounded-2xl p-5 sm:p-6 md:p-8 shadow-2xl mb-8"
       >
         <div className="flex items-center gap-4 mb-6 border-b border-nc-border/50 pb-5">
           <div className="p-3 bg-nc-bg-input rounded-xl text-nc-primary">
@@ -183,7 +212,7 @@ export function ConfigView() {
             </span>
           </div>
 
-          <div>
+          <div data-scroll-block="true" data-scroll-top-anchor="true">
             <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">
               Apresentação
             </label>
@@ -198,6 +227,8 @@ export function ConfigView() {
                     key={opt.id}
                     type="button"
                     data-nav-item="true"
+                    data-config-mode-option={opt.id}
+                    data-config-selected={isSelected ? 'true' : 'false'}
                     onClick={() => setModePreference(opt.id)}
                     className={`text-left p-3.5 rounded-xl border transition-colors ${
                       isSelected
@@ -218,7 +249,7 @@ export function ConfigView() {
             </div>
           </div>
 
-          <div>
+          <div data-scroll-block="true">
             <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">
               Densidade no modo TV
             </label>
@@ -233,6 +264,8 @@ export function ConfigView() {
                     key={opt.id}
                     type="button"
                     data-nav-item="true"
+                    data-config-density-option={opt.id}
+                    data-config-selected={isSelected ? 'true' : 'false'}
                     onClick={() => setDensity(opt.id)}
                     className={`text-left p-3.5 rounded-xl border transition-colors ${
                       isSelected
@@ -325,7 +358,7 @@ export function ConfigView() {
         )}
 
         {/* Build & Diagnostics Section */}
-        <div className="mt-8 pt-6 border-t border-nc-border/50 space-y-4">
+        <div data-scroll-block="true" className="mt-8 pt-6 border-t border-nc-border/50 space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <h3 className="text-lg font-medium text-white flex items-center gap-2">
               <ShieldCheck className="w-5 h-5 text-nc-primary" /> Arquitetura & Diagnóstico
@@ -334,6 +367,7 @@ export function ConfigView() {
               type="button"
               data-nav-row="config-diagnostics-toggle"
               data-nav-item="true"
+              data-scroll-block="true"
               onClick={() => setShowScreenDiagnostics((prev) => !prev)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nc-bg-input border border-nc-border/60 text-xs font-medium text-gray-200 hover:text-white hover:border-white/40 transition-colors"
             >
@@ -344,7 +378,15 @@ export function ConfigView() {
           </div>
 
           {showScreenDiagnostics && (
-            <div className="bg-nc-bg-input/80 rounded-xl p-4 border border-nc-border/50 space-y-3 text-xs">
+            <div
+              tabIndex={0}
+              role="region"
+              aria-label="Diagnóstico da Tela e Ambiente"
+              data-nav-item="true"
+              data-synopsis-focus="true"
+              data-scroll-block="true"
+              className="bg-nc-bg-input/80 rounded-xl p-4 border border-nc-border/50 space-y-3 text-xs focus:outline-none"
+            >
               <div className="font-semibold text-white text-sm flex items-center gap-2 border-b border-nc-border/40 pb-2">
                 <Monitor className="w-4 h-4 text-nc-primary" /> Diagnóstico da Tela e Ambiente
               </div>

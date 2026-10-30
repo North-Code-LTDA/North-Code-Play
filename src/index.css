@@ -74,6 +74,10 @@ html[data-nav-mode="remote"] [data-scroll-container="true"],
 html[data-nav-mode="remote"] [data-nav-row="true"],
 html[data-nav-mode="remote"] [data-synopsis-focus="true"] {
   scroll-behavior: smooth;
+  scroll-padding-top: 1.25rem;
+  scroll-padding-bottom: 1.25rem;
+  scroll-padding-left: 1rem;
+  scroll-padding-right: 1rem;
 }
 
 /* ============================================================================
@@ -82,56 +86,64 @@ html[data-nav-mode="remote"] [data-synopsis-focus="true"] {
  * Uses proportional layout tokens without global zoom or transform: scale().
  * ============================================================================ */
 html[data-display-mode="tv"] {
-  --nc-tv-sidebar-width: 13.5rem;
-  --nc-tv-category-pane-width: 25%;
-  --nc-tv-nav-item-py: 0.55rem;
-  --nc-tv-nav-item-px: 0.75rem;
-  --nc-tv-nav-item-font: 0.85rem;
-  --nc-tv-cat-item-py: 0.5rem;
-  --nc-tv-cat-item-px: 0.75rem;
-  --nc-tv-cat-item-font: 0.82rem;
-  --nc-tv-grid-gap: 0.75rem;
-  --nc-tv-section-pad: 1.15rem;
+  --nc-tv-sidebar-width: clamp(10.75rem, 18vw, 13.5rem);
+  --nc-tv-category-pane-width: clamp(11rem, 23%, 16.5rem);
+  --nc-tv-nav-item-py: 0.5rem;
+  --nc-tv-nav-item-px: 0.7rem;
+  --nc-tv-nav-item-font: 0.84rem;
+  --nc-tv-cat-item-py: 0.48rem;
+  --nc-tv-cat-item-px: 0.7rem;
+  --nc-tv-cat-item-font: 0.81rem;
+  --nc-tv-grid-gap: 0.7rem;
+  --nc-tv-section-pad: clamp(0.75rem, 1.8vw, 1.2rem);
+  --nc-tv-card-min: clamp(116px, 13vw, 160px);
+  --nc-tv-synopsis-font: 0.875rem;
 }
 
 html[data-display-mode="tv"][data-tv-density="compact"] {
-  --nc-tv-sidebar-width: 12rem;
-  --nc-tv-category-pane-width: 22%;
-  --nc-tv-nav-item-py: 0.42rem;
-  --nc-tv-nav-item-px: 0.65rem;
-  --nc-tv-nav-item-font: 0.8rem;
-  --nc-tv-cat-item-py: 0.4rem;
-  --nc-tv-cat-item-px: 0.65rem;
-  --nc-tv-cat-item-font: 0.78rem;
-  --nc-tv-grid-gap: 0.6rem;
-  --nc-tv-section-pad: 0.9rem;
+  --nc-tv-sidebar-width: clamp(9.75rem, 16vw, 12rem);
+  --nc-tv-category-pane-width: clamp(10rem, 20%, 14.5rem);
+  --nc-tv-nav-item-py: 0.38rem;
+  --nc-tv-nav-item-px: 0.6rem;
+  --nc-tv-nav-item-font: 0.78rem;
+  --nc-tv-cat-item-py: 0.38rem;
+  --nc-tv-cat-item-px: 0.6rem;
+  --nc-tv-cat-item-font: 0.76rem;
+  --nc-tv-grid-gap: 0.55rem;
+  --nc-tv-section-pad: clamp(0.6rem, 1.4vw, 0.95rem);
+  --nc-tv-card-min: clamp(98px, 11vw, 136px);
+  --nc-tv-synopsis-font: 0.82rem;
 }
 
 html[data-display-mode="tv"][data-tv-density="comfortable"] {
-  --nc-tv-sidebar-width: 14.75rem;
-  --nc-tv-category-pane-width: 27%;
-  --nc-tv-nav-item-py: 0.65rem;
-  --nc-tv-nav-item-px: 0.85rem;
-  --nc-tv-nav-item-font: 0.9rem;
-  --nc-tv-cat-item-py: 0.6rem;
-  --nc-tv-cat-item-px: 0.85rem;
-  --nc-tv-cat-item-font: 0.875rem;
-  --nc-tv-grid-gap: 0.9rem;
-  --nc-tv-section-pad: 1.35rem;
+  --nc-tv-sidebar-width: clamp(11.5rem, 19.5vw, 14.5rem);
+  --nc-tv-category-pane-width: clamp(12rem, 25%, 18rem);
+  --nc-tv-nav-item-py: 0.6rem;
+  --nc-tv-nav-item-px: 0.8rem;
+  --nc-tv-nav-item-font: 0.88rem;
+  --nc-tv-cat-item-py: 0.56rem;
+  --nc-tv-cat-item-px: 0.8rem;
+  --nc-tv-cat-item-font: 0.86rem;
+  --nc-tv-grid-gap: 0.85rem;
+  --nc-tv-section-pad: clamp(0.9rem, 2vw, 1.35rem);
+  --nc-tv-card-min: clamp(136px, 15.5vw, 188px);
+  --nc-tv-synopsis-font: 0.925rem;
 }
 
 @media (min-width: 768px) {
   html[data-display-mode="tv"] .nc-tv-sidebar {
     width: var(--nc-tv-sidebar-width) !important;
+    min-width: 0 !important;
   }
 
   html[data-display-mode="tv"] .nc-tv-sidebar-logo {
-    padding: 0.85rem 1rem !important;
+    padding: 0.7rem 0.9rem !important;
   }
 
   html[data-display-mode="tv"] .nc-tv-sidebar-nav {
-    padding: 0.35rem 0.65rem !important;
+    padding: 0.35rem 0.6rem !important;
     gap: 0.25rem !important;
+    min-height: 0 !important;
   }
 
   html[data-display-mode="tv"] .nc-tv-sidebar-nav > button {
@@ -143,16 +155,18 @@ html[data-display-mode="tv"][data-tv-density="comfortable"] {
   }
 
   html[data-display-mode="tv"] .nc-tv-sidebar-footer {
-    padding: 0.65rem !important;
+    padding: 0.55rem 0.65rem !important;
   }
 
   html[data-display-mode="tv"] .nc-tv-header {
-    padding-top: 0.55rem !important;
-    padding-bottom: 0.55rem !important;
+    padding-top: 0.45rem !important;
+    padding-bottom: 0.45rem !important;
   }
 
   html[data-display-mode="tv"] .nc-tv-category-pane {
     width: var(--nc-tv-category-pane-width) !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
   }
 
   html[data-display-mode="tv"] .nc-tv-category-btn {
@@ -171,35 +185,30 @@ html[data-display-mode="tv"][data-tv-density="comfortable"] {
 
   html[data-display-mode="tv"] .nc-tv-content-pad {
     padding: var(--nc-tv-section-pad) !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
   }
 
   html[data-display-mode="tv"] .nc-tv-media-grid {
     gap: var(--nc-tv-grid-gap) !important;
-    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
-  }
-
-  html[data-display-mode="tv"][data-tv-density="compact"] .nc-tv-media-grid {
-    grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
-  }
-
-  html[data-display-mode="tv"][data-tv-density="comfortable"] .nc-tv-media-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    grid-template-columns: repeat(auto-fill, minmax(var(--nc-tv-card-min), 1fr)) !important;
+    min-width: 0 !important;
   }
 
   html[data-display-mode="tv"] .nc-tv-hero {
-    min-height: 46vh !important;
-    padding-top: 3rem !important;
-    padding-bottom: 2.5rem !important;
+    min-height: clamp(180px, 42vh, 340px) !important;
+    padding-top: clamp(1.5rem, 4vh, 2.75rem) !important;
+    padding-bottom: clamp(1.25rem, 3.5vh, 2.25rem) !important;
   }
 
   html[data-display-mode="tv"][data-tv-density="compact"] .nc-tv-hero {
-    min-height: 40vh !important;
-    padding-top: 2.25rem !important;
-    padding-bottom: 1.75rem !important;
+    min-height: clamp(160px, 36vh, 290px) !important;
+    padding-top: 1.25rem !important;
+    padding-bottom: 1.15rem !important;
   }
 
   html[data-display-mode="tv"] .nc-tv-hero-title {
-    font-size: 2.25rem !important;
+    font-size: clamp(1.5rem, 3vw, 2.25rem) !important;
     line-height: 1.15 !important;
   }
 
@@ -227,6 +236,132 @@ html[data-display-mode="tv"][data-tv-density="comfortable"] {
   }
 }
 
+/* ============================================================================
+ * TV Mode & Compact Height Adaptation for MovieDetails and SeriesDetails
+ * Ensures banners, titles, synopses, seasons, and episodes remain proportional
+ * and scrollable in TV viewports (e.g. 960x540, 1280x720, 1920x1080) and short windows.
+ * ============================================================================ */
+html[data-display-mode="tv"] .nc-tv-details-header {
+  padding: 0.55rem 1rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-scroll {
+  padding: var(--nc-tv-section-pad) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-stack {
+  gap: 1.1rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-hero {
+  min-height: clamp(170px, 38vh, 310px) !important;
+}
+
+html[data-display-mode="tv"][data-tv-density="compact"] .nc-tv-details-hero {
+  min-height: clamp(150px, 34vh, 270px) !important;
+}
+
+html[data-display-mode="tv"][data-tv-density="comfortable"] .nc-tv-details-hero {
+  min-height: clamp(190px, 42vh, 350px) !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-movie-hero {
+  min-height: clamp(185px, 42vh, 340px) !important;
+}
+
+html[data-display-mode="tv"][data-tv-density="compact"] .nc-tv-movie-hero {
+  min-height: clamp(165px, 36vh, 290px) !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-hero-inner {
+  padding: clamp(0.85rem, 2.5vh, 1.5rem) clamp(1rem, 2.5vw, 1.75rem) !important;
+  padding-top: clamp(1.75rem, 6vh, 3.25rem) !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-title {
+  font-size: clamp(1.35rem, 3vw, 2.15rem) !important;
+  line-height: 1.15 !important;
+  margin-bottom: 0.45rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-synopsis {
+  max-height: clamp(4.5rem, 21vh, 9.5rem) !important;
+  padding: 0.5rem 0.65rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-synopsis p {
+  font-size: var(--nc-tv-synopsis-font) !important;
+  line-height: 1.45 !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-action {
+  padding: 0.55rem 1.2rem !important;
+  font-size: 0.875rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-action-icon {
+  padding: 0.55rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-body {
+  gap: 1rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-movie-details-wrap {
+  padding: 0.5rem var(--nc-tv-section-pad) 1.25rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-movie-panel {
+  padding: 1rem 1.25rem !important;
+  gap: 1rem !important;
+  border-radius: 1.25rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-season-row {
+  padding-bottom: 0.5rem !important;
+  margin-bottom: 0.65rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-season-btn {
+  padding: 0.4rem 1rem !important;
+  font-size: 0.81rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-episode-card {
+  padding: 0.65rem 0.9rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-episode-icon {
+  width: 2.25rem !important;
+  height: 2.25rem !important;
+}
+
+@media (max-height: 640px) {
+  .nc-tv-details-hero {
+    min-height: clamp(165px, 38vh, 260px) !important;
+  }
+
+  .nc-tv-movie-hero {
+    min-height: clamp(180px, 42vh, 280px) !important;
+  }
+
+  .nc-tv-details-hero-inner {
+    padding: 0.9rem 1.25rem !important;
+    padding-top: 2rem !important;
+  }
+
+  .nc-tv-details-title {
+    font-size: clamp(1.35rem, 3.2vw, 2rem) !important;
+    margin-bottom: 0.4rem !important;
+  }
+
+  .nc-tv-details-synopsis {
+    max-height: clamp(4.25rem, 20vh, 7.5rem) !important;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html[data-nav-mode="remote"] button,
   html[data-nav-mode="remote"] input,
@@ -248,6 +383,7 @@ html[data-display-mode="tv"][data-tv-density="comfortable"] {
     scroll-behavior: auto !important;
   }
 }
+
 
 
 
