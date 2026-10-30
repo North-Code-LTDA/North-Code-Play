@@ -211,15 +211,6 @@ export function VideoPlayer({
         ) {
           return;
         }
-        const hasKeyboardFocusInPlayer = Boolean(
-          isKeyboardNavigatingRef.current &&
-            containerRef.current &&
-            document.activeElement &&
-            containerRef.current.contains(document.activeElement)
-        );
-        if (hasKeyboardFocusInPlayer) {
-          return;
-        }
         setIsControlsVisible(false);
         isKeyboardNavigatingRef.current = false;
         if (
@@ -246,6 +237,28 @@ export function VideoPlayer({
     setIsControlsVisible(true);
     scheduleAutoHide();
   }, [scheduleAutoHide]);
+
+  const handlePlayerKeyDownCapture = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const key = e.key;
+      const isActivityKey =
+        key === 'ArrowUp' ||
+        key === 'ArrowDown' ||
+        key === 'ArrowLeft' ||
+        key === 'ArrowRight' ||
+        key === 'Enter' ||
+        key === 'NumpadEnter' ||
+        key === ' ' ||
+        key === 'Spacebar' ||
+        key === 'Tab' ||
+        key === 'Home' ||
+        key === 'End';
+      if (!isActivityKey) return;
+      setActivePlayer(playerId);
+      resetInactivityTimer();
+    },
+    [playerId, resetInactivityTimer]
+  );
 
   // Synchronize timer with state changes only while controls are currently visible
   useEffect(() => {
@@ -764,6 +777,7 @@ export function VideoPlayer({
         setActivePlayer(playerId);
         resetInactivityTimer();
       }}
+      onKeyDownCapture={handlePlayerKeyDownCapture}
       onClick={handleContainerClick}
       className={`${
         embedded && !isVisuallyExpanded

@@ -348,6 +348,7 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPl
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 50 }}
       data-focus-scope="modal"
+      data-nav-zone="main"
       className="absolute inset-0 z-[60] bg-nc-bg/95 backdrop-blur-xl flex flex-col overflow-hidden w-full h-full min-w-0 min-h-0"
     >
       {/* Header */}

@@ -339,25 +339,25 @@ html[data-display-mode="tv"] .nc-tv-episode-icon {
 }
 
 @media (max-height: 640px) {
-  .nc-tv-details-hero {
+  html[data-display-mode="tv"] .nc-tv-details-hero {
     min-height: clamp(165px, 38vh, 260px) !important;
   }
 
-  .nc-tv-movie-hero {
+  html[data-display-mode="tv"] .nc-tv-movie-hero {
     min-height: clamp(180px, 42vh, 280px) !important;
   }
 
-  .nc-tv-details-hero-inner {
+  html[data-display-mode="tv"] .nc-tv-details-hero-inner {
     padding: 0.9rem 1.25rem !important;
     padding-top: 2rem !important;
   }
 
-  .nc-tv-details-title {
+  html[data-display-mode="tv"] .nc-tv-details-title {
     font-size: clamp(1.35rem, 3.2vw, 2rem) !important;
     margin-bottom: 0.4rem !important;
   }
 
-  .nc-tv-details-synopsis {
+  html[data-display-mode="tv"] .nc-tv-details-synopsis {
     max-height: clamp(4.25rem, 20vh, 7.5rem) !important;
   }
 }
