@@ -125,7 +125,6 @@ interface LiveTvViewProps {
 }
 
 export function LiveTvView({
-  onPlay,
   searchQuery = '',
   initialChannelIntent = null,
   onConsumeChannelIntent,

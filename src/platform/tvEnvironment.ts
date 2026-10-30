@@ -31,11 +31,17 @@ export interface DisplayPreferencesSnapshot {
 let confirmedMode: DisplayMode = 'default';
 let confirmedTvScale: number = TV_SCALE_DEFAULT;
 let isConfiguredState = false;
-let previewState: { mode: DisplayMode; tvScale: number } | null = null;
+let previewState: { mode: DisplayMode; tvScale: number; sessionId: string } | null = null;
+let previewSessionCounter = 0;
 let initializedFromStorage = false;
 let lastLoadedRawPrefs: string | null = null;
 
 const listeners = new Set<() => void>();
+
+export function createDisplayPreviewSession(): string {
+  previewSessionCounter += 1;
+  return `nc_display_preview_${previewSessionCounter}`;
+}
 
 export function clampTvScale(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -170,16 +176,25 @@ function notifyListeners(): void {
   });
 }
 
-export function startDisplayPreview(mode: DisplayMode, tvScale?: number): void {
+export function startDisplayPreview(
+  mode: DisplayMode,
+  tvScale?: number,
+  sessionId: string = 'default_session'
+): void {
   loadFromStorageIfNeeded();
-  const nextScale = clampTvScale(tvScale ?? (previewState ? previewState.tvScale : confirmedTvScale));
-  previewState = { mode, tvScale: nextScale };
+  const nextScale = clampTvScale(
+    tvScale ?? (previewState ? previewState.tvScale : confirmedTvScale)
+  );
+  previewState = { mode, tvScale: nextScale, sessionId };
   notifyListeners();
 }
 
-export function cancelDisplayPreview(): void {
+export function cancelDisplayPreview(sessionId?: string): void {
   loadFromStorageIfNeeded();
   if (previewState !== null) {
+    if (sessionId !== undefined && previewState.sessionId !== sessionId) {
+      return;
+    }
     previewState = null;
     notifyListeners();
   } else {
@@ -187,13 +202,21 @@ export function cancelDisplayPreview(): void {
   }
 }
 
-export function confirmDisplayPreferences(mode: DisplayMode, tvScale?: number): boolean {
+export function confirmDisplayPreferences(
+  mode: DisplayMode,
+  tvScale?: number,
+  sessionId?: string
+): boolean {
   loadFromStorageIfNeeded();
-  const nextScale = clampTvScale(tvScale ?? (previewState ? previewState.tvScale : confirmedTvScale));
+  const nextScale = clampTvScale(
+    tvScale ?? (previewState ? previewState.tvScale : confirmedTvScale)
+  );
   confirmedMode = mode;
   confirmedTvScale = nextScale;
   isConfiguredState = true;
-  previewState = null;
+  if (sessionId === undefined || previewState === null || previewState.sessionId === sessionId) {
+    previewState = null;
+  }
 
   const payload: StoredDisplayPreferences = {
     version: 1,
@@ -211,6 +234,12 @@ export function confirmDisplayPreferences(mode: DisplayMode, tvScale?: number): 
       persisted = true;
     } catch {
       // Keep in-memory state if localStorage is blocked or full
+      initializedFromStorage = true;
+      try {
+        lastLoadedRawPrefs = window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS);
+      } catch {
+        // Ignore read error when storage is unavailable
+      }
     }
 
     if (persisted) {
@@ -235,9 +264,9 @@ export function subscribeDisplayPreferences(listener: () => void): () => void {
 }
 
 export interface UseDisplayPreferencesResult extends DisplayPreferencesSnapshot {
-  startPreview: (mode: DisplayMode, tvScale?: number) => void;
-  cancelPreview: () => void;
-  confirmPreferences: (mode: DisplayMode, tvScale?: number) => boolean;
+  startPreview: (mode: DisplayMode, tvScale?: number, sessionId?: string) => void;
+  cancelPreview: (sessionId?: string) => void;
+  confirmPreferences: (mode: DisplayMode, tvScale?: number, sessionId?: string) => boolean;
 }
 
 export function useDisplayPreferences(): UseDisplayPreferencesResult {

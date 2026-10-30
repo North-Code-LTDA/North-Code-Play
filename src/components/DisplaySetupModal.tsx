@@ -7,6 +7,8 @@ import {
   TV_SCALE_STEP,
   TV_SCALE_DEFAULT,
   clampTvScale,
+  createDisplayPreviewSession,
+  getDisplayPreferencesSnapshot,
   useDisplayPreferences,
 } from '../platform/tvEnvironment';
 import {
@@ -53,32 +55,71 @@ export function DisplaySetupModal({
   const modalRef = useRef<HTMLDivElement>(null);
   const sliderRef = useRef<HTMLDivElement>(null);
   const pendingFocusSelectorRef = useRef<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Initialize state when modal opens
+  const clearPendingFocusTimer = useCallback(() => {
+    if (focusTimerRef.current !== null) {
+      clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = null;
+    }
+  }, []);
+
+  const ensureSessionId = useCallback((): string => {
+    if (!activeSessionIdRef.current) {
+      activeSessionIdRef.current = createDisplayPreviewSession();
+    }
+    return activeSessionIdRef.current;
+  }, []);
+
+  // Initialize state and manage preview session lifecycle when modal opens/closes/unmounts
   useEffect(() => {
-    if (!isOpen) return;
-    const initialMode: DisplayMode = isConfigured ? confirmedMode : 'tv';
-    const initialScale = isConfigured ? clampTvScale(confirmedTvScale) : TV_SCALE_DEFAULT;
+    if (!isOpen) {
+      clearPendingFocusTimer();
+      if (activeSessionIdRef.current) {
+        const staleSessionId = activeSessionIdRef.current;
+        activeSessionIdRef.current = null;
+        cancelPreview(staleSessionId);
+      }
+      return;
+    }
+
+    const sessionId = createDisplayPreviewSession();
+    activeSessionIdRef.current = sessionId;
+
+    const snap = getDisplayPreferencesSnapshot();
+    const initialMode: DisplayMode = snap.isConfigured ? snap.mode : 'tv';
+    const initialScale = snap.isConfigured ? clampTvScale(snap.tvScale) : TV_SCALE_DEFAULT;
     setSelectedDevice(initialMode);
     setDraftScale(initialScale);
     setStep(initialStep);
 
     if (initialStep === 'tv-calibrate') {
-      startPreview('tv', initialScale);
+      startPreview('tv', initialScale, sessionId);
       pendingFocusSelectorRef.current = '[data-calibration-slider="true"]';
     } else {
       pendingFocusSelectorRef.current = `[data-device-choice="${initialMode}"]`;
     }
-  }, [isOpen, initialStep, isConfigured, confirmedMode, confirmedTvScale, startPreview]);
+
+    return () => {
+      clearPendingFocusTimer();
+      cancelPreview(sessionId);
+      if (activeSessionIdRef.current === sessionId) {
+        activeSessionIdRef.current = null;
+      }
+    };
+  }, [isOpen, initialStep, startPreview, cancelPreview, clearPendingFocusTimer]);
 
   // Apply programmatic focus when step changes or modal opens
   useEffect(() => {
+    clearPendingFocusTimer();
     if (!isOpen) return;
     const root = modalRef.current;
     if (!root) return;
 
-    const timer = setTimeout(() => {
-      if (!modalRef.current) return;
+    focusTimerRef.current = setTimeout(() => {
+      focusTimerRef.current = null;
+      if (!modalRef.current || !modalRef.current.isConnected) return;
       const selector = pendingFocusSelectorRef.current;
       pendingFocusSelectorRef.current = null;
 
@@ -87,65 +128,79 @@ export function DisplaySetupModal({
         modalRef.current.querySelector<HTMLElement>('[data-autofocus="true"]') ||
         modalRef.current.querySelector<HTMLElement>('button, [role="slider"]');
 
-      if (target) {
+      if (target && target.isConnected) {
         focusElementSafely(target);
       }
     }, 0);
 
-    return () => clearTimeout(timer);
-  }, [isOpen, step]);
+    return () => {
+      clearPendingFocusTimer();
+    };
+  }, [isOpen, step, clearPendingFocusTimer]);
 
   const handleSelectTvDevice = useCallback(() => {
-    const nextScale = isConfigured && confirmedMode === 'tv'
-      ? clampTvScale(confirmedTvScale)
-      : draftScale || TV_SCALE_DEFAULT;
+    const sessionId = ensureSessionId();
+    const nextScale =
+      isConfigured && confirmedMode === 'tv'
+        ? clampTvScale(confirmedTvScale)
+        : draftScale || TV_SCALE_DEFAULT;
     setSelectedDevice('tv');
     setDraftScale(nextScale);
-    startPreview('tv', nextScale);
+    startPreview('tv', nextScale, sessionId);
     pendingFocusSelectorRef.current = '[data-calibration-slider="true"]';
     setStep('tv-calibrate');
-  }, [isConfigured, confirmedMode, confirmedTvScale, draftScale, startPreview]);
+  }, [isConfigured, confirmedMode, confirmedTvScale, draftScale, startPreview, ensureSessionId]);
 
   const handleSelectOtherDevice = useCallback(() => {
+    const sessionId = ensureSessionId();
     setSelectedDevice('default');
-    startPreview('default', draftScale);
+    startPreview('default', draftScale, sessionId);
     pendingFocusSelectorRef.current = '[data-confirm-default="true"]';
     setStep('default-confirm');
-  }, [draftScale, startPreview]);
+  }, [draftScale, startPreview, ensureSessionId]);
 
   const handleReturnToDeviceStep = useCallback(() => {
-    cancelPreview();
+    if (activeSessionIdRef.current) {
+      cancelPreview(activeSessionIdRef.current);
+    }
     pendingFocusSelectorRef.current = `[data-device-choice="${selectedDevice}"]`;
     setStep('device');
   }, [cancelPreview, selectedDevice]);
 
   const handleCancelModal = useCallback(() => {
-    cancelPreview();
+    clearPendingFocusTimer();
+    if (activeSessionIdRef.current) {
+      cancelPreview(activeSessionIdRef.current);
+    }
     onCancel?.();
-  }, [cancelPreview, onCancel]);
+  }, [cancelPreview, clearPendingFocusTimer, onCancel]);
 
   const handleConfirmTv = useCallback(() => {
-    confirmPreferences('tv', draftScale);
+    clearPendingFocusTimer();
+    confirmPreferences('tv', draftScale, activeSessionIdRef.current ?? undefined);
     onComplete();
-  }, [confirmPreferences, draftScale, onComplete]);
+  }, [confirmPreferences, draftScale, clearPendingFocusTimer, onComplete]);
 
   const handleConfirmDefault = useCallback(() => {
-    confirmPreferences('default', draftScale);
+    clearPendingFocusTimer();
+    confirmPreferences('default', draftScale, activeSessionIdRef.current ?? undefined);
     onComplete();
-  }, [confirmPreferences, draftScale, onComplete]);
+  }, [confirmPreferences, draftScale, clearPendingFocusTimer, onComplete]);
 
   const handleResetScale = useCallback(() => {
+    const sessionId = ensureSessionId();
     setDraftScale(TV_SCALE_DEFAULT);
-    startPreview('tv', TV_SCALE_DEFAULT);
-  }, [startPreview]);
+    startPreview('tv', TV_SCALE_DEFAULT, sessionId);
+  }, [startPreview, ensureSessionId]);
 
   const applyScaleValue = useCallback(
     (rawVal: number) => {
+      const sessionId = ensureSessionId();
       const next = clampTvScale(rawVal);
       setDraftScale(next);
-      startPreview('tv', next);
+      startPreview('tv', next, sessionId);
     },
-    [startPreview]
+    [startPreview, ensureSessionId]
   );
 
   // Back policy integration

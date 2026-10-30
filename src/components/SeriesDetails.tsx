@@ -27,7 +27,7 @@ interface SeriesDetailsProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
 }
 
-export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose, onPlay }: SeriesDetailsProps) {
+export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose }: SeriesDetailsProps) {
   const { credentials } = useXtreamContext();
   const { isFavorite, toggleFavorite, favoriteError, clearFavoriteError } = useFavorites();
   const [loadingInfo, setLoadingInfo] = useState(true);
