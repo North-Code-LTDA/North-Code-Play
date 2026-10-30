@@ -15,6 +15,10 @@
   --color-nc-focus: #4b5563;
 }
 
+:root {
+  --nc-ui-scale: 1;
+}
+
 @layer base {
   body {
     @apply bg-nc-bg text-nc-text-primary font-sans antialiased selection:bg-white selection:text-black;
@@ -82,164 +86,135 @@ html[data-nav-mode="remote"] [data-synopsis-focus="true"] {
 
 /* ============================================================================
  * TV Presentation Mode (html[data-display-mode="tv"])
- * Activated automatically via window.WebToApk.isTv() or manually in ConfigView.
- * Uses proportional layout tokens without global zoom or transform: scale().
+ * Activated explicitly by the user via DisplaySetupModal or ConfigView.
+ * Scales root rem font-size continuously via --nc-ui-scale (0.50 to 1.25)
+ * without global zoom or transform: scale().
  * ============================================================================ */
 html[data-display-mode="tv"] {
-  --nc-tv-sidebar-width: clamp(10.75rem, 18vw, 13.5rem);
-  --nc-tv-category-pane-width: clamp(11rem, 23%, 16.5rem);
-  --nc-tv-nav-item-py: 0.5rem;
-  --nc-tv-nav-item-px: 0.7rem;
-  --nc-tv-nav-item-font: 0.84rem;
+  font-size: calc(100% * var(--nc-ui-scale, 1));
+  --nc-tv-sidebar-width: 12.75rem;
+  --nc-tv-category-pane-width: 14.5rem;
+  --nc-tv-nav-item-py: 0.52rem;
+  --nc-tv-nav-item-px: 0.72rem;
+  --nc-tv-nav-item-font: 0.86rem;
   --nc-tv-cat-item-py: 0.48rem;
-  --nc-tv-cat-item-px: 0.7rem;
-  --nc-tv-cat-item-font: 0.81rem;
-  --nc-tv-grid-gap: 0.7rem;
-  --nc-tv-section-pad: clamp(0.75rem, 1.8vw, 1.2rem);
-  --nc-tv-card-min: clamp(116px, 13vw, 160px);
+  --nc-tv-cat-item-px: 0.72rem;
+  --nc-tv-cat-item-font: 0.82rem;
+  --nc-tv-grid-gap: 0.72rem;
+  --nc-tv-section-pad: 1rem;
+  --nc-tv-card-min: 8.75rem;
   --nc-tv-synopsis-font: 0.875rem;
 }
 
-html[data-display-mode="tv"][data-tv-density="compact"] {
-  --nc-tv-sidebar-width: clamp(9.75rem, 16vw, 12rem);
-  --nc-tv-category-pane-width: clamp(10rem, 20%, 14.5rem);
-  --nc-tv-nav-item-py: 0.38rem;
-  --nc-tv-nav-item-px: 0.6rem;
-  --nc-tv-nav-item-font: 0.78rem;
-  --nc-tv-cat-item-py: 0.38rem;
-  --nc-tv-cat-item-px: 0.6rem;
-  --nc-tv-cat-item-font: 0.76rem;
-  --nc-tv-grid-gap: 0.55rem;
-  --nc-tv-section-pad: clamp(0.6rem, 1.4vw, 0.95rem);
-  --nc-tv-card-min: clamp(98px, 11vw, 136px);
-  --nc-tv-synopsis-font: 0.82rem;
+html[data-display-mode="tv"] .nc-tv-sidebar {
+  width: var(--nc-tv-sidebar-width) !important;
+  min-width: 0 !important;
 }
 
-html[data-display-mode="tv"][data-tv-density="comfortable"] {
-  --nc-tv-sidebar-width: clamp(11.5rem, 19.5vw, 14.5rem);
-  --nc-tv-category-pane-width: clamp(12rem, 25%, 18rem);
-  --nc-tv-nav-item-py: 0.6rem;
-  --nc-tv-nav-item-px: 0.8rem;
-  --nc-tv-nav-item-font: 0.88rem;
-  --nc-tv-cat-item-py: 0.56rem;
-  --nc-tv-cat-item-px: 0.8rem;
-  --nc-tv-cat-item-font: 0.86rem;
-  --nc-tv-grid-gap: 0.85rem;
-  --nc-tv-section-pad: clamp(0.9rem, 2vw, 1.35rem);
-  --nc-tv-card-min: clamp(136px, 15.5vw, 188px);
-  --nc-tv-synopsis-font: 0.925rem;
+html[data-display-mode="tv"] .nc-tv-sidebar-logo {
+  padding: 0.7rem 0.9rem !important;
 }
 
-@media (min-width: 768px) {
-  html[data-display-mode="tv"] .nc-tv-sidebar {
-    width: var(--nc-tv-sidebar-width) !important;
-    min-width: 0 !important;
-  }
+html[data-display-mode="tv"] .nc-tv-sidebar-nav {
+  padding: 0.35rem 0.6rem !important;
+  gap: 0.25rem !important;
+  min-height: 0 !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-sidebar-logo {
-    padding: 0.7rem 0.9rem !important;
-  }
+html[data-display-mode="tv"] .nc-tv-sidebar-nav > button {
+  padding-top: var(--nc-tv-nav-item-py) !important;
+  padding-bottom: var(--nc-tv-nav-item-py) !important;
+  padding-left: var(--nc-tv-nav-item-px) !important;
+  padding-right: var(--nc-tv-nav-item-px) !important;
+  font-size: var(--nc-tv-nav-item-font) !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-sidebar-nav {
-    padding: 0.35rem 0.6rem !important;
-    gap: 0.25rem !important;
-    min-height: 0 !important;
-  }
+html[data-display-mode="tv"] .nc-tv-sidebar-footer {
+  padding: 0.55rem 0.65rem !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-sidebar-nav > button {
-    padding-top: var(--nc-tv-nav-item-py) !important;
-    padding-bottom: var(--nc-tv-nav-item-py) !important;
-    padding-left: var(--nc-tv-nav-item-px) !important;
-    padding-right: var(--nc-tv-nav-item-px) !important;
-    font-size: var(--nc-tv-nav-item-font) !important;
-  }
+html[data-display-mode="tv"] .nc-tv-header {
+  padding-top: 0.45rem !important;
+  padding-bottom: 0.45rem !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-sidebar-footer {
-    padding: 0.55rem 0.65rem !important;
-  }
+html[data-display-mode="tv"] .nc-tv-category-pane {
+  width: var(--nc-tv-category-pane-width) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-header {
-    padding-top: 0.45rem !important;
-    padding-bottom: 0.45rem !important;
-  }
+html[data-display-mode="tv"] .nc-tv-category-btn {
+  padding-top: var(--nc-tv-cat-item-py) !important;
+  padding-bottom: var(--nc-tv-cat-item-py) !important;
+  padding-left: var(--nc-tv-cat-item-px) !important;
+  padding-right: var(--nc-tv-cat-item-px) !important;
+  font-size: var(--nc-tv-cat-item-font) !important;
+  line-height: 1.25 !important;
+  white-space: normal !important;
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-category-pane {
-    width: var(--nc-tv-category-pane-width) !important;
-    min-width: 0 !important;
-    min-height: 0 !important;
-  }
+html[data-display-mode="tv"] .nc-tv-content-pad {
+  padding: var(--nc-tv-section-pad) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-category-btn {
-    padding-top: var(--nc-tv-cat-item-py) !important;
-    padding-bottom: var(--nc-tv-cat-item-py) !important;
-    padding-left: var(--nc-tv-cat-item-px) !important;
-    padding-right: var(--nc-tv-cat-item-px) !important;
-    font-size: var(--nc-tv-cat-item-font) !important;
-    line-height: 1.25 !important;
-    white-space: normal !important;
-    display: -webkit-box !important;
-    -webkit-line-clamp: 2 !important;
-    -webkit-box-orient: vertical !important;
-    overflow: hidden !important;
-  }
+html[data-display-mode="tv"] .nc-tv-media-grid {
+  gap: var(--nc-tv-grid-gap) !important;
+  grid-template-columns: repeat(auto-fill, minmax(var(--nc-tv-card-min), 1fr)) !important;
+  min-width: 0 !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-content-pad {
-    padding: var(--nc-tv-section-pad) !important;
-    min-width: 0 !important;
-    min-height: 0 !important;
-  }
+html[data-display-mode="tv"] .nc-tv-row-card-live {
+  width: 15.5rem !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-media-grid {
-    gap: var(--nc-tv-grid-gap) !important;
-    grid-template-columns: repeat(auto-fill, minmax(var(--nc-tv-card-min), 1fr)) !important;
-    min-width: 0 !important;
-  }
+html[data-display-mode="tv"] .nc-tv-row-card-poster {
+  width: 9.25rem !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-hero {
-    min-height: clamp(180px, 42vh, 340px) !important;
-    padding-top: clamp(1.5rem, 4vh, 2.75rem) !important;
-    padding-bottom: clamp(1.25rem, 3.5vh, 2.25rem) !important;
-  }
+html[data-display-mode="tv"] .nc-tv-hero {
+  min-height: 15.5rem !important;
+  padding-top: 1.75rem !important;
+  padding-bottom: 1.5rem !important;
+}
 
-  html[data-display-mode="tv"][data-tv-density="compact"] .nc-tv-hero {
-    min-height: clamp(160px, 36vh, 290px) !important;
-    padding-top: 1.25rem !important;
-    padding-bottom: 1.15rem !important;
-  }
+html[data-display-mode="tv"] .nc-tv-hero-title {
+  font-size: 1.85rem !important;
+  line-height: 1.15 !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-hero-title {
-    font-size: clamp(1.5rem, 3vw, 2.25rem) !important;
-    line-height: 1.15 !important;
-  }
+html[data-display-mode="tv"] .nc-tv-epg-timeline::before {
+  margin-left: 1.25rem !important;
+  transform: none !important;
+  left: 0 !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-epg-timeline::before {
-    margin-left: 1.25rem !important;
-    transform: none !important;
-    left: 0 !important;
-  }
+html[data-display-mode="tv"] .nc-tv-epg-row {
+  flex-direction: row !important;
+  justify-content: flex-start !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-epg-row {
-    flex-direction: row !important;
-    justify-content: flex-start !important;
-  }
+html[data-display-mode="tv"] .nc-tv-epg-marker {
+  left: 1.25rem !important;
+  top: 1.25rem !important;
+  transform: translate(-50%, 0) !important;
+}
 
-  html[data-display-mode="tv"] .nc-tv-epg-marker {
-    left: 1.25rem !important;
-    top: 1.25rem !important;
-    transform: translate(-50%, 0) !important;
-  }
-
-  html[data-display-mode="tv"] .nc-tv-epg-card {
-    width: calc(100% - 2.75rem) !important;
-    margin-left: 2.75rem !important;
-    padding: 0.75rem 1rem !important;
-  }
+html[data-display-mode="tv"] .nc-tv-epg-card {
+  width: calc(100% - 2.75rem) !important;
+  margin-left: 2.75rem !important;
+  padding: 0.75rem 1rem !important;
 }
 
 /* ============================================================================
- * TV Mode & Compact Height Adaptation for MovieDetails and SeriesDetails
- * Ensures banners, titles, synopses, seasons, and episodes remain proportional
- * and scrollable in TV viewports (e.g. 960x540, 1280x720, 1920x1080) and short windows.
+ * TV Mode Adaptation for MovieDetails and SeriesDetails
+ * Uses rem tokens so scaling from 50% to 125% takes full effect.
  * ============================================================================ */
 html[data-display-mode="tv"] .nc-tv-details-header {
   padding: 0.55rem 1rem !important;
@@ -256,38 +231,26 @@ html[data-display-mode="tv"] .nc-tv-details-stack {
 }
 
 html[data-display-mode="tv"] .nc-tv-details-hero {
-  min-height: clamp(170px, 38vh, 310px) !important;
-}
-
-html[data-display-mode="tv"][data-tv-density="compact"] .nc-tv-details-hero {
-  min-height: clamp(150px, 34vh, 270px) !important;
-}
-
-html[data-display-mode="tv"][data-tv-density="comfortable"] .nc-tv-details-hero {
-  min-height: clamp(190px, 42vh, 350px) !important;
+  min-height: 14rem !important;
 }
 
 html[data-display-mode="tv"] .nc-tv-movie-hero {
-  min-height: clamp(185px, 42vh, 340px) !important;
-}
-
-html[data-display-mode="tv"][data-tv-density="compact"] .nc-tv-movie-hero {
-  min-height: clamp(165px, 36vh, 290px) !important;
+  min-height: 15rem !important;
 }
 
 html[data-display-mode="tv"] .nc-tv-details-hero-inner {
-  padding: clamp(0.85rem, 2.5vh, 1.5rem) clamp(1rem, 2.5vw, 1.75rem) !important;
-  padding-top: clamp(1.75rem, 6vh, 3.25rem) !important;
+  padding: 1.1rem 1.35rem !important;
+  padding-top: 2.1rem !important;
 }
 
 html[data-display-mode="tv"] .nc-tv-details-title {
-  font-size: clamp(1.35rem, 3vw, 2.15rem) !important;
+  font-size: 1.75rem !important;
   line-height: 1.15 !important;
   margin-bottom: 0.45rem !important;
 }
 
 html[data-display-mode="tv"] .nc-tv-details-synopsis {
-  max-height: clamp(4.5rem, 21vh, 9.5rem) !important;
+  max-height: 6.5rem !important;
   padding: 0.5rem 0.65rem !important;
 }
 
@@ -338,28 +301,60 @@ html[data-display-mode="tv"] .nc-tv-episode-icon {
   height: 2.25rem !important;
 }
 
-@media (max-height: 640px) {
-  html[data-display-mode="tv"] .nc-tv-details-hero {
-    min-height: clamp(165px, 38vh, 260px) !important;
-  }
+/* ============================================================================
+ * Calibration Modal Safe Controls (.nc-calibration-safe)
+ * Protects the setup modal's own labels, slider, and action buttons with fixed px
+ * sizing so the user can always read and confirm/reset even when testing 50% scale.
+ * ============================================================================ */
+.nc-calibration-safe {
+  font-size: 14px;
+  line-height: 1.4;
+}
 
-  html[data-display-mode="tv"] .nc-tv-movie-hero {
-    min-height: clamp(180px, 42vh, 280px) !important;
-  }
+.nc-calibration-safe .nc-cal-title {
+  font-size: 18px;
+  line-height: 1.25;
+}
 
-  html[data-display-mode="tv"] .nc-tv-details-hero-inner {
-    padding: 0.9rem 1.25rem !important;
-    padding-top: 2rem !important;
-  }
+.nc-calibration-safe .nc-cal-subtitle {
+  font-size: 13px;
+  line-height: 1.35;
+}
 
-  html[data-display-mode="tv"] .nc-tv-details-title {
-    font-size: clamp(1.35rem, 3.2vw, 2rem) !important;
-    margin-bottom: 0.4rem !important;
-  }
+.nc-calibration-safe .nc-cal-card-title {
+  font-size: 17px;
+  line-height: 1.25;
+}
 
-  html[data-display-mode="tv"] .nc-tv-details-synopsis {
-    max-height: clamp(4.25rem, 20vh, 7.5rem) !important;
-  }
+.nc-calibration-safe .nc-cal-card-desc {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.nc-calibration-safe .nc-cal-label {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.nc-calibration-safe .nc-cal-badge {
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.nc-calibration-safe .nc-cal-scale-pill {
+  font-size: 15px;
+  line-height: 1.2;
+  padding: 6px 12px;
+}
+
+.nc-calibration-safe .nc-cal-btn {
+  font-size: 13px;
+  line-height: 1.25;
+  padding: 9px 15px;
+}
+
+.nc-calibration-safe .nc-cal-slider-box {
+  padding: 12px 10px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -383,7 +378,3 @@ html[data-display-mode="tv"] .nc-tv-episode-icon {
     scroll-behavior: auto !important;
   }
 }
-
-
-
-

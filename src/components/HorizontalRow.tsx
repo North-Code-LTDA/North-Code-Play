@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import { motion } from 'motion/react';
-import { Play, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { MediaImage } from './MediaImage';
 
@@ -54,7 +54,9 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             className={`shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
-              type === 'live' ? 'w-64 md:w-72 aspect-video' : 'w-36 md:w-44 aspect-[2/3]'
+              type === 'live'
+                ? 'nc-tv-row-card-live w-64 md:w-72 aspect-video'
+                : 'nc-tv-row-card-poster w-36 md:w-44 aspect-[2/3]'
             }`}
           >
             <div className="relative w-full h-full">

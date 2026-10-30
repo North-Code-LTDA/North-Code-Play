@@ -18,7 +18,6 @@ export function PlayerTimeline({
   duration,
   bufferedRanges,
   isLive,
-  liveEdgeDistance = 0,
   isVisible = true,
   onSeek,
   onUserInteraction,

@@ -115,17 +115,6 @@ export function readHistoryMap(historyKey: string): PlaybackHistoryMap | null {
 }
 
 /**
- * Reads history map for a given account identity.
- * Returns null if read fails or throws exception.
- */
-export function loadPlaybackHistory(identity: AccountIdentity | null | undefined): PlaybackHistoryMap | null {
-  if (!identity || !identity.serverUrl || !identity.username) return {};
-  const historyKey = getHistoryKey(identity.serverUrl, identity.username);
-  if (!historyKey) return {};
-  return readHistoryMap(historyKey);
-}
-
-/**
  * Safely writes PlaybackHistoryMap to localStorage under historyKey.
  * Dispatches custom event for same-tab reactive updates.
  * Returns false if writing fails.

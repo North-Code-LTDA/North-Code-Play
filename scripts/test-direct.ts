@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { Window, Storage } from 'happy-dom';
+import { Window } from 'happy-dom';
 
 // -------------------------------------------------------------
 // 1. SETUP DOM & STORAGE ENVIRONMENT BEFORE ANY MODULE IMPORTS

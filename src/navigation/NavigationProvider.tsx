@@ -9,7 +9,7 @@ import {
 } from './spatialNav';
 import { executeBackAction, setCentralBackPolicyAttached } from './backPolicy';
 import { attachCapacitorBackAdapter } from './capacitorBackAdapter';
-import { attachTvEnvironmentMonitor } from '../platform/tvEnvironment';
+import { syncDocumentDisplayAttributes } from '../platform/tvEnvironment';
 
 interface NavigationContextValue {
   navMode: NavMode;
@@ -53,12 +53,11 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
   const [navMode, setNavModeState] = useState<NavMode>(() => getNavMode());
 
   useEffect(() => {
-    const detachTvMonitor = attachTvEnvironmentMonitor();
+    syncDocumentDisplayAttributes();
     const unsubscribeNav = subscribeNavMode((mode) => {
       setNavModeState(mode);
     });
     return () => {
-      detachTvMonitor();
       unsubscribeNav();
     };
   }, []);

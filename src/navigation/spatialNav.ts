@@ -396,13 +396,6 @@ function pickBestItemInBlock(
       );
       if (selectedSeasonBtn) return selectedSeasonBtn;
     }
-    const rowAttr = block.container.getAttribute('data-nav-row');
-    if (rowAttr === 'config-display-mode' || rowAttr === 'config-tv-density') {
-      const selectedConfigBtn = block.items.find(
-        (item) => item.getAttribute('data-config-selected') === 'true'
-      );
-      if (selectedConfigBtn) return selectedConfigBtn;
-    }
   }
 
   // If moving into a horizontal row or group, prefer horizontally aligned item that is visible in the row
@@ -533,12 +526,10 @@ function pickPreferredZoneEntry(
   }
 
   if (targetZone === 'content') {
-    const selectedConfig = zoneItems.find(
-      (c) =>
-        c.closest('[data-nav-row="config-display-mode"]') &&
-        c.getAttribute('data-config-selected') === 'true'
+    const primaryConfig = zoneItems.find(
+      (c) => c.getAttribute('data-config-primary') === 'true'
     );
-    if (selectedConfig) return selectedConfig;
+    if (primaryConfig) return primaryConfig;
 
     const autofocusItem = zoneItems.find((c) => c.getAttribute('data-autofocus') === 'true');
     if (autofocusItem) return autofocusItem;

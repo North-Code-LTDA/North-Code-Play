@@ -1,179 +1,166 @@
 import { useEffect, useState, useCallback } from 'react';
 
-export type DisplayModePreference = 'auto' | 'tv' | 'default';
-export type EffectiveDisplayMode = 'tv' | 'default';
-export type TvDensityPreference = 'compact' | 'normal' | 'comfortable';
+export type DisplayMode = 'tv' | 'default';
 
-const STORAGE_KEY_DISPLAY_MODE = 'northcode_display_mode_pref';
-const STORAGE_KEY_TV_DENSITY = 'northcode_tv_density_pref';
+export const STORAGE_KEY_DISPLAY_PREFS = 'northcode_display_preferences_v1';
+const LEGACY_KEY_DISPLAY_MODE = 'northcode_display_mode_pref';
+const LEGACY_KEY_TV_DENSITY = 'northcode_tv_density_pref';
 
-let memoryDisplayModePref: DisplayModePreference = 'auto';
-let memoryTvDensityPref: TvDensityPreference = 'normal';
+export const TV_SCALE_MIN = 50;
+export const TV_SCALE_MAX = 125;
+export const TV_SCALE_STEP = 5;
+export const TV_SCALE_DEFAULT = 85;
+
+export interface StoredDisplayPreferences {
+  version: 1;
+  mode: DisplayMode;
+  tvScale: number;
+  configured: true;
+}
+
+export interface DisplayPreferencesSnapshot {
+  mode: DisplayMode;
+  tvScale: number;
+  effectiveMode: DisplayMode;
+  effectiveTvScale: number;
+  uiScaleFactor: number;
+  isConfigured: boolean;
+  isPreviewActive: boolean;
+}
+
+let confirmedMode: DisplayMode = 'default';
+let confirmedTvScale: number = TV_SCALE_DEFAULT;
+let isConfiguredState = false;
+let previewState: { mode: DisplayMode; tvScale: number } | null = null;
 let initializedFromStorage = false;
+let lastLoadedRawPrefs: string | null = null;
 
 const listeners = new Set<() => void>();
 
-/**
- * Safely queries window.WebToApk.isTv() when running inside the WebToApk Android wrapper.
- * Never infers TV mode from keyboard navigation, screen width, or orientation.
- */
-export function detectWebToApkIsTv(): { detected: boolean; available: boolean } {
-  if (typeof window === 'undefined') {
-    return { detected: false, available: false };
+export function clampTvScale(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return TV_SCALE_DEFAULT;
   }
+  const stepped = Math.round(value / TV_SCALE_STEP) * TV_SCALE_STEP;
+  return Math.max(TV_SCALE_MIN, Math.min(TV_SCALE_MAX, stepped));
+}
+
+function isValidStoredDisplayPreferences(raw: unknown): raw is StoredDisplayPreferences {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const obj = raw as Record<string, unknown>;
+  if (obj.version !== 1) return false;
+  if (obj.configured !== true) return false;
+  if (obj.mode !== 'tv' && obj.mode !== 'default') return false;
+  if (
+    typeof obj.tvScale !== 'number' ||
+    !Number.isFinite(obj.tvScale) ||
+    obj.tvScale < TV_SCALE_MIN ||
+    obj.tvScale > TV_SCALE_MAX
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function loadFromStorageIfNeeded(): void {
+  if (typeof window === 'undefined') return;
+
+  let currentRaw: string | null = null;
   try {
-    const w = window as any;
-    if (w.WebToApk && typeof w.WebToApk.isTv === 'function') {
-      const res = w.WebToApk.isTv();
-      return { detected: res === true, available: true };
+    currentRaw = window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS);
+  } catch {
+    if (!initializedFromStorage) {
+      initializedFromStorage = true;
     }
-  } catch {
-    // Ignore runtime bridge errors in non-APK browsers
+    return;
   }
-  return { detected: false, available: false };
-}
 
-export function isNativeTvEnvironment(): boolean {
-  return detectWebToApkIsTv().detected;
-}
-
-export function isNativePackagedEnvironment(): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    const w = window as any;
-    if (w.AppMint && typeof w.AppMint.setBackHandler === 'function') return true;
-    if (w.WebToApk && typeof w.WebToApk.isTv === 'function') return true;
-    if (w.Capacitor) return true;
-  } catch {
-    // Ignore
+  if (initializedFromStorage && currentRaw === lastLoadedRawPrefs) {
+    return;
   }
-  return false;
-}
 
-function ensureLoadedFromStorage(): void {
-  if (initializedFromStorage || typeof window === 'undefined') return;
   initializedFromStorage = true;
+  lastLoadedRawPrefs = currentRaw;
 
-  try {
-    const rawMode = window.localStorage.getItem(STORAGE_KEY_DISPLAY_MODE);
-    if (rawMode === 'auto' || rawMode === 'tv' || rawMode === 'default') {
-      memoryDisplayModePref = rawMode;
-    }
-  } catch {
-    // Storage unavailable or blocked; keep memory default
+  if (!currentRaw) {
+    confirmedMode = 'default';
+    confirmedTvScale = TV_SCALE_DEFAULT;
+    isConfiguredState = false;
+    return;
   }
 
   try {
-    const rawDensity = window.localStorage.getItem(STORAGE_KEY_TV_DENSITY);
-    if (rawDensity === 'compact' || rawDensity === 'normal' || rawDensity === 'comfortable') {
-      memoryTvDensityPref = rawDensity;
+    const parsed = JSON.parse(currentRaw);
+    if (isValidStoredDisplayPreferences(parsed)) {
+      confirmedMode = parsed.mode;
+      confirmedTvScale = clampTvScale(parsed.tvScale);
+      isConfiguredState = true;
+      return;
     }
   } catch {
-    // Storage unavailable or blocked; keep memory default
+    // Malformed JSON falls back to unconfigured default
   }
+
+  confirmedMode = 'default';
+  confirmedTvScale = TV_SCALE_DEFAULT;
+  isConfiguredState = false;
 }
 
-export function getDisplayModePreference(): DisplayModePreference {
-  ensureLoadedFromStorage();
-  return memoryDisplayModePref;
-}
+export function getDisplayPreferencesSnapshot(): DisplayPreferencesSnapshot {
+  loadFromStorageIfNeeded();
+  const effectiveMode: DisplayMode = previewState
+    ? previewState.mode
+    : isConfiguredState
+    ? confirmedMode
+    : 'default';
+  const effectiveTvScale: number = previewState
+    ? previewState.tvScale
+    : confirmedTvScale;
+  const uiScaleFactor =
+    effectiveMode === 'tv' ? Number((effectiveTvScale / 100).toFixed(2)) : 1;
 
-export function getTvDensityPreference(): TvDensityPreference {
-  ensureLoadedFromStorage();
-  return memoryTvDensityPref;
-}
-
-export function getEffectiveDisplayMode(
-  pref: DisplayModePreference = getDisplayModePreference()
-): EffectiveDisplayMode {
-  if (pref === 'tv') return 'tv';
-  if (pref === 'default') return 'default';
-  return isNativeTvEnvironment() ? 'tv' : 'default';
+  return {
+    mode: confirmedMode,
+    tvScale: confirmedTvScale,
+    effectiveMode,
+    effectiveTvScale,
+    uiScaleFactor,
+    isConfigured: isConfiguredState,
+    isPreviewActive: previewState !== null,
+  };
 }
 
 export function syncDocumentDisplayAttributes(): boolean {
   if (typeof document === 'undefined' || !document.documentElement) return false;
-  const pref = getDisplayModePreference();
-  const effective = getEffectiveDisplayMode(pref);
-  const density = getTvDensityPreference();
-  const origin = pref === 'auto' ? 'auto' : 'manual';
-
+  const snap = getDisplayPreferencesSnapshot();
   const docEl = document.documentElement;
   let changed = false;
 
-  if (docEl.getAttribute('data-display-mode') !== effective) {
-    docEl.setAttribute('data-display-mode', effective);
+  if (docEl.getAttribute('data-display-mode') !== snap.effectiveMode) {
+    docEl.setAttribute('data-display-mode', snap.effectiveMode);
     changed = true;
   }
-  if (docEl.getAttribute('data-tv-density') !== density) {
-    docEl.setAttribute('data-tv-density', density);
+
+  const targetScaleStr = String(snap.uiScaleFactor);
+  if (docEl.style.getPropertyValue('--nc-ui-scale') !== targetScaleStr) {
+    docEl.style.setProperty('--nc-ui-scale', targetScaleStr);
     changed = true;
   }
-  if (docEl.getAttribute('data-display-origin') !== origin) {
-    docEl.setAttribute('data-display-origin', origin);
+
+  if (docEl.hasAttribute('data-tv-density')) {
+    docEl.removeAttribute('data-tv-density');
+    changed = true;
+  }
+  if (docEl.hasAttribute('data-display-origin')) {
+    docEl.removeAttribute('data-display-origin');
     changed = true;
   }
 
   return changed;
 }
 
-interface InternalSnapshot {
-  modePreference: DisplayModePreference;
-  effectiveMode: EffectiveDisplayMode;
-  origin: 'auto' | 'manual';
-  density: TvDensityPreference;
-  webToApkAvailable: boolean;
-  webToApkDetected: boolean;
-}
-
-let lastSnapshot: InternalSnapshot | null = null;
-
-function readInternalSnapshot(): InternalSnapshot {
-  const modePreference = getDisplayModePreference();
-  const webToApk = detectWebToApkIsTv();
-  const effectiveMode: EffectiveDisplayMode =
-    modePreference === 'tv'
-      ? 'tv'
-      : modePreference === 'default'
-      ? 'default'
-      : webToApk.detected
-      ? 'tv'
-      : 'default';
-  const density = getTvDensityPreference();
-  const origin = modePreference === 'auto' ? 'auto' : 'manual';
-
-  return {
-    modePreference,
-    effectiveMode,
-    origin,
-    density,
-    webToApkAvailable: webToApk.available,
-    webToApkDetected: webToApk.detected,
-  };
-}
-
-function snapshotsEqual(a: InternalSnapshot | null, b: InternalSnapshot): boolean {
-  if (!a) return false;
-  return (
-    a.modePreference === b.modePreference &&
-    a.effectiveMode === b.effectiveMode &&
-    a.origin === b.origin &&
-    a.density === b.density &&
-    a.webToApkAvailable === b.webToApkAvailable &&
-    a.webToApkDetected === b.webToApkDetected
-  );
-}
-
-function notifyListeners(force: boolean = false): boolean {
-  const next = readInternalSnapshot();
-  const domChanged = syncDocumentDisplayAttributes();
-  const stateChanged = !snapshotsEqual(lastSnapshot, next);
-  lastSnapshot = next;
-
-  if (!force && !domChanged && !stateChanged) {
-    return false;
-  }
-
+function notifyListeners(): void {
+  syncDocumentDisplayAttributes();
   listeners.forEach((fn) => {
     try {
       fn();
@@ -181,165 +168,111 @@ function notifyListeners(force: boolean = false): boolean {
       // Ignore subscriber errors
     }
   });
-  return true;
 }
 
-/**
- * Re-evaluates native TV detection and synchronizes document attributes and React subscribers
- * only if the effective state or bridge availability changed.
- */
-export function refreshTvEnvironmentDetection(): boolean {
-  ensureLoadedFromStorage();
-  return notifyListeners(false);
+export function startDisplayPreview(mode: DisplayMode, tvScale?: number): void {
+  loadFromStorageIfNeeded();
+  const nextScale = clampTvScale(tvScale ?? (previewState ? previewState.tvScale : confirmedTvScale));
+  previewState = { mode, tvScale: nextScale };
+  notifyListeners();
 }
 
-/**
- * Central lifecycle monitor for TV presentation mode.
- * Synchronizes immediately on startup, performs a bounded set of short re-checks
- * in case the Android WebView injects window.WebToApk slightly after initial script load,
- * and re-verifies when the app returns to foreground.
- */
-export function attachTvEnvironmentMonitor(): () => void {
-  if (typeof window === 'undefined' || typeof document === 'undefined') {
-    return () => {};
+export function cancelDisplayPreview(): void {
+  loadFromStorageIfNeeded();
+  if (previewState !== null) {
+    previewState = null;
+    notifyListeners();
+  } else {
+    syncDocumentDisplayAttributes();
   }
+}
 
-  refreshTvEnvironmentDetection();
+export function confirmDisplayPreferences(mode: DisplayMode, tvScale?: number): boolean {
+  loadFromStorageIfNeeded();
+  const nextScale = clampTvScale(tvScale ?? (previewState ? previewState.tvScale : confirmedTvScale));
+  confirmedMode = mode;
+  confirmedTvScale = nextScale;
+  isConfiguredState = true;
+  previewState = null;
 
-  const retryDelays = [120, 350, 800, 1600, 3000];
-  const timers: Array<ReturnType<typeof setTimeout>> = [];
-
-  if (!detectWebToApkIsTv().available) {
-    for (const delay of retryDelays) {
-      const t = setTimeout(() => {
-        refreshTvEnvironmentDetection();
-        if (detectWebToApkIsTv().available) {
-          timers.forEach((id) => clearTimeout(id));
-          timers.length = 0;
-        }
-      }, delay);
-      timers.push(t);
-    }
-  }
-
-  const handleForegroundResume = () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-      return;
-    }
-    refreshTvEnvironmentDetection();
+  const payload: StoredDisplayPreferences = {
+    version: 1,
+    mode: confirmedMode,
+    tvScale: confirmedTvScale,
+    configured: true,
   };
 
-  window.addEventListener('focus', handleForegroundResume);
-  window.addEventListener('pageshow', handleForegroundResume);
-  document.addEventListener('visibilitychange', handleForegroundResume);
-
-  return () => {
-    timers.forEach((id) => clearTimeout(id));
-    timers.length = 0;
-    window.removeEventListener('focus', handleForegroundResume);
-    window.removeEventListener('pageshow', handleForegroundResume);
-    document.removeEventListener('visibilitychange', handleForegroundResume);
-  };
-}
-
-export function setDisplayModePreference(pref: DisplayModePreference): void {
-  ensureLoadedFromStorage();
-  memoryDisplayModePref = pref;
+  let persisted = false;
   if (typeof window !== 'undefined') {
     try {
-      window.localStorage.setItem(STORAGE_KEY_DISPLAY_MODE, pref);
+      const serialized = JSON.stringify(payload);
+      window.localStorage.setItem(STORAGE_KEY_DISPLAY_PREFS, serialized);
+      lastLoadedRawPrefs = serialized;
+      persisted = true;
     } catch {
-      // Safe fallback to in-memory preference
+      // Keep in-memory state if localStorage is blocked or full
+    }
+
+    if (persisted) {
+      try {
+        window.localStorage.removeItem(LEGACY_KEY_DISPLAY_MODE);
+        window.localStorage.removeItem(LEGACY_KEY_TV_DENSITY);
+      } catch {
+        // Ignore cleanup errors
+      }
     }
   }
-  notifyListeners(true);
+
+  notifyListeners();
+  return persisted;
 }
 
-export function setTvDensityPreference(density: TvDensityPreference): void {
-  ensureLoadedFromStorage();
-  memoryTvDensityPref = density;
-  if (typeof window !== 'undefined') {
-    try {
-      window.localStorage.setItem(STORAGE_KEY_TV_DENSITY, density);
-    } catch {
-      // Safe fallback to in-memory preference
-    }
-  }
-  notifyListeners(true);
-}
-
-export function subscribeTvPresentation(listener: () => void): () => void {
+export function subscribeDisplayPreferences(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
   };
 }
 
-export interface TvPresentationState {
-  modePreference: DisplayModePreference;
-  effectiveMode: EffectiveDisplayMode;
-  origin: 'auto' | 'manual';
-  density: TvDensityPreference;
-  webToApkTv: { detected: boolean; available: boolean };
-  setModePreference: (pref: DisplayModePreference) => void;
-  setDensity: (density: TvDensityPreference) => void;
+export interface UseDisplayPreferencesResult extends DisplayPreferencesSnapshot {
+  startPreview: (mode: DisplayMode, tvScale?: number) => void;
+  cancelPreview: () => void;
+  confirmPreferences: (mode: DisplayMode, tvScale?: number) => boolean;
 }
 
-export function useTvPresentation(): TvPresentationState {
-  const getSnapshot = useCallback(() => {
-    const snap = readInternalSnapshot();
-    return {
-      modePreference: snap.modePreference,
-      effectiveMode: snap.effectiveMode,
-      origin: snap.origin,
-      density: snap.density,
-      webToApkTv: {
-        detected: snap.webToApkDetected,
-        available: snap.webToApkAvailable,
-      },
-    };
-  }, []);
+export function useDisplayPreferences(): UseDisplayPreferencesResult {
+  const [state, setState] = useState<DisplayPreferencesSnapshot>(() =>
+    getDisplayPreferencesSnapshot()
+  );
 
-  const [state, setState] = useState(getSnapshot);
-
-  useEffect(() => {
-    refreshTvEnvironmentDetection();
+  const refreshState = useCallback(() => {
+    const next = getDisplayPreferencesSnapshot();
     setState((prev) => {
-      const next = getSnapshot();
       if (
-        prev.modePreference === next.modePreference &&
+        prev.mode === next.mode &&
+        prev.tvScale === next.tvScale &&
         prev.effectiveMode === next.effectiveMode &&
-        prev.origin === next.origin &&
-        prev.density === next.density &&
-        prev.webToApkTv.available === next.webToApkTv.available &&
-        prev.webToApkTv.detected === next.webToApkTv.detected
+        prev.effectiveTvScale === next.effectiveTvScale &&
+        prev.uiScaleFactor === next.uiScaleFactor &&
+        prev.isConfigured === next.isConfigured &&
+        prev.isPreviewActive === next.isPreviewActive
       ) {
         return prev;
       }
       return next;
     });
-    return subscribeTvPresentation(() => {
-      setState((prev) => {
-        const next = getSnapshot();
-        if (
-          prev.modePreference === next.modePreference &&
-          prev.effectiveMode === next.effectiveMode &&
-          prev.origin === next.origin &&
-          prev.density === next.density &&
-          prev.webToApkTv.available === next.webToApkTv.available &&
-          prev.webToApkTv.detected === next.webToApkTv.detected
-        ) {
-          return prev;
-        }
-        return next;
-      });
-    });
-  }, [getSnapshot]);
+  }, []);
+
+  useEffect(() => {
+    syncDocumentDisplayAttributes();
+    refreshState();
+    return subscribeDisplayPreferences(refreshState);
+  }, [refreshState]);
 
   return {
     ...state,
-    setModePreference: setDisplayModePreference,
-    setDensity: setTvDensityPreference,
+    startPreview: startDisplayPreview,
+    cancelPreview: cancelDisplayPreview,
+    confirmPreferences: confirmDisplayPreferences,
   };
 }
-

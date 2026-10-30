@@ -33,7 +33,7 @@ interface MoviesViewProps {
 export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
   const { 
     vodCategories, vodStreams, allVodStreams, fetchVodStreams, 
-    loadingVod, vodError, vodCategoriesError, vodCategoriesStatus,
+    vodError, vodCategoriesError, vodCategoriesStatus,
     vodCatalogStatus, fetchVodCategories, credentials 
   } = useXtreamContext();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();

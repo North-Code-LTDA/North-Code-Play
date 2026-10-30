@@ -25,10 +25,6 @@ export function setActivePlayer(id: string): void {
   }
 }
 
-export function getActivePlayerId(): string | null {
-  return activePlayerId;
-}
-
 export function isPlayerActive(
   id: string,
   isFs: boolean,

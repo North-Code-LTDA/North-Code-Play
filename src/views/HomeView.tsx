@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { AnimatePresence } from 'motion/react';
 import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { HeroBanner } from '../components/HeroBanner';
@@ -11,6 +11,8 @@ import { sortByYearAndRating } from '../utils/catalogRanking';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 import { formatCategoryLabel } from '../utils/categoryLabel';
 export { formatCategoryLabel };
+
+const displayCount = { live: 24, vod: 24, series: 24 };
 
 interface HomeViewProps {
   onPlay: (
@@ -30,13 +32,11 @@ interface HomeViewProps {
 
 export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: HomeViewProps) {
   const { 
-    liveStreams, vodStreams, seriesStreams, 
     allLiveStreams, allVodStreams, allSeriesStreams,
     liveCategories, vodCategories, seriesCategories,
     credentials,
     sessionReady,
     liveCatalogStatus, vodCatalogStatus, seriesCatalogStatus,
-    liveCategoriesStatus, vodCategoriesStatus, seriesCategoriesStatus,
     liveCategoriesError, vodCategoriesError, seriesCategoriesError,
     liveError, vodError, seriesError,
     fetchLiveStreams, fetchVodStreams, fetchSeriesStreams,
@@ -45,7 +45,6 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
 
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
   const [selectedMovie, setSelectedMovie] = useState<any | null>(null);
-  const [displayCount, setDisplayCount] = useState({ live: 24, vod: 24, series: 24 });
   const [homePlayError, setHomePlayError] = useState<string | null>(null);
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
 

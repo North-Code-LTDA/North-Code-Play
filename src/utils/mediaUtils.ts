@@ -411,19 +411,3 @@ export function buildDirectMediaUrl(
   return `${cleanBase}/live/${user}/${pass}/${id}.m3u8`;
 }
 
-export async function getMediaStreamUrl(
-  credentials: XtreamCredentials,
-  options: {
-    type: "live" | "movie" | "series";
-    streamId: string | number;
-    containerExtension?: string;
-    allowedOutputFormats?: string[];
-  }
-): Promise<string> {
-  return buildDirectMediaUrl(credentials, {
-    type: options.type,
-    streamId: options.streamId,
-    containerExtension: options.containerExtension,
-    allowedOutputFormats: options.allowedOutputFormats,
-  });
-}

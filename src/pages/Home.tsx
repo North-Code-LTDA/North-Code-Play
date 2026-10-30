@@ -16,6 +16,8 @@ import { useDebounce } from '../hooks/useDebounce';
 import { normalizeServerUrl } from '../utils/mediaUtils';
 import { safeRemoveCredentials } from '../utils/accountUtils';
 import { MediaImage } from '../components/MediaImage';
+import { DisplaySetupModal } from '../components/DisplaySetupModal';
+import { useDisplayPreferences } from '../platform/tvEnvironment';
 import { APP_VERSION, APP_COMMIT } from '../version';
 import {
   useNavigationMode,
@@ -33,6 +35,8 @@ export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | '
 function HomeContent({ credentials }: { credentials: any }) {
   const navigate = useNavigate();
   const navMode = useNavigationMode();
+  const { isConfigured } = useDisplayPreferences();
+  const isDisplaySetupOpen = !isConfigured;
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [currentView, setCurrentView] = useState<ViewType>('inicio');
   const [liveLaunchIntent, setLiveLaunchIntent] = useState<LiveChannelLaunchIntent | null>(null);
@@ -186,6 +190,20 @@ function HomeContent({ credentials }: { credentials: any }) {
 
   const isOverlayActive = !isOpeningDismissed && !allSixFinished;
 
+  const handleFirstSetupComplete = () => {
+    setTimeout(() => {
+      if (getNavMode() !== 'remote') return;
+      const root = homeRootRef.current;
+      if (!root) return;
+      const target =
+        root.querySelector<HTMLElement>('[data-nav-zone="content"] button, [data-nav-zone="content"] [data-nav-item="true"]') ||
+        root.querySelector<HTMLElement>('aside[data-nav-zone="sidebar"] button[data-sidebar-active="true"]');
+      if (target && isElementFocusable(target)) {
+        focusElementSafely(target);
+      }
+    }, 0);
+  };
+
   useEffect(() => {
     if (logoutError) {
       const timer = setTimeout(() => setLogoutError(null), 4000);
@@ -279,10 +297,8 @@ function HomeContent({ credentials }: { credentials: any }) {
           if (alreadyConfig && getNavMode() === 'remote') {
             const root = homeRootRef.current || document.body;
             const target =
-              root.querySelector<HTMLElement>(
-                '[data-nav-row="config-display-mode"] button[data-config-selected="true"]'
-              ) ||
-              root.querySelector<HTMLElement>('[data-nav-row="config-display-mode"] button');
+              root.querySelector<HTMLElement>('[data-config-primary="true"]') ||
+              root.querySelector<HTMLElement>('[data-nav-zone="content"] button');
             if (target) {
               focusElementSafely(target);
             }
@@ -342,7 +358,7 @@ function HomeContent({ credentials }: { credentials: any }) {
           lastPointerDownTimeRef.current = Date.now();
         }}
         className="h-[100dvh] bg-nc-bg flex flex-col md:flex-row w-full overflow-hidden"
-        inert={isOverlayActive ? true : undefined}
+        inert={isOverlayActive || isDisplaySetupOpen ? true : undefined}
       >
         <AnimatePresence>
           {activeVideo && (
@@ -561,8 +577,10 @@ function HomeContent({ credentials }: { credentials: any }) {
       {/* Initial Opening Overlay covering the entire interface */}
       {isOverlayActive && (
         <div
-          role="dialog"
-          aria-modal="true"
+          role={isDisplaySetupOpen ? undefined : 'dialog'}
+          aria-modal={isDisplaySetupOpen ? undefined : 'true'}
+          aria-hidden={isDisplaySetupOpen ? 'true' : undefined}
+          inert={isDisplaySetupOpen ? true : undefined}
           aria-label="Carregando programação"
           className="fixed inset-0 z-[100] bg-nc-bg/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center select-none"
         >
@@ -604,6 +622,13 @@ function HomeContent({ credentials }: { credentials: any }) {
           )}
         </div>
       )}
+
+      {/* First-run Device Presentation Setup Wizard (outside inert containers) */}
+      <DisplaySetupModal
+        isOpen={isDisplaySetupOpen}
+        canCancel={false}
+        onComplete={handleFirstSetupComplete}
+      />
     </>
   );
 }

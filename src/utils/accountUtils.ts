@@ -65,14 +65,6 @@ export function safeReadStorage(key: string): StorageReadResult {
 }
 
 /**
- * Safely reads raw string from localStorage without throwing
- */
-export function safeGetStorage(key: string): string | null {
-  const res = safeReadStorage(key);
-  return res.success ? res.value : null;
-}
-
-/**
  * Safely writes string to localStorage without throwing
  */
 export function safeSetStorage(key: string, value: string): boolean {

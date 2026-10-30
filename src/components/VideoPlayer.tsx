@@ -65,9 +65,6 @@ export function VideoPlayer({
   // Track whether reproduction has ever started for current stream
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
 
-  // Track accessible keyboard navigation vs mouse clicks to defuse lingering focus
-  const isKeyboardNavigatingRef = useRef(false);
-
   // Playback session hook manages HLS.js vs native HTML5, tracks, audio, qualities, buffer
   const session = usePlaybackSession({
     videoRef,
@@ -95,26 +92,6 @@ export function VideoPlayer({
   useEffect(() => {
     setHasStartedPlaying(false);
   }, [streamUrl, retryTrigger]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Tab' || e.key.startsWith('Arrow')) {
-        isKeyboardNavigatingRef.current = true;
-      }
-    };
-    const handlePointerActivity = () => {
-      isKeyboardNavigatingRef.current = false;
-    };
-
-    window.addEventListener('keydown', handleKeyDown, true);
-    window.addEventListener('pointerdown', handlePointerActivity, true);
-    window.addEventListener('mousemove', handlePointerActivity, true);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown, true);
-      window.removeEventListener('pointerdown', handlePointerActivity, true);
-      window.removeEventListener('mousemove', handlePointerActivity, true);
-    };
-  }, []);
 
   // Unique player instance identifier and registry tracking
   const playerId = useId();
@@ -212,7 +189,6 @@ export function VideoPlayer({
           return;
         }
         setIsControlsVisible(false);
-        isKeyboardNavigatingRef.current = false;
         if (
           containerRef.current &&
           document.activeElement &&

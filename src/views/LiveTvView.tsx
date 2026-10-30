@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { TvMinimalPlay, Loader2, Play, Heart, ArrowLeft, Calendar, AlertCircle, RefreshCw, X, Layers } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { TvMinimalPlay, Loader2, Heart, ArrowLeft, Calendar, AlertCircle, RefreshCw, X, Layers } from 'lucide-react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { VideoPlayer } from '../components/VideoPlayer';
@@ -939,7 +938,7 @@ export function LiveTvView({
         lastPointerDownTimeRef.current = Date.now();
         pendingChannelEntryCategoryRef.current = null;
       }}
-      className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-[calc(100vh-80px)] overflow-y-auto md:overflow-hidden bg-nc-bg"
+      className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-full min-h-0 overflow-y-auto md:overflow-hidden bg-nc-bg"
     >
       {/* Left Pane: Categories or Channels */}
       <div
@@ -1285,7 +1284,7 @@ export function LiveTvView({
              </div>
 
              {/* EPG List */}
-             <div className="flex-1 w-full h-auto md:h-full min-h-[300px] overflow-visible md:overflow-y-auto p-4 custom-scrollbar bg-nc-bg">
+             <div className="flex-1 w-full h-auto md:h-full min-h-[12rem] md:min-h-0 overflow-visible md:overflow-y-auto p-4 custom-scrollbar bg-nc-bg">
                <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2 border-b border-nc-border/50 pb-2">
                  <Calendar className="w-5 h-5 text-nc-primary" /> Programação
                </h3>

@@ -32,7 +32,7 @@ interface SeriesViewProps {
 export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
   const { 
     seriesCategories, seriesStreams, allSeriesStreams, fetchSeriesStreams, 
-    loadingSeries, seriesError, seriesCategoriesError, seriesCategoriesStatus, 
+    seriesError, seriesCategoriesError, seriesCategoriesStatus, 
     seriesCatalogStatus, fetchSeriesCategories, credentials 
   } = useXtreamContext();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
