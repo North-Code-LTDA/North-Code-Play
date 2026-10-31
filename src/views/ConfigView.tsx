@@ -46,6 +46,7 @@ export function ConfigView() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const remProbeRef = useRef<HTMLDivElement>(null);
+  const compensatedProbeRef = useRef<HTMLDivElement>(null);
   const diagnosticsTextareaRef = useRef<HTMLTextAreaElement>(null);
   const adjustTriggerRef = useRef<HTMLButtonElement | null>(null);
   const hasInitialFocusedRef = useRef(false);
@@ -62,13 +63,15 @@ export function ConfigView() {
   } = useDisplayPreferences();
 
   const [diagnostics, setDiagnostics] = useState<DisplayEnvironmentDiagnostics>(() =>
-    readDisplayEnvironmentDiagnostics(null)
+    readDisplayEnvironmentDiagnostics(null, null)
   );
 
   const nativeBackBridge = getNativeBackBridgeStatus();
 
   const updateDiagnosticsSnapshot = useCallback(() => {
-    setDiagnostics(readDisplayEnvironmentDiagnostics(remProbeRef.current));
+    setDiagnostics(
+      readDisplayEnvironmentDiagnostics(remProbeRef.current, compensatedProbeRef.current)
+    );
   }, []);
 
   // Measure after browser layout when display preferences or diagnostics visibility change
@@ -252,6 +255,11 @@ export function ConfigView() {
             ? `${measured.probeWidthPx} × ${measured.probeHeightPx} px`
             : 'indisponível'
         }`,
+        `Amostra compensada 10×--nc-rem × 2×--nc-rem (getBoundingClientRect): ${
+          measured.compensatedProbeWidthPx !== null && measured.compensatedProbeHeightPx !== null
+            ? `${measured.compensatedProbeWidthPx} × ${measured.compensatedProbeHeightPx} px`
+            : 'indisponível'
+        }`,
         `Escala efetiva medida: ${
           measured.effectiveMeasuredScalePct !== null
             ? `${measured.effectiveMeasuredScalePct}%`
@@ -286,7 +294,10 @@ export function ConfigView() {
   );
 
   const handleCopyDiagnostics = async () => {
-    const latest = readDisplayEnvironmentDiagnostics(remProbeRef.current);
+    const latest = readDisplayEnvironmentDiagnostics(
+      remProbeRef.current,
+      compensatedProbeRef.current
+    );
     setDiagnostics(latest);
     const reportText = buildSanitizedDiagnosticsText(latest);
 
@@ -340,6 +351,18 @@ export function ConfigView() {
         aria-hidden="true"
         tabIndex={-1}
         style={{ width: '10rem', height: '2rem' }}
+        className="fixed -top-[9999px] -left-[9999px] opacity-0 pointer-events-none select-none overflow-hidden"
+      />
+      {/* Hidden, non-interactive, non-focusable compensated 10*--nc-rem x 2*--nc-rem sample probe */}
+      <div
+        ref={compensatedProbeRef}
+        data-compensated-probe="true"
+        aria-hidden="true"
+        tabIndex={-1}
+        style={{
+          width: 'calc(10 * var(--nc-rem, 1rem))',
+          height: 'calc(2 * var(--nc-rem, 1rem))',
+        }}
         className="fixed -top-[9999px] -left-[9999px] opacity-0 pointer-events-none select-none overflow-hidden"
       />
 
@@ -670,8 +693,19 @@ export function ConfigView() {
                     </div>
                     <div>
                       <span className="text-gray-400 block">Compensação de Escala (--nc-rem-compensation)</span>
-                      <span className="text-white font-mono">
+                      <span className="text-white font-mono" data-diag-rem-compensation="true">
                         {diagnostics.measured.domRemCompensationVar ?? '1 (sem bloqueio de fonte)'}
+                      </span>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <span className="text-gray-400 block">
+                        Amostra Compensada 10×--nc-rem × 2×--nc-rem (getBoundingClientRect)
+                      </span>
+                      <span className="text-white font-mono" data-diag-compensated-probe-rect="true">
+                        {diagnostics.measured.compensatedProbeWidthPx !== null &&
+                        diagnostics.measured.compensatedProbeHeightPx !== null
+                          ? `${diagnostics.measured.compensatedProbeWidthPx} × ${diagnostics.measured.compensatedProbeHeightPx} px`
+                          : 'indisponível'}
                       </span>
                     </div>
                   </div>

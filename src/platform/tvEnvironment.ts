@@ -279,6 +279,8 @@ export interface DisplayEnvironmentDiagnostics {
     computedRootFontSizePx: number | null;
     probeWidthPx: number | null;
     probeHeightPx: number | null;
+    compensatedProbeWidthPx: number | null;
+    compensatedProbeHeightPx: number | null;
     effectiveMeasuredScalePct: number | null;
   };
   viewport: {
@@ -298,7 +300,8 @@ export interface DisplayEnvironmentDiagnostics {
 }
 
 export function readDisplayEnvironmentDiagnostics(
-  probeEl?: HTMLElement | null
+  probeEl?: HTMLElement | null,
+  compensatedProbeEl?: HTMLElement | null
 ): DisplayEnvironmentDiagnostics {
   const snap = getDisplayPreferencesSnapshot();
   const hasDoc = typeof document !== 'undefined' && Boolean(document.documentElement);
@@ -365,6 +368,26 @@ export function readDisplayEnvironmentDiagnostics(
       ) {
         probeWidthPx = Number(rect.width.toFixed(2));
         probeHeightPx = Number(rect.height.toFixed(2));
+      }
+    } catch {
+      // Ignore rect errors
+    }
+  }
+
+  let compensatedProbeWidthPx: number | null = null;
+  let compensatedProbeHeightPx: number | null = null;
+  if (compensatedProbeEl && typeof compensatedProbeEl.getBoundingClientRect === 'function') {
+    try {
+      const cRect = compensatedProbeEl.getBoundingClientRect();
+      if (
+        cRect &&
+        Number.isFinite(cRect.width) &&
+        Number.isFinite(cRect.height) &&
+        cRect.width > 0 &&
+        cRect.height > 0
+      ) {
+        compensatedProbeWidthPx = Number(cRect.width.toFixed(2));
+        compensatedProbeHeightPx = Number(cRect.height.toFixed(2));
       }
     } catch {
       // Ignore rect errors
@@ -451,6 +474,8 @@ export function readDisplayEnvironmentDiagnostics(
       computedRootFontSizePx,
       probeWidthPx,
       probeHeightPx,
+      compensatedProbeWidthPx,
+      compensatedProbeHeightPx,
       effectiveMeasuredScalePct,
     },
     viewport: {

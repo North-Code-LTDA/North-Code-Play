@@ -441,7 +441,7 @@ export function DisplaySetupModal({
                 className="w-full h-[185px] sm:h-[210px] rounded-xl border border-nc-border/60 bg-nc-bg overflow-hidden flex pointer-events-none"
               >
                 {/* Simulated Sidebar */}
-                <div className="w-[8.5rem] flex flex-col border-r border-nc-border/50 bg-black/60 shrink-0 h-full">
+                <div className="w-[calc(8.5*var(--nc-rem,1rem))] flex flex-col border-r border-nc-border/50 bg-black/60 shrink-0 h-full">
                   <div className="nc-tv-sidebar-logo border-b border-nc-border/30">
                     <div className="font-bold text-white text-xs truncate">NORTH CODE</div>
                   </div>
@@ -482,7 +482,7 @@ export function DisplaySetupModal({
                 </div>
 
                 {/* Simulated Category & Channel Pane */}
-                <div className="w-[9.5rem] hidden sm:flex flex-col border-r border-nc-border/50 bg-nc-bg-card/30 shrink-0 h-full p-2 gap-1 overflow-hidden">
+                <div className="w-[calc(9.5*var(--nc-rem,1rem))] hidden sm:flex flex-col border-r border-nc-border/50 bg-nc-bg-card/30 shrink-0 h-full p-2 gap-1 overflow-hidden">
                   <div className="text-xs font-semibold uppercase tracking-wider text-nc-text-secondary px-2 py-1">
                     Canais
                   </div>
@@ -510,7 +510,7 @@ export function DisplaySetupModal({
                       Escala {draftScale}%
                     </span>
                   </div>
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(5.75rem,1fr))] gap-2 flex-1 content-start overflow-hidden">
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(calc(5.75*var(--nc-rem,1rem)),1fr))] gap-2 flex-1 content-start overflow-hidden">
                     {Array.from({ length: 10 }).map((_, idx) => (
                       <div
                         key={idx}

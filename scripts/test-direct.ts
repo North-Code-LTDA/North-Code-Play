@@ -112,12 +112,68 @@ Object.defineProperty(windowInstance.HTMLElement.prototype, 'scrollTop', {
   configurable: true,
 });
 
+// 1.5 GUARDA DE ISOLAMENTO DE REDE PARA TESTES AUTOMATIZADOS (SEM ACESSO EXTERNO)
+function sanitizeUrlForTestLog(rawUrl: unknown): string {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return '[url-vazia]';
+  try {
+    const parsed = new URL(rawUrl, 'http://localhost');
+    // Remove credenciais de path (/live/user/pass/id -> /live/[redacted]/[redacted]/id) e query params
+    const safePath = parsed.pathname.replace(
+      /^\/(live|movie|series)\/[^/]+\/[^/]+\//i,
+      '/$1/[redacted]/[redacted]/'
+    );
+    return `${parsed.origin}${safePath}`;
+  } catch {
+    return '[url-sanitizada]';
+  }
+}
+
+let externalNetworkGuardHandler: ((url: string, init?: RequestInit) => Promise<Response>) | null =
+  null;
+let blockedExternalNetworkCount = 0;
+
+const offlineFetchGuard = async (input: any, init?: RequestInit): Promise<Response> => {
+  const rawUrl =
+    typeof input === 'string'
+      ? input
+      : input && typeof input.url === 'string'
+        ? input.url
+        : String(input ?? '');
+  if (externalNetworkGuardHandler) {
+    return externalNetworkGuardHandler(rawUrl, init);
+  }
+  blockedExternalNetworkCount++;
+  throw new Error(
+    `[TestNetworkGuard] Chamada HTTP externa bloqueada durante os testes: ${sanitizeUrlForTestLog(rawUrl)}`
+  );
+};
+
+(windowInstance as any).fetch = offlineFetchGuard;
+(globalThis as any).fetch = offlineFetchGuard;
+
+if ((windowInstance as any).XMLHttpRequest) {
+  (windowInstance as any).XMLHttpRequest.prototype.send = function () {
+    blockedExternalNetworkCount++;
+    throw new Error('[TestNetworkGuard] XMLHttpRequest externo bloqueado durante os testes.');
+  };
+}
+
 // 2. IMPORTAÇÃO DINÂMICA DOS MÓDULOS REAIS DO PROJETO (APÓS INICIALIZAR WINDOW E REQUESTANIMATIONFRAME)
+import fs from 'fs';
+import path from 'path';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
+import axios from 'axios';
 import type { XtreamCredentials } from '../src/types';
 import type { FavoriteItem } from '../src/hooks/useFavorites';
+
+axios.defaults.adapter = async (config) => {
+  blockedExternalNetworkCount++;
+  throw new Error(
+    `[TestNetworkGuard] Requisição axios externa bloqueada nos testes: ${sanitizeUrlForTestLog(config?.url)}`
+  );
+};
 
 const {
   normalizeServerUrl,
@@ -151,6 +207,37 @@ const {
   readDisplayEnvironmentDiagnostics,
 } = await import('../src/platform/tvEnvironment');
 
+// Mocks padrão offline para todos os métodos de XtreamService desde o início da suíte
+const originalXtreamAuthenticate = XtreamService.authenticate.bind(XtreamService);
+
+function installDefaultXtreamOfflineMocks(): void {
+  (XtreamService as any).authenticate = async (creds?: XtreamCredentials) => ({
+    user_info: {
+      username: creds?.username || 'testUser',
+      auth: 1,
+      status: 'Active',
+      exp_date: '1893456000',
+      active_cons: '1',
+      max_connections: '3',
+      allowed_output_formats: creds?.allowed_output_formats || ['m3u8', 'ts'],
+    },
+    server_info: {
+      allowed_output_formats: creds?.allowed_output_formats || ['m3u8', 'ts'],
+    },
+  });
+  (XtreamService as any).getLiveCategories = async () => [];
+  (XtreamService as any).getVodCategories = async () => [];
+  (XtreamService as any).getSeriesCategories = async () => [];
+  (XtreamService as any).getLiveStreams = async () => [];
+  (XtreamService as any).getVodStreams = async () => [];
+  (XtreamService as any).getSeries = async () => [];
+  (XtreamService as any).getVodInfo = async () => ({ info: {}, movie_data: {} });
+  (XtreamService as any).getSeriesInfo = async () => ({ info: {}, episodes: {} });
+  (XtreamService as any).getShortEpg = async () => ({ epg_listings: [] });
+}
+
+installDefaultXtreamOfflineMocks();
+
 const origGetItem = windowInstance.localStorage.getItem;
 const origSetItem = windowInstance.localStorage.setItem;
 const origRemoveItem = windowInstance.localStorage.removeItem;
@@ -165,9 +252,40 @@ function describeElement(el: Element | null | undefined): string {
   const player = el.getAttribute('data-player-container')
     ? `[data-player-container="${el.getAttribute('data-player-container')}"]`
     : '';
-  const style = el.getAttribute('style') ? ` style="${el.getAttribute('style')}"` : '';
-  const text = (el.textContent || '').trim().slice(0, 40);
-  return `<${tag}${id}${player}${scope}${style}>("${text}")`;
+  const navId = el.getAttribute('data-sidebar-nav-id')
+    ? `[data-sidebar-nav-id="${el.getAttribute('data-sidebar-nav-id')}"]`
+    : '';
+  const catId =
+    el.getAttribute('data-category-id') || el.getAttribute('data-live-category-id')
+      ? `[cat="${el.getAttribute('data-category-id') || el.getAttribute('data-live-category-id')}"]`
+      : '';
+  const chId = el.getAttribute('data-live-channel-id')
+    ? `[channel="${el.getAttribute('data-live-channel-id')}"]`
+    : '';
+  const text = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+  return `<${tag}${id}${player}${scope}${navId}${catId}${chId}>("${text}")`;
+}
+
+function assertSameElement(
+  actual: Element | null | undefined,
+  expected: Element | null | undefined,
+  message: string
+): void {
+  if (actual !== expected) {
+    assert.fail(
+      `${message} | esperado: ${describeElement(expected)} | obtido: ${describeElement(actual)}`
+    );
+  }
+}
+
+function assertDifferentElement(
+  actual: Element | null | undefined,
+  unexpected: Element | null | undefined,
+  message: string
+): void {
+  if (actual === unexpected) {
+    assert.fail(`${message} | não deveria ser: ${describeElement(unexpected)}`);
+  }
 }
 
 async function waitForCondition(
@@ -908,7 +1026,7 @@ async function runPlayerControlsStabilityAndAutoHideTests() {
   await act(async () => {
     visiblePlayButton.focus();
   });
-  assert.strictEqual(window.document.activeElement, visiblePlayButton, 'Botão reteve foco após clique');
+  assertSameElement(window.document.activeElement, visiblePlayButton, 'Botão reteve foco após clique');
 
   // Avançar 3.1s sem toque de teclado
   await act(async () => {
@@ -1095,7 +1213,7 @@ async function runPlayerBackAndScrollNavigationTests() {
   await act(async () => {
     await (playerContainerDiv as any).requestFullscreen();
   });
-  assert.strictEqual(
+  assertSameElement(
     (windowInstance.document as any).fullscreenElement,
     playerContainerDiv,
     'document.fullscreenElement deve ser o contêiner do player'
@@ -1111,7 +1229,7 @@ async function runPlayerBackAndScrollNavigationTests() {
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
 
-  assert.strictEqual(
+  assertSameElement(
     (windowInstance.document as any).fullscreenElement,
     null,
     'Primeiro clique em Voltar deve sair da tela cheia (exitFullscreen)'
@@ -1123,7 +1241,7 @@ async function runPlayerBackAndScrollNavigationTests() {
   );
 
   const videoElementAfter = container.querySelector('video') as any as HTMLVideoElement;
-  assert.strictEqual(
+  assertSameElement(
     videoElementAfter,
     videoElementBefore,
     'O mesmo elemento <video> deve continuar montado e reproduzindo sem interrupção'
@@ -1657,7 +1775,7 @@ async function runAttemptIdPropagationAndStaleCallbackTests() {
 
   // Confirma que o elemento <video> é mantido (mesma referência no DOM)
   const video2 = container.querySelector('video') as HTMLVideoElement;
-  assert.strictEqual(video2, video, 'Mesmo elemento <video> deve ser reutilizado sem desmontar o player');
+  assertSameElement(video2, video, 'Mesmo elemento <video> deve ser reutilizado sem desmontar o player');
 
   // Emitir evento para a nova tentativa 6
   await act(async () => {
@@ -1857,7 +1975,7 @@ async function runLiveTvSdPriorityAndFallbackTests() {
   });
 
   const videoElAfterSecondOk = container.querySelector('video') as HTMLVideoElement;
-  assert.strictEqual(videoElAfterSecondOk, videoEl, '2º OK no mesmo canal NÃO deve desmontar o elemento <video>');
+  assertSameElement(videoElAfterSecondOk, videoEl, '2º OK no mesmo canal NÃO deve desmontar o elemento <video>');
   assert.strictEqual(
     videoLoadCallCount,
     loadCountBeforeSecondOk,
@@ -2045,7 +2163,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   await act(async () => {
     heroFirstBtn.focus();
   });
-  assert.strictEqual(document.activeElement, heroFirstBtn, 'Foco inicial posicionado no HeroBanner');
+  assertSameElement(document.activeElement, heroFirstBtn, 'Foco inicial posicionado no HeroBanner');
 
   // Descer pelas fileiras do Início com ArrowDown passo a passo
   for (let i = 0; i < homeRows.length; i++) {
@@ -2069,14 +2187,14 @@ async function runDpadNavigationAndBackPolicyTests() {
   const lastRow = homeRows[homeRows.length - 1];
   const lastRowItems = Array.from(lastRow.querySelectorAll('[data-nav-item="true"]')) as HTMLElement[];
   assert(lastRowItems.length >= 2, 'Fileira deve conter pelo menos 2 cards para testar ArrowLeft/ArrowRight');
-  assert.strictEqual(document.activeElement, lastRowItems[0], 'Primeiro card da última fileira deve estar focado');
+  assertSameElement(document.activeElement, lastRowItems[0], 'Primeiro card da última fileira deve estar focado');
 
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     lastRowItems[1],
     'ArrowRight dentro de HorizontalRow deve focar o próximo card da mesma fileira'
@@ -2087,7 +2205,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     lastRowItems[0],
     'ArrowLeft dentro de HorizontalRow deve voltar ao card anterior da mesma fileira'
@@ -2184,9 +2302,14 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
-  assert(
-    container.textContent?.includes('Categorias de Filmes'),
-    'Enter no item Filmes da sidebar deve abrir a seção de Filmes'
+  await waitForCondition(
+    () =>
+      Boolean(
+        container.textContent?.includes('Categorias de Filmes') &&
+          container.querySelector('[data-nav-zone="categories"] button[data-category-id]')
+      ),
+    1000,
+    'Montagem da seção Filmes (MoviesView) e botões de categoria'
   );
 
   // Selecionar a categoria Ação por Enter e focar o card do filme
@@ -2201,6 +2324,12 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
+  await waitForCondition(
+    () => container.querySelector('[data-nav-zone="content"] [data-nav-item="true"]') !== null,
+    1000,
+    'Renderização dos cards de filmes da categoria Ação'
+  );
+
   const moviesMain = container.querySelector('main[data-scroll-container="true"]') as HTMLElement;
   assert(moviesMain, 'MoviesView deve possuir <main data-scroll-container="true">');
   moviesMain.scrollTop = 340;
@@ -2213,8 +2342,16 @@ async function runDpadNavigationAndBackPolicyTests() {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
     );
-    await new Promise((resolve) => setTimeout(resolve, 40));
   });
+
+  await waitForCondition(
+    () =>
+      Boolean(
+        document.querySelector('[data-focus-scope="modal"] [role="region"][aria-label="Sinopse do filme"]')
+      ),
+    1000,
+    'Abertura de MovieDetails com sinopse carregada'
+  );
 
   const activeModalScope = document.querySelector('[data-focus-scope="modal"]') as HTMLElement;
   assert(activeModalScope, 'MovieDetails aberto deve expor data-focus-scope="modal"');
@@ -2231,7 +2368,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   await act(async () => {
     moviePlayBtn.focus();
   });
-  assert.strictEqual(document.activeElement, moviePlayBtn, 'Foco posicionado no botão Assistir de MovieDetails');
+  assertSameElement(document.activeElement, moviePlayBtn, 'Foco posicionado no botão Assistir de MovieDetails');
 
   // ArrowDown a partir da linha de ações (Assistir) deve focar a região da sinopse
   await act(async () => {
@@ -2239,7 +2376,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     movieSynopsisEl,
     'ArrowDown a partir de Assistir em MovieDetails deve focar a sinopse para leitura'
@@ -2255,7 +2392,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(document.activeElement, movieSynopsisEl, 'ArrowDown com texto restante na sinopse do filme deve manter foco na sinopse');
+  assertSameElement(document.activeElement, movieSynopsisEl, 'ArrowDown com texto restante na sinopse do filme deve manter foco na sinopse');
   assert.strictEqual(movieSynopsisEl.scrollTop, 120, '1º ArrowDown na sinopse longa do filme deve avançar scrollTop em 120px');
 
   await act(async () => {
@@ -2263,7 +2400,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(document.activeElement, movieSynopsisEl, 'ArrowUp com scrollTop > 0 na sinopse do filme deve manter foco na sinopse');
+  assertSameElement(document.activeElement, movieSynopsisEl, 'ArrowUp com scrollTop > 0 na sinopse do filme deve manter foco na sinopse');
   assert.strictEqual(movieSynopsisEl.scrollTop, 0, 'ArrowUp na sinopse do filme deve voltar scrollTop para 0');
 
   // Simular rolagem da página para baixo durante leitura da sinopse
@@ -2275,7 +2412,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     moviePlayBtn,
     'ArrowUp a partir do topo da sinopse deve retornar ao botão Assistir (e não saltar direto para Voltar)'
@@ -2292,12 +2429,12 @@ async function runDpadNavigationAndBackPolicyTests() {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
     );
-    await new Promise((resolve) => setTimeout(resolve, 30));
   });
 
-  assert(
-    document.querySelector('[data-player-container="true"][data-focus-scope="modal"]') !== null,
-    'Pressionar Enter em Assistir deve abrir o VideoPlayer modal ([data-player-container="true"][data-focus-scope="modal"])'
+  await waitForCondition(
+    () => document.querySelector('[data-player-container="true"][data-focus-scope="modal"]') !== null,
+    1000,
+    'Abertura do VideoPlayer modal a partir de MovieDetails'
   );
 
   // Pressionar Escape 1 vez:
@@ -2309,9 +2446,10 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
-  assert(
-    document.activeElement === moviePlayBtn,
-    `Fechamento lógico imediato no 1º Escape: o foco deve retornar imediatamente ao botão Assistir em MovieDetails, mas estava em ${describeElement(document.activeElement)}`
+  assertSameElement(
+    document.activeElement,
+    moviePlayBtn,
+    'Fechamento lógico imediato no 1º Escape: o foco deve retornar imediatamente ao botão Assistir em MovieDetails'
   );
   assert(
     activeModalScope.isConnected,
@@ -2325,17 +2463,19 @@ async function runDpadNavigationAndBackPolicyTests() {
   );
 
   const residualPlayerEl = document.querySelector('[data-player-container="true"][data-focus-scope="modal"]');
-  assert(
-    residualPlayerEl === null,
-    `1º Escape com VideoPlayer aberto deve remover o VideoPlayer do DOM após a transição de saída, mas encontrou: ${describeElement(residualPlayerEl)}`
+  assertSameElement(
+    residualPlayerEl,
+    null,
+    '1º Escape com VideoPlayer aberto deve remover o VideoPlayer do DOM após a transição de saída'
   );
   assert(
     document.querySelector('[data-focus-scope="modal"]') !== null,
     '1º Escape ao sair do VideoPlayer NÃO deve fechar MovieDetails em duplicidade'
   );
-  assert(
-    document.activeElement === moviePlayBtn,
-    `Após conclusão da saída do VideoPlayer, o foco deve permanecer no botão Assistir em MovieDetails, mas estava em ${describeElement(document.activeElement)}`
+  assertSameElement(
+    document.activeElement,
+    moviePlayBtn,
+    'Após conclusão da saída do VideoPlayer, o foco deve permanecer no botão Assistir em MovieDetails'
   );
 
   // Passo 1 (Filmes): Escape fecha MovieDetails, restaura foco ao card e preserva scrollTop da grade
@@ -2345,12 +2485,19 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
-  const residualModalAfterMovieClose = document.querySelector('[data-focus-scope="modal"]');
-  assert(
-    residualModalAfterMovieClose === null,
-    `Escape em MovieDetails deve fechar a tela de detalhes, mas encontrou: ${describeElement(residualModalAfterMovieClose)}`
+  await waitForCondition(
+    () => document.querySelector('[data-focus-scope="modal"]') === null,
+    1200,
+    'Desmontagem de MovieDetails após comando Escape'
   );
-  assert.strictEqual(
+
+  const residualModalAfterMovieClose = document.querySelector('[data-focus-scope="modal"]');
+  assertSameElement(
+    residualModalAfterMovieClose,
+    null,
+    'Escape em MovieDetails deve fechar a tela de detalhes'
+  );
+  assertSameElement(
     document.activeElement,
     movieCard,
     'Ao fechar MovieDetails com Voltar, o foco deve ser restaurado para o card que o abriu'
@@ -2372,7 +2519,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     container.textContent?.includes('Categorias de Filmes'),
     'Voltar a partir da grade de Filmes deve permanecer na seção Filmes'
   );
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     acaoBtn,
     'Voltar a partir da grade de Filmes deve mover o foco para o botão da categoria atualmente selecionada (Ação)'
@@ -2391,7 +2538,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
 
   const filmesSidebarBtn = container.querySelector('button[data-sidebar-nav-id="movies"]') as HTMLButtonElement;
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     filmesSidebarBtn,
     'Critério 4: Voltar a partir das categorias de Filmes deve focar o botão "Filmes" na barra lateral'
@@ -2436,9 +2583,14 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
-  assert(
-    container.textContent?.includes('Categorias de Séries'),
-    'Enter no item Séries da sidebar deve abrir a seção de Séries'
+  await waitForCondition(
+    () =>
+      Boolean(
+        container.textContent?.includes('Categorias de Séries') &&
+          container.querySelector('[data-nav-zone="categories"] button[data-category-id]')
+      ),
+    1000,
+    'Montagem da seção Séries (SeriesView) e botões de categoria'
   );
 
   const seriesCatBtns = Array.from(container.querySelectorAll('[data-nav-zone="categories"] button[data-category-id]')) as HTMLButtonElement[];
@@ -2452,6 +2604,12 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
+  await waitForCondition(
+    () => container.querySelector('[data-nav-zone="content"] [data-nav-item="true"]') !== null,
+    1000,
+    'Renderização dos cards de séries da categoria Drama'
+  );
+
   const seriesMain = container.querySelector('main[data-scroll-container="true"]') as HTMLElement;
   assert(seriesMain, 'SeriesView deve possuir <main data-scroll-container="true">');
   seriesMain.scrollTop = 290;
@@ -2464,8 +2622,16 @@ async function runDpadNavigationAndBackPolicyTests() {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
     );
-    await new Promise((resolve) => setTimeout(resolve, 40));
   });
+
+  await waitForCondition(
+    () =>
+      Boolean(
+        document.querySelector('[data-focus-scope="modal"] [role="region"][aria-label="Sinopse da série"]')
+      ),
+    1000,
+    'Abertura de SeriesDetails com sinopse e episódios carregados'
+  );
 
   const seriesModalScope = document.querySelector('[data-focus-scope="modal"]') as HTMLElement;
   assert(seriesModalScope, 'SeriesDetails aberto deve expor data-focus-scope="modal"');
@@ -2490,7 +2656,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   await act(async () => {
     seriesSynopsisEl.focus();
   });
-  assert.strictEqual(document.activeElement, seriesSynopsisEl, 'Foco posicionado na sinopse da série');
+  assertSameElement(document.activeElement, seriesSynopsisEl, 'Foco posicionado na sinopse da série');
 
   // 1º ArrowDown: rola 0 -> 120 e mantém foco na sinopse
   await act(async () => {
@@ -2498,7 +2664,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(document.activeElement, seriesSynopsisEl, '1º ArrowDown na sinopse longa da série deve manter foco na sinopse');
+  assertSameElement(document.activeElement, seriesSynopsisEl, '1º ArrowDown na sinopse longa da série deve manter foco na sinopse');
   assert.strictEqual(seriesSynopsisEl.scrollTop, 120, '1º ArrowDown deve avançar scrollTop para 120');
 
   // 2º ArrowDown: rola 120 -> 240 e mantém foco na sinopse
@@ -2507,7 +2673,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(document.activeElement, seriesSynopsisEl, '2º ArrowDown na sinopse longa da série deve manter foco na sinopse');
+  assertSameElement(document.activeElement, seriesSynopsisEl, '2º ArrowDown na sinopse longa da série deve manter foco na sinopse');
   assert.strictEqual(seriesSynopsisEl.scrollTop, 240, '2º ArrowDown deve avançar scrollTop para 240');
 
   // 3º ArrowDown: rola 240 -> 350 (limite final) e mantém foco na sinopse
@@ -2516,7 +2682,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(document.activeElement, seriesSynopsisEl, '3º ArrowDown ao atingir o limite da sinopse ainda mantém foco na sinopse');
+  assertSameElement(document.activeElement, seriesSynopsisEl, '3º ArrowDown ao atingir o limite da sinopse ainda mantém foco na sinopse');
   assert.strictEqual(seriesSynopsisEl.scrollTop, 350, '3º ArrowDown deve atingir o limite máximo scrollTop = 350');
 
   // Simular que o container externo também rolou parcialmente
@@ -2528,7 +2694,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     seriesFavBtn,
     'Após chegar ao fim da sinopse da série, o próximo ArrowDown deve mover o foco para o botão Favoritar'
@@ -2549,7 +2715,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(document.activeElement, seriesSynopsisEl, '1º ArrowUp a partir do fim da sinopse deve manter foco na sinopse');
+  assertSameElement(document.activeElement, seriesSynopsisEl, '1º ArrowUp a partir do fim da sinopse deve manter foco na sinopse');
   assert.strictEqual(seriesSynopsisEl.scrollTop, 230, '1º ArrowUp deve reduzir scrollTop de 350 para 230');
 
   await act(async () => {
@@ -2557,7 +2723,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(document.activeElement, seriesSynopsisEl, '2º ArrowUp na sinopse deve manter foco na sinopse');
+  assertSameElement(document.activeElement, seriesSynopsisEl, '2º ArrowUp na sinopse deve manter foco na sinopse');
   assert.strictEqual(seriesSynopsisEl.scrollTop, 110, '2º ArrowUp deve reduzir scrollTop de 230 para 110');
 
   await act(async () => {
@@ -2565,7 +2731,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(document.activeElement, seriesSynopsisEl, '3º ArrowUp ao atingir o topo 0 ainda mantém foco na sinopse');
+  assertSameElement(document.activeElement, seriesSynopsisEl, '3º ArrowUp ao atingir o topo 0 ainda mantém foco na sinopse');
   assert.strictEqual(seriesSynopsisEl.scrollTop, 0, '3º ArrowUp deve atingir scrollTop = 0');
 
   // 4º ArrowUp (já em scrollTop === 0): entrega o foco para o botão Voltar no cabeçalho
@@ -2574,7 +2740,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     seriesBackBtn,
     'Quando scrollTop da sinopse chega a 0, o próximo ArrowUp deve mover o foco para o botão Voltar no topo'
@@ -2606,7 +2772,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     seriesSynopsisEl,
     'Subir com ArrowUp em SeriesDetails a partir dos episódios deve focar a sinopse no topo'
@@ -2623,8 +2789,20 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(document.activeElement, seriesCard, 'Fechar SeriesDetails deve restaurar foco ao card da série');
+  assertSameElement(document.activeElement, seriesCard, 'Fechar SeriesDetails deve restaurar foco ao card da série');
   assert.strictEqual(seriesMain.scrollTop, 290, 'Fechar SeriesDetails deve preservar scrollTop da grade');
+
+  // Aguardar a conclusão da animação de saída (AnimatePresence exit) de SeriesDetails para que seu handler modal seja desmontado
+  await waitForCondition(
+    () => document.querySelector('[data-focus-scope="modal"]') === null,
+    1200,
+    'Desmontagem do modal SeriesDetails após transição de saída (AnimatePresence)'
+  );
+  assertSameElement(
+    document.activeElement,
+    seriesCard,
+    'Após conclusão da saída de SeriesDetails, o foco deve permanecer no card da série'
+  );
 
   // Passo 2 (Séries): Escape a partir do card volta para a categoria selecionada (Drama)
   await act(async () => {
@@ -2632,7 +2810,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     dramaBtn,
     'Voltar a partir da grade de Séries deve focar a categoria selecionada (Drama)'
@@ -2645,7 +2823,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
   const seriesSidebarBtn = container.querySelector('button[data-sidebar-nav-id="series"]') as HTMLButtonElement;
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     seriesSidebarBtn,
     'Critério 5: Voltar a partir das categorias de Séries deve focar o botão "Séries" na barra lateral'
@@ -2690,7 +2868,17 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
-  const liveCatList = container.querySelector('[data-nav-zone="categories"][data-scroll-container="true"]') as HTMLElement;
+  await waitForCondition(
+    () =>
+      Boolean(
+        container.querySelector('[data-nav-zone="categories"] [data-scroll-container="true"]') &&
+          container.querySelector('button[data-live-category-id="1"]')
+      ),
+    1000,
+    'Montagem de LiveTvView e lista de categorias da TV ao Vivo'
+  );
+
+  const liveCatList = container.querySelector('[data-nav-zone="categories"] [data-scroll-container="true"]') as HTMLElement;
   assert(liveCatList, 'Lista de categorias da TV ao Vivo deve existir');
   liveCatList.scrollTop = 180;
 
@@ -2703,8 +2891,13 @@ async function runDpadNavigationAndBackPolicyTests() {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
     );
-    await new Promise((resolve) => setTimeout(resolve, 20));
   });
+
+  await waitForCondition(
+    () => container.querySelectorAll('button[data-live-channel-btn="true"]').length >= 2,
+    1000,
+    'Renderização dos canais da categoria Abertos (id=1)'
+  );
 
   const channelButtonsCatA = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
   const backToCatsBtnInA = container.querySelector('button[data-live-back-to-categories="true"]');
@@ -2714,12 +2907,12 @@ async function runDpadNavigationAndBackPolicyTests() {
     '1',
     'Critério 1: O botão do primeiro canal exibido em Abertos deve ter data-live-channel-category-id="1"'
   );
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     channelButtonsCatA[0],
     'Critério 1: Ao abrir a categoria A (Abertos), o foco deve ir para o primeiro canal dessa categoria'
   );
-  assert.notStrictEqual(
+  assertDifferentElement(
     document.activeElement,
     backToCatsBtnInA,
     'Critério 1: O foco NÃO deve terminar em "Voltar às Categorias" quando a categoria possui canais'
@@ -2731,6 +2924,11 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
+  await waitForCondition(
+    () => container.querySelector('button[data-live-category-id="2"]') !== null,
+    1000,
+    'Retorno à lista de categorias da TV ao Vivo'
+  );
   const esportesCatBtn = container.querySelector('button[data-live-category-id="2"]') as HTMLButtonElement;
   assert(esportesCatBtn, 'Botão da categoria Esportes (id=2) deve existir na TV ao Vivo');
 
@@ -2739,8 +2937,13 @@ async function runDpadNavigationAndBackPolicyTests() {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
     );
-    await new Promise((resolve) => setTimeout(resolve, 20));
   });
+
+  await waitForCondition(
+    () => container.querySelectorAll('button[data-live-channel-btn="true"]').length >= 2,
+    1000,
+    'Renderização dos canais da categoria Esportes (id=2)'
+  );
 
   const renderedCat1ButtonsInCat2 = container.querySelectorAll('button[data-live-channel-category-id="1"]');
   assert.strictEqual(
@@ -2757,12 +2960,12 @@ async function runDpadNavigationAndBackPolicyTests() {
     '2',
     'Critério 2: O primeiro canal focado em Esportes deve ter data-live-channel-category-id="2"'
   );
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     channelButtonsCatB[0],
     'Critério 2: Ao trocar da categoria A para a categoria B populada, o foco deve estar no primeiro canal de B'
   );
-  assert.notStrictEqual(
+  assertDifferentElement(
     document.activeElement,
     backToCatsBtnInB,
     'Critério 2: O foco em B NÃO deve parar em "Voltar às Categorias"'
@@ -2775,17 +2978,26 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
+  await waitForCondition(
+    () => container.querySelector('button[data-live-category-id="1"]') !== null,
+    1000,
+    'Retorno à lista de categorias da TV ao Vivo antes de reabrir Abertos'
+  );
   const abertosCatBtnAgain = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
   await act(async () => {
     abertosCatBtnAgain.focus();
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
     );
-    await new Promise((resolve) => setTimeout(resolve, 20));
   });
+  await waitForCondition(
+    () => container.querySelectorAll('button[data-live-channel-btn="true"]').length >= 2,
+    1000,
+    'Reabertura dos canais de Abertos'
+  );
 
   const channelButtons = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
-  assert.strictEqual(document.activeElement, channelButtons[0], 'Foco no primeiro canal de Abertos');
+  assertSameElement(document.activeElement, channelButtons[0], 'Foco no primeiro canal de Abertos');
 
   // ArrowDown deve mover para o segundo canal da lista
   await act(async () => {
@@ -2793,7 +3005,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     channelButtons[1],
     'ArrowDown na lista de canais deve focar o segundo canal'
@@ -2827,7 +3039,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
-  assert.strictEqual(
+  assertSameElement(
     document.querySelector('[data-player-container="true"][data-focus-scope="modal"]'),
     null,
     '1º Escape na TV ao Vivo deve sair da tela cheia de volta ao preview'
@@ -2843,13 +3055,13 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     container.querySelector('video'),
     null,
     '2º Escape na TV ao Vivo deve fechar o preview do canal'
   );
   const channelButtonsAfterPreviewClose = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     channelButtonsAfterPreviewClose[1],
     'Ao fechar o preview com Voltar, o foco deve permanecer no canal que estava selecionado na lista'
@@ -2863,12 +3075,12 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
   const abertosCatBtnRestored = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
   assert(abertosCatBtnRestored, 'Lista de categorias deve voltar a ser exibida após 3º Escape');
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     abertosCatBtnRestored,
     '3º Escape deve restaurar o foco exatamente na categoria de origem (Abertos)'
   );
-  const liveCatListRestored = container.querySelector('[data-nav-zone="categories"][data-scroll-container="true"]') as HTMLElement;
+  const liveCatListRestored = container.querySelector('[data-nav-zone="categories"] [data-scroll-container="true"]') as HTMLElement;
   assert.strictEqual(
     liveCatListRestored.scrollTop,
     180,
@@ -2886,7 +3098,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
   const backToCatsBtn = container.querySelector('button[data-live-back-to-categories="true"]') as HTMLButtonElement;
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     backToCatsBtn,
     'Quando a categoria não tiver canais focáveis, o foco deve ir para o botão "Voltar às Categorias"'
@@ -2906,7 +3118,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
   const liveSidebarBtn = container.querySelector('button[data-sidebar-nav-id="live"]') as HTMLButtonElement;
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     liveSidebarBtn,
     'Critério 3: 4º Escape a partir das categorias da TV ao Vivo deve focar o botão "TV ao Vivo" na barra lateral'
@@ -2989,7 +3201,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(container.querySelector('video'), null, '1º Escape após abrir canal pela Home fecha o preview');
+  assertSameElement(container.querySelector('video'), null, '1º Escape após abrir canal pela Home fecha o preview');
 
   await act(async () => {
     windowInstance.dispatchEvent(
@@ -3006,7 +3218,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
-  assert.strictEqual(
+  assertSameElement(
     document.activeElement,
     container.querySelector('button[data-sidebar-nav-id="live"]'),
     '3º Escape após abrir canal pela Home foca o botão "TV ao Vivo" na barra lateral'
@@ -3691,7 +3903,37 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   assert.strictEqual(document.documentElement.style.fontSize, '', 'Modo default deve limpar font-size inline');
   assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-rem-compensation'), '', 'Modo default deve limpar --nc-rem-compensation');
 
-  // 10. Diagnóstico da Tela e Ambiente em ConfigView (valores solicitados vs medidos, amostra 10rem x 2rem e cópia sanitizada)
+  // 9.5 Auditoria da uniformidade de --nc-rem e --nc-rem-compensation em src/index.css
+  const cssContent = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf-8');
+  assert(
+    cssContent.includes('--nc-rem: calc(1rem * var(--nc-rem-compensation, 1));'),
+    'src/index.css deve centralizar o token --nc-rem derivado de --nc-rem-compensation'
+  );
+  assert(
+    cssContent.includes('--spacing: calc(0.25 * var(--nc-rem));'),
+    'html[data-display-mode="tv"] deve definir --spacing usando --nc-rem (compensado uma única vez)'
+  );
+  assert(
+    cssContent.includes('--text-sm: calc(0.875 * var(--nc-rem));') &&
+      cssContent.includes('--text-base: calc(1 * var(--nc-rem));') &&
+      cssContent.includes('--text-xl: calc(1.25 * var(--nc-rem));'),
+    'html[data-display-mode="tv"] deve compensar tokens tipográficos (--text-*) via --nc-rem'
+  );
+
+  // Verificar que dentro do bloco de regras html[data-display-mode="tv"] não restaram dimensões explícitas em rem sem --nc-rem
+  const cssWithoutComments = cssContent.replace(/\/\*[\s\S]*?\*\//g, '');
+  const tvRulesSection = cssWithoutComments.split('html[data-display-mode="tv"]')[1]?.split('.nc-calibration-safe')[0] || '';
+  const uncompensatedRemMatches = tvRulesSection
+    .split('\n')
+    .filter((line) => !line.includes('--nc-rem:'))
+    .filter((line) => /\b\d+(?:\.\d+)?rem\b/.test(line));
+  assert.strictEqual(
+    uncompensatedRemMatches.length,
+    0,
+    `Nenhuma regra do modo TV deve usar rem literal sem --nc-rem, mas encontrou: ${uncompensatedRemMatches.join(' | ')}`
+  );
+
+  // 10. Diagnóstico da Tela e Ambiente em ConfigView + 3 cenários explícitos de área de transferência (clipboard)
   confirmDisplayPreferences('tv', 75);
   const diagContainer = document.createElement('div');
   document.body.appendChild(diagContainer);
@@ -3726,18 +3968,29 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   const diagPanel = diagContainer.querySelector('[data-screen-diagnostics-panel="true"]') as HTMLElement;
   assert(diagPanel !== null, 'Cenário 10: Painel Diagnóstico da Tela e Ambiente deve abrir');
 
-  // No Happy DOM sem layout real, getBoundingClientRect() retorna 0x0 -> deve exibir "indisponível", nunca 0px
+  // No Happy DOM sem layout real, getBoundingClientRect() retorna 0x0 -> ambas as sondas devem exibir "indisponível", nunca 0px
   const probeRectTextEl = diagPanel.querySelector('[data-diag-probe-rect="true"]') as HTMLElement;
+  const compProbeRectTextEl = diagPanel.querySelector('[data-diag-compensated-probe-rect="true"]') as HTMLElement;
   assert.strictEqual(
     probeRectTextEl?.textContent?.trim(),
     'indisponível',
     'Cenário 10: Em ambiente simulado sem medição real (rect 0x0), a amostra 10rem x 2rem deve exibir "indisponível" e nunca 0px'
   );
+  assert.strictEqual(
+    compProbeRectTextEl?.textContent?.trim(),
+    'indisponível',
+    'Cenário 10: Em ambiente simulado sem medição real (rect 0x0), a amostra compensada deve exibir "indisponível" e nunca 0px'
+  );
 
-  // Simular medição real de layout (ex.: 75% de 16px = 12px -> 10rem = 120px, 2rem = 24px) na sonda invisível
+  // Simular medição real de layout nas duas sondas invisíveis (10rem x 2rem bruta e 10*--nc-rem x 2*--nc-rem compensada)
   const probeEl = diagContainer.querySelector('[data-rem-probe="true"]') as HTMLElement;
-  assert(probeEl !== null, 'Cenário 10: Sonda invisível [data-rem-probe="true"] deve existir');
-  probeEl.getBoundingClientRect = () =>
+  const compensatedProbeEl = diagContainer.querySelector('[data-compensated-probe="true"]') as HTMLElement;
+  assert(probeEl !== null, 'Cenário 10: Sonda invisível [data-rem-probe="true"] (10rem x 2rem) deve existir');
+  assert(compensatedProbeEl !== null, 'Cenário 10: Sonda invisível [data-compensated-probe="true"] deve existir');
+  assert.strictEqual(probeEl.style.width, '10rem', 'Sonda bruta [data-rem-probe="true"] deve manter width: 10rem intacto');
+  assert.strictEqual(probeEl.style.height, '2rem', 'Sonda bruta [data-rem-probe="true"] deve manter height: 2rem intacto');
+
+  const mockRect120x24 = () =>
     ({
       width: 120,
       height: 24,
@@ -3749,33 +4002,140 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
       y: -9999,
       toJSON: () => ({}),
     }) as DOMRect;
+  probeEl.getBoundingClientRect = mockRect120x24;
+  compensatedProbeEl.getBoundingClientRect = mockRect120x24;
 
   const copyDiagBtn = diagPanel.querySelector('[data-copy-diagnostics="true"]') as HTMLButtonElement;
   assert(copyDiagBtn !== null, 'Cenário 10: Botão "Copiar diagnóstico" deve existir');
 
-  await act(async () => {
-    copyDiagBtn.click();
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  });
+  const origClipboardDescriptor = Object.getOwnPropertyDescriptor(windowInstance.navigator, 'clipboard') ||
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(windowInstance.navigator), 'clipboard');
 
-  assert.strictEqual(
-    probeRectTextEl?.textContent?.trim(),
-    '120 × 24 px',
-    'Cenário 10: Quando getBoundingClientRect retorna medida real, o painel deve exibir "120 × 24 px"'
-  );
+  try {
+    // CENÁRIO 10A: Área de transferência disponível (navigator.clipboard.writeText resolve com sucesso)
+    let clipboardCapturedText = '';
+    Object.defineProperty(windowInstance.navigator, 'clipboard', {
+      value: {
+        writeText: async (text: string) => {
+          clipboardCapturedText = text;
+        },
+      },
+      configurable: true,
+      writable: true,
+    });
 
-  const diagTextarea = diagPanel.querySelector('[data-diagnostics-text="true"]') as HTMLTextAreaElement;
-  assert(diagTextarea !== null, 'Cenário 10: Alternativa de texto selecionável deve ser exibida quando clipboard não está disponível');
-  assert(
-    diagTextarea.value.includes('TV (75%)') && diagTextarea.value.includes('120 × 24 px'),
-    'Cenário 10: Texto do diagnóstico deve incluir modo solicitado e medida real da amostra'
-  );
-  assert(
-    !diagTextarea.value.includes('secret-server.iptv.local') &&
-      !diagTextarea.value.includes('secretUser99') &&
-      !diagTextarea.value.includes('superSecretPassword123'),
-    'Cenário 10: O texto do diagnóstico NUNCA deve incluir credenciais, senhas ou URL do servidor da conta'
-  );
+    await act(async () => {
+      copyDiagBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+
+    assert.strictEqual(
+      probeRectTextEl?.textContent?.trim(),
+      '120 × 24 px',
+      'Cenário 10A: Quando getBoundingClientRect retorna medida real, a amostra 10rem × 2rem exibe "120 × 24 px"'
+    );
+    assert.strictEqual(
+      compProbeRectTextEl?.textContent?.trim(),
+      '120 × 24 px',
+      'Cenário 10A: Quando getBoundingClientRect retorna medida real, a amostra compensada exibe "120 × 24 px"'
+    );
+    assert(
+      copyDiagBtn.textContent?.includes('Diagnóstico copiado!'),
+      'Cenário 10A: Com clipboard disponível, o botão deve confirmar "Diagnóstico copiado!"'
+    );
+    assert.strictEqual(
+      diagPanel.querySelector('[data-diagnostics-text="true"]'),
+      null,
+      'Cenário 10A: Com cópia bem-sucedida para o clipboard, o fallback de textarea não precisa abrir automaticamente'
+    );
+    assert(
+      clipboardCapturedText.includes('TV (75%)') &&
+        clipboardCapturedText.includes('Amostra real 10rem × 2rem (getBoundingClientRect): 120 × 24 px') &&
+        clipboardCapturedText.includes('Amostra compensada 10×--nc-rem × 2×--nc-rem (getBoundingClientRect): 120 × 24 px'),
+      'Cenário 10A: Texto copiado deve conter escala solicitada e medidas reais das amostras bruta e compensada'
+    );
+    assert(
+      !clipboardCapturedText.includes('secret-server.iptv.local') &&
+        !clipboardCapturedText.includes('secretUser99') &&
+        !clipboardCapturedText.includes('superSecretPassword123'),
+      'Cenário 10A: Texto copiado para a área de transferência NUNCA deve expor credenciais, servidor ou senha'
+    );
+
+    // CENÁRIO 10B: Área de transferência indisponível (navigator.clipboard ausente/undefined)
+    Object.defineProperty(windowInstance.navigator, 'clipboard', {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+
+    await act(async () => {
+      copyDiagBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+
+    const diagTextareaFallbackB = diagPanel.querySelector('[data-diagnostics-text="true"]') as HTMLTextAreaElement;
+    assert(
+      diagTextareaFallbackB !== null,
+      'Cenário 10B: Quando navigator.clipboard é indisponível, o fallback de texto selecionável [data-diagnostics-text="true"] deve abrir'
+    );
+    assert(
+      diagTextareaFallbackB.value.includes('TV (75%)') &&
+        diagTextareaFallbackB.value.includes('120 × 24 px'),
+      'Cenário 10B: Textarea de fallback deve conter o relatório completo do diagnóstico'
+    );
+    assert(
+      !diagTextareaFallbackB.value.includes('secret-server.iptv.local') &&
+        !diagTextareaFallbackB.value.includes('secretUser99') &&
+        !diagTextareaFallbackB.value.includes('superSecretPassword123'),
+      'Cenário 10B: Textarea de fallback NUNCA deve incluir credenciais, senhas ou URL do servidor da conta'
+    );
+
+    // Ocultar texto selecionável manualmente antes de testar o Cenário 10C (rejeição de escrita)
+    const toggleSelectableBtn = Array.from(diagPanel.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Ocultar texto selecionável')
+    ) as HTMLButtonElement | undefined;
+    if (toggleSelectableBtn) {
+      await act(async () => {
+        toggleSelectableBtn.click();
+      });
+    }
+
+    // CENÁRIO 10C: Escrita na área de transferência rejeitada (navigator.clipboard.writeText rejeita a Promise)
+    Object.defineProperty(windowInstance.navigator, 'clipboard', {
+      value: {
+        writeText: async () => {
+          throw new Error('NotAllowedError: Write permission denied');
+        },
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    await act(async () => {
+      copyDiagBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+
+    const diagTextareaFallbackC = diagPanel.querySelector('[data-diagnostics-text="true"]') as HTMLTextAreaElement;
+    assert(
+      diagTextareaFallbackC !== null,
+      'Cenário 10C: Quando navigator.clipboard.writeText rejeita, a tela deve se recuperar abrindo o textarea selecionável [data-diagnostics-text="true"]'
+    );
+    assert(
+      diagPanel.textContent?.includes('Área de transferência indisponível'),
+      'Cenário 10C: Deve exibir aviso orientando a seleção manual após rejeição da área de transferência'
+    );
+    assert(
+      !diagTextareaFallbackC.value.includes('secret-server.iptv.local') &&
+        !diagTextareaFallbackC.value.includes('secretUser99') &&
+        !diagTextareaFallbackC.value.includes('superSecretPassword123'),
+      'Cenário 10C: Textarea após rejeição NUNCA deve expor credenciais, senhas ou URL do servidor'
+    );
+  } finally {
+    if (origClipboardDescriptor) {
+      Object.defineProperty(windowInstance.navigator, 'clipboard', origClipboardDescriptor);
+    }
+  }
 
   await act(async () => {
     diagRoot.unmount();
@@ -3856,8 +4216,55 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   });
   document.body.removeChild(liveTvContainer);
 
+  // 12. Verificação explícita do isolamento de rede nos testes
+  assert.strictEqual(
+    blockedExternalNetworkCount,
+    0,
+    'Nenhuma tentativa de rede externa não mockada deve ter ocorrido durante toda a suíte de testes'
+  );
+
+  // Testar que uma chamada não mockada ao XtreamService.authenticate real é interceptada pelo guarda offline sem vazar credenciais
+  const preBlockCount = blockedExternalNetworkCount;
+  const abortCtrl = new AbortController();
+  let guardErrorMsg = '';
+  externalNetworkGuardHandler = async (rawUrl: string) => {
+    blockedExternalNetworkCount++;
+    abortCtrl.abort();
+    throw new Error(`Bloqueio offline controlado: ${sanitizeUrlForTestLog(rawUrl)}`);
+  };
+  try {
+    await originalXtreamAuthenticate(secretCreds, { signal: abortCtrl.signal });
+  } catch (err: any) {
+    guardErrorMsg = String(err?.message || '');
+  } finally {
+    externalNetworkGuardHandler = null;
+  }
+  assert(
+    blockedExternalNetworkCount === preBlockCount + 1,
+    'Guarda de rede offline deve interceptar imediatamente qualquer chamada fetch externa'
+  );
+  assert(
+    !guardErrorMsg.includes('secretUser99') && !guardErrorMsg.includes('superSecretPassword123'),
+    'Erros do guarda de rede nunca devem expor usuário ou senha'
+  );
+
+  installDefaultXtreamOfflineMocks();
   confirmDisplayPreferences('default', 85);
-  console.log('✅ Todos os testes de ciclo de vida da prévia, diagnóstico de escala e nomes de canais no modo TV aprovados!');
+  console.log('✅ Todos os testes de ciclo de vida da prévia, diagnóstico de escala, 3 cenários de clipboard, nomes de canais e isolamento de rede aprovados!');
+}
+
+async function cleanupTestEnvironment(): Promise<void> {
+  for (const [, handle] of rafTimers) {
+    clearTimeout(handle);
+  }
+  rafTimers.clear();
+  windowInstance.document.body.innerHTML = '';
+  try {
+    await windowInstance.happyDOM.abort();
+    await windowInstance.happyDOM.close();
+  } catch {
+    // Ignore close errors
+  }
 }
 
 async function main() {
@@ -3872,13 +4279,15 @@ async function main() {
   await runLiveTvSdPriorityAndFallbackTests();
   await runDpadNavigationAndBackPolicyTests();
   await runDisplaySetupPreviewAndLifecycleTests();
+  await cleanupTestEnvironment();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
-  process.exit(0);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error('\n❌ ERRO NA EXECUÇÃO DOS TESTES:', err);
-  process.exit(1);
+  await cleanupTestEnvironment();
+  process.exitCode = 1;
 });
+
 
 
