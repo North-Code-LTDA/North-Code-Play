@@ -91,19 +91,21 @@ html[data-nav-mode="remote"] [data-synopsis-focus="true"] {
  * without global zoom or transform: scale().
  * ============================================================================ */
 html[data-display-mode="tv"] {
+  font-size: var(--nc-ui-scale-pct, 85%);
   font-size: calc(100% * var(--nc-ui-scale, 1));
-  --nc-tv-sidebar-width: 12.75rem;
-  --nc-tv-category-pane-width: 14.5rem;
-  --nc-tv-nav-item-py: 0.52rem;
-  --nc-tv-nav-item-px: 0.72rem;
-  --nc-tv-nav-item-font: 0.86rem;
-  --nc-tv-cat-item-py: 0.48rem;
-  --nc-tv-cat-item-px: 0.72rem;
-  --nc-tv-cat-item-font: 0.82rem;
-  --nc-tv-grid-gap: 0.72rem;
-  --nc-tv-section-pad: 1rem;
-  --nc-tv-card-min: 8.75rem;
-  --nc-tv-synopsis-font: 0.875rem;
+  --spacing: calc(0.25rem * var(--nc-rem-compensation, 1));
+  --nc-tv-sidebar-width: calc(12.75rem * var(--nc-rem-compensation, 1));
+  --nc-tv-category-pane-width: calc(16.25rem * var(--nc-rem-compensation, 1));
+  --nc-tv-nav-item-py: calc(0.52rem * var(--nc-rem-compensation, 1));
+  --nc-tv-nav-item-px: calc(0.72rem * var(--nc-rem-compensation, 1));
+  --nc-tv-nav-item-font: calc(0.86rem * var(--nc-rem-compensation, 1));
+  --nc-tv-cat-item-py: calc(0.48rem * var(--nc-rem-compensation, 1));
+  --nc-tv-cat-item-px: calc(0.72rem * var(--nc-rem-compensation, 1));
+  --nc-tv-cat-item-font: calc(0.82rem * var(--nc-rem-compensation, 1));
+  --nc-tv-grid-gap: calc(0.72rem * var(--nc-rem-compensation, 1));
+  --nc-tv-section-pad: calc(1rem * var(--nc-rem-compensation, 1));
+  --nc-tv-card-min: calc(8.75rem * var(--nc-rem-compensation, 1));
+  --nc-tv-synopsis-font: calc(0.875rem * var(--nc-rem-compensation, 1));
 }
 
 html[data-display-mode="tv"] .nc-tv-sidebar {
@@ -140,6 +142,7 @@ html[data-display-mode="tv"] .nc-tv-header {
 
 html[data-display-mode="tv"] .nc-tv-category-pane {
   width: var(--nc-tv-category-pane-width) !important;
+  max-width: 42vw !important;
   min-width: 0 !important;
   min-height: 0 !important;
 }
@@ -156,6 +159,72 @@ html[data-display-mode="tv"] .nc-tv-category-btn {
   -webkit-line-clamp: 2 !important;
   -webkit-box-orient: vertical !important;
   overflow: hidden !important;
+}
+
+/* ============================================================================
+ * TV Mode Channel List Items inside .nc-tv-category-pane
+ * Allows full channel names to wrap cleanly across lines with auto height,
+ * compacting logo and favorite button so the channel name is never crushed.
+ * ============================================================================ */
+html[data-display-mode="tv"] .nc-tv-channel-row {
+  align-items: flex-start !important;
+  gap: 0.25rem !important;
+  height: auto !important;
+  min-width: 0 !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-channel-btn {
+  align-items: flex-start !important;
+  gap: 0.5rem !important;
+  padding: 0.45rem 0.5rem !important;
+  height: auto !important;
+  min-width: 0 !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-channel-logo {
+  width: 2.75rem !important;
+  height: 2.1rem !important;
+  flex-shrink: 0 !important;
+  margin-top: 0.05rem !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-channel-info {
+  flex: 1 1 0% !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-channel-name {
+  display: block !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  -webkit-line-clamp: unset !important;
+  line-height: 1.3 !important;
+  font-size: calc(0.84rem * var(--nc-rem-compensation, 1)) !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-channel-meta {
+  flex-wrap: wrap !important;
+  overflow: visible !important;
+  font-size: calc(0.68rem * var(--nc-rem-compensation, 1)) !important;
+  line-height: 1.25 !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-channel-meta > span:last-child {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  overflow-wrap: anywhere !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-channel-fav {
+  padding: 0.4rem !important;
+  margin-right: 0.2rem !important;
+  flex-shrink: 0 !important;
+  align-self: center !important;
 }
 
 html[data-display-mode="tv"] .nc-tv-content-pad {

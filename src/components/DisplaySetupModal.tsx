@@ -438,10 +438,10 @@ export function DisplaySetupModal({
               {/* Miniature App Layout using real rem & TV tokens */}
               <div
                 aria-hidden="true"
-                className="w-full h-[180px] sm:h-[205px] rounded-xl border border-nc-border/60 bg-nc-bg overflow-hidden flex pointer-events-none"
+                className="w-full h-[185px] sm:h-[210px] rounded-xl border border-nc-border/60 bg-nc-bg overflow-hidden flex pointer-events-none"
               >
                 {/* Simulated Sidebar */}
-                <div className="nc-tv-sidebar flex flex-col border-r border-nc-border/50 bg-black/60 shrink-0 h-full">
+                <div className="w-[8.5rem] flex flex-col border-r border-nc-border/50 bg-black/60 shrink-0 h-full">
                   <div className="nc-tv-sidebar-logo border-b border-nc-border/30">
                     <div className="font-bold text-white text-xs truncate">NORTH CODE</div>
                   </div>
@@ -481,13 +481,13 @@ export function DisplaySetupModal({
                   </div>
                 </div>
 
-                {/* Simulated Category Pane */}
-                <div className="nc-tv-category-pane hidden sm:flex flex-col border-r border-nc-border/50 bg-nc-bg-card/30 shrink-0 h-full p-2 gap-1 overflow-hidden">
-                  <div className="text-[0.65rem] font-semibold uppercase tracking-wider text-nc-text-secondary px-2 py-1">
-                    Categorias
+                {/* Simulated Category & Channel Pane */}
+                <div className="w-[9.5rem] hidden sm:flex flex-col border-r border-nc-border/50 bg-nc-bg-card/30 shrink-0 h-full p-2 gap-1 overflow-hidden">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-nc-text-secondary px-2 py-1">
+                    Canais
                   </div>
                   <div className="nc-tv-category-btn rounded-lg bg-nc-primary text-black font-semibold">
-                    Canais Abertos
+                    Canais Abertos HD
                   </div>
                   <div className="nc-tv-category-btn rounded-lg text-nc-text-secondary bg-nc-bg-input/50">
                     Esportes Ao Vivo
@@ -510,8 +510,8 @@ export function DisplaySetupModal({
                       Escala {draftScale}%
                     </span>
                   </div>
-                  <div className="nc-tv-media-grid grid flex-1 content-start overflow-hidden">
-                    {Array.from({ length: 8 }).map((_, idx) => (
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(5.75rem,1fr))] gap-2 flex-1 content-start overflow-hidden">
+                    {Array.from({ length: 10 }).map((_, idx) => (
                       <div
                         key={idx}
                         className={`aspect-[16/10] rounded-lg border p-2 flex flex-col justify-end ${
@@ -520,10 +520,10 @@ export function DisplaySetupModal({
                             : 'bg-nc-bg-card border-nc-border/50'
                         }`}
                       >
-                        <div className="text-[0.7rem] font-semibold text-white truncate">
+                        <div className="text-xs font-semibold text-white truncate">
                           Item {idx + 1}
                         </div>
-                        <div className="text-[0.6rem] text-nc-text-secondary truncate">
+                        <div className="text-xs text-nc-text-secondary truncate">
                           Full HD
                         </div>
                       </div>

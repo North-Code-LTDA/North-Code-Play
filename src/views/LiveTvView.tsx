@@ -1059,7 +1059,7 @@ export function LiveTvView({
                         key={group.groupId}
                         data-nav-row="true"
                         data-scroll-block="true"
-                        className={`w-full flex items-center gap-1 rounded-xl transition-colors border ${
+                        className={`nc-tv-channel-row w-full flex items-center gap-1 rounded-xl transition-colors border ${
                           isSelected
                             ? 'bg-nc-primary/10 border-nc-primary/30'
                             : 'bg-transparent border-transparent hover:bg-nc-bg-input'
@@ -1077,9 +1077,9 @@ export function LiveTvView({
                             }
                             handleSelectGroup(group);
                           }}
-                          className="w-full flex items-center gap-3 p-2 rounded-xl transition-colors flex-1 min-w-0 text-left"
+                          className="nc-tv-channel-btn w-full flex items-center gap-3 p-2 rounded-xl transition-colors flex-1 min-w-0 text-left"
                         >
-                          <div className="w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden relative">
+                          <div className="nc-tv-channel-logo w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden relative">
                             <MediaImage
                               src={group.stream_icon}
                               serverUrl={credentials?.serverUrl}
@@ -1092,13 +1092,16 @@ export function LiveTvView({
                             />
                           </div>
 
-                          <div className="flex-1 min-w-0 text-left flex flex-col gap-0.5">
-                            <p className={`font-medium text-sm truncate ${isSelected ? 'text-nc-primary' : 'text-white'}`}>
+                          <div className="nc-tv-channel-info flex-1 min-w-0 text-left flex flex-col gap-0.5">
+                            <p
+                              data-live-channel-name="true"
+                              className={`nc-tv-channel-name font-medium text-sm truncate ${isSelected ? 'text-nc-primary' : 'text-white'}`}
+                            >
                               {group.displayName}
                             </p>
                             {group.isGrouped && (
-                              <div className="flex items-center gap-1.5 text-[10px] text-nc-text-secondary overflow-hidden">
-                                <span className="inline-flex items-center gap-0.5 font-semibold text-nc-primary/90 bg-nc-primary/10 px-1.5 py-0.5 rounded border border-nc-primary/20">
+                              <div className="nc-tv-channel-meta flex items-center gap-1.5 text-[10px] text-nc-text-secondary overflow-hidden">
+                                <span className="inline-flex items-center gap-0.5 font-semibold text-nc-primary/90 bg-nc-primary/10 px-1.5 py-0.5 rounded border border-nc-primary/20 shrink-0">
                                   <Layers className="w-2.5 h-2.5" />
                                   {group.variants.length} versões
                                 </span>
@@ -1122,7 +1125,7 @@ export function LiveTvView({
                               handleToggleFavorite({ id: primaryId, name: group.displayName, cover: group.stream_icon || '', type: 'live' });
                             }
                           }}
-                          className="p-2.5 mr-1 rounded-xl shrink-0 text-nc-text-secondary hover:text-white transition-colors"
+                          className="nc-tv-channel-fav p-2.5 mr-1 rounded-xl shrink-0 text-nc-text-secondary hover:text-white transition-colors"
                         >
                           <Heart className={`w-4 h-4 ${groupFav ? 'fill-nc-primary text-nc-primary' : ''}`} />
                         </button>

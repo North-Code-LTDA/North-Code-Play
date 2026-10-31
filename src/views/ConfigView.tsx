@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   Settings,
   User,
@@ -14,12 +14,18 @@ import {
   Sliders,
   ChevronDown,
   ChevronUp,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { APP_VERSION, APP_COMMIT } from '../version';
-import { useDisplayPreferences } from '../platform/tvEnvironment';
+import {
+  useDisplayPreferences,
+  readDisplayEnvironmentDiagnostics,
+  DisplayEnvironmentDiagnostics,
+} from '../platform/tvEnvironment';
 import { DisplaySetupModal } from '../components/DisplaySetupModal';
 import {
   getNativeBackBridgeStatus,
@@ -27,50 +33,23 @@ import {
   focusElementSafely,
 } from '../navigation';
 
-interface ScreenMetrics {
-  innerWidth: number;
-  innerHeight: number;
-  devicePixelRatio: number;
-  vvWidth: number | null;
-  vvHeight: number | null;
-  vvScale: number | null;
-}
-
-function readScreenMetrics(): ScreenMetrics {
-  if (typeof window === 'undefined') {
-    return {
-      innerWidth: 0,
-      innerHeight: 0,
-      devicePixelRatio: 1,
-      vvWidth: null,
-      vvHeight: null,
-      vvScale: null,
-    };
-  }
-  const vv = window.visualViewport;
-  return {
-    innerWidth: Math.round(window.innerWidth),
-    innerHeight: Math.round(window.innerHeight),
-    devicePixelRatio: Number((window.devicePixelRatio || 1).toFixed(2)),
-    vvWidth: vv ? Math.round(vv.width) : null,
-    vvHeight: vv ? Math.round(vv.height) : null,
-    vvScale: vv ? Number((vv.scale || 1).toFixed(2)) : null,
-  };
-}
-
 export function ConfigView() {
   const { credentials } = useXtreamContext();
   const [accountInfo, setAccountInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showScreenDiagnostics, setShowScreenDiagnostics] = useState(false);
-  const [screenMetrics, setScreenMetrics] = useState<ScreenMetrics>(() => readScreenMetrics());
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [modalInitialStep, setModalInitialStep] = useState<'device' | 'tv-calibrate'>('device');
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'fallback'>('idle');
+  const [showSelectableDiagnostics, setShowSelectableDiagnostics] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const remProbeRef = useRef<HTMLDivElement>(null);
+  const diagnosticsTextareaRef = useRef<HTMLTextAreaElement>(null);
   const adjustTriggerRef = useRef<HTMLButtonElement | null>(null);
   const hasInitialFocusedRef = useRef(false);
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
     mode,
@@ -79,9 +58,67 @@ export function ConfigView() {
     effectiveTvScale,
     uiScaleFactor,
     isConfigured,
+    isPreviewActive,
   } = useDisplayPreferences();
 
+  const [diagnostics, setDiagnostics] = useState<DisplayEnvironmentDiagnostics>(() =>
+    readDisplayEnvironmentDiagnostics(null)
+  );
+
   const nativeBackBridge = getNativeBackBridgeStatus();
+
+  const updateDiagnosticsSnapshot = useCallback(() => {
+    setDiagnostics(readDisplayEnvironmentDiagnostics(remProbeRef.current));
+  }, []);
+
+  // Measure after browser layout when display preferences or diagnostics visibility change
+  useEffect(() => {
+    updateDiagnosticsSnapshot();
+
+    let rafId: number | null = null;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      rafId = window.requestAnimationFrame(() => {
+        updateDiagnosticsSnapshot();
+      });
+    } else {
+      timerId = setTimeout(() => {
+        updateDiagnosticsSnapshot();
+      }, 0);
+    }
+
+    return () => {
+      if (
+        rafId !== null &&
+        typeof window !== 'undefined' &&
+        typeof window.cancelAnimationFrame === 'function'
+      ) {
+        window.cancelAnimationFrame(rafId);
+      }
+      if (timerId !== null) {
+        clearTimeout(timerId);
+      }
+    };
+  }, [
+    mode,
+    tvScale,
+    effectiveMode,
+    effectiveTvScale,
+    uiScaleFactor,
+    isConfigured,
+    isPreviewActive,
+    showScreenDiagnostics,
+    updateDiagnosticsSnapshot,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current !== null) {
+        clearTimeout(copyResetTimerRef.current);
+      }
+    };
+  }, []);
 
   // Transfer focus once on mount when entering ConfigView via keyboard/remote
   useEffect(() => {
@@ -104,7 +141,7 @@ export function ConfigView() {
 
   useEffect(() => {
     const handleResize = () => {
-      setScreenMetrics(readScreenMetrics());
+      updateDiagnosticsSnapshot();
     };
     window.addEventListener('resize', handleResize);
     const vv = window.visualViewport;
@@ -113,7 +150,7 @@ export function ConfigView() {
       window.removeEventListener('resize', handleResize);
       vv?.removeEventListener('resize', handleResize);
     };
-  }, []);
+  }, [updateDiagnosticsSnapshot]);
 
   useEffect(() => {
     let isMounted = true;
@@ -180,8 +217,132 @@ export function ConfigView() {
     return nativeBackBridge.label;
   };
 
+  const buildSanitizedDiagnosticsText = useCallback(
+    (snap: DisplayEnvironmentDiagnostics): string => {
+      const { requested, measured, viewport, environment } = snap;
+      const lines = [
+        `=== North Code Play — Diagnóstico de Apresentação e Ambiente ===`,
+        `Versão: v${APP_VERSION} (${APP_COMMIT})`,
+        `--- Valores Solicitados (Estado) ---`,
+        `Modo solicitado (efetivo): ${
+          requested.effectiveMode === 'tv'
+            ? `TV (${requested.effectiveTvScale}%)`
+            : 'Outros dispositivos (100%)'
+        }${requested.isPreviewActive ? ' [Prévia ativa]' : ''}`,
+        `Preferência confirmada salva: ${
+          requested.isConfigured
+            ? requested.confirmedMode === 'tv'
+              ? `TV (${requested.confirmedTvScale}%)`
+              : 'Outros dispositivos (100%)'
+            : 'Não configurada'
+        }`,
+        `Fator --nc-ui-scale solicitado: ${requested.uiScaleFactor}`,
+        `Font-size raiz esperado: ${requested.expectedRootFontSizePx}px (base: ${requested.baseRootFontSizePx}px)`,
+        `Amostra 10rem × 2rem esperada: ${requested.expectedProbeWidthPx} × ${requested.expectedProbeHeightPx} px`,
+        `--- Valores Medidos (DOM / Ambiente) ---`,
+        `Atributo html[data-display-mode]: ${measured.domDisplayModeAttr ?? 'indisponível'}`,
+        `--nc-ui-scale no DOM (inline / computado): ${measured.domUiScaleVar ?? 'indisponível'} / ${
+          measured.computedUiScaleVar ?? 'indisponível'
+        }`,
+        `--nc-rem-compensation no DOM: ${measured.domRemCompensationVar ?? '1 (padrão)'}`,
+        `Font-size inline no html: ${measured.inlineRootFontSize ?? '(nenhum)'}`,
+        `Font-size computado (getComputedStyle): ${measured.computedRootFontSize ?? 'indisponível'}`,
+        `Amostra real 10rem × 2rem (getBoundingClientRect): ${
+          measured.probeWidthPx !== null && measured.probeHeightPx !== null
+            ? `${measured.probeWidthPx} × ${measured.probeHeightPx} px`
+            : 'indisponível'
+        }`,
+        `Escala efetiva medida: ${
+          measured.effectiveMeasuredScalePct !== null
+            ? `${measured.effectiveMeasuredScalePct}%`
+            : 'indisponível'
+        }`,
+        `--- Viewport e Ambiente ---`,
+        `Viewport CSS (innerWidth × innerHeight): ${
+          viewport.innerWidth !== null && viewport.innerHeight !== null
+            ? `${viewport.innerWidth} × ${viewport.innerHeight} px`
+            : 'indisponível'
+        }`,
+        `Client Viewport (clientWidth × clientHeight): ${
+          viewport.clientWidth !== null && viewport.clientHeight !== null
+            ? `${viewport.clientWidth} × ${viewport.clientHeight} px`
+            : 'indisponível'
+        }`,
+        `Visual Viewport: ${
+          viewport.vvWidth !== null && viewport.vvHeight !== null
+            ? `${viewport.vvWidth} × ${viewport.vvHeight} px (scale: ${viewport.vvScale ?? 1})`
+            : 'indisponível'
+        }`,
+        `Device Pixel Ratio (DPR): ${
+          viewport.devicePixelRatio !== null ? `${viewport.devicePixelRatio}x` : 'indisponível'
+        }`,
+        `Integração Nativa de Voltar: ${formatBackBridgeStatus()}`,
+        `Plataforma: ${environment.platform}`,
+        `User-Agent / WebView: ${environment.userAgent}`,
+      ];
+      return lines.join('\n');
+    },
+    [nativeBackBridge.label]
+  );
+
+  const handleCopyDiagnostics = async () => {
+    const latest = readDisplayEnvironmentDiagnostics(remProbeRef.current);
+    setDiagnostics(latest);
+    const reportText = buildSanitizedDiagnosticsText(latest);
+
+    if (copyResetTimerRef.current !== null) {
+      clearTimeout(copyResetTimerRef.current);
+    }
+
+    let copied = false;
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function'
+      ) {
+        await navigator.clipboard.writeText(reportText);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+
+    if (!copied) {
+      setShowSelectableDiagnostics(true);
+      setCopyStatus('fallback');
+      setTimeout(() => {
+        if (diagnosticsTextareaRef.current) {
+          try {
+            diagnosticsTextareaRef.current.select();
+          } catch {
+            // Ignore selection errors
+          }
+        }
+      }, 0);
+    } else {
+      setCopyStatus('copied');
+    }
+
+    copyResetTimerRef.current = setTimeout(() => {
+      setCopyStatus('idle');
+    }, 3500);
+  };
+
+  const diagnosticsReportText = buildSanitizedDiagnosticsText(diagnostics);
+
   return (
     <>
+      {/* Hidden, non-interactive, non-focusable 10rem x 2rem measurement probe */}
+      <div
+        ref={remProbeRef}
+        data-rem-probe="true"
+        aria-hidden="true"
+        tabIndex={-1}
+        style={{ width: '10rem', height: '2rem' }}
+        className="fixed -top-[9999px] -left-[9999px] opacity-0 pointer-events-none select-none overflow-hidden"
+      />
+
       <div
         ref={containerRef}
         data-nav-zone="content"
@@ -377,53 +538,220 @@ export function ConfigView() {
                 data-nav-item="true"
                 data-synopsis-focus="true"
                 data-scroll-block="true"
-                className="bg-nc-bg-input/80 rounded-xl p-4 border border-nc-border/50 space-y-3 text-xs focus:outline-none"
+                data-screen-diagnostics-panel="true"
+                className="bg-nc-bg-input/80 rounded-xl p-4 border border-nc-border/50 space-y-4 text-xs focus:outline-none"
               >
-                <div className="font-semibold text-white text-sm flex items-center gap-2 border-b border-nc-border/40 pb-2">
-                  <Monitor className="w-4 h-4 text-nc-primary" /> Diagnóstico da Tela e Ambiente
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <span className="text-gray-400 block">Modo de Apresentação Efetivo</span>
-                    <span className="text-white font-mono">
-                      {effectiveMode === 'tv'
-                        ? `TV — Escala ${effectiveTvScale}% (--nc-ui-scale: ${uiScaleFactor})`
-                        : 'Padrão (100%)'}
-                    </span>
+                <div className="flex items-center justify-between flex-wrap gap-2 border-b border-nc-border/40 pb-2.5">
+                  <div className="font-semibold text-white text-sm flex items-center gap-2">
+                    <Monitor className="w-4 h-4 text-nc-primary" /> Diagnóstico da Tela e Ambiente
                   </div>
-                  <div>
-                    <span className="text-gray-400 block">Preferência Salva no Dispositivo</span>
-                    <span className="text-white font-mono">
-                      {isConfigured
-                        ? mode === 'tv'
-                          ? `TV (${tvScale}%)`
-                          : 'Outros dispositivos (100%)'
-                        : 'Não configurada'}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-gray-400 block">Viewport CSS (innerWidth × innerHeight)</span>
-                    <span className="text-white font-mono">
-                      {screenMetrics.innerWidth} × {screenMetrics.innerHeight} px
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-gray-400 block">Device Pixel Ratio (DPR)</span>
-                    <span className="text-white font-mono">{screenMetrics.devicePixelRatio}x</span>
-                  </div>
-                  <div>
-                    <span className="text-gray-400 block">Visual Viewport</span>
-                    <span className="text-white font-mono">
-                      {screenMetrics.vvWidth !== null && screenMetrics.vvHeight !== null
-                        ? `${screenMetrics.vvWidth} × ${screenMetrics.vvHeight} px (scale: ${screenMetrics.vvScale ?? 1})`
-                        : 'Indisponível'}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-gray-400 block">Integração Nativa de Voltar</span>
-                    <span className="text-white font-mono">{formatBackBridgeStatus()}</span>
+
+                  <div
+                    data-nav-row="config-diagnostics-actions"
+                    className="flex flex-wrap items-center gap-2"
+                  >
+                    <button
+                      type="button"
+                      data-nav-item="true"
+                      data-copy-diagnostics="true"
+                      onClick={handleCopyDiagnostics}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nc-primary text-black font-semibold text-xs hover:bg-nc-primary-hover transition-colors"
+                    >
+                      {copyStatus === 'copied' ? (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Diagnóstico copiado!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copiar diagnóstico</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      data-nav-item="true"
+                      onClick={() => setShowSelectableDiagnostics((prev) => !prev)}
+                      className="px-2.5 py-1.5 rounded-lg bg-nc-bg-card border border-nc-border/60 text-gray-200 hover:text-white text-xs transition-colors"
+                    >
+                      {showSelectableDiagnostics ? 'Ocultar texto selecionável' : 'Texto selecionável'}
+                    </button>
                   </div>
                 </div>
+
+                {/* Group 1: Requested Values (Application State) */}
+                <div className="space-y-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-nc-primary">
+                    1. Valores Solicitados pelo Estado
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-black/30 p-3 rounded-lg border border-nc-border/30">
+                    <div>
+                      <span className="text-gray-400 block">Modo e Escala Solicitados (Efetivo)</span>
+                      <span className="text-white font-mono" data-diag-requested-mode="true">
+                        {diagnostics.requested.effectiveMode === 'tv'
+                          ? `TV — ${diagnostics.requested.effectiveTvScale}% (--nc-ui-scale: ${diagnostics.requested.uiScaleFactor})`
+                          : 'Outros dispositivos — Padrão 100% (--nc-ui-scale: 1)'}
+                        {diagnostics.requested.isPreviewActive ? ' [Prévia]' : ''}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Preferência Salva no Dispositivo</span>
+                      <span className="text-white font-mono">
+                        {diagnostics.requested.isConfigured
+                          ? diagnostics.requested.confirmedMode === 'tv'
+                            ? `TV (${diagnostics.requested.confirmedTvScale}%)`
+                            : 'Outros dispositivos (100%)'
+                          : 'Não configurada'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Font-size Raiz Esperado</span>
+                      <span className="text-white font-mono">
+                        {diagnostics.requested.expectedRootFontSizePx}px (base: {diagnostics.requested.baseRootFontSizePx}px)
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Amostra 10rem × 2rem Esperada</span>
+                      <span className="text-white font-mono">
+                        {diagnostics.requested.expectedProbeWidthPx} × {diagnostics.requested.expectedProbeHeightPx} px
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Group 2: Measured Values (DOM & Computed Layout) */}
+                <div className="space-y-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-nc-primary">
+                    2. Valores Medidos no DOM e Layout Real
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-black/30 p-3 rounded-lg border border-nc-border/30">
+                    <div>
+                      <span className="text-gray-400 block">Atributo html[data-display-mode]</span>
+                      <span className="text-white font-mono" data-diag-dom-mode="true">
+                        {diagnostics.measured.domDisplayModeAttr ?? 'indisponível'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">--nc-ui-scale Lido do DOM (inline / computado)</span>
+                      <span className="text-white font-mono" data-diag-dom-scale="true">
+                        {diagnostics.measured.domUiScaleVar ?? 'indisponível'} /{' '}
+                        {diagnostics.measured.computedUiScaleVar ?? 'indisponível'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Font-size Computado do html (getComputedStyle)</span>
+                      <span className="text-white font-mono" data-diag-computed-fontsize="true">
+                        {diagnostics.measured.computedRootFontSize ?? 'indisponível'} (inline:{' '}
+                        {diagnostics.measured.inlineRootFontSize ?? 'nenhum'})
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Amostra Real 10rem × 2rem (getBoundingClientRect)</span>
+                      <span className="text-white font-mono" data-diag-probe-rect="true">
+                        {diagnostics.measured.probeWidthPx !== null &&
+                        diagnostics.measured.probeHeightPx !== null
+                          ? `${diagnostics.measured.probeWidthPx} × ${diagnostics.measured.probeHeightPx} px`
+                          : 'indisponível'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Proporção Medida vs. Solicitada</span>
+                      <span className="text-white font-mono" data-diag-measured-scale="true">
+                        {diagnostics.measured.effectiveMeasuredScalePct !== null
+                          ? `${diagnostics.measured.effectiveMeasuredScalePct}% medido (solicitado: ${
+                              diagnostics.requested.effectiveMode === 'tv'
+                                ? `${diagnostics.requested.effectiveTvScale}%`
+                                : '100%'
+                            })`
+                          : 'indisponível'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Compensação de Escala (--nc-rem-compensation)</span>
+                      <span className="text-white font-mono">
+                        {diagnostics.measured.domRemCompensationVar ?? '1 (sem bloqueio de fonte)'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Group 3: Viewport, Native Bridge, Browser/WebView & App Version */}
+                <div className="space-y-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-nc-primary">
+                    3. Viewport, Ambiente e Versão
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-black/30 p-3 rounded-lg border border-nc-border/30">
+                    <div>
+                      <span className="text-gray-400 block">Viewport CSS (innerWidth × innerHeight)</span>
+                      <span className="text-white font-mono">
+                        {diagnostics.viewport.innerWidth !== null &&
+                        diagnostics.viewport.innerHeight !== null
+                          ? `${diagnostics.viewport.innerWidth} × ${diagnostics.viewport.innerHeight} px`
+                          : 'indisponível'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Device Pixel Ratio (DPR)</span>
+                      <span className="text-white font-mono">
+                        {diagnostics.viewport.devicePixelRatio !== null
+                          ? `${diagnostics.viewport.devicePixelRatio}x`
+                          : 'indisponível'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Visual Viewport</span>
+                      <span className="text-white font-mono">
+                        {diagnostics.viewport.vvWidth !== null &&
+                        diagnostics.viewport.vvHeight !== null
+                          ? `${diagnostics.viewport.vvWidth} × ${diagnostics.viewport.vvHeight} px (scale: ${
+                              diagnostics.viewport.vvScale ?? 1
+                            })`
+                          : 'indisponível'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Integração Nativa de Voltar</span>
+                      <span className="text-white font-mono">{formatBackBridgeStatus()}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Versão da Aplicação</span>
+                      <span className="text-white font-mono">
+                        v{APP_VERSION} ({APP_COMMIT})
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 block">Plataforma</span>
+                      <span className="text-white font-mono">{diagnostics.environment.platform}</span>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <span className="text-gray-400 block">Identificação Técnica (Navegador / WebView)</span>
+                      <span className="text-white font-mono break-all select-all">
+                        {diagnostics.environment.userAgent}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {(showSelectableDiagnostics || copyStatus === 'fallback') && (
+                  <div className="space-y-1.5 pt-1">
+                    <label className="text-gray-300 block font-medium">
+                      {copyStatus === 'fallback'
+                        ? 'Área de transferência indisponível — selecione e copie o texto abaixo:'
+                        : 'Texto completo do diagnóstico (somente ambiente e apresentação, sem dados da conta):'}
+                    </label>
+                    <textarea
+                      ref={diagnosticsTextareaRef}
+                      readOnly
+                      rows={8}
+                      data-diagnostics-text="true"
+                      value={diagnosticsReportText}
+                      onClick={(e) => e.currentTarget.select()}
+                      className="w-full rounded-lg bg-black/70 border border-nc-border/60 p-2.5 text-[11px] font-mono text-gray-200 select-all focus:outline-none focus:border-nc-primary"
+                    />
+                  </div>
+                )}
               </div>
             )}
 

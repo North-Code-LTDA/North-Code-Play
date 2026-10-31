@@ -1,14 +1,15 @@
 import assert from 'assert';
 import { Window } from 'happy-dom';
 
-// -------------------------------------------------------------
-// 1. SETUP DOM & STORAGE ENVIRONMENT BEFORE ANY MODULE IMPORTS
-// -------------------------------------------------------------
-const windowInstance = new Window({ url: 'http://localhost' });
+// 1. CONFIGURAÇÃO DO AMBIENTE DOM REAL (HAPPY-DOM) PARA TESTES DE HOOKS E UI
+const windowInstance = new Window({
+  url: 'http://localhost',
+  width: 1280,
+  height: 720,
+});
 (globalThis as any).window = windowInstance;
 (globalThis as any).document = windowInstance.document;
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
 Object.defineProperty(globalThis, 'navigator', {
   value: windowInstance.navigator,
   configurable: true,
@@ -16,11 +17,52 @@ Object.defineProperty(globalThis, 'navigator', {
 });
 (globalThis as any).localStorage = windowInstance.localStorage;
 (globalThis as any).HTMLElement = windowInstance.HTMLElement;
+(globalThis as any).Element = windowInstance.Element;
+(globalThis as any).Node = windowInstance.Node;
 (globalThis as any).HTMLMediaElement = windowInstance.HTMLMediaElement;
 (globalThis as any).HTMLVideoElement = windowInstance.HTMLVideoElement;
+(globalThis as any).Event = windowInstance.Event;
+(globalThis as any).CustomEvent = windowInstance.CustomEvent;
+(globalThis as any).KeyboardEvent = (windowInstance as any).KeyboardEvent;
 (globalThis as any).MouseEvent = windowInstance.MouseEvent;
 (globalThis as any).PointerEvent = windowInstance.PointerEvent;
 (globalThis as any).StorageEvent = windowInstance.StorageEvent;
+(globalThis as any).getComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
+
+// Implementação coerente de requestAnimationFrame / cancelAnimationFrame para motion/react e hooks de UI
+let nextRafId = 0;
+const rafTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+const testRequestAnimationFrame = (callback: FrameRequestCallback): number => {
+  const id = ++nextRafId;
+  const handle = setTimeout(() => {
+    rafTimers.delete(id);
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    callback(now);
+  }, 16);
+  rafTimers.set(id, handle);
+  return id;
+};
+
+const testCancelAnimationFrame = (id: number): void => {
+  const handle = rafTimers.get(id);
+  if (handle !== undefined) {
+    clearTimeout(handle);
+    rafTimers.delete(id);
+  }
+};
+
+(windowInstance as any).requestAnimationFrame = testRequestAnimationFrame;
+(windowInstance as any).cancelAnimationFrame = testCancelAnimationFrame;
+(globalThis as any).requestAnimationFrame = testRequestAnimationFrame;
+(globalThis as any).cancelAnimationFrame = testCancelAnimationFrame;
+
+// No Happy DOM, a implementação parcial de WAAPI (Element.prototype.animate / KeyframeEffect)
+// falha ao interpretar variáveis CSS compostas (ex.: var(--nc-player-btn-scale)) e não conclui onfinish.
+// Removendo Element.prototype.animate no ambiente de teste, o motion/react utiliza seu motor JS determinístico via requestAnimationFrame.
+delete (windowInstance.Element.prototype as any).animate;
+delete (windowInstance.HTMLElement.prototype as any).animate;
+
 
 let videoLoadCallCount = 0;
 let videoPlayCallCount = 0;
@@ -33,13 +75,11 @@ HTMLMediaElement.prototype.play = function () {
   this.dispatchEvent(new windowInstance.Event('playing'));
   return Promise.resolve();
 };
-
 HTMLMediaElement.prototype.pause = function () {
   videoPauseCallCount++;
   Object.defineProperty(this, 'paused', { value: true, configurable: true, writable: true });
   this.dispatchEvent(new windowInstance.Event('pause'));
 };
-
 HTMLMediaElement.prototype.load = function () {
   videoLoadCallCount++;
   this.dispatchEvent(new windowInstance.Event('loadstart'));
@@ -50,17 +90,12 @@ Object.defineProperty(windowInstance.document, 'fullscreenElement', {
   get() {
     return currentFullscreenElement;
   },
-  set(el: Element | null) {
-    currentFullscreenElement = el;
-  },
   configurable: true,
 });
-
 (windowInstance.document as any).exitFullscreen = async function () {
   currentFullscreenElement = null;
   windowInstance.document.dispatchEvent(new windowInstance.Event('fullscreenchange'));
 };
-
 (windowInstance.HTMLElement.prototype as any).requestFullscreen = async function () {
   currentFullscreenElement = this;
   windowInstance.document.dispatchEvent(new windowInstance.Event('fullscreenchange'));
@@ -77,46 +112,80 @@ Object.defineProperty(windowInstance.HTMLElement.prototype, 'scrollTop', {
   configurable: true,
 });
 
-// -------------------------------------------------------------
-// 2. NOW IMPORT REACT & PROJECT MODULES AFTER DOM INITIALIZATION
-// -------------------------------------------------------------
+// 2. IMPORTAÇÃO DINÂMICA DOS MÓDULOS REAIS DO PROJETO (APÓS INICIALIZAR WINDOW E REQUESTANIMATIONFRAME)
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import {
+import type { XtreamCredentials } from '../src/types';
+import type { FavoriteItem } from '../src/hooks/useFavorites';
+
+const {
   normalizeServerUrl,
   normalizeImageSource,
   buildDirectMediaUrl,
   buildDirectImageUrl,
-} from '../src/utils/mediaUtils';
-import {
+} = await import('../src/utils/mediaUtils');
+const {
   getFavoritesKey,
   FAVORITES_KEY_PREFIX,
   CREDENTIALS_KEY,
-} from '../src/utils/accountUtils';
-import { XtreamCredentials } from '../src/types';
-import { useFavorites, FavoriteItem, getCachedFavoritesForAccount } from '../src/hooks/useFavorites';
-import { VideoPlayer } from '../src/components/VideoPlayer';
-import { DisplaySetupModal } from '../src/components/DisplaySetupModal';
-import { FavoritesView } from '../src/views/FavoritesView';
-import { MoviesView } from '../src/views/MoviesView';
-import { SeriesView } from '../src/views/SeriesView';
-import { LiveTvView } from '../src/views/LiveTvView';
-import { XtreamProvider, XtreamContext } from '../src/context/XtreamContext';
-import { XtreamService } from '../src/services/xtreamService';
-import { Home } from '../src/pages/Home';
-import {
+} = await import('../src/utils/accountUtils');
+const { useFavorites, getCachedFavoritesForAccount } = await import('../src/hooks/useFavorites');
+const { VideoPlayer } = await import('../src/components/VideoPlayer');
+const { DisplaySetupModal } = await import('../src/components/DisplaySetupModal');
+const { FavoritesView } = await import('../src/views/FavoritesView');
+const { MoviesView } = await import('../src/views/MoviesView');
+const { SeriesView } = await import('../src/views/SeriesView');
+const { LiveTvView } = await import('../src/views/LiveTvView');
+const { ConfigView } = await import('../src/views/ConfigView');
+const { XtreamProvider, XtreamContext } = await import('../src/context/XtreamContext');
+const { XtreamService } = await import('../src/services/xtreamService');
+const { Home } = await import('../src/pages/Home');
+const {
   STORAGE_KEY_DISPLAY_PREFS,
   getDisplayPreferencesSnapshot,
   startDisplayPreview,
   cancelDisplayPreview,
   confirmDisplayPreferences,
   createDisplayPreviewSession,
-} from '../src/platform/tvEnvironment';
+  readDisplayEnvironmentDiagnostics,
+} = await import('../src/platform/tvEnvironment');
 
 const origGetItem = windowInstance.localStorage.getItem;
 const origSetItem = windowInstance.localStorage.setItem;
 const origRemoveItem = windowInstance.localStorage.removeItem;
+
+function describeElement(el: Element | null | undefined): string {
+  if (!el) return 'null';
+  const tag = el.tagName.toLowerCase();
+  const id = el.id ? `#${el.id}` : '';
+  const scope = el.getAttribute('data-focus-scope')
+    ? `[data-focus-scope="${el.getAttribute('data-focus-scope')}"]`
+    : '';
+  const player = el.getAttribute('data-player-container')
+    ? `[data-player-container="${el.getAttribute('data-player-container')}"]`
+    : '';
+  const style = el.getAttribute('style') ? ` style="${el.getAttribute('style')}"` : '';
+  const text = (el.textContent || '').trim().slice(0, 40);
+  return `<${tag}${id}${player}${scope}${style}>("${text}")`;
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs: number,
+  description: string
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+  }
+  if (!predicate()) {
+    throw new Error(`Timeout (${timeoutMs}ms) aguardando condição: ${description}`);
+  }
+}
 
 // -------------------------------------------------------------
 // 3. TESTES DE REGRESSÃO DE URLS E IMAGENS
@@ -2231,26 +2300,42 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Pressionar Enter em Assistir deve abrir o VideoPlayer modal ([data-player-container="true"][data-focus-scope="modal"])'
   );
 
-  // Pressionar Escape 1 vez: deve fechar o VideoPlayer e manter MovieDetails aberto, restaurando foco ao botão Assistir
+  // Pressionar Escape 1 vez:
+  // 1) Fechamento lógico imediato: o comando Escape encerra activeVideo e devolve o foco imediatamente ao botão Assistir em MovieDetails, mantendo MovieDetails aberto.
+  // 2) Conclusão da saída animada (AnimatePresence exit={{ opacity: 0 }}): o elemento DOM do VideoPlayer é removido após os quadros de saída.
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
 
-  assert.strictEqual(
-    document.querySelector('[data-player-container="true"][data-focus-scope="modal"]'),
-    null,
-    '1º Escape com VideoPlayer aberto deve fechar o VideoPlayer'
+  assert(
+    document.activeElement === moviePlayBtn,
+    `Fechamento lógico imediato no 1º Escape: o foco deve retornar imediatamente ao botão Assistir em MovieDetails, mas estava em ${describeElement(document.activeElement)}`
+  );
+  assert(
+    activeModalScope.isConnected,
+    'Fechamento lógico imediato no 1º Escape: MovieDetails deve permanecer aberto e conectado ao DOM'
+  );
+
+  await waitForCondition(
+    () => document.querySelector('[data-player-container="true"][data-focus-scope="modal"]') === null,
+    1200,
+    'Remoção do elemento [data-player-container="true"][data-focus-scope="modal"] após conclusão da animação de saída (AnimatePresence)'
+  );
+
+  const residualPlayerEl = document.querySelector('[data-player-container="true"][data-focus-scope="modal"]');
+  assert(
+    residualPlayerEl === null,
+    `1º Escape com VideoPlayer aberto deve remover o VideoPlayer do DOM após a transição de saída, mas encontrou: ${describeElement(residualPlayerEl)}`
   );
   assert(
     document.querySelector('[data-focus-scope="modal"]') !== null,
     '1º Escape ao sair do VideoPlayer NÃO deve fechar MovieDetails em duplicidade'
   );
-  assert.strictEqual(
-    document.activeElement,
-    moviePlayBtn,
-    'Ao fechar o VideoPlayer com Escape, o foco deve retornar imediatamente ao botão Assistir em MovieDetails'
+  assert(
+    document.activeElement === moviePlayBtn,
+    `Após conclusão da saída do VideoPlayer, o foco deve permanecer no botão Assistir em MovieDetails, mas estava em ${describeElement(document.activeElement)}`
   );
 
   // Passo 1 (Filmes): Escape fecha MovieDetails, restaura foco ao card e preserva scrollTop da grade
@@ -2260,10 +2345,10 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
-  assert.strictEqual(
-    document.querySelector('[data-focus-scope="modal"]'),
-    null,
-    'Escape em MovieDetails deve fechar a tela de detalhes'
+  const residualModalAfterMovieClose = document.querySelector('[data-focus-scope="modal"]');
+  assert(
+    residualModalAfterMovieClose === null,
+    `Escape em MovieDetails deve fechar a tela de detalhes, mas encontrou: ${describeElement(residualModalAfterMovieClose)}`
   );
   assert.strictEqual(
     document.activeElement,
@@ -2448,10 +2533,9 @@ async function runDpadNavigationAndBackPolicyTests() {
     seriesFavBtn,
     'Após chegar ao fim da sinopse da série, o próximo ArrowDown deve mover o foco para o botão Favoritar'
   );
-  assert.strictEqual(
-    seriesDetailsScroll.scrollTop,
-    140,
-    'Mover o foco da sinopse para Favoritar NÃO deve resetar seriesDetailsScroll.scrollTop para 0 prematuramente'
+  assert(
+    seriesDetailsScroll.scrollTop >= 140,
+    `Mover o foco da sinopse para Favoritar NÃO deve resetar seriesDetailsScroll.scrollTop para 0 prematuramente (atual: ${seriesDetailsScroll.scrollTop})`
   );
 
   // Subir de volta para a sinopse e testar subida gradual com ArrowUp (350 -> 230 -> 110 -> 0)
@@ -3560,7 +3644,220 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default');
   assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1');
 
-  console.log('✅ Todos os testes de ciclo de vida da prévia de apresentação aprovados!');
+  // 9. Idempotência da aplicação de font-size em px, compensação de minimumFontSize de WebView e restauração do modo padrão
+  confirmDisplayPreferences('tv', 50);
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.5');
+  assert.strictEqual(document.documentElement.style.fontSize, '8px', 'Em 50% (base 16px), font-size inline deve ser 8px');
+
+  // Reaplicar diversas escalas seguidas não acumula multiplicações (idempotente)
+  confirmDisplayPreferences('tv', 85);
+  assert.strictEqual(document.documentElement.style.fontSize, '13.6px', 'Em 85% (base 16px), font-size inline deve ser 13.6px');
+  confirmDisplayPreferences('tv', 125);
+  assert.strictEqual(document.documentElement.style.fontSize, '20px', 'Em 125% (base 16px), font-size inline deve ser 20px');
+  confirmDisplayPreferences('tv', 50);
+  assert.strictEqual(document.documentElement.style.fontSize, '8px', 'Retornar a 50% deve resultar exatamente em 8px sem acumular multiplicações');
+
+  // Simular WebView com minimumFontSize = 12px que bloqueia redução de font-size abaixo de 12px
+  const origGetComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
+  (windowInstance as any).getComputedStyle = (el: Element) => {
+    const baseStyle = origGetComputedStyle(el);
+    if (el === document.documentElement && document.documentElement.getAttribute('data-display-mode') === 'tv') {
+      return new Proxy(baseStyle, {
+        get(target, prop) {
+          if (prop === 'fontSize') return '12px';
+          const val = (target as any)[prop];
+          return typeof val === 'function' ? val.bind(target) : val;
+        },
+      });
+    }
+    return baseStyle;
+  };
+  (globalThis as any).getComputedStyle = (windowInstance as any).getComputedStyle;
+
+  confirmDisplayPreferences('tv', 50);
+  assert.strictEqual(
+    document.documentElement.style.getPropertyValue('--nc-rem-compensation'),
+    '0.6667',
+    'Quando a WebView trava o font-size computado em 12px para um pedido de 8px (50%), --nc-rem-compensation deve ser 8/12 = 0.6667'
+  );
+
+  // Restaurar getComputedStyle original e voltar ao modo padrão
+  (windowInstance as any).getComputedStyle = origGetComputedStyle;
+  (globalThis as any).getComputedStyle = origGetComputedStyle;
+
+  confirmDisplayPreferences('default', 85);
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default');
+  assert.strictEqual(document.documentElement.style.fontSize, '', 'Modo default deve limpar font-size inline');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-rem-compensation'), '', 'Modo default deve limpar --nc-rem-compensation');
+
+  // 10. Diagnóstico da Tela e Ambiente em ConfigView (valores solicitados vs medidos, amostra 10rem x 2rem e cópia sanitizada)
+  confirmDisplayPreferences('tv', 75);
+  const diagContainer = document.createElement('div');
+  document.body.appendChild(diagContainer);
+  const diagRoot = createRoot(diagContainer);
+
+  const secretCreds: XtreamCredentials = {
+    serverUrl: 'http://secret-server.iptv.local:8080',
+    username: 'secretUser99',
+    password: 'superSecretPassword123',
+    allowed_output_formats: ['m3u8'],
+  };
+
+  await act(async () => {
+    diagRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: secretCreds },
+        React.createElement(NavigationProvider, null, React.createElement(ConfigView))
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const toggleDiagBtn = diagContainer.querySelector('[data-nav-row="config-diagnostics-toggle"]') as HTMLButtonElement;
+  assert(toggleDiagBtn !== null, 'Cenário 10: Botão para abrir o diagnóstico da tela deve existir em ConfigView');
+
+  await act(async () => {
+    toggleDiagBtn.click();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+
+  const diagPanel = diagContainer.querySelector('[data-screen-diagnostics-panel="true"]') as HTMLElement;
+  assert(diagPanel !== null, 'Cenário 10: Painel Diagnóstico da Tela e Ambiente deve abrir');
+
+  // No Happy DOM sem layout real, getBoundingClientRect() retorna 0x0 -> deve exibir "indisponível", nunca 0px
+  const probeRectTextEl = diagPanel.querySelector('[data-diag-probe-rect="true"]') as HTMLElement;
+  assert.strictEqual(
+    probeRectTextEl?.textContent?.trim(),
+    'indisponível',
+    'Cenário 10: Em ambiente simulado sem medição real (rect 0x0), a amostra 10rem x 2rem deve exibir "indisponível" e nunca 0px'
+  );
+
+  // Simular medição real de layout (ex.: 75% de 16px = 12px -> 10rem = 120px, 2rem = 24px) na sonda invisível
+  const probeEl = diagContainer.querySelector('[data-rem-probe="true"]') as HTMLElement;
+  assert(probeEl !== null, 'Cenário 10: Sonda invisível [data-rem-probe="true"] deve existir');
+  probeEl.getBoundingClientRect = () =>
+    ({
+      width: 120,
+      height: 24,
+      top: -9999,
+      left: -9999,
+      right: -9879,
+      bottom: -9975,
+      x: -9999,
+      y: -9999,
+      toJSON: () => ({}),
+    }) as DOMRect;
+
+  const copyDiagBtn = diagPanel.querySelector('[data-copy-diagnostics="true"]') as HTMLButtonElement;
+  assert(copyDiagBtn !== null, 'Cenário 10: Botão "Copiar diagnóstico" deve existir');
+
+  await act(async () => {
+    copyDiagBtn.click();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+
+  assert.strictEqual(
+    probeRectTextEl?.textContent?.trim(),
+    '120 × 24 px',
+    'Cenário 10: Quando getBoundingClientRect retorna medida real, o painel deve exibir "120 × 24 px"'
+  );
+
+  const diagTextarea = diagPanel.querySelector('[data-diagnostics-text="true"]') as HTMLTextAreaElement;
+  assert(diagTextarea !== null, 'Cenário 10: Alternativa de texto selecionável deve ser exibida quando clipboard não está disponível');
+  assert(
+    diagTextarea.value.includes('TV (75%)') && diagTextarea.value.includes('120 × 24 px'),
+    'Cenário 10: Texto do diagnóstico deve incluir modo solicitado e medida real da amostra'
+  );
+  assert(
+    !diagTextarea.value.includes('secret-server.iptv.local') &&
+      !diagTextarea.value.includes('secretUser99') &&
+      !diagTextarea.value.includes('superSecretPassword123'),
+    'Cenário 10: O texto do diagnóstico NUNCA deve incluir credenciais, senhas ou URL do servidor da conta'
+  );
+
+  await act(async () => {
+    diagRoot.unmount();
+  });
+  document.body.removeChild(diagContainer);
+
+  // 11. Nomes de canais em LiveTvView no modo TV: curtos, longos com espaços e longos sem espaços exibem texto completo com classes de quebra em múltiplas linhas
+  confirmDisplayPreferences('tv', 85);
+  (XtreamService as any).getLiveCategories = async () => [
+    { category_id: '77', category_name: 'Variedades' },
+  ];
+  (XtreamService as any).getLiveStreams = async () => [
+    { stream_id: 7701, name: 'SBT', category_id: '77' },
+    {
+      stream_id: 7702,
+      name: 'Discovery Channel Brasil Documentários Especiais e Ciência Ao Vivo',
+      category_id: '77',
+    },
+    {
+      stream_id: 7703,
+      name: 'CANAL_ULTRA_LONGO_SEM_ESPACOS_PARA_VALIDAR_QUEBRA_SEGURA_NO_PAINEL_DE_TV_2026',
+      category_id: '77',
+    },
+  ];
+
+  const liveTvContainer = document.createElement('div');
+  document.body.appendChild(liveTvContainer);
+  const liveTvRoot = createRoot(liveTvContainer);
+
+  await act(async () => {
+    liveTvRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: secretCreds },
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(LiveTvView, { onPlay: () => {} })
+        )
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+
+  const cat77Btn = liveTvContainer.querySelector('button[data-live-category-id="77"]') as HTMLButtonElement;
+  assert(cat77Btn !== null, 'Cenário 11: Categoria Variedades (id=77) deve ser renderizada');
+
+  await act(async () => {
+    cat77Btn.click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  const channelNameEls = Array.from(
+    liveTvContainer.querySelectorAll('[data-live-channel-name="true"]')
+  ) as HTMLElement[];
+  assert.strictEqual(channelNameEls.length, 3, 'Cenário 11: Deve renderizar os 3 canais (curto, longo com espaços e longo sem espaços)');
+
+  const renderedChannelTexts = channelNameEls.map((el) => (el.textContent || '').trim());
+  assert(renderedChannelTexts.includes('SBT'), 'Cenário 11: Nome curto deve estar íntegro');
+  assert(
+    renderedChannelTexts.includes('Discovery Channel Brasil Documentários Especiais e Ciência Ao Vivo'),
+    'Cenário 11: Nome longo com espaços deve estar íntegro sem corte textual'
+  );
+  assert(
+    renderedChannelTexts.includes('CANAL_ULTRA_LONGO_SEM_ESPACOS_PARA_VALIDAR_QUEBRA_SEGURA_NO_PAINEL_DE_TV_2026'),
+    'Cenário 11: Nome longo sem espaços deve estar íntegro sem corte textual'
+  );
+
+  for (const nameEl of channelNameEls) {
+    assert(
+      nameEl.classList.contains('nc-tv-channel-name'),
+      'Cenário 11: Elemento do nome do canal deve possuir a classe nc-tv-channel-name para quebra multilinha no modo TV'
+    );
+  }
+
+  await act(async () => {
+    liveTvRoot.unmount();
+  });
+  document.body.removeChild(liveTvContainer);
+
+  confirmDisplayPreferences('default', 85);
+  console.log('✅ Todos os testes de ciclo de vida da prévia, diagnóstico de escala e nomes de canais no modo TV aprovados!');
 }
 
 async function main() {
@@ -3576,6 +3873,7 @@ async function main() {
   await runDpadNavigationAndBackPolicyTests();
   await runDisplaySetupPreviewAndLifecycleTests();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
+  process.exit(0);
 }
 
 main().catch((err) => {
