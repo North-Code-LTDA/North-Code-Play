@@ -14,10 +14,10 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test": "tsx scripts/test-direct.ts",
-    "cap:sync": "cap sync android",
-    "android:sync": "npm run build && cap sync android",
-    "android:prepare": "npm run build && cap sync android",
-    "android:open": "cap open android"
+    "cap:sync": "node tooling/android/prepare-android.mjs --skip-web-build",
+    "android:sync": "npm run build && node tooling/android/prepare-android.mjs --skip-web-build",
+    "android:prepare": "npm run build && node tooling/android/prepare-android.mjs --skip-web-build",
+    "android:open": "node tooling/android/prepare-android.mjs --skip-web-build --open"
   },
   "dependencies": {
     "@capacitor/android": "^8.0.0",

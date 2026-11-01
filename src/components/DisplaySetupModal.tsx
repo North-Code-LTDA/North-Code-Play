@@ -249,7 +249,7 @@ export function DisplaySetupModal({
       aria-label="Configuração de apresentação da interface"
       data-focus-scope="modal"
       data-display-setup-modal="true"
-      className="nc-calibration-modal fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 overflow-y-auto select-none"
+      className="nc-calibration-modal nc-safe-modal fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex items-center justify-center sm:p-5 overflow-y-auto select-none"
     >
       <div className="nc-calibration-shell w-full max-w-[820px] bg-nc-bg-card border border-nc-border/70 rounded-2xl shadow-2xl overflow-hidden my-auto">
         {/* Step 1: Explicit Device Selection */}

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
-import { LogOut, Home as HomeIcon, Tv, Film, PlaySquare, Settings, Menu, X, Search, Heart, AlertCircle, Loader2 } from 'lucide-react';
+import { LogOut, Home as HomeIcon, Tv, Film, PlaySquare, Settings, Menu, X, Search, Heart, AlertCircle, Loader2, RefreshCw, KeyRound } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { VideoPlayer } from '../components/VideoPlayer';
 
@@ -14,7 +14,7 @@ import { FavoritesView } from '../views/FavoritesView';
 import { XtreamProvider, useXtreamContext } from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
 import { normalizeServerUrl } from '../utils/mediaUtils';
-import { safeRemoveCredentials } from '../utils/accountUtils';
+import { markCredentialsAuthRejected, safeRemoveCredentials } from '../utils/accountUtils';
 import { MediaImage } from '../components/MediaImage';
 import { DisplaySetupModal } from '../components/DisplaySetupModal';
 import { useDisplayPreferences } from '../platform/tvEnvironment';
@@ -43,7 +43,9 @@ function HomeContent({ credentials }: { credentials: any }) {
   const liveLaunchReqCounterRef = useRef(0);
   const lastPointerDownTimeRef = useRef<number>(0);
   const homeRootRef = useRef<HTMLDivElement>(null);
+  const authRecoveryPrimaryRef = useRef<HTMLButtonElement>(null);
   const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [isRetryingSession, setIsRetryingSession] = useState(false);
   const [activeVideo, setActiveVideo] = useState<{
     url: string;
     title: string;
@@ -59,6 +61,23 @@ function HomeContent({ credentials }: { credentials: any }) {
   const [isSearchEditing, setIsSearchEditing] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const debouncedSearchQuery = useDebounce(searchQuery, 500);
+
+  // Overlay state & context consumption
+  const {
+    sessionReady,
+    liveCategoriesStatus,
+    vodCategoriesStatus,
+    seriesCategoriesStatus,
+    liveCatalogStatus,
+    vodCatalogStatus,
+    seriesCatalogStatus,
+    liveCategoriesError,
+    vodCategoriesError,
+    seriesCategoriesError,
+    isAuthRejected,
+    authError,
+    retrySession,
+  } = useXtreamContext();
 
   // Back policy: 1) Exit search text editing mode
   useBackHandler(
@@ -147,17 +166,6 @@ function HomeContent({ credentials }: { credentials: any }) {
     currentView !== 'inicio'
   );
 
-  // Overlay state & context consumption
-  const {
-    sessionReady,
-    liveCategoriesStatus,
-    vodCategoriesStatus,
-    seriesCategoriesStatus,
-    liveCatalogStatus,
-    vodCatalogStatus,
-    seriesCatalogStatus,
-  } = useXtreamContext();
-
   const [isOpeningDismissed, setIsOpeningDismissed] = useState(false);
   const [showContinueButton, setShowContinueButton] = useState(false);
 
@@ -172,12 +180,12 @@ function HomeContent({ credentials }: { credentials: any }) {
     isStatusFinished(seriesCatalogStatus)
   );
 
-  // Automatically close without minimum artificial delay when all six are ready or error
+  // Automatically close without minimum artificial delay when all six are ready/error or if auth is rejected
   useEffect(() => {
-    if (allSixFinished) {
+    if (allSixFinished || isAuthRejected) {
       setIsOpeningDismissed(true);
     }
-  }, [allSixFinished]);
+  }, [allSixFinished, isAuthRejected]);
 
   // Show "Continuar enquanto carrega" button if pending after 10s
   useEffect(() => {
@@ -188,7 +196,62 @@ function HomeContent({ credentials }: { credentials: any }) {
     return () => clearTimeout(timer);
   }, [isOpeningDismissed]);
 
-  const isOverlayActive = !isOpeningDismissed && !allSixFinished;
+  const isOverlayActive = !isOpeningDismissed && !allSixFinished && !isAuthRejected;
+
+  const hasTransientCategoriesFailure = Boolean(
+    !isAuthRejected &&
+      sessionReady &&
+      (liveCategoriesStatus === 'error' ||
+        vodCategoriesStatus === 'error' ||
+        seriesCategoriesStatus === 'error')
+  );
+
+  const transientFailureMessage =
+    liveCategoriesError ||
+    vodCategoriesError ||
+    seriesCategoriesError ||
+    'Falha temporária de conexão com o servidor do provedor.';
+
+  const handleReturnToLoginForRecovery = () => {
+    const reason =
+      authError || 'Usuário ou senha inválidos ou conta desativada.';
+    markCredentialsAuthRejected(reason);
+    navigate('/', {
+      replace: true,
+      state: {
+        editCredentials: true,
+        authError: reason,
+      },
+    });
+  };
+
+  const handleEditCredentialsOnTransientFailure = () => {
+    navigate('/', {
+      state: {
+        editCredentials: true,
+      },
+    });
+  };
+
+  const handleRetrySession = async () => {
+    setIsRetryingSession(true);
+    try {
+      await retrySession();
+    } finally {
+      setIsRetryingSession(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isAuthRejected && !isDisplaySetupOpen && authRecoveryPrimaryRef.current) {
+      const timer = setTimeout(() => {
+        if (authRecoveryPrimaryRef.current) {
+          focusElementSafely(authRecoveryPrimaryRef.current);
+        }
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [isAuthRejected, isDisplaySetupOpen]);
 
   const handleFirstSetupComplete = () => {
     setTimeout(() => {
@@ -354,11 +417,12 @@ function HomeContent({ credentials }: { credentials: any }) {
     <>
       <div
         ref={homeRootRef}
+        data-home-shell="true"
         onPointerDownCapture={() => {
           lastPointerDownTimeRef.current = Date.now();
         }}
-        className="h-[100dvh] bg-nc-bg flex flex-col md:flex-row w-full overflow-hidden"
-        inert={isOverlayActive || isDisplaySetupOpen ? true : undefined}
+        className="h-[100dvh] nc-safe-screen bg-nc-bg flex flex-col md:flex-row w-full overflow-hidden"
+        inert={isOverlayActive || isDisplaySetupOpen || isAuthRejected ? true : undefined}
       >
         <AnimatePresence>
           {activeVideo && (
@@ -383,7 +447,7 @@ function HomeContent({ credentials }: { credentials: any }) {
         </AnimatePresence>
 
         {/* Sidebar - Desktop */}
-        <aside data-nav-zone="sidebar" className="nc-tv-sidebar hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-[100dvh] sticky top-0 shrink-0">
+        <aside data-nav-zone="sidebar" className="nc-tv-sidebar hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-full shrink-0">
           <div className="nc-tv-sidebar-logo p-6">
             <Logo className="scale-90 origin-left" />
           </div>
@@ -461,7 +525,7 @@ function HomeContent({ credentials }: { credentials: any }) {
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
                 transition={{ type: 'spring', bounce: 0, duration: 0.4 }}
-                className="md:hidden fixed inset-y-0 left-0 w-64 bg-nc-bg-card border-r border-nc-border/50 z-[70] flex flex-col"
+                className="md:hidden fixed inset-y-0 left-0 w-64 nc-safe-drawer bg-nc-bg-card border-r border-nc-border/50 z-[70] flex flex-col"
               >
                 <div className="p-4 flex items-center justify-between border-b border-nc-border/50">
                   <Logo className="scale-75 origin-left" />
@@ -549,6 +613,43 @@ function HomeContent({ credentials }: { credentials: any }) {
               </div>
             </div>
           )}
+
+          {/* Transient Failure Banner (preserves credentials, allows retry or optional credential editing) */}
+          {hasTransientCategoriesFailure && (
+            <div
+              role="status"
+              data-transient-recovery="true"
+              className="w-full shrink-0 px-4 py-3 md:px-8 bg-amber-500/10 border-b border-amber-500/30 flex flex-wrap items-center justify-between gap-3 z-[35]"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+                <p className="text-xs sm:text-sm text-amber-200 truncate sm:whitespace-normal">
+                  {transientFailureMessage} Suas credenciais continuam salvas neste dispositivo.
+                </p>
+              </div>
+              <div data-nav-row="transient-recovery-actions" className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  data-transient-retry="true"
+                  disabled={isRetryingSession}
+                  onClick={handleRetrySession}
+                  className="px-3.5 py-1.5 rounded-lg bg-nc-primary text-black text-xs sm:text-sm font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRetryingSession ? 'animate-spin' : ''}`} />
+                  <span>Tentar novamente</span>
+                </button>
+                <button
+                  type="button"
+                  data-transient-edit-login="true"
+                  onClick={handleEditCredentialsOnTransientFailure}
+                  className="px-3.5 py-1.5 rounded-lg bg-nc-bg-card hover:bg-nc-bg-input text-white border border-nc-border/60 text-xs sm:text-sm font-medium transition-colors"
+                >
+                  Revisar servidor
+                </button>
+              </div>
+            </div>
+          )}
+
           <main className="flex-1 min-w-0 min-h-0 flex overflow-hidden relative">
             {renderView()}
           </main>
@@ -574,6 +675,64 @@ function HomeContent({ credentials }: { credentials: any }) {
         )}
       </div>
 
+      {/* Authentication Rejected Recovery Modal (proven invalid, disabled, or expired credentials) */}
+      {isAuthRejected && (
+        <div
+          role={isDisplaySetupOpen ? undefined : 'dialog'}
+          aria-modal={isDisplaySetupOpen ? undefined : 'true'}
+          aria-hidden={isDisplaySetupOpen ? 'true' : undefined}
+          inert={isDisplaySetupOpen ? true : undefined}
+          aria-label="Recuperação de acesso"
+          data-focus-scope="modal"
+          data-auth-recovery="true"
+          className="fixed inset-0 z-[130] bg-nc-bg/95 backdrop-blur-md nc-safe-overlay flex flex-col items-center justify-center text-center select-none"
+        >
+          <div className="w-full max-w-md bg-nc-bg-card border border-nc-border rounded-2xl p-6 sm:p-8 shadow-2xl flex flex-col items-center">
+            <div className="w-14 h-14 rounded-2xl bg-red-500/15 border border-red-500/40 flex items-center justify-center mb-4">
+              <KeyRound className="w-7 h-7 text-red-400" />
+            </div>
+
+            <h2 className="text-xl font-bold text-white mb-2">
+              Não foi possível validar seu acesso
+            </h2>
+            <p className="text-sm text-red-300 font-medium mb-2">
+              {authError || 'Usuário ou senha inválidos ou conta desativada/expirada.'}
+            </p>
+            <p className="text-xs text-nc-text-secondary mb-6 leading-relaxed">
+              Seus favoritos, histórico de reprodução e preferências de tela continuam salvos neste dispositivo. Volte ao login para atualizar ou corrigir seus dados de acesso.
+            </p>
+
+            <div
+              data-nav-row="auth-recovery-actions"
+              className="flex flex-col sm:flex-row items-center justify-center gap-3 w-full"
+            >
+              <button
+                ref={authRecoveryPrimaryRef}
+                type="button"
+                data-autofocus="true"
+                data-auth-recovery-login="true"
+                onClick={handleReturnToLoginForRecovery}
+                className="w-full sm:flex-1 py-3 px-4 rounded-xl bg-nc-primary text-black font-semibold hover:bg-nc-primary-hover transition-colors flex items-center justify-center gap-2"
+              >
+                <KeyRound className="w-4 h-4" />
+                <span>Voltar ao Login e corrigir</span>
+              </button>
+
+              <button
+                type="button"
+                data-auth-recovery-retry="true"
+                disabled={isRetryingSession}
+                onClick={handleRetrySession}
+                className="w-full sm:w-auto py-3 px-4 rounded-xl bg-nc-bg-input hover:bg-nc-border/50 text-white border border-nc-border/60 font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${isRetryingSession ? 'animate-spin' : ''}`} />
+                <span>Tentar novamente</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Initial Opening Overlay covering the entire interface */}
       {isOverlayActive && (
         <div
@@ -582,7 +741,7 @@ function HomeContent({ credentials }: { credentials: any }) {
           aria-hidden={isDisplaySetupOpen ? 'true' : undefined}
           inert={isDisplaySetupOpen ? true : undefined}
           aria-label="Carregando programação"
-          className="fixed inset-0 z-[100] bg-nc-bg/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center select-none"
+          className="fixed inset-0 z-[100] bg-nc-bg/95 backdrop-blur-md nc-safe-overlay flex flex-col items-center justify-center text-center select-none"
         >
           <div className="relative mb-6">
             <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-white/[0.04] border border-nc-border/60 flex items-center justify-center shadow-2xl backdrop-blur-sm">

@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
 import { motion, AnimatePresence } from 'motion/react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from '../components/MediaImage';
-import { CREDENTIALS_KEY, safeReadStorage, safeSaveCredentials } from '../utils/accountUtils';
+import {
+  readAutoLoginState,
+  safeSaveCredentials,
+} from '../utils/accountUtils';
 import { useBackHandler, BACK_PRIORITY, pushFocusMemory, popFocusMemory } from '../navigation';
 
 const AVATAR_OPTIONS = [
@@ -32,30 +35,52 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   
   const navigate = useNavigate();
+  const location = useLocation();
 
-  // Ao reabrir o aplicativo na rota inicial (/), retoma automaticamente /home se houver sessão válida salva
+  // Ao reabrir o aplicativo na rota inicial (/), retoma automaticamente /home se houver sessão válida salva.
+  // Se as credenciais salvas tiverem sido recusadas/expiradas (isAuthRejected) ou se o usuário abriu o Login
+  // para corrigir dados (editCredentials), permanece no formulário com os dados preenchidos para edição.
   useEffect(() => {
-    const readRes = safeReadStorage(CREDENTIALS_KEY);
-    if (readRes.success && readRes.value) {
-      try {
-        const parsed = JSON.parse(readRes.value);
-        if (
-          parsed &&
-          typeof parsed === 'object' &&
-          typeof parsed.serverUrl === 'string' &&
-          parsed.serverUrl.trim().length > 0 &&
-          typeof parsed.username === 'string' &&
-          parsed.username.trim().length > 0 &&
-          typeof parsed.password === 'string' &&
-          parsed.password.length > 0
-        ) {
-          navigate('/home', { replace: true });
-        }
-      } catch {
-        // Ignora JSON inválido e permanece na tela de login
+    const locState = (location?.state as Record<string, any> | null) || null;
+    const searchParams = new URLSearchParams(location?.search || '');
+    const editRequested =
+      Boolean(locState?.editCredentials) || searchParams.get('edit') === '1';
+
+    const autoState = readAutoLoginState();
+
+    if (autoState.canAutoLogin && !editRequested) {
+      navigate('/home', { replace: true });
+      return;
+    }
+
+    if (autoState.credentials) {
+      const saved = autoState.credentials;
+      if (typeof saved.playlistName === 'string' && saved.playlistName.trim()) {
+        setPlaylistName(saved.playlistName);
+      }
+      if (typeof saved.avatar === 'string' && saved.avatar.trim()) {
+        setAvatar(saved.avatar);
+      }
+      if (typeof saved.serverUrl === 'string') {
+        setServerUrl(saved.serverUrl);
+      }
+      if (typeof saved.username === 'string') {
+        setUsername(saved.username);
+      }
+      if (typeof saved.password === 'string') {
+        setPassword(saved.password);
       }
     }
-  }, [navigate]);
+
+    const recoveryMessage =
+      (typeof locState?.authError === 'string' && locState.authError.trim()) ||
+      (autoState.isAuthRejected && autoState.authError) ||
+      null;
+
+    if (recoveryMessage) {
+      setError(recoveryMessage);
+    }
+  }, [navigate, location]);
 
   useBackHandler(
     'login-avatar-picker',
@@ -136,7 +161,10 @@ export function Login() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-4 relative overflow-hidden bg-nc-bg">
+    <div
+      data-login-screen="true"
+      className="min-h-[100dvh] nc-safe-login flex flex-col items-center justify-center relative overflow-x-hidden overflow-y-auto bg-nc-bg"
+    >
       {/* Background glow effect for a premium feel */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-white/[0.02] blur-[120px] rounded-full pointer-events-none" />
 

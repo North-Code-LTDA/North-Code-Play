@@ -142,7 +142,7 @@ export function PlayerControls({
         data-nav-row="player-top"
         className={`absolute top-0 left-0 right-0 z-20 w-full bg-gradient-to-b from-black/85 via-black/40 to-transparent flex items-center justify-between transition-all duration-300 ${
           isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
-        } ${embedded ? 'p-2.5 sm:p-3' : 'p-4 sm:p-6'}`}
+        } ${embedded ? 'p-2.5 sm:p-3' : 'p-4 sm:p-6 nc-safe-player-top'}`}
         onClick={stopProp}
         onPointerDown={stopProp}
         aria-hidden={!isVisible}
@@ -261,7 +261,7 @@ export function PlayerControls({
       <div
         className={`absolute bottom-0 left-0 right-0 z-20 w-full bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col gap-1.5 transition-all duration-300 ${
           isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
-        } ${embedded ? 'px-3 pb-2.5 pt-4' : 'px-4 pb-4 sm:px-6 sm:pb-6 pt-8'}`}
+        } ${embedded ? 'px-3 pb-2.5 pt-4' : 'px-4 pb-4 sm:px-6 sm:pb-6 pt-8 nc-safe-player-bottom'}`}
         onClick={stopProp}
         onPointerDown={stopProp}
         aria-hidden={!isVisible}

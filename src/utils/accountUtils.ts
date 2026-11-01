@@ -141,15 +141,128 @@ export function setStoredFavorites(accountKey: string, favs: FavoriteItem[]): bo
   return safeSetStorage(accountKey, JSON.stringify(favs));
 }
 
+export interface StoredSessionState {
+  canAutoLogin: boolean;
+  isAuthRejected: boolean;
+  authError: string | null;
+  credentials: (XtreamCredentials & { authRejected?: boolean; authError?: string }) | null;
+}
+
 /**
- * Safely saves credentials to localStorage.
+ * Reads stored credentials and evaluates whether automatic session resumption to /home
+ * should happen, or if the stored credentials were marked as rejected/expired by the provider
+ * so the user can edit them on the Login screen without a redirect loop.
+ */
+export function readAutoLoginState(): StoredSessionState {
+  const readRes = safeReadStorage(CREDENTIALS_KEY);
+  if (!readRes.success || !readRes.value) {
+    return {
+      canAutoLogin: false,
+      isAuthRejected: false,
+      authError: null,
+      credentials: null,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(readRes.value);
+    if (!parsed || typeof parsed !== 'object') {
+      return {
+        canAutoLogin: false,
+        isAuthRejected: false,
+        authError: null,
+        credentials: null,
+      };
+    }
+
+    const hasRequiredFields =
+      typeof parsed.serverUrl === 'string' &&
+      parsed.serverUrl.trim().length > 0 &&
+      typeof parsed.username === 'string' &&
+      parsed.username.trim().length > 0 &&
+      typeof parsed.password === 'string' &&
+      parsed.password.length > 0;
+
+    if (!hasRequiredFields) {
+      return {
+        canAutoLogin: false,
+        isAuthRejected: false,
+        authError: null,
+        credentials: parsed,
+      };
+    }
+
+    if (parsed.authRejected === true) {
+      return {
+        canAutoLogin: false,
+        isAuthRejected: true,
+        authError:
+          typeof parsed.authError === 'string' && parsed.authError.trim()
+            ? parsed.authError.trim()
+            : 'Usuário ou senha inválidos ou conta expirada.',
+        credentials: parsed,
+      };
+    }
+
+    return {
+      canAutoLogin: true,
+      isAuthRejected: false,
+      authError: null,
+      credentials: parsed,
+    };
+  } catch {
+    return {
+      canAutoLogin: false,
+      isAuthRejected: false,
+      authError: null,
+      credentials: null,
+    };
+  }
+}
+
+/**
+ * Marks the currently stored credentials as rejected by the provider (invalid, disabled, or expired)
+ * while preserving the user's serverUrl, username, playlistName, avatar, favorites, watch history,
+ * and display/player preferences so the user can return to Login and fix their access data
+ * without being auto-redirected back to /home.
+ */
+export function markCredentialsAuthRejected(
+  reason: string = 'Usuário ou senha inválidos ou conta expirada.'
+): boolean {
+  const readRes = safeReadStorage(CREDENTIALS_KEY);
+  if (!readRes.success || !readRes.value) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(readRes.value);
+    if (!parsed || typeof parsed !== 'object') {
+      return false;
+    }
+    const updated = {
+      ...parsed,
+      authRejected: true,
+      authError: reason,
+    };
+    return safeSetStorage(CREDENTIALS_KEY, JSON.stringify(updated));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Safely saves credentials to localStorage, clearing any prior authRejected recovery flag.
  */
 export function safeSaveCredentials(
   fullCredentials: XtreamCredentials
 ): { success: boolean; error?: string } {
   if (typeof window === 'undefined') return { success: false, error: 'window_unavailable' };
 
-  const ok = safeSetStorage(CREDENTIALS_KEY, JSON.stringify(fullCredentials));
+  const cleanCredentials: Record<string, any> = { ...fullCredentials };
+  delete cleanCredentials.authRejected;
+  delete cleanCredentials.authError;
+
+  const ok = safeSetStorage(CREDENTIALS_KEY, JSON.stringify(cleanCredentials));
   if (!ok) {
     return { success: false, error: 'storage_failure' };
   }
@@ -169,3 +282,4 @@ export function safeRemoveCredentials(): { success: boolean; error?: string } {
     return { success: false, error: 'storage_failure' };
   }
 }
+

@@ -13,6 +13,103 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+export interface XtreamCategorizedError extends Error {
+  isAuthError?: boolean;
+  isTransient?: boolean;
+  isClientError?: boolean;
+  isFatalFormat?: boolean;
+  status?: number;
+  authErrorReason?: 'invalid_credentials' | 'account_inactive' | 'http_unauthorized';
+}
+
+export function createXtreamAuthError(
+  message: string,
+  reason: 'invalid_credentials' | 'account_inactive' | 'http_unauthorized' = 'invalid_credentials',
+  status?: number
+): XtreamCategorizedError {
+  const err: XtreamCategorizedError = new Error(message);
+  err.isAuthError = true;
+  err.isClientError = true;
+  err.isTransient = false;
+  err.authErrorReason = reason;
+  if (status !== undefined) {
+    err.status = status;
+  }
+  return err;
+}
+
+/**
+ * Diferencia rejeição comprovada de autenticação (credenciais inválidas, auth=0,
+ * conta expirada/desativada/banida ou HTTP 401/403) de falhas transitórias
+ * (timeout, falha de rede, CORS, HTTP 5xx ou indisponibilidade temporária).
+ */
+export function isAuthenticationRejectedError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const anyErr = err as XtreamCategorizedError;
+
+  if (anyErr.isAuthError === true) return true;
+  if (anyErr.isTransient === true) return false;
+  if (anyErr.status === 401 || anyErr.status === 403) return true;
+
+  const msg = String(anyErr.message || '').trim();
+  if (!msg) return false;
+
+  // Nunca classificar erros de rede, timeout, CORS ou cancelamento como rejeição de credenciais
+  if (
+    /tempo limite|timeout|falha de rede|cors|cancelad|indispon|http 5\d\d|http 429|http 408/i.test(
+      msg
+    )
+  ) {
+    return false;
+  }
+
+  return /usuário ou senha (inválidos|incorretos)|conta (de usuário )?(desativada|expirada|banida)|credenciais inválidas|acesso (negado|expirado)|http (401|403)\b/i.test(
+    msg
+  );
+}
+
+export function isTransientXtreamError(err: unknown): boolean {
+  if (!err) return false;
+  if (isAuthenticationRejectedError(err)) return false;
+  const anyErr = err as XtreamCategorizedError;
+  if (anyErr.isTransient === true) return true;
+  const msg = String(anyErr.message || '');
+  if (/Operação cancelada pelo usuário/i.test(msg)) return false;
+  return true;
+}
+
+/**
+ * Inspeciona se um payload retornado pelo servidor Xtream (em authenticate ou em endpoints
+ * de categorias/catálogo) indica explicitamente credenciais inválidas ou conta inativa/expirada.
+ */
+export function inspectPayloadForAuthError(data: unknown): void {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return;
+  }
+  const obj = data as Record<string, any>;
+  if (!obj.user_info || typeof obj.user_info !== 'object') {
+    return;
+  }
+
+  const auth = obj.user_info.auth;
+  if (auth === 0 || auth === '0' || auth === false || String(auth) === '0') {
+    throw createXtreamAuthError(
+      'Usuário ou senha inválidos ou conta desativada.',
+      'invalid_credentials'
+    );
+  }
+
+  if (
+    obj.user_info.status &&
+    ['disabled', 'expired', 'banned'].includes(String(obj.user_info.status).toLowerCase())
+  ) {
+    throw createXtreamAuthError(
+      'Conta de usuário desativada ou expirada.',
+      'account_inactive'
+    );
+  }
+}
+
 /**
  * Valida que o retorno do catálogo é um array e descarta entradas inválidas
  * (null, undefined, tipos primitivos ou arrays aninhados no lugar de objetos de registro),
@@ -22,6 +119,7 @@ export function normalizeCatalogArray<T = any>(
   data: unknown,
   invalidFormatMessage: string
 ): T[] {
+  inspectPayloadForAuthError(data);
   if (!Array.isArray(data)) {
     throw new Error(invalidFormatMessage);
   }
@@ -69,7 +167,7 @@ export class XtreamService {
    * Performs direct HTTP/HTTPS GET requests to the Xtream provider via the transport adapter
    * (fetch on Web, explicit CapacitorHttp on Android).
    * Applies at most ONE automatic retry for transient network errors or timeouts.
-   * Does NOT retry HTTP 4xx, invalid JSON, or intentional caller cancellation.
+   * Does NOT retry HTTP 4xx, auth rejections, invalid JSON, or intentional caller cancellation.
    */
   private static async request<T = any>(
     credentials: XtreamCredentials,
@@ -114,18 +212,28 @@ export class XtreamService {
       }
 
       try {
-        return await executeXtreamGetRequest<T>({
+        const payload = await executeXtreamGetRequest<T>({
           url: targetUrl.toString(),
           timeoutMs,
           signal: callerSignal,
         });
+        inspectPayloadForAuthError(payload);
+        return payload;
       } catch (err: any) {
         // Do not retry caller aborts
         if (callerSignal?.aborted || err?.message === "Operação cancelada pelo usuário.") {
           throw new Error("Operação cancelada pelo usuário.");
         }
-        // Do not retry HTTP 4xx
-        if (err?.isClientError) {
+        // Classify HTTP 401 / 403 as explicit authentication rejection
+        if (err?.status === 401 || err?.status === 403) {
+          throw createXtreamAuthError(
+            `Acesso recusado pelo servidor do provedor (HTTP ${err.status}). Verifique seu usuário e senha.`,
+            "http_unauthorized",
+            err.status
+          );
+        }
+        // Do not retry auth errors or HTTP 4xx
+        if (err?.isAuthError || err?.isClientError) {
           throw err;
         }
         // Do not retry fatal format errors (malformed JSON)
@@ -166,20 +274,13 @@ export class XtreamService {
     }
 
     if (!data.user_info) {
-      throw new Error("Usuário ou senha incorretos ou resposta inesperada do provedor.");
+      throw createXtreamAuthError(
+        "Usuário ou senha incorretos ou resposta inesperada do provedor.",
+        "invalid_credentials"
+      );
     }
 
-    const auth = data.user_info.auth;
-    if (auth === 0 || auth === "0" || auth === false || String(auth) === "0") {
-      throw new Error("Usuário ou senha inválidos ou conta desativada.");
-    }
-
-    if (
-      data.user_info.status &&
-      ["disabled", "expired", "banned"].includes(String(data.user_info.status).toLowerCase())
-    ) {
-      throw new Error("Conta de usuário desativada ou expirada.");
-    }
+    inspectPayloadForAuthError(data);
 
     return data as XtreamAuthResponse;
   }

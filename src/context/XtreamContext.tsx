@@ -13,7 +13,14 @@ import {
   VodStream,
   SeriesStream,
 } from "../types";
-import { XtreamService } from "../services/xtreamService";
+import {
+  XtreamService,
+  isAuthenticationRejectedError,
+} from "../services/xtreamService";
+import {
+  markCredentialsAuthRejected,
+  safeSaveCredentials,
+} from "../utils/accountUtils";
 
 export type OperationStatus = "idle" | "loading" | "ready" | "error";
 
@@ -55,6 +62,10 @@ interface XtreamContextData {
   vodError: string | null;
   seriesError: string | null;
 
+  // Auth rejection vs transient error state
+  isAuthRejected: boolean;
+  authError: string | null;
+
   // Backward compatibility
   categoriesError: string | null;
   error: string | null;
@@ -76,6 +87,7 @@ interface XtreamContextData {
   fetchVodStreams: (categoryId?: string) => Promise<void>;
   fetchSeriesStreams: (categoryId?: string) => Promise<void>;
   retryCategories: () => Promise<void>;
+  retrySession: () => Promise<void>;
 }
 
 export const XtreamContext = createContext<XtreamContextData | undefined>(
@@ -145,6 +157,59 @@ export function XtreamProvider({
   const [liveError, setLiveError] = useState<string | null>(null);
   const [vodError, setVodError] = useState<string | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
+
+  // Auth rejection state (distinct from transient errors)
+  const [isAuthRejected, setIsAuthRejected] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const registerErrorAndCheckAuth = useCallback(
+    async (
+      err: any,
+      currentSession: number,
+      signal?: AbortSignal
+    ): Promise<string> => {
+      const fallbackMsg =
+        err?.message || "Falha ao comunicar com o servidor do provedor.";
+
+      if (isAuthenticationRejectedError(err)) {
+        if (sessionRef.current === currentSession) {
+          setIsAuthRejected(true);
+          setAuthError(fallbackMsg);
+          markCredentialsAuthRejected(fallbackMsg);
+        }
+        return fallbackMsg;
+      }
+
+      // Se o erro não é transitório nem cancelamento (ex.: servidor retornou objeto não-array inesperado
+      // em endpoint de categorias), consulta authenticate() para verificar se a conta expirou/foi desativada
+      if (
+        credentials &&
+        !err?.isTransient &&
+        err?.message !== "Operação cancelada pelo usuário." &&
+        !signal?.aborted
+      ) {
+        try {
+          await XtreamService.authenticate(credentials, { signal });
+        } catch (authCheckErr: any) {
+          if (
+            sessionRef.current === currentSession &&
+            isAuthenticationRejectedError(authCheckErr)
+          ) {
+            const authMsg =
+              authCheckErr?.message ||
+              "Usuário ou senha inválidos ou conta desativada.";
+            setIsAuthRejected(true);
+            setAuthError(authMsg);
+            markCredentialsAuthRejected(authMsg);
+            return authMsg;
+          }
+        }
+      }
+
+      return fallbackMsg;
+    },
+    [credentials]
+  );
 
   // Full-catalog memory references
   const allLiveStreamsRef = useRef<LiveStream[]>([]);
@@ -364,6 +429,14 @@ export function XtreamProvider({
     setVodError(null);
     setSeriesError(null);
 
+    const initiallyRejected = Boolean((credentials as any)?.authRejected);
+    const initialAuthErr =
+      initiallyRejected && typeof (credentials as any)?.authError === "string"
+        ? (credentials as any).authError
+        : null;
+    setIsAuthRejected(initiallyRejected);
+    setAuthError(initialAuthErr);
+
     setSessionReady(false);
 
     if (!credentials) return;
@@ -380,8 +453,15 @@ export function XtreamProvider({
         setLiveCategoriesStatus("ready");
       } catch (err: any) {
         if (sessionRef.current !== currentSession) return;
-        const msg = err.message || "Falha ao carregar categorias de TV.";
-        setLiveCategoriesError(msg);
+        const msg = await registerErrorAndCheckAuth(
+          err,
+          currentSession,
+          signal
+        );
+        if (sessionRef.current !== currentSession) return;
+        setLiveCategoriesError(
+          msg || "Falha ao carregar categorias de TV."
+        );
         setLiveCategoriesStatus("error");
       }
     });
@@ -397,8 +477,15 @@ export function XtreamProvider({
         setVodCategoriesStatus("ready");
       } catch (err: any) {
         if (sessionRef.current !== currentSession) return;
-        const msg = err.message || "Falha ao carregar categorias de filmes.";
-        setVodCategoriesError(msg);
+        const msg = await registerErrorAndCheckAuth(
+          err,
+          currentSession,
+          signal
+        );
+        if (sessionRef.current !== currentSession) return;
+        setVodCategoriesError(
+          msg || "Falha ao carregar categorias de filmes."
+        );
         setVodCategoriesStatus("error");
       }
     });
@@ -414,8 +501,15 @@ export function XtreamProvider({
         setSeriesCategoriesStatus("ready");
       } catch (err: any) {
         if (sessionRef.current !== currentSession) return;
-        const msg = err.message || "Falha ao carregar categorias de séries.";
-        setSeriesCategoriesError(msg);
+        const msg = await registerErrorAndCheckAuth(
+          err,
+          currentSession,
+          signal
+        );
+        if (sessionRef.current !== currentSession) return;
+        setSeriesCategoriesError(
+          msg || "Falha ao carregar categorias de séries."
+        );
         setSeriesCategoriesStatus("error");
       }
     });
@@ -426,7 +520,7 @@ export function XtreamProvider({
     return () => {
       abortControllerRef.current?.abort();
     };
-  }, [credentials, enqueueOperation]);
+  }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
 
   // Actions for Categories
   const fetchLiveCategories = useCallback(async () => {
@@ -443,12 +537,19 @@ export function XtreamProvider({
         setLiveCategoriesStatus("ready");
       } catch (err: any) {
         if (sessionRef.current !== currentSession) return;
-        const msg = err.message || "Falha ao carregar categorias de TV.";
-        setLiveCategoriesError(msg);
+        const msg = await registerErrorAndCheckAuth(
+          err,
+          currentSession,
+          signal
+        );
+        if (sessionRef.current !== currentSession) return;
+        setLiveCategoriesError(
+          msg || "Falha ao carregar categorias de TV."
+        );
         setLiveCategoriesStatus("error");
       }
     });
-  }, [credentials, enqueueOperation]);
+  }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
 
   const fetchVodCategories = useCallback(async () => {
     if (!credentials) return;
@@ -464,12 +565,19 @@ export function XtreamProvider({
         setVodCategoriesStatus("ready");
       } catch (err: any) {
         if (sessionRef.current !== currentSession) return;
-        const msg = err.message || "Falha ao carregar categorias de filmes.";
-        setVodCategoriesError(msg);
+        const msg = await registerErrorAndCheckAuth(
+          err,
+          currentSession,
+          signal
+        );
+        if (sessionRef.current !== currentSession) return;
+        setVodCategoriesError(
+          msg || "Falha ao carregar categorias de filmes."
+        );
         setVodCategoriesStatus("error");
       }
     });
-  }, [credentials, enqueueOperation]);
+  }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
 
   const fetchSeriesCategories = useCallback(async () => {
     if (!credentials) return;
@@ -485,12 +593,19 @@ export function XtreamProvider({
         setSeriesCategoriesStatus("ready");
       } catch (err: any) {
         if (sessionRef.current !== currentSession) return;
-        const msg = err.message || "Falha ao carregar categorias de séries.";
-        setSeriesCategoriesError(msg);
+        const msg = await registerErrorAndCheckAuth(
+          err,
+          currentSession,
+          signal
+        );
+        if (sessionRef.current !== currentSession) return;
+        setSeriesCategoriesError(
+          msg || "Falha ao carregar categorias de séries."
+        );
         setSeriesCategoriesStatus("error");
       }
     });
-  }, [credentials, enqueueOperation]);
+  }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
 
   // Backward-compatible category retry
   const retryCategories = useCallback(async () => {
@@ -546,13 +661,18 @@ export function XtreamProvider({
           }
         } catch (err: any) {
           if (sessionRef.current !== currentSession) return;
-          const msg = err.message || "Falha ao carregar canais ao vivo.";
-          setLiveError(msg);
+          const msg = await registerErrorAndCheckAuth(
+            err,
+            currentSession,
+            signal
+          );
+          if (sessionRef.current !== currentSession) return;
+          setLiveError(msg || "Falha ao carregar canais ao vivo.");
           setLiveCatalogStatus("error");
         }
       });
     },
-    [credentials, liveCatalogStatus, enqueueOperation]
+    [credentials, liveCatalogStatus, enqueueOperation, registerErrorAndCheckAuth]
   );
 
   // VOD Streams Catalog Fetch
@@ -600,13 +720,18 @@ export function XtreamProvider({
           }
         } catch (err: any) {
           if (sessionRef.current !== currentSession) return;
-          const msg = err.message || "Falha ao carregar filmes.";
-          setVodError(msg);
+          const msg = await registerErrorAndCheckAuth(
+            err,
+            currentSession,
+            signal
+          );
+          if (sessionRef.current !== currentSession) return;
+          setVodError(msg || "Falha ao carregar filmes.");
           setVodCatalogStatus("error");
         }
       });
     },
-    [credentials, vodCatalogStatus, enqueueOperation]
+    [credentials, vodCatalogStatus, enqueueOperation, registerErrorAndCheckAuth]
   );
 
   // Series Streams Catalog Fetch
@@ -654,14 +779,65 @@ export function XtreamProvider({
           }
         } catch (err: any) {
           if (sessionRef.current !== currentSession) return;
-          const msg = err.message || "Falha ao carregar séries.";
-          setSeriesError(msg);
+          const msg = await registerErrorAndCheckAuth(
+            err,
+            currentSession,
+            signal
+          );
+          if (sessionRef.current !== currentSession) return;
+          setSeriesError(msg || "Falha ao carregar séries.");
           setSeriesCatalogStatus("error");
         }
       });
     },
-    [credentials, seriesCatalogStatus, enqueueOperation]
+    [credentials, seriesCatalogStatus, enqueueOperation, registerErrorAndCheckAuth]
   );
+
+  // Full session retry (re-verifies authentication if previously rejected and reloads failed categories/catalogs)
+  const retrySession = useCallback(async () => {
+    if (!credentials) return;
+    const currentSession = sessionRef.current;
+
+    if (isAuthRejected) {
+      try {
+        await XtreamService.authenticate(credentials, {
+          signal: abortControllerRef.current?.signal,
+        });
+        if (sessionRef.current !== currentSession) return;
+        setIsAuthRejected(false);
+        setAuthError(null);
+        safeSaveCredentials(credentials);
+      } catch (err: any) {
+        if (sessionRef.current !== currentSession) return;
+        if (isAuthenticationRejectedError(err)) {
+          const msg =
+            err?.message || "Usuário ou senha inválidos ou conta desativada.";
+          setIsAuthRejected(true);
+          setAuthError(msg);
+          markCredentialsAuthRejected(msg);
+          return;
+        }
+      }
+    }
+
+    await Promise.allSettled([
+      fetchLiveCategories(),
+      fetchVodCategories(),
+      fetchSeriesCategories(),
+      fetchLiveStreams(latestLiveCategoryRef.current),
+      fetchVodStreams(latestVodCategoryRef.current),
+      fetchSeriesStreams(latestSeriesCategoryRef.current),
+    ]);
+  }, [
+    credentials,
+    isAuthRejected,
+    fetchLiveCategories,
+    fetchVodCategories,
+    fetchSeriesCategories,
+    fetchLiveStreams,
+    fetchVodStreams,
+    fetchSeriesStreams,
+  ]);
 
   // Backward compatibility values
   const loadingLive = liveCatalogStatus === "loading";
@@ -674,7 +850,8 @@ export function XtreamProvider({
 
   const categoriesError =
     liveCategoriesError || vodCategoriesError || seriesCategoriesError;
-  const error = liveError || vodError || seriesError || categoriesError;
+  const error =
+    authError || liveError || vodError || seriesError || categoriesError;
 
   return (
     <XtreamContext.Provider
@@ -701,6 +878,8 @@ export function XtreamProvider({
         liveError,
         vodError,
         seriesError,
+        isAuthRejected,
+        authError,
         categoriesError,
         error,
         loadingLive,
@@ -717,6 +896,7 @@ export function XtreamProvider({
         fetchVodStreams,
         fetchSeriesStreams,
         retryCategories,
+        retrySession,
       }}
     >
       {children}

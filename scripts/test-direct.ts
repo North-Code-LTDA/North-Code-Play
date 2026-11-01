@@ -4896,8 +4896,311 @@ async function runCapacitorTransportAndAuditFixTests() {
   assert(typeof APP_COMMIT === 'string' && APP_COMMIT.length > 0, 'APP_COMMIT deve ser uma string não vazia');
   assert(typeof APP_BUILD_TIME === 'string' && APP_BUILD_TIME.length > 0, 'APP_BUILD_TIME deve estar preenchido');
 
+  // =========================================================================
+  // 11.8. Auto-login com recuperação de acesso (credenciais inválidas/expiradas vs falha transitória) e preservação de dados locais
+  // =========================================================================
+  const {
+    createXtreamAuthError,
+    isAuthenticationRejectedError,
+    isTransientXtreamError,
+  } = await import('../src/services/xtreamService');
+  const {
+    readAutoLoginState,
+    markCredentialsAuthRejected,
+    safeSaveCredentials,
+  } = await import('../src/utils/accountUtils');
+
+  // A) Classificação estrita: rejeição de autenticação vs erro transitório
+  const authRejectedErr = createXtreamAuthError('Usuário ou senha inválidos (auth=0)', 'invalid_credentials', 200);
+  assert.strictEqual(isAuthenticationRejectedError(authRejectedErr), true, 'Erro de autenticação explícita deve ser classificado como rejeição de autenticação');
+  assert.strictEqual(isTransientXtreamError(authRejectedErr), false, 'Erro de autenticação explícita não deve ser classificado como transitório');
+  assert.strictEqual(isAuthenticationRejectedError({ status: 401, message: 'HTTP 401' }), true, 'HTTP 401 deve ser classificado como rejeição de autenticação');
+  assert.strictEqual(isAuthenticationRejectedError({ status: 403, message: 'HTTP 403' }), true, 'HTTP 403 deve ser classificado como rejeição de autenticação');
+  assert.strictEqual(isTransientXtreamError(new Error('Tempo limite de conexão esgotado')), true, 'Timeout deve ser classificado como transitório');
+  assert.strictEqual(isTransientXtreamError(new Error('Failed to fetch')), true, 'Falha de rede/CORS deve ser classificada como transitória');
+  assert.strictEqual(isTransientXtreamError({ status: 503, message: 'HTTP 503' }), true, 'HTTP 5xx deve ser classificado como transitório');
+
+  // B) Rejeição de credenciais no <XtreamService.authenticate> real (auth=0 e status='Expired')
+  setTransportTestConfig({
+    mode: 'capacitor',
+    capacitorHttpGet: async (opts) => ({
+      status: 200,
+      headers: {},
+      url: opts.url,
+      data: {
+        user_info: { username: 'expiredUser', auth: 1, status: 'Expired' },
+        server_info: { allowed_output_formats: ['m3u8'] },
+      },
+    }),
+  });
+
+  let caughtExpiredErr: any = null;
+  try {
+    await originalXtreamAuthenticate({
+      serverUrl: 'http://provider.test:8080',
+      username: 'expiredUser',
+      password: 'expiredPassword',
+    });
+  } catch (err) {
+    caughtExpiredErr = err;
+  }
+  assert(caughtExpiredErr !== null, 'Conta com status "Expired" deve lançar erro na validação');
+  assert.strictEqual(
+    isAuthenticationRejectedError(caughtExpiredErr),
+    true,
+    'Erro de conta expirada deve ser marcado como rejeição de autenticação definitiva (sem retry)'
+  );
+  setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });
+
+  // C) Fluxo completo de recuperação de acesso em <Home /> -> <Login /> sem loop de redirecionamento e preservando favoritos, histórico e preferências
+  const FAVORITES_KEY = 'nc_simple_favorites_v2';
+  const HISTORY_KEY = 'xtream_watch_history';
+  const savedFavoritesSample = JSON.stringify([{ key: 'vod:999', type: 'vod', id: 999, name: 'Filme Favorito Preservado' }]);
+  const savedHistorySample = JSON.stringify([{ id: '999', type: 'movie', name: 'Filme Histórico Preservado', timestamp: 1700000000000 }]);
+  const savedDisplayPrefsSample = JSON.stringify({ version: 2, deviceType: 'other', scalePercent: 100 });
+
+  window.localStorage.setItem(FAVORITES_KEY, savedFavoritesSample);
+  window.localStorage.setItem(HISTORY_KEY, savedHistorySample);
+  window.localStorage.setItem(STORAGE_KEY_DISPLAY_PREFS, savedDisplayPrefsSample);
+
+  const rejectedCreds: XtreamCredentials = {
+    serverUrl: 'http://server.tv:8080',
+    username: 'invalidSavedUser',
+    password: 'invalidSavedPassword',
+    playlistName: 'Minha Lista Principal',
+    avatar: '🎬',
+    allowed_output_formats: ['m3u8'],
+  };
+  safeSaveCredentials(rejectedCreds);
+  assert.strictEqual(readAutoLoginState().canAutoLogin, true, 'Antes de detectar rejeição, canAutoLogin deve ser true');
+
+  // Simular servidor rejeitando as credenciais salvas ao abrir /home
+  (XtreamService as any).authenticate = async () => {
+    throw createXtreamAuthError('Acesso negado: conta expirada ou credenciais inválidas no provedor.', 'http_unauthorized', 401);
+  };
+  (XtreamService as any).getLiveCategories = async () => {
+    throw createXtreamAuthError('Acesso negado: conta expirada ou credenciais inválidas no provedor.', 'http_unauthorized', 401);
+  };
+
+  const recoveryContainer = document.createElement('div');
+  document.body.appendChild(recoveryContainer);
+  const recoveryRoot = createRoot(recoveryContainer);
+
+  await act(async () => {
+    recoveryRoot.render(
+      React.createElement(
+        MemoryRouter,
+        { initialEntries: ['/home'] },
+        React.createElement(
+          Routes,
+          null,
+          React.createElement(Route, { path: '/', element: React.createElement(Login) }),
+          React.createElement(Route, { path: '/home', element: React.createElement(Home) })
+        )
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  });
+
+  const authRecoveryModal = recoveryContainer.querySelector('[data-auth-recovery="true"]');
+  assert(
+    authRecoveryModal !== null,
+    'Quando as credenciais salvas são rejeitadas pelo servidor em /home, o modal de recuperação de acesso ([data-auth-recovery="true"]) deve ser exibido'
+  );
+  assert.strictEqual(
+    readAutoLoginState().isAuthRejected,
+    true,
+    'Após rejeição de autenticação, readAutoLoginState().isAuthRejected deve ser true'
+  );
+  assert.strictEqual(
+    readAutoLoginState().canAutoLogin,
+    false,
+    'Com credenciais rejeitadas, readAutoLoginState().canAutoLogin deve ser false para impedir loop de redirecionamento'
+  );
+
+  // Clicar em "Corrigir credenciais de acesso" ([data-auth-recovery-login="true"]) para voltar ao Login
+  const goToLoginBtn = recoveryContainer.querySelector('[data-auth-recovery-login="true"]') as HTMLButtonElement;
+  assert(goToLoginBtn !== null, 'Botão [data-auth-recovery-login="true"] deve estar presente no modal de recuperação');
+
+  await act(async () => {
+    goToLoginBtn.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+
+  // Confirmar que <Login /> permaneceu aberto sem redirecionar de volta para /home e pré-preencheu os dados salvos para edição
+  const loginInputs = Array.from(recoveryContainer.querySelectorAll('input')) as HTMLInputElement[];
+  assert(
+    loginInputs.length >= 4,
+    'Ao voltar para "/", <Login /> deve exibir o formulário de edição sem redirecionar em loop para /home'
+  );
+  const inputValues = loginInputs.map((inp) => inp.value);
+  assert(
+    inputValues.includes('http://server.tv:8080') && inputValues.includes('invalidSavedUser'),
+    'O formulário de Login deve vir pré-preenchido com serverUrl e username salvos para facilitar a correção pelo usuário'
+  );
+  assert(
+    (recoveryContainer.textContent || '').includes('expirada') ||
+      (recoveryContainer.textContent || '').includes('inválidas'),
+    'O formulário de Login deve exibir o motivo da rejeição das credenciais'
+  );
+
+  // Confirmar que favoritos, histórico de exibição e preferências de tela foram integralmente preservados
+  assert.strictEqual(
+    window.localStorage.getItem(FAVORITES_KEY),
+    savedFavoritesSample,
+    'Favoritos devem permanecer preservados durante a recuperação de acesso'
+  );
+  assert.strictEqual(
+    window.localStorage.getItem(HISTORY_KEY),
+    savedHistorySample,
+    'Histórico de reprodução deve permanecer preservado durante a recuperação de acesso'
+  );
+  assert.strictEqual(
+    window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS),
+    savedDisplayPrefsSample,
+    'Preferências de apresentação devem permanecer preservadas durante a recuperação de acesso'
+  );
+
+  await act(async () => {
+    recoveryRoot.unmount();
+  });
+  document.body.removeChild(recoveryContainer);
+
+  // D) Falha transitória (timeout/rede/5xx) preserva credenciais salvas, mantém auto-login ativo e permite repetir sem perder a sessão
+  const validSavedCreds: XtreamCredentials = {
+    serverUrl: 'http://server.tv:8080',
+    username: 'transientUser',
+    password: 'transientPassword',
+    allowed_output_formats: ['m3u8'],
+  };
+  safeSaveCredentials(validSavedCreds);
+  assert.strictEqual(
+    readAutoLoginState().canAutoLogin,
+    true,
+    'Ao salvar credenciais válidas novamente, canAutoLogin deve voltar a ser true'
+  );
+
+  let categoryLoadCount = 0;
+  (XtreamService as any).authenticate = async () => {
+    throw new Error('Tempo limite de conexão esgotado (timeout).');
+  };
+  (XtreamService as any).getLiveCategories = async () => {
+    categoryLoadCount++;
+    if (categoryLoadCount === 1) {
+      throw new Error('Tempo limite de conexão esgotado (timeout).');
+    }
+    return [{ category_id: '1', category_name: 'Canais Recuperados' }];
+  };
+  (XtreamService as any).getVodCategories = async () => [];
+  (XtreamService as any).getSeriesCategories = async () => [];
+
+  const transientContainer = document.createElement('div');
+  document.body.appendChild(transientContainer);
+  const transientRoot = createRoot(transientContainer);
+
+  await act(async () => {
+    transientRoot.render(
+      React.createElement(
+        MemoryRouter,
+        { initialEntries: ['/home'] },
+        React.createElement(
+          Routes,
+          null,
+          React.createElement(Route, { path: '/', element: React.createElement(Login) }),
+          React.createElement(Route, { path: '/home', element: React.createElement(Home) })
+        )
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  });
+
+  assert.strictEqual(
+    transientContainer.querySelector('[data-auth-recovery="true"]'),
+    null,
+    'Falha transitória de rede/timeout NÃO deve exibir o modal de credenciais inválidas'
+  );
+  assert.strictEqual(
+    readAutoLoginState().canAutoLogin,
+    true,
+    'Falha transitória NÃO deve invalidar as credenciais salvas nem desativar o auto-login'
+  );
+
+  const transientBanner = transientContainer.querySelector('[data-transient-recovery="true"]');
+  assert(
+    transientBanner !== null,
+    'Quando a carga inicial falha por erro transitório, o banner de repetição ([data-transient-recovery="true"]) deve ser exibido'
+  );
+
+  // Restaurar authenticate e clicar em "Tentar novamente"
   installDefaultXtreamOfflineMocks();
-  console.log('✅ Todos os testes de Capacitor 8, CapacitorHttp, normalização de volume/catálogo, storage seguro, timer LiveTV e reabertura aprovados!');
+  (XtreamService as any).getLiveCategories = async () => [
+    { category_id: '1', category_name: 'Canais Recuperados' },
+  ];
+
+  const transientRetryBtn = transientContainer.querySelector('[data-transient-retry="true"]') as HTMLButtonElement;
+  assert(transientRetryBtn !== null, 'Botão [data-transient-retry="true"] deve estar disponível');
+
+  await act(async () => {
+    transientRetryBtn.click();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  });
+
+  assert.strictEqual(
+    transientContainer.querySelector('[data-transient-recovery="true"]'),
+    null,
+    'Após repetir com sucesso, o banner de falha transitória deve desaparecer'
+  );
+
+  await act(async () => {
+    transientRoot.unmount();
+  });
+  document.body.removeChild(transientContainer);
+
+  // =========================================================================
+  // 11.9. Safe area sem soma indevida com 100dvh e variáveis de ambiente opcionais
+  // =========================================================================
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const indexCssContent = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf8');
+  const bodyRuleMatch = indexCssContent.match(/body\s*\{([^}]*)\}/);
+  assert(bodyRuleMatch !== null, 'Regra CSS de body deve existir em src/index.css');
+  assert(
+    !bodyRuleMatch![1].includes('padding-top') &&
+      !bodyRuleMatch![1].includes('padding-bottom') &&
+      !bodyRuleMatch![1].includes('padding-left') &&
+      !bodyRuleMatch![1].includes('padding-right'),
+    'body não deve aplicar padding de safe-area globalmente para não somar com 100dvh nos containers principais'
+  );
+  assert(
+    indexCssContent.includes('.nc-safe-screen') &&
+      indexCssContent.includes('.nc-safe-login') &&
+      indexCssContent.includes('.nc-safe-modal'),
+    'src/index.css deve definir os utilitários de safe-area por container (.nc-safe-screen, .nc-safe-login, .nc-safe-modal)'
+  );
+
+  const homeSource = fs.readFileSync(path.resolve(process.cwd(), 'src/pages/Home.tsx'), 'utf8');
+  assert(
+    homeSource.includes('h-[100dvh] nc-safe-screen'),
+    'Home.tsx deve aplicar h-[100dvh] nc-safe-screen no container raiz'
+  );
+  assert(
+    !homeSource.includes('aside className="hidden md:flex flex-col w-64 bg-[#0a0a0a] border-r border-white/5 h-[100dvh]'),
+    'A sidebar desktop em Home.tsx deve usar h-full em vez de h-[100dvh] para não ultrapassar o container com safe-area'
+  );
+
+  const envExampleContent = fs.readFileSync(path.resolve(process.cwd(), '.env.example'), 'utf8');
+  const emptyAssignments = envExampleContent
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#') && /^[A-Za-z0-9_]+=\s*$/.test(line));
+  assert.strictEqual(
+    emptyAssignments.length,
+    0,
+    '.env.example não deve conter variáveis opcionais com valor vazio (apenas documentação em comentários)'
+  );
+
+  installDefaultXtreamOfflineMocks();
+  console.log('✅ Todos os testes de Capacitor 8, CapacitorHttp, normalização de volume/catálogo, storage seguro, timer LiveTV, auto-login/recuperação e safe-area aprovados!');
 }
 
 async function main() {

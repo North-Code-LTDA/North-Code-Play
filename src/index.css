@@ -32,11 +32,60 @@
 @layer base {
   body {
     @apply bg-nc-bg text-nc-text-primary font-sans antialiased selection:bg-white selection:text-black;
-    padding-top: var(--nc-safe-top, 0px);
-    padding-bottom: var(--nc-safe-bottom, 0px);
-    padding-left: var(--nc-safe-left, 0px);
-    padding-right: var(--nc-safe-right, 0px);
+    margin: 0;
+    padding: 0;
   }
+}
+
+.nc-safe-screen {
+  box-sizing: border-box;
+  padding-top: var(--nc-safe-top, 0px);
+  padding-bottom: var(--nc-safe-bottom, 0px);
+  padding-left: var(--nc-safe-left, 0px);
+  padding-right: var(--nc-safe-right, 0px);
+}
+
+.nc-safe-login {
+  box-sizing: border-box;
+  padding-top: calc(1rem + var(--nc-safe-top, 0px));
+  padding-bottom: calc(1rem + var(--nc-safe-bottom, 0px));
+  padding-left: calc(1rem + var(--nc-safe-left, 0px));
+  padding-right: calc(1rem + var(--nc-safe-right, 0px));
+}
+
+.nc-safe-drawer {
+  box-sizing: border-box;
+  padding-top: var(--nc-safe-top, 0px);
+  padding-bottom: var(--nc-safe-bottom, 0px);
+  padding-left: var(--nc-safe-left, 0px);
+}
+
+.nc-safe-modal {
+  box-sizing: border-box;
+  padding-top: calc(0.75rem + var(--nc-safe-top, 0px));
+  padding-bottom: calc(0.75rem + var(--nc-safe-bottom, 0px));
+  padding-left: calc(0.75rem + var(--nc-safe-left, 0px));
+  padding-right: calc(0.75rem + var(--nc-safe-right, 0px));
+}
+
+.nc-safe-overlay {
+  box-sizing: border-box;
+  padding-top: calc(1.5rem + var(--nc-safe-top, 0px));
+  padding-bottom: calc(1.5rem + var(--nc-safe-bottom, 0px));
+  padding-left: calc(1.5rem + var(--nc-safe-left, 0px));
+  padding-right: calc(1.5rem + var(--nc-safe-right, 0px));
+}
+
+.nc-safe-player-top {
+  padding-top: calc(1rem + var(--nc-safe-top, 0px));
+  padding-left: calc(1rem + var(--nc-safe-left, 0px));
+  padding-right: calc(1rem + var(--nc-safe-right, 0px));
+}
+
+.nc-safe-player-bottom {
+  padding-bottom: calc(1rem + var(--nc-safe-bottom, 0px));
+  padding-left: calc(1rem + var(--nc-safe-left, 0px));
+  padding-right: calc(1rem + var(--nc-safe-right, 0px));
 }
 
 @layer utilities {
