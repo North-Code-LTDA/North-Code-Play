@@ -7,9 +7,32 @@ import {
   XtreamCredentials,
 } from "../types";
 import { normalizeServerUrl } from "../utils/mediaUtils";
+import { executeXtreamGetRequest } from "./httpTransport";
 
 export interface RequestOptions {
   signal?: AbortSignal;
+}
+
+/**
+ * Valida que o retorno do catálogo é um array e descarta entradas inválidas
+ * (null, undefined, tipos primitivos ou arrays aninhados no lugar de objetos de registro),
+ * preservando a ordem e os dados dos registros válidos.
+ */
+export function normalizeCatalogArray<T = any>(
+  data: unknown,
+  invalidFormatMessage: string
+): T[] {
+  if (!Array.isArray(data)) {
+    throw new Error(invalidFormatMessage);
+  }
+  const result: T[] = [];
+  for (let i = 0; i < data.length; i++) {
+    const item = data[i];
+    if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+      result.push(item as T);
+    }
+  }
+  return result;
 }
 
 export class XtreamService {
@@ -43,7 +66,8 @@ export class XtreamService {
   }
 
   /**
-   * Performs direct HTTP/HTTPS GET requests from the user's browser directly to the Xtream provider.
+   * Performs direct HTTP/HTTPS GET requests to the Xtream provider via the transport adapter
+   * (fetch on Web, explicit CapacitorHttp on Android).
    * Applies at most ONE automatic retry for transient network errors or timeouts.
    * Does NOT retry HTTP 4xx, invalid JSON, or intentional caller cancellation.
    */
@@ -89,94 +113,16 @@ export class XtreamService {
         throw new Error("Operação cancelada pelo usuário.");
       }
 
-      const controller = new AbortController();
-      let didTimeout = false;
-      const timeoutId = setTimeout(() => {
-        didTimeout = true;
-        controller.abort();
-      }, timeoutMs);
-
-      const onCallerAbort = () => {
-        controller.abort();
-      };
-
-      if (callerSignal) {
-        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
-      }
-
       try {
-        let response: Response;
-        try {
-          response = await fetch(targetUrl.toString(), {
-            method: "GET",
-            signal: controller.signal,
-          });
-        } catch (err: any) {
-          if (callerSignal?.aborted) {
-            throw new Error("Operação cancelada pelo usuário.");
-          }
-          if (didTimeout) {
-            const timeoutError = new Error(
-              "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
-            );
-            (timeoutError as any).isTransient = true;
-            throw timeoutError;
-          }
-          const netError = new Error(
-            "Falha de rede ou bloqueio de CORS ao comunicar diretamente com o provedor. " +
-              "Verifique se o servidor está online e se permite requisições da web."
-          );
-          (netError as any).isTransient = true;
-          throw netError;
-        }
-
-        if (!response.ok) {
-          const status = response.status;
-          const isClientError = status >= 400 && status < 500;
-          const httpError = new Error(
-            `O servidor do provedor retornou HTTP ${status} (${response.statusText || "Erro"}).`
-          );
-          (httpError as any).isClientError = isClientError;
-          (httpError as any).isTransient = !isClientError;
-          throw httpError;
-        }
-
-        let textData: string;
-        try {
-          textData = await response.text();
-        } catch (err: any) {
-          if (callerSignal?.aborted) {
-            throw new Error("Operação cancelada pelo usuário.");
-          }
-          if (didTimeout) {
-            const timeoutError = new Error(
-              "Tempo limite esgotado ao aguardar resposta do servidor do provedor."
-            );
-            (timeoutError as any).isTransient = true;
-            throw timeoutError;
-          }
-          const readError = new Error("Falha ao ler os dados da resposta do provedor.");
-          (readError as any).isTransient = true;
-          throw readError;
-        }
-
-        if (!textData || !textData.trim()) {
-          return [] as unknown as T;
-        }
-
-        try {
-          return JSON.parse(textData) as T;
-        } catch {
-          const jsonError = new Error(
-            "O provedor retornou uma resposta em formato inválido (não é um JSON válido)."
-          );
-          (jsonError as any).isFatalFormat = true;
-          throw jsonError;
-        }
+        return await executeXtreamGetRequest<T>({
+          url: targetUrl.toString(),
+          timeoutMs,
+          signal: callerSignal,
+        });
       } catch (err: any) {
         // Do not retry caller aborts
-        if (callerSignal?.aborted || err.message === "Operação cancelada pelo usuário.") {
-          throw err;
+        if (callerSignal?.aborted || err?.message === "Operação cancelada pelo usuário.") {
+          throw new Error("Operação cancelada pelo usuário.");
         }
         // Do not retry HTTP 4xx
         if (err?.isClientError) {
@@ -192,11 +138,6 @@ export class XtreamService {
         }
         // Wait briefly before the single retry
         await XtreamService.sleep(1000, callerSignal);
-      } finally {
-        clearTimeout(timeoutId);
-        if (callerSignal) {
-          callerSignal.removeEventListener("abort", onCallerAbort);
-        }
       }
     }
 
@@ -220,7 +161,7 @@ export class XtreamService {
       options
     );
 
-    if (!data || typeof data !== "object") {
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
       throw new Error("Resposta inválida recebida do servidor do provedor.");
     }
 
@@ -257,10 +198,10 @@ export class XtreamService {
       XtreamService.DEFAULT_TIMEOUT_MS,
       options
     );
-    if (!Array.isArray(data)) {
-      throw new Error("Resposta inválida do provedor ao buscar categorias de TV (esperava-se uma lista).");
-    }
-    return data;
+    return normalizeCatalogArray<Category>(
+      data,
+      "Resposta inválida do provedor ao buscar categorias de TV (esperava-se uma lista)."
+    );
   }
 
   /**
@@ -279,10 +220,10 @@ export class XtreamService {
       XtreamService.CATALOG_TIMEOUT_MS,
       options
     );
-    if (!Array.isArray(data)) {
-      throw new Error("Resposta inválida do provedor ao buscar canais ao vivo (esperava-se uma lista).");
-    }
-    return data;
+    return normalizeCatalogArray<LiveStream>(
+      data,
+      "Resposta inválida do provedor ao buscar canais ao vivo (esperava-se uma lista)."
+    );
   }
 
   /**
@@ -299,10 +240,10 @@ export class XtreamService {
       XtreamService.DEFAULT_TIMEOUT_MS,
       options
     );
-    if (!Array.isArray(data)) {
-      throw new Error("Resposta inválida do provedor ao buscar categorias de filmes (esperava-se uma lista).");
-    }
-    return data;
+    return normalizeCatalogArray<Category>(
+      data,
+      "Resposta inválida do provedor ao buscar categorias de filmes (esperava-se uma lista)."
+    );
   }
 
   /**
@@ -321,10 +262,10 @@ export class XtreamService {
       XtreamService.CATALOG_TIMEOUT_MS,
       options
     );
-    if (!Array.isArray(data)) {
-      throw new Error("Resposta inválida do provedor ao buscar catálogo de filmes (esperava-se uma lista).");
-    }
-    return data;
+    return normalizeCatalogArray<VodStream>(
+      data,
+      "Resposta inválida do provedor ao buscar catálogo de filmes (esperava-se uma lista)."
+    );
   }
 
   /**
@@ -358,10 +299,10 @@ export class XtreamService {
       XtreamService.DEFAULT_TIMEOUT_MS,
       options
     );
-    if (!Array.isArray(data)) {
-      throw new Error("Resposta inválida do provedor ao buscar categorias de séries (esperava-se uma lista).");
-    }
-    return data;
+    return normalizeCatalogArray<Category>(
+      data,
+      "Resposta inválida do provedor ao buscar categorias de séries (esperava-se uma lista)."
+    );
   }
 
   /**
@@ -380,10 +321,10 @@ export class XtreamService {
       XtreamService.CATALOG_TIMEOUT_MS,
       options
     );
-    if (!Array.isArray(data)) {
-      throw new Error("Resposta inválida do provedor ao buscar catálogo de séries (esperava-se uma lista).");
-    }
-    return data;
+    return normalizeCatalogArray<SeriesStream>(
+      data,
+      "Resposta inválida do provedor ao buscar catálogo de séries (esperava-se uma lista)."
+    );
   }
 
   /**

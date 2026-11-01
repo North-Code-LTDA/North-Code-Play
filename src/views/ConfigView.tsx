@@ -20,7 +20,7 @@ import {
 import { motion } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
-import { APP_VERSION, APP_COMMIT } from '../version';
+import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME, formatCommitShort } from '../version';
 import {
   useDisplayPreferences,
   readDisplayEnvironmentDiagnostics,
@@ -225,7 +225,7 @@ export function ConfigView() {
       const { requested, measured, viewport, environment } = snap;
       const lines = [
         `=== North Code Play — Diagnóstico de Apresentação e Ambiente ===`,
-        `Versão: v${APP_VERSION} (${APP_COMMIT})`,
+        `Versão: v${APP_VERSION} (${APP_COMMIT}) — Build: ${APP_BUILD_TIME}`,
         `--- Valores Solicitados (Estado) ---`,
         `Modo solicitado (efetivo): ${
           requested.effectiveMode === 'tv'
@@ -792,13 +792,13 @@ export function ConfigView() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
               <div className="bg-nc-bg-input/60 rounded-xl p-4 border border-nc-border/30">
                 <span className="text-nc-text-secondary text-xs block mb-1 flex items-center gap-1.5">
-                  <GitCommit className="w-4 h-4 text-nc-primary" /> Commit da Aplicação
+                  <GitCommit className="w-4 h-4 text-nc-primary" /> Identificação do Build
                 </span>
                 <span className="font-mono text-white text-xs select-all break-all">
                   {APP_COMMIT}
                 </span>
                 <span className="text-gray-500 text-[11px] block mt-1">
-                  Versão: v{APP_VERSION} ({APP_COMMIT.slice(0, 7)})
+                  Versão: v{APP_VERSION} ({formatCommitShort(APP_COMMIT)}) &bull; {APP_BUILD_TIME.slice(0, 10)}
                 </span>
               </div>
 

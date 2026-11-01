@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Configuração de Segurança de Rede do North Code Play (Android TV e Celular):
+  - Permite tráfego HTTP (cleartextTrafficPermitted="true") necessário para servidores IPTV Xtream Codes
+    que operam sobre HTTP em portas customizadas (ex.: :80, :8080, :8880) e para a origem local http://localhost.
+  - Preserva a validação TLS padrão do sistema operacional (<certificates src="system" />) para todas
+    as conexões HTTPS.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

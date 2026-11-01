@@ -24,6 +24,19 @@ import {
 
 export const AUTO_RESOLUTION_PRIORITY: ResolutionQuality[] = ['SD', 'HD', 'FHD', '4K'];
 
+const DEFAULT_LIVE_FALLBACK_TIMEOUT_MS = 28000;
+let liveFallbackTimeoutOverrideMs: number | null = null;
+
+export function getLiveFallbackTimeoutMs(): number {
+  return liveFallbackTimeoutOverrideMs !== null
+    ? liveFallbackTimeoutOverrideMs
+    : DEFAULT_LIVE_FALLBACK_TIMEOUT_MS;
+}
+
+export function setLiveFallbackTimeoutMsForTest(ms: number | null): void {
+  liveFallbackTimeoutOverrideMs = ms;
+}
+
 /**
  * Selects the next channel variant stream to attempt.
  * - In 'auto' mode: strictly follows SD -> HD -> FHD -> 4K priority (lowest to highest resolution),
@@ -161,10 +174,11 @@ export function LiveTvView({
   const historyRecords = useAccountPlaybackHistory(credentials);
 
   // References for playback attempt tracking and session fallback
+  const isMountedRef = useRef<boolean>(true);
   const sessionSuccessfulVariantsRef = useRef<Map<string, string | number>>(new Map());
   const attemptedStreamIdsRef = useRef<Set<string | number>>(new Set());
   const attemptIdRef = useRef<number>(0);
-  const fallbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const fallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // References for D-pad focus and scroll preservation between categories, channels, and preview
   const viewRootRef = useRef<HTMLDivElement>(null);
@@ -176,6 +190,19 @@ export function LiveTvView({
   const pendingCategoryRestoreFocusRef = useRef<string | null>(null);
   const pendingChannelRestoreFocusRef = useRef<string | null>(null);
   const consumedIntentRequestIdRef = useRef<number | null>(null);
+
+  // Cancel fallbackTimeoutRef and invalidate active attempt on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (fallbackTimeoutRef.current) {
+        clearTimeout(fallbackTimeoutRef.current);
+        fallbackTimeoutRef.current = null;
+      }
+      attemptIdRef.current++;
+    };
+  }, []);
 
   // Reset active attempt and memory when active credentials change
   useEffect(() => {
@@ -405,6 +432,9 @@ export function LiveTvView({
     targetMode: string,
     forcedStream?: any
   ) => {
+    if (!isMountedRef.current) {
+      return;
+    }
     if (fallbackTimeoutRef.current) {
       clearTimeout(fallbackTimeoutRef.current);
       fallbackTimeoutRef.current = null;
@@ -433,12 +463,14 @@ export function LiveTvView({
         allowedOutputFormats: credentials?.allowed_output_formats,
       });
 
-      if (attemptIdRef.current === currentAttemptId) {
+      if (isMountedRef.current && attemptIdRef.current === currentAttemptId) {
         setMiniPlayerUrl(url);
 
-        // 28-second fallback timeout if playback doesn't start
+        // Fallback timeout (default 28 seconds) if playback doesn't start
+        const timeoutMs = getLiveFallbackTimeoutMs();
         fallbackTimeoutRef.current = setTimeout(() => {
-          if (attemptIdRef.current !== currentAttemptId) return;
+          fallbackTimeoutRef.current = null;
+          if (!isMountedRef.current || attemptIdRef.current !== currentAttemptId) return;
           attemptedStreamIdsRef.current.add(streamId);
           const nextStream = pickVariantForGroup(group, targetMode, attemptedStreamIdsRef.current);
           if (nextStream) {
@@ -447,10 +479,10 @@ export function LiveTvView({
             setMiniPlayerError('Não foi possível carregar nenhuma versão do canal (Tempo limite esgotado).');
             setMiniPlayerLoading(false);
           }
-        }, 28000);
+        }, timeoutMs);
       }
     } catch (err: any) {
-      if (attemptIdRef.current === currentAttemptId) {
+      if (isMountedRef.current && attemptIdRef.current === currentAttemptId) {
         attemptedStreamIdsRef.current.add(streamId);
         setMiniPlayerUrl('');
         setMiniPlayerError(err.message || 'Falha ao conectar à transmissão do canal.');
@@ -502,7 +534,7 @@ export function LiveTvView({
 
   // Handle playback success callback
   const handlePlaybackSuccess = useCallback((attemptId?: number) => {
-    if (attemptId === undefined || attemptId !== attemptIdRef.current) {
+    if (!isMountedRef.current || attemptId === undefined || attemptId !== attemptIdRef.current) {
       return; // Discard absent or stale callback
     }
 
@@ -522,7 +554,7 @@ export function LiveTvView({
 
   // Handle playback final error callback
   const handlePlaybackFinalError = useCallback((errorMsg: string, attemptId?: number) => {
-    if (attemptId === undefined || attemptId !== attemptIdRef.current) {
+    if (!isMountedRef.current || attemptId === undefined || attemptId !== attemptIdRef.current) {
       return; // Discard absent or stale callback
     }
 

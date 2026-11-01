@@ -34,6 +34,9 @@ export type { BackHandlerEntry } from './backPolicy';
 export {
   attachCapacitorBackAdapter,
   getNativeBackBridgeStatus,
+  setCapacitorAppBridgeForTest,
 } from './capacitorBackAdapter';
-export type { NativeBackBridgeStatus } from './capacitorBackAdapter';
-
+export type {
+  NativeBackBridgeStatus,
+  CapacitorAppBridgeLike,
+} from './capacitorBackAdapter';

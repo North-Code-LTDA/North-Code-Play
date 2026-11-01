@@ -1,5 +1,5 @@
-# Multi-stage build for pure static SPA web application
-FROM node:20-alpine AS build
+# Multi-stage build for pure static SPA web application (Node 22+)
+FROM node:22-alpine AS build
 
 WORKDIR /app
 

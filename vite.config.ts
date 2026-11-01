@@ -1,10 +1,43 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { execSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { defineConfig } from 'vite';
 
+function resolveBuildCommit(): string {
+  const envCommit =
+    process.env.RENDER_GIT_COMMIT ||
+    process.env.GIT_COMMIT ||
+    process.env.VITE_APP_COMMIT ||
+    process.env.COMMIT_SHA;
+
+  if (envCommit && envCommit.trim()) {
+    return envCommit.trim();
+  }
+
+  try {
+    const gitDir = path.resolve(__dirname, '.git');
+    if (fs.existsSync(gitDir)) {
+      const gitSha = execSync('git rev-parse HEAD', {
+        cwd: __dirname,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+        .toString()
+        .trim();
+      if (gitSha) {
+        return gitSha;
+      }
+    }
+  } catch {
+    // Sem metadados Git disponíveis (ex.: código extraído de ZIP)
+  }
+
+  return 'local-build';
+}
+
 export default defineConfig(() => {
-  const commit = process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '04a1df5d2e4aeab43562343c9f4a72bad4cc3c9e';
+  const commit = resolveBuildCommit();
   const buildTime = new Date().toISOString();
 
   return {

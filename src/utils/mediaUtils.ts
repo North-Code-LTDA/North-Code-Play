@@ -316,22 +316,42 @@ export function diagnoseImageUrl(
   };
 }
 
+let memoryDebugImagesEnabled = false;
+
 export function isDebugImagesEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  return (
-    Boolean((window as any).__NC_DEBUG_IMAGES__) ||
-    window.localStorage?.getItem("nc_debug_images") === "true"
-  );
+  if (typeof window === "undefined") {
+    return memoryDebugImagesEnabled;
+  }
+  if (typeof (window as any).__NC_DEBUG_IMAGES__ === "boolean") {
+    return (window as any).__NC_DEBUG_IMAGES__;
+  }
+  try {
+    const raw = window.localStorage?.getItem("nc_debug_images");
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+  } catch {
+    // Preserve application and image loading when localStorage is unavailable or blocked
+  }
+  return memoryDebugImagesEnabled;
 }
 
 export function setDebugImagesEnabled(enabled: boolean): void {
+  const normalized = Boolean(enabled);
+  memoryDebugImagesEnabled = normalized;
   if (typeof window === "undefined") return;
-  (window as any).__NC_DEBUG_IMAGES__ = enabled;
-  if (enabled) {
-    window.localStorage?.setItem("nc_debug_images", "true");
+  (window as any).__NC_DEBUG_IMAGES__ = normalized;
+  try {
+    if (normalized) {
+      window.localStorage?.setItem("nc_debug_images", "true");
+    } else {
+      window.localStorage?.removeItem("nc_debug_images");
+    }
+  } catch {
+    // Keep in-memory state when localStorage throws QuotaExceededError or SecurityError
+  }
+  if (normalized) {
     console.log("[NC Debug Images] Diagnóstico de imagens ATIVADO.");
   } else {
-    window.localStorage?.removeItem("nc_debug_images");
     console.log("[NC Debug Images] Diagnóstico de imagens DESATIVADO.");
   }
 }

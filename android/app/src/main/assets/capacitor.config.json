@@ -1,0 +1,18 @@
+{
+	"appId": "com.northcode.play",
+	"appName": "North Code Play",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "http",
+		"cleartext": true
+	},
+	"plugins": {
+		"CapacitorHttp": {
+			"enabled": false
+		},
+		"SystemBars": {
+			"insetsHandling": "css",
+			"style": "DARK"
+		}
+	}
+}

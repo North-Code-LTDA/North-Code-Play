@@ -1,4 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import "@fontsource/inter/300.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
 @import "tailwindcss";
 
 @theme {
@@ -19,11 +23,19 @@
   --nc-ui-scale: 1;
   --nc-rem-compensation: 1;
   --nc-rem: calc(1rem * var(--nc-rem-compensation, 1));
+  --nc-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --nc-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --nc-safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --nc-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
 }
 
 @layer base {
   body {
     @apply bg-nc-bg text-nc-text-primary font-sans antialiased selection:bg-white selection:text-black;
+    padding-top: var(--nc-safe-top, 0px);
+    padding-bottom: var(--nc-safe-bottom, 0px);
+    padding-left: var(--nc-safe-left, 0px);
+    padding-right: var(--nc-safe-right, 0px);
   }
 }
 

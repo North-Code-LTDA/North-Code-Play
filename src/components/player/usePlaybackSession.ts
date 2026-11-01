@@ -25,6 +25,40 @@ interface UsePlaybackSessionOptions {
   onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
 }
 
+export const VOLUME_STORAGE_KEY = 'nc_player_volume';
+
+export function normalizePlayerVolume(raw: unknown, fallback: number = 1): number {
+  const safeFallback =
+    typeof fallback === 'number' && Number.isFinite(fallback) && fallback >= 0 && fallback <= 1
+      ? fallback
+      : 1;
+
+  if (raw === null || raw === undefined || typeof raw === 'boolean') {
+    return safeFallback;
+  }
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return safeFallback;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+      return safeFallback;
+    }
+    return parsed;
+  }
+
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) {
+      return safeFallback;
+    }
+    return Math.max(0, Math.min(raw, 1));
+  }
+
+  return safeFallback;
+}
+
 export function usePlaybackSession({
   videoRef,
   streamUrl,
@@ -73,7 +107,7 @@ export function usePlaybackSession({
   const [volume, setVolumeState] = useState(() => {
     try {
       const saved = localStorage.getItem('nc_player_volume');
-      return saved !== null ? Number(saved) : 1;
+      return normalizePlayerVolume(saved, 1);
     } catch {
       return 1;
     }
@@ -171,7 +205,7 @@ export function usePlaybackSession({
   useEffect(() => {
     const video = videoRef.current;
     if (video) {
-      video.volume = volume;
+      video.volume = normalizePlayerVolume(volume, 1);
       video.muted = isMuted;
     }
   }, [videoRef, volume, isMuted]);
@@ -281,7 +315,7 @@ export function usePlaybackSession({
     setIsLoading(true);
 
     // Initial video element setup using current ref values
-    video.volume = volumeRef.current;
+    video.volume = normalizePlayerVolume(volumeRef.current, 1);
     video.muted = isMutedRef.current;
     video.playbackRate = playbackRateRef.current;
 
@@ -429,10 +463,11 @@ export function usePlaybackSession({
 
     const handleVolumeChange = () => {
       if (sessionIdRef.current !== currentSessionId) return;
-      setVolumeState(video.volume);
+      const safeVol = normalizePlayerVolume(video.volume, volumeRef.current);
+      setVolumeState(safeVol);
       setIsMuted(video.muted);
       try {
-        localStorage.setItem('nc_player_volume', String(video.volume));
+        localStorage.setItem('nc_player_volume', String(safeVol));
       } catch {}
     };
 
@@ -718,13 +753,14 @@ export function usePlaybackSession({
   const setVolume = useCallback(
     (newVol: number) => {
       const video = videoRef.current;
-      const clamped = Math.max(0, Math.min(newVol, 1));
+      const clamped = normalizePlayerVolume(newVol, volumeRef.current);
       if (video) {
         video.volume = clamped;
         if (clamped > 0 && video.muted) {
           video.muted = false;
         }
       }
+      volumeRef.current = clamped;
       setVolumeState(clamped);
       try {
         localStorage.setItem('nc_player_volume', String(clamped));

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">North Code Play</string>
+    <string name="title_activity_main">North Code Play</string>
+    <string name="package_name">com.northcode.play</string>
+    <string name="custom_url_scheme">com.northcode.play</string>
+</resources>

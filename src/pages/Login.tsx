@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
 import { motion, AnimatePresence } from 'motion/react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from '../components/MediaImage';
-import { safeSaveCredentials } from '../utils/accountUtils';
+import { CREDENTIALS_KEY, safeReadStorage, safeSaveCredentials } from '../utils/accountUtils';
 import { useBackHandler, BACK_PRIORITY, pushFocusMemory, popFocusMemory } from '../navigation';
 
 const AVATAR_OPTIONS = [
@@ -32,6 +32,30 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   
   const navigate = useNavigate();
+
+  // Ao reabrir o aplicativo na rota inicial (/), retoma automaticamente /home se houver sessão válida salva
+  useEffect(() => {
+    const readRes = safeReadStorage(CREDENTIALS_KEY);
+    if (readRes.success && readRes.value) {
+      try {
+        const parsed = JSON.parse(readRes.value);
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          typeof parsed.serverUrl === 'string' &&
+          parsed.serverUrl.trim().length > 0 &&
+          typeof parsed.username === 'string' &&
+          parsed.username.trim().length > 0 &&
+          typeof parsed.password === 'string' &&
+          parsed.password.length > 0
+        ) {
+          navigate('/home', { replace: true });
+        }
+      } catch {
+        // Ignora JSON inválido e permanece na tela de login
+      }
+    }
+  }, [navigate]);
 
   useBackHandler(
     'login-avatar-picker',

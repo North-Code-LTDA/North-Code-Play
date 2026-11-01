@@ -18,7 +18,7 @@ import { safeRemoveCredentials } from '../utils/accountUtils';
 import { MediaImage } from '../components/MediaImage';
 import { DisplaySetupModal } from '../components/DisplaySetupModal';
 import { useDisplayPreferences } from '../platform/tvEnvironment';
-import { APP_VERSION, APP_COMMIT } from '../version';
+import { APP_VERSION, APP_COMMIT, formatCommitShort } from '../version';
 import {
   useNavigationMode,
   useBackHandler,
@@ -420,7 +420,7 @@ function HomeContent({ credentials }: { credentials: any }) {
             </button>
             <div className="mt-2.5 pt-2 border-t border-nc-border/30 text-center">
               <span className="text-[10px] font-mono text-nc-text-secondary/60">
-                v{APP_VERSION} ({APP_COMMIT.slice(0, 7)})
+                v{APP_VERSION} ({formatCommitShort(APP_COMMIT)})
               </span>
             </div>
           </div>
@@ -506,7 +506,7 @@ function HomeContent({ credentials }: { credentials: any }) {
                   </button>
                   <div className="mt-3 pt-2 border-t border-nc-border/30 text-center">
                     <span className="text-[10px] font-mono text-nc-text-secondary/60">
-                      v{APP_VERSION} ({APP_COMMIT.slice(0, 7)})
+                      v{APP_VERSION} ({formatCommitShort(APP_COMMIT)})
                     </span>
                   </div>
                 </div>

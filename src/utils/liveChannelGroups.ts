@@ -81,9 +81,17 @@ export function parseChannelVariantSuffix(streamName: string | undefined | null)
  * Groups a list of live stream objects by category, EPG channel ID, and base channel name
  * when at least 2 distinct resolutions (4K, FHD, HD, SD) exist for that base name.
  * Preserves ALL streams with distinct IDs inside variants and allStreams.
+ * Tolerates null, undefined, primitive, or array entries passed directly in the input array.
  */
 export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
   if (!Array.isArray(streams) || streams.length === 0) {
+    return [];
+  }
+
+  const validStreams = streams.filter(
+    (s) => s !== null && typeof s === 'object' && !Array.isArray(s)
+  );
+  if (validStreams.length === 0) {
     return [];
   }
 
@@ -91,11 +99,17 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
   // bucketKey uses JSON.stringify([String(catId), epgId, normalizedBaseName]) for unambiguous separation
   const buckets = new Map<
     string,
-    { baseName: string; normalizedBaseName: string; categoryId: string | number; epgId: string; streams: { stream: any; parsed: ParsedSuffixResult }[] }
+    {
+      baseName: string;
+      normalizedBaseName: string;
+      categoryId: string | number;
+      epgId: string;
+      streams: { stream: any; parsed: ParsedSuffixResult }[];
+    }
   >();
   const streamToBucketKey = new Map<any, string>();
 
-  for (const stream of streams) {
+  for (const stream of validStreams) {
     const parsed = parseChannelVariantSuffix(stream?.name);
     const catId = stream?.category_id ?? 'default';
 
@@ -120,7 +134,7 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
   const result: LiveChannelGroup[] = [];
   const processedBucketKeys = new Set<string>();
 
-  for (const stream of streams) {
+  for (const stream of validStreams) {
     const bucketKey = streamToBucketKey.get(stream);
 
     if (bucketKey && buckets.has(bucketKey)) {
@@ -143,7 +157,7 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
         processedBucketKeys.add(bucketKey);
 
         const allBucketStreams = bucket.streams.map((i) => i.stream);
-        const icon = allBucketStreams.find((s) => s.stream_icon)?.stream_icon || stream.stream_icon;
+        const icon = allBucketStreams.find((s) => s?.stream_icon)?.stream_icon || stream.stream_icon;
         const epgId = bucket.epgId;
 
         // Build variants array preserving ALL distinct streams
@@ -156,7 +170,7 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
           const matchingItems = bucket.streams.filter((item) => item.parsed.resolution === res);
           for (let i = 0; i < matchingItems.length; i++) {
             const s = matchingItems[i].stream;
-            const sId = s.stream_id || s.id;
+            const sId = s.stream_id ?? s.id;
             const count = (resCounts.get(res) || 0) + 1;
             resCounts.set(res, count);
 
@@ -198,12 +212,12 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
     }
 
     // Single item (either no resolution variant, or only 1 resolution variant in bucket)
-    const streamId = stream.stream_id || stream.id;
+    const streamId = stream.stream_id ?? stream.id ?? '';
     const groupId = JSON.stringify(['single', String(stream.category_id || 'default'), String(streamId)]);
 
     result.push({
       groupId,
-      displayName: stream.name || 'Sem nome',
+      displayName: typeof stream.name === 'string' && stream.name.trim() ? stream.name : 'Sem nome',
       category_id: stream.category_id,
       epg_channel_id: stream.epg_channel_id,
       stream_icon: stream.stream_icon,
@@ -222,16 +236,25 @@ export function groupLiveStreams(streams: any[]): LiveChannelGroup[] {
  * Matches if query is included in group displayName OR any variant/stream full name.
  */
 export function filterLiveChannelGroups(groups: LiveChannelGroup[], searchQuery: string): LiveChannelGroup[] {
+  if (!Array.isArray(groups)) {
+    return [];
+  }
+  const validGroups = groups.filter(
+    (g) => g !== null && typeof g === 'object' && !Array.isArray(g)
+  );
   if (!searchQuery || !searchQuery.trim()) {
-    return groups;
+    return validGroups;
   }
 
   const q = searchQuery.toLowerCase().trim();
 
-  return groups.filter((group) => {
-    if (group.displayName.toLowerCase().includes(q)) {
+  return validGroups.filter((group) => {
+    if ((group.displayName || '').toLowerCase().includes(q)) {
       return true;
     }
-    return group.allStreams.some((s) => (s.name || '').toLowerCase().includes(q));
+    if (!Array.isArray(group.allStreams)) return false;
+    return group.allStreams.some(
+      (s) => s && typeof s === 'object' && String(s.name || '').toLowerCase().includes(q)
+    );
   });
 }

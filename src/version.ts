@@ -1,37 +1,50 @@
-// North Code Play versioning - dynamically reflects deployed commit
-export const APP_VERSION = "1.3.0";
+// North Code Play versioning - coherent across Web interface and Android Capacitor build
+export const APP_VERSION = '1.3.0';
+export const ANDROID_VERSION_CODE = 10300;
+export const LOCAL_BUILD_COMMIT = 'local-build';
 
-// Fallback commit from base specification if RENDER_GIT_COMMIT is not provided
-const DEFAULT_COMMIT = "9fdf134fa210bc5696dacbc5411269d8bc5112fa";
+export function resolveCommit(envOverride?: Record<string, string | undefined>): string {
+  const env =
+    envOverride ??
+    (typeof process !== 'undefined' && process.env ? (process.env as Record<string, string | undefined>) : undefined);
 
-function resolveCommit(): string {
-  if (typeof __APP_COMMIT__ !== "undefined" && __APP_COMMIT__) {
-    return __APP_COMMIT__;
-  }
-  if (typeof process !== "undefined" && process.env) {
-    if (process.env.RENDER_GIT_COMMIT) {
-      return process.env.RENDER_GIT_COMMIT;
-    }
-    if (process.env.GIT_COMMIT) {
-      return process.env.GIT_COMMIT;
+  if (env) {
+    const envCommit =
+      env.RENDER_GIT_COMMIT || env.GIT_COMMIT || env.VITE_APP_COMMIT || env.COMMIT_SHA;
+    if (envCommit && envCommit.trim()) {
+      return envCommit.trim();
     }
   }
-  return DEFAULT_COMMIT;
+
+  if (typeof __APP_COMMIT__ !== 'undefined' && __APP_COMMIT__ && __APP_COMMIT__.trim()) {
+    return __APP_COMMIT__.trim();
+  }
+
+  return LOCAL_BUILD_COMMIT;
 }
 
-function resolveBuildTime(): string {
-  if (typeof __APP_BUILD_TIME__ !== "undefined" && __APP_BUILD_TIME__) {
-    return __APP_BUILD_TIME__;
+export function resolveBuildTime(): string {
+  if (typeof __APP_BUILD_TIME__ !== 'undefined' && __APP_BUILD_TIME__ && __APP_BUILD_TIME__.trim()) {
+    return __APP_BUILD_TIME__.trim();
   }
   return new Date().toISOString();
+}
+
+export function formatCommitShort(commit: string = APP_COMMIT): string {
+  const clean = (commit || LOCAL_BUILD_COMMIT).trim();
+  if (clean === LOCAL_BUILD_COMMIT || clean.startsWith('local')) {
+    return clean;
+  }
+  return clean.length > 10 ? clean.slice(0, 7) : clean;
 }
 
 export const APP_COMMIT = resolveCommit();
 export const APP_BUILD_TIME = resolveBuildTime();
 
-if (typeof window !== "undefined") {
+if (typeof window !== 'undefined') {
   (window as any).__NORTHCODE_BUILD__ = {
     version: APP_VERSION,
+    versionCode: ANDROID_VERSION_CODE,
     commit: APP_COMMIT,
     buildTime: APP_BUILD_TIME,
   };

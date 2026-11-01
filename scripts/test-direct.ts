@@ -2002,6 +2002,8 @@ async function runDpadNavigationAndBackPolicyTests() {
     getNavMode,
     clearAllBackHandlersForTest,
     attachCapacitorBackAdapter,
+    setCapacitorAppBridgeForTest,
+    getNativeBackBridgeStatus,
   } = await import('../src/navigation');
 
   clearAllBackHandlersForTest();
@@ -3238,32 +3240,34 @@ async function runDpadNavigationAndBackPolicyTests() {
     '4º Escape separado retorna à tela Início'
   );
 
-  // 4. Ponte de runtime do Capacitor (backButton) na raiz chama App.exitApp() e NUNCA faz logout
+  // 4. Ponte oficial do Capacitor (@capacitor/app backButton) na raiz chama App.exitApp() e NUNCA faz logout
   let exitAppCalled = false;
   let backListenerCallback: ((ev: any) => void) | null = null;
 
-  (windowInstance as any).Capacitor = {
-    Plugins: {
-      App: {
-        addListener: (eventName: string, cb: (ev: any) => void) => {
-          if (eventName === 'backButton') {
-            backListenerCallback = cb;
-          }
-          return {
-            remove: () => {
-              backListenerCallback = null;
-            },
-          };
+  setCapacitorAppBridgeForTest({
+    isNativePlatform: () => true,
+    getPlatform: () => 'android',
+    addListener: async (_eventName, cb) => {
+      backListenerCallback = cb;
+      return {
+        remove: async () => {
+          backListenerCallback = null;
         },
-        exitApp: () => {
-          exitAppCalled = true;
-        },
-      },
+      };
     },
-  };
+    exitApp: async () => {
+      exitAppCalled = true;
+    },
+  });
 
   const detachCap = attachCapacitorBackAdapter();
+  await new Promise((resolve) => setTimeout(resolve, 10));
   assert(backListenerCallback !== null, 'Adaptador Capacitor deve registrar listener para backButton');
+  assert.strictEqual(
+    getNativeBackBridgeStatus().label,
+    'Capacitor App.backButton (@capacitor/app)',
+    'getNativeBackBridgeStatus deve identificar a ponte oficial @capacitor/app'
+  );
 
   // Disparar backButton na raiz (Início sem modal aberto)
   await act(async () => {
@@ -3277,7 +3281,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   );
 
   detachCap();
-  delete (windowInstance as any).Capacitor;
+  setCapacitorAppBridgeForTest(null);
 
   // 5. Movimento de ponteiro alterna de volta para 'pointer' sem quebrar cliques
   await act(async () => {
@@ -4267,6 +4271,635 @@ async function cleanupTestEnvironment(): Promise<void> {
   }
 }
 
+async function runCapacitorTransportAndAuditFixTests() {
+  console.log('\n--- 11. Testes de Capacitor 8, Transporte HTTP JSON, Volume, Catálogo, Storage, Timer LiveTV e Reabertura ---');
+
+  const {
+    NavigationProvider,
+    attachCapacitorBackAdapter,
+    setCapacitorAppBridgeForTest,
+    getNativeBackBridgeStatus,
+    registerBackHandler,
+    clearAllBackHandlersForTest,
+  } = await import('../src/navigation');
+  const {
+    executeXtreamGetRequest,
+    setTransportTestConfig,
+    isUsingCapacitorNativeTransport,
+  } = await import('../src/services/httpTransport');
+  const { normalizeCatalogArray } = await import('../src/services/xtreamService');
+  const { groupLiveStreams } = await import('../src/utils/liveChannelGroups');
+  const {
+    normalizePlayerVolume,
+    usePlaybackSession,
+    VOLUME_STORAGE_KEY,
+  } = await import('../src/components/player/usePlaybackSession');
+  const {
+    isDebugImagesEnabled,
+    setDebugImagesEnabled,
+  } = await import('../src/utils/mediaUtils');
+  const { MediaImage } = await import('../src/components/MediaImage');
+  const { setLiveFallbackTimeoutMsForTest } = await import('../src/views/LiveTvView');
+  const { Login } = await import('../src/pages/Login');
+  const {
+    APP_VERSION,
+    APP_COMMIT,
+    APP_BUILD_TIME,
+    resolveCommit,
+    formatCommitShort,
+  } = await import('../src/version');
+
+  clearAllBackHandlersForTest();
+
+  // =========================================================================
+  // 11.1. Ponte oficial Capacitor (@capacitor/app): registro único, remoção e resolução tardia da Promise após desmontagem (StrictMode)
+  // =========================================================================
+  let activeListenersCount = 0;
+  let removeCallsCount = 0;
+  const pendingResolvers: Array<(handle: { remove: () => Promise<void> }) => void> = [];
+
+  setCapacitorAppBridgeForTest({
+    isNativePlatform: () => true,
+    getPlatform: () => 'android',
+    addListener: () =>
+      new Promise((resolve) => {
+        activeListenersCount++;
+        pendingResolvers.push(resolve);
+      }),
+    exitApp: async () => {},
+  });
+
+  // Simular ciclo React.StrictMode: 1ª montagem -> desmontagem imediata antes da Promise resolver -> 2ª montagem
+  const detachFirst = attachCapacitorBackAdapter();
+  detachFirst();
+  const detachSecond = attachCapacitorBackAdapter();
+
+  assert.strictEqual(
+    pendingResolvers.length,
+    2,
+    'Duas montagens sequenciais em StrictMode iniciam duas Promises de registro'
+  );
+
+  // Resolver a 1ª Promise tardiamente (após detachFirst já ter sido chamado)
+  pendingResolvers[0]({
+    remove: async () => {
+      removeCallsCount++;
+      activeListenersCount--;
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+
+  assert.strictEqual(
+    removeCallsCount,
+    1,
+    'Quando a Promise da 1ª montagem resolve após a desmontagem, handle.remove() deve ser chamado imediatamente'
+  );
+  assert.strictEqual(
+    activeListenersCount,
+    1,
+    'Apenas o listener da 2ª montagem ativa deve permanecer registrado'
+  );
+
+  // Resolver a 2ª Promise e depois desmontar a 2ª instância
+  pendingResolvers[1]({
+    remove: async () => {
+      removeCallsCount++;
+      activeListenersCount--;
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  detachSecond();
+  await new Promise((resolve) => setTimeout(resolve, 15));
+
+  assert.strictEqual(
+    removeCallsCount,
+    2,
+    'Desmontar a instância ativa deve remover o listener resolvido'
+  );
+  assert.strictEqual(
+    activeListenersCount,
+    0,
+    'Nenhum listener órfão deve permanecer ativo após desmontagem completa'
+  );
+
+  // Verificar prioridade hierárquica do botão Voltar via listener nativo antes de chegar à raiz
+  let interceptedByModal = false;
+  let rootExitTriggered = false;
+  let currentBackCallback: ((ev: any) => void) | null = null;
+
+  setCapacitorAppBridgeForTest({
+    isNativePlatform: () => true,
+    getPlatform: () => 'android',
+    addListener: async (_eventName, cb) => {
+      currentBackCallback = cb;
+      return {
+        remove: async () => {
+          currentBackCallback = null;
+        },
+      };
+    },
+    exitApp: async () => {
+      rootExitTriggered = true;
+    },
+  });
+
+  const detachActive = attachCapacitorBackAdapter();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert(currentBackCallback !== null, 'Listener nativo ativo deve estar registrado');
+
+  const unregisterModalBack = registerBackHandler('test-modal-layer', 80, () => {
+    interceptedByModal = true;
+    return true;
+  });
+
+  currentBackCallback!({ canGoBack: true });
+  assert.strictEqual(interceptedByModal, true, 'Back nativo deve acionar primeiro o handler de maior prioridade (modal)');
+  assert.strictEqual(rootExitTriggered, false, 'Enquanto houver modal/camada aberta, App.exitApp() não deve ser chamado');
+
+  unregisterModalBack();
+  currentBackCallback!({ canGoBack: false });
+  assert.strictEqual(rootExitTriggered, true, 'Quando nenhuma camada interna consome o Voltar, App.exitApp() deve ser chamado');
+
+  detachActive();
+  setCapacitorAppBridgeForTest(null);
+  assert.strictEqual(
+    getNativeBackBridgeStatus().bridgeType,
+    'none',
+    'Fora do ambiente nativo, getNativeBackBridgeStatus().bridgeType deve ser "none" (sem AppMint)'
+  );
+
+  // =========================================================================
+  // 11.2. Transporte HTTP JSON: Navegador (fetch) vs Android Nativo (CapacitorHttp.get), objeto já parseado vs string, timeout, 1 retry e AbortSignal
+  // =========================================================================
+  // A) Modo Web usando fetch
+  setTransportTestConfig({
+    mode: 'web',
+    capacitorHttpGet: async () => {
+      throw new Error('CapacitorHttp.get não deve ser chamado no modo Web');
+    },
+  });
+  assert.strictEqual(isUsingCapacitorNativeTransport(), false);
+
+  let webFetchCalls = 0;
+  externalNetworkGuardHandler = async (url: string) => {
+    webFetchCalls++;
+    return new Response(JSON.stringify({ mode: 'web', url }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  const webRes = await executeXtreamGetRequest<{ mode: string; url: string }>({
+    url: 'http://provider.test:8080/player_api.php?action=test',
+    timeoutMs: 5000,
+  });
+  assert.strictEqual(webFetchCalls, 1, 'No navegador, executeXtreamGetRequest deve usar fetch');
+  assert.strictEqual(webRes.mode, 'web');
+  externalNetworkGuardHandler = null;
+
+  // B) Modo Android Nativo usando CapacitorHttp.get com payload já parseado (objeto/array direto sem re-serializar) e com string JSON
+  let nativeCalls = 0;
+  let capturedNativeOpts: any = null;
+  const preParsedPayload = [{ category_id: '10', category_name: 'Filmes 4K' }];
+
+  setTransportTestConfig({
+    mode: 'capacitor',
+    capacitorHttpGet: async (opts) => {
+      nativeCalls++;
+      capturedNativeOpts = opts;
+      return {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        url: opts.url,
+        data: preParsedPayload,
+      };
+    },
+  });
+  assert.strictEqual(isUsingCapacitorNativeTransport(), true);
+
+  const nativeObjRes = await executeXtreamGetRequest<typeof preParsedPayload>({
+    url: 'http://provider.test:8080/player_api.php?action=get_vod_categories',
+    timeoutMs: 9000,
+  });
+  assert.strictEqual(nativeCalls, 1, 'No Android Capacitor, executeXtreamGetRequest deve usar CapacitorHttp.get');
+  assert.strictEqual(
+    nativeObjRes,
+    preParsedPayload,
+    'Quando CapacitorHttp.get já retorna objeto/array parseado, o transporte deve preservá-lo diretamente sem JSON.stringify/JSON.parse desnecessários'
+  );
+  assert.strictEqual(capturedNativeOpts.connectTimeout, 9000, 'connectTimeout nativo deve ser repassado');
+  assert.strictEqual(capturedNativeOpts.readTimeout, 9000, 'readTimeout nativo deve ser repassado');
+
+  // Resposta como texto JSON em CapacitorHttp.get
+  setTransportTestConfig({
+    mode: 'capacitor',
+    capacitorHttpGet: async (opts) => ({
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+      url: opts.url,
+      data: '  {"user_info":{"auth":1,"status":"Active"}}  ',
+    }),
+  });
+  const nativeTextRes = await executeXtreamGetRequest<{ user_info: { auth: number; status: string } }>({
+    url: 'http://provider.test:8080/player_api.php',
+    timeoutMs: 5000,
+  });
+  assert.strictEqual(nativeTextRes.user_info.auth, 1, 'Quando CapacitorHttp.get retorna string JSON, o transporte deve fazer parse com segurança');
+
+  // C) Timeout + 1 repetição automática para falha transitória via XtreamService real (originalXtreamAuthenticate)
+  let transientAttempts = 0;
+  setTransportTestConfig({
+    mode: 'capacitor',
+    capacitorHttpGet: async (opts) => {
+      transientAttempts++;
+      if (transientAttempts === 1) {
+        const timeoutErr: any = new Error('SocketTimeoutException: timed out');
+        throw timeoutErr;
+      }
+      return {
+        status: 200,
+        headers: {},
+        url: opts.url,
+        data: {
+          user_info: { username: 'retryUser', auth: 1, status: 'Active' },
+          server_info: { allowed_output_formats: ['m3u8'] },
+        },
+      };
+    },
+  });
+
+  const retryAuthRes = await originalXtreamAuthenticate({
+    serverUrl: 'http://provider.test:8080',
+    username: 'retryUser',
+    password: 'retryPassword',
+  });
+  assert.strictEqual(transientAttempts, 2, 'Falha transitória de timeout no XtreamService deve acionar exatamente 1 repetição');
+  assert.strictEqual(retryAuthRes.user_info.username, 'retryUser', 'Segunda tentativa de autenticação deve resolver com sucesso');
+
+  // D) Erro HTTP 404 (definitivo) não deve repetir
+  let http404Attempts = 0;
+  setTransportTestConfig({
+    mode: 'capacitor',
+    capacitorHttpGet: async (opts) => {
+      http404Attempts++;
+      return {
+        status: 404,
+        headers: {},
+        url: opts.url,
+        data: 'Not Found',
+      };
+    },
+  });
+
+  let caught404: any = null;
+  try {
+    await originalXtreamAuthenticate({
+      serverUrl: 'http://provider.test:8080',
+      username: 'retryUser',
+      password: 'retryPassword',
+    });
+  } catch (err) {
+    caught404 = err;
+  }
+  assert(caught404 !== null && String(caught404.message).includes('HTTP 404'), 'HTTP 404 deve lançar erro claro informando o status HTTP');
+  assert.strictEqual(http404Attempts, 1, 'Erros HTTP 4xx definitivos não devem fazer retry');
+
+  // E) Cancelamento lógico via AbortSignal interrompe a espera imediatamente
+  const cancelCtrl = new AbortController();
+  setTransportTestConfig({
+    mode: 'capacitor',
+    capacitorHttpGet: async (opts) => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { status: 200, headers: {}, url: opts.url, data: { late: true } };
+    },
+  });
+
+  let caughtAbort: any = null;
+  const abortPromise = executeXtreamGetRequest({
+    url: 'http://provider.test:8080/player_api.php?action=slow',
+    signal: cancelCtrl.signal,
+    timeoutMs: 2000,
+  });
+  setTimeout(() => cancelCtrl.abort(), 15);
+  try {
+    await abortPromise;
+  } catch (err) {
+    caughtAbort = err;
+  }
+  assert(
+    caughtAbort !== null && String(caughtAbort.message).includes('Operação cancelada'),
+    'Cancelamento via AbortSignal deve interromper imediatamente a espera da operação'
+  );
+
+  setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });
+
+  // =========================================================================
+  // 11.3. Correção 5B — Volume persistido inválido em usePlaybackSession.ts
+  // =========================================================================
+  assert.strictEqual(normalizePlayerVolume('abc'), 1, 'Volume "abc" deve retornar fallback 1');
+  assert.strictEqual(normalizePlayerVolume('Infinity'), 1, 'Volume "Infinity" deve retornar fallback 1');
+  assert.strictEqual(normalizePlayerVolume('-Infinity'), 1, 'Volume "-Infinity" deve retornar fallback 1');
+  assert.strictEqual(normalizePlayerVolume(NaN), 1, 'Volume NaN deve retornar fallback 1');
+  assert.strictEqual(normalizePlayerVolume('2'), 1, 'Volume persistido "2" (> 1) deve retornar fallback 1');
+  assert.strictEqual(normalizePlayerVolume('-0.2'), 1, 'Volume persistido "-0.2" (< 0) deve retornar fallback 1');
+  assert.strictEqual(normalizePlayerVolume(''), 1, 'Volume vazio "" deve retornar fallback 1');
+  assert.strictEqual(normalizePlayerVolume('0.65'), 0.65, 'Volume válido "0.65" deve ser preservado como 0.65');
+  assert.strictEqual(normalizePlayerVolume(0), 0, 'Volume 0 (mudo por volume) deve ser aceito como 0');
+
+  // Testar leitura inicial do hook usePlaybackSession quando localStorage contém valores corrompidos
+  for (const invalidRaw of ['abc', 'Infinity', '2', '-0.2']) {
+    window.localStorage.setItem(VOLUME_STORAGE_KEY, invalidRaw);
+    let capturedVolume = -1;
+    let capturedSetVolume: ((v: number) => void) | null = null;
+    const volRef = { current: document.createElement('video') as HTMLVideoElement | null };
+
+    function VolumeProbe() {
+      const session = usePlaybackSession({
+        streamUrl: 'http://server.tv:8080/live/u/p/1.m3u8',
+        contentType: 'live',
+        videoRef: volRef,
+      });
+      capturedVolume = session.volume;
+      capturedSetVolume = session.setVolume;
+      return null;
+    }
+
+    const vContainer = document.createElement('div');
+    document.body.appendChild(vContainer);
+    const vRoot = createRoot(vContainer);
+    await act(async () => {
+      vRoot.render(React.createElement(VolumeProbe));
+    });
+
+    assert.strictEqual(
+      capturedVolume,
+      1,
+      `Com nc_player_volume="${invalidRaw}" no localStorage, usePlaybackSession deve iniciar com volume seguro 1`
+    );
+
+    // Testar setVolume com valor fora da faixa [0, 1] e NaN
+    await act(async () => {
+      capturedSetVolume!(2.5);
+    });
+    assert.strictEqual(capturedVolume, 1, 'setVolume(2.5) deve limitar para 1 sem lançar IndexSizeError no elemento video');
+    assert.strictEqual(volRef.current!.volume, 1, 'videoElement.volume deve receber valor finito entre 0 e 1');
+
+    await act(async () => {
+      capturedSetVolume!(-0.5);
+    });
+    assert.strictEqual(capturedVolume, 0, 'setVolume(-0.5) deve limitar para 0 sem lançar IndexSizeError');
+    assert.strictEqual(volRef.current!.volume, 0, 'videoElement.volume deve receber 0');
+
+    await act(async () => {
+      vRoot.unmount();
+    });
+    document.body.removeChild(vContainer);
+  }
+  window.localStorage.setItem(VOLUME_STORAGE_KEY, '0.8');
+
+  // =========================================================================
+  // 11.4. Correção 5C — Entradas inválidas no catálogo (xtreamService.ts & liveChannelGroups.ts)
+  // =========================================================================
+  const mixedCatalog = [
+    null,
+    undefined,
+    'texto-invalido',
+    123,
+    ['sub-array'],
+    { stream_id: 501, name: 'Globo SP HD', category_id: '1' },
+    null,
+    { stream_id: 502, name: 'Globo SP SD', category_id: '1' },
+  ];
+
+  const cleanCatalog = normalizeCatalogArray<{ stream_id: number; name: string; category_id: string }>(
+    mixedCatalog,
+    'Canais ao vivo'
+  );
+  assert.strictEqual(cleanCatalog.length, 2, 'normalizeCatalogArray deve descartar null, primitivos e sub-arrays');
+  assert.strictEqual(cleanCatalog[0].stream_id, 501, 'normalizeCatalogArray deve preservar a ordem dos registros válidos (1º)');
+  assert.strictEqual(cleanCatalog[1].stream_id, 502, 'normalizeCatalogArray deve preservar a ordem dos registros válidos (2º)');
+
+  assert.throws(
+    () => normalizeCatalogArray({ erro: 'nao-e-array' }, 'Formato inválido: catálogo não é uma lista'),
+    /Formato inválido/,
+    'normalizeCatalogArray deve continuar lançando erro claro quando a resposta inteira não for uma lista'
+  );
+
+  const groupedWithNulls = groupLiveStreams([
+    null as any,
+    undefined as any,
+    'invalido' as any,
+    { stream_id: 601, name: 'Band News HD', category_id: '1' } as any,
+    { stream_id: 602, name: 'Band News SD', category_id: '1' } as any,
+  ]);
+  assert.strictEqual(
+    groupedWithNulls.length,
+    1,
+    'groupLiveStreams([null, canalValido]) deve ignorar itens inválidos sem lançar TypeError e agrupar os canais válidos'
+  );
+  assert.strictEqual(
+    groupedWithNulls[0].variants.length,
+    2,
+    'groupLiveStreams deve preservar todas as variantes válidas do canal'
+  );
+
+  // =========================================================================
+  // 11.5. Correção 5D — Preferência de depuração de imagens sem falha de armazenamento (mediaUtils.ts)
+  // =========================================================================
+  window.localStorage.getItem = () => {
+    throw new Error('SecurityError: localStorage getItem blocked');
+  };
+  window.localStorage.setItem = () => {
+    throw new Error('QuotaExceededError: localStorage setItem blocked');
+  };
+  window.localStorage.removeItem = () => {
+    throw new Error('SecurityError: localStorage removeItem blocked');
+  };
+
+  try {
+    assert.doesNotThrow(() => {
+      setDebugImagesEnabled(true);
+    }, 'setDebugImagesEnabled(true) não deve lançar exceção quando localStorage falha');
+    assert.strictEqual(
+      isDebugImagesEnabled(),
+      true,
+      'isDebugImagesEnabled() deve refletir o fallback em memória quando localStorage falha'
+    );
+
+    assert.doesNotThrow(() => {
+      setDebugImagesEnabled(false);
+    }, 'setDebugImagesEnabled(false) não deve lançar exceção quando localStorage.removeItem falha');
+    assert.strictEqual(
+      isDebugImagesEnabled(),
+      false,
+      'isDebugImagesEnabled() deve retornar false após desativar no fallback em memória'
+    );
+
+    // Renderizar <MediaImage /> com localStorage bloqueado
+    const imgContainer = document.createElement('div');
+    document.body.appendChild(imgContainer);
+    const imgRoot = createRoot(imgContainer);
+    await act(async () => {
+      imgRoot.render(
+        React.createElement(MediaImage, {
+          src: 'http://server.tv:8080/images/poster.jpg',
+          alt: 'Poster Teste Seguro',
+        })
+      );
+    });
+    assert(
+      imgContainer.querySelector('img') !== null,
+      'Componente <MediaImage /> deve continuar renderizando normalmente mesmo com localStorage inacessível'
+    );
+    await act(async () => {
+      imgRoot.unmount();
+    });
+    document.body.removeChild(imgContainer);
+  } finally {
+    window.localStorage.getItem = origGetItem;
+    window.localStorage.setItem = origSetItem;
+    window.localStorage.removeItem = origRemoveItem;
+  }
+
+  // =========================================================================
+  // 11.6. Correção 5A — Timer de fallback de 28s em LiveTvView.tsx ao desmontar
+  // =========================================================================
+  setLiveFallbackTimeoutMsForTest(50);
+  try {
+    (XtreamService as any).getLiveCategories = async () => [
+      { category_id: '88', category_name: 'Canais Fallback Timer' },
+    ];
+    (XtreamService as any).getLiveStreams = async () => [
+      { stream_id: 8801, name: 'Canal Teste Timer SD', category_id: '88' },
+      { stream_id: 8802, name: 'Canal Teste Timer HD', category_id: '88' },
+    ];
+
+    const timerCreds: XtreamCredentials = {
+      serverUrl: 'http://server.tv:8080',
+      username: 'timerUser',
+      password: 'timerPassword',
+      allowed_output_formats: ['m3u8', 'ts'],
+    };
+
+    const timerContainer = document.createElement('div');
+    document.body.appendChild(timerContainer);
+    const timerRoot = createRoot(timerContainer);
+
+    await act(async () => {
+      timerRoot.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: timerCreds },
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(LiveTvView, { onPlay: () => {} })
+          )
+        )
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+    // Abrir categoria 88 e clicar no canal para iniciar o preview (que agenda fallbackTimeoutRef)
+    const cat88Btn = timerContainer.querySelector('button[data-live-category-id="88"]') as HTMLButtonElement;
+    assert(cat88Btn !== null, 'Categoria 88 deve estar renderizada');
+    await act(async () => {
+      cat88Btn.click();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+
+    const chBtn = timerContainer.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
+    assert(chBtn !== null, 'Botão do canal deve estar renderizado');
+    await act(async () => {
+      chBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    const loadCallsBeforeUnmount = videoLoadCallCount;
+
+    // Desmontar LiveTvView ANTES do timer de 50ms disparar
+    await act(async () => {
+      timerRoot.unmount();
+    });
+    document.body.removeChild(timerContainer);
+
+    // Aguardar 90ms (além dos 50ms do timer) e confirmar que nenhuma nova tentativa de reprodução foi disparada
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    assert.strictEqual(
+      videoLoadCallCount,
+      loadCallsBeforeUnmount,
+      'Após desmontar LiveTvView com fallbackTimeoutRef pendente, o timer deve ser cancelado e nenhuma nova tentativa pode disparar'
+    );
+  } finally {
+    setLiveFallbackTimeoutMsForTest(28000);
+  }
+
+  // =========================================================================
+  // 11.7. Reabertura do aplicativo (<Login /> -> /home com credenciais salvas) e identificação honesta de build (version.ts)
+  // =========================================================================
+  const savedCreds: XtreamCredentials = {
+    serverUrl: 'http://server.tv:8080',
+    username: 'reopenUser',
+    password: 'reopenPassword',
+    allowed_output_formats: ['m3u8'],
+  };
+  window.localStorage.setItem(CREDENTIALS_KEY, JSON.stringify(savedCreds));
+
+  const reopenContainer = document.createElement('div');
+  document.body.appendChild(reopenContainer);
+  const reopenRoot = createRoot(reopenContainer);
+
+  const { Routes, Route, useLocation } = await import('react-router-dom');
+  let currentRoutePath = '';
+  function LocationTracker() {
+    const loc = useLocation();
+    currentRoutePath = loc.pathname;
+    return React.createElement('div', { 'data-route-path': loc.pathname });
+  }
+
+  await act(async () => {
+    reopenRoot.render(
+      React.createElement(
+        MemoryRouter,
+        { initialEntries: ['/'] },
+        React.createElement(
+          Routes,
+          null,
+          React.createElement(Route, { path: '/', element: React.createElement(Login) }),
+          React.createElement(Route, { path: '/home', element: React.createElement(LocationTracker) })
+        )
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+
+  assert.strictEqual(
+    currentRoutePath,
+    '/home',
+    'Ao reabrir o aplicativo na rota "/" com credenciais válidas salvas, <Login /> deve redirecionar automaticamente para "/home"'
+  );
+
+  await act(async () => {
+    reopenRoot.unmount();
+  });
+  document.body.removeChild(reopenContainer);
+
+  // Validar resolução de versão e commit sem hashes antigos fixos
+  assert.strictEqual(APP_VERSION, '1.3.0', 'APP_VERSION deve estar alinhada com package.json (1.3.0)');
+  assert.strictEqual(resolveCommit({}), 'local-build', 'Sem commit de ambiente, resolveCommit deve retornar "local-build"');
+  assert.strictEqual(formatCommitShort('local-build'), 'local-build', 'formatCommitShort("local-build") deve preservar "local-build"');
+  assert.strictEqual(
+    formatCommitShort('4c6b86f65165f183f4e0426f06d373fe467a0cbb'),
+    '4c6b86f',
+    'Quando um SHA completo é fornecido, formatCommitShort deve abreviar para 7 caracteres'
+  );
+  assert(typeof APP_COMMIT === 'string' && APP_COMMIT.length > 0, 'APP_COMMIT deve ser uma string não vazia');
+  assert(typeof APP_BUILD_TIME === 'string' && APP_BUILD_TIME.length > 0, 'APP_BUILD_TIME deve estar preenchido');
+
+  installDefaultXtreamOfflineMocks();
+  console.log('✅ Todos os testes de Capacitor 8, CapacitorHttp, normalização de volume/catálogo, storage seguro, timer LiveTV e reabertura aprovados!');
+}
+
 async function main() {
   console.log('🚀 INICIANDO VALIDAÇÃO COMPLETA DOS FAVORITOS SIMPLES E REGRESSÕES\n');
   runDirectUrlTests();
@@ -4279,6 +4912,7 @@ async function main() {
   await runLiveTvSdPriorityAndFallbackTests();
   await runDpadNavigationAndBackPolicyTests();
   await runDisplaySetupPreviewAndLifecycleTests();
+  await runCapacitorTransportAndAuditFixTests();
   await cleanupTestEnvironment();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
 }

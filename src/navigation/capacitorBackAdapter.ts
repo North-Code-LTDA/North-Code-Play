@@ -1,183 +1,221 @@
+import { Capacitor } from '@capacitor/core';
+import type { PluginListenerHandle } from '@capacitor/core';
+import { App } from '@capacitor/app';
+import type { BackButtonListenerEvent } from '@capacitor/app';
 import { executeBackAction } from './backPolicy';
 
-interface CapacitorListenerHandle {
-  remove?: () => Promise<void> | void;
+export interface CapacitorAppBridgeLike {
+  isNativePlatform?: () => boolean;
+  getPlatform?: () => string;
+  addListener: (
+    eventName: 'backButton',
+    listenerFunc: (event: BackButtonListenerEvent) => void
+  ) => Promise<PluginListenerHandle> | PluginListenerHandle;
+  exitApp: () => Promise<void> | void;
 }
 
 export interface NativeBackBridgeStatus {
-  bridgeType: 'appmint' | 'capacitor' | 'cordova-backbutton' | 'none';
+  bridgeType: 'capacitor' | 'none';
   label: string;
   active: boolean;
 }
 
-let activeBridgeType: NativeBackBridgeStatus['bridgeType'] = 'none';
+let testBridgeOverride: CapacitorAppBridgeLike | null = null;
+let activeInstanceToken = 0;
+let attachedInstanceToken: number | null = null;
+let activeTearDown: (() => void) | null = null;
 
-export function getNativeBackBridgeStatus(): NativeBackBridgeStatus {
-  if (typeof window !== 'undefined') {
-    try {
-      const w = window as any;
-      if (w.AppMint && typeof w.AppMint.setBackHandler === 'function') {
-        return {
-          bridgeType: 'appmint',
-          label: 'AppMint.setBackHandler (WebToApk)',
-          active: activeBridgeType === 'appmint',
-        };
-      }
-      if (w.Capacitor?.Plugins?.App && typeof w.Capacitor.Plugins.App.addListener === 'function') {
-        return {
-          bridgeType: 'capacitor',
-          label: 'Capacitor App.backButton',
-          active: activeBridgeType === 'capacitor',
-        };
-      }
-    } catch {
-      // Ignore bridge inspection errors
-    }
+/**
+ * Permite injetar ou inspecionar o adaptador oficial @capacitor/app em testes automatizados
+ * sem depender de variáveis globais legadas (AppMint/Cordova).
+ */
+export function setCapacitorAppBridgeForTest(override: CapacitorAppBridgeLike | null): void {
+  testBridgeOverride = override;
+}
+
+function resolveCapacitorBridge(): {
+  isNative: boolean;
+  addListener: CapacitorAppBridgeLike['addListener'];
+  exitApp: CapacitorAppBridgeLike['exitApp'];
+} {
+  if (testBridgeOverride) {
+    const isNative =
+      typeof testBridgeOverride.isNativePlatform === 'function'
+        ? testBridgeOverride.isNativePlatform()
+        : true;
+    return {
+      isNative,
+      addListener: testBridgeOverride.addListener.bind(testBridgeOverride),
+      exitApp: testBridgeOverride.exitApp.bind(testBridgeOverride),
+    };
   }
 
-  if (activeBridgeType === 'cordova-backbutton') {
+  let isNative = false;
+  try {
+    if (typeof Capacitor?.isNativePlatform === 'function') {
+      isNative = Boolean(Capacitor.isNativePlatform());
+    } else if (typeof Capacitor?.getPlatform === 'function') {
+      isNative = Capacitor.getPlatform() !== 'web';
+    }
+  } catch {
+    isNative = false;
+  }
+
+  return {
+    isNative,
+    addListener: (eventName, listenerFunc) => App.addListener(eventName, listenerFunc),
+    exitApp: () => App.exitApp(),
+  };
+}
+
+export function getNativeBackBridgeStatus(): NativeBackBridgeStatus {
+  const { isNative } = resolveCapacitorBridge();
+  const isAttached = attachedInstanceToken !== null;
+
+  if (isNative || (testBridgeOverride !== null && isAttached)) {
     return {
-      bridgeType: 'cordova-backbutton',
-      label: 'Ausente (Fallback document backbutton ativo)',
-      active: false,
+      bridgeType: 'capacitor',
+      label: 'Capacitor App.backButton (@capacitor/app)',
+      active: isAttached,
     };
   }
 
   return {
     bridgeType: 'none',
-    label: 'Ausente',
+    label: 'Navegador Web (Capacitor App.backButton pronto para Android)',
     active: false,
   };
 }
 
 /**
- * Attaches a runtime listener to Android TV / APK hardware/system Back button:
- * 1. Prioritizes window.AppMint.setBackHandler (WebToApk official synchronous API):
- *    - Executes executeBackAction() synchronously.
- *    - Returns true when consumed internally (player, modal, submenu, details, channels, categories, section).
- *    - Returns false when no internal layer consumes Back (root screen), allowing host exit confirmation.
- *    - Cleans up via setBackHandler(null) on teardown and avoids attaching duplicate listeners.
- * 2. Falls back to Capacitor App.addListener('backButton') or Cordova/WebView 'backbutton'
- *    ONLY when AppMint.setBackHandler is not present.
+ * Registra o listener oficial do Capacitor 8 (`App.addListener('backButton', ...)`)
+ * para Android TV e celulares Android:
+ * - Encaminha o evento para `executeBackAction()`, respeitando a prioridade de camadas:
+ *   menus do player -> tela cheia/player -> detalhes -> canais/categorias -> seção -> início.
+ * - Na tela raiz (quando `executeBackAction()` retorna `false`), invoca `App.exitApp()`
+ *   mantendo as credenciais e os dados locais preservados para reabertura.
+ * - Garante um único listener ativo por instância e remoção segura mesmo quando a
+ *   Promise de `App.addListener` resolve após a desmontagem ou durante ciclos de `React.StrictMode`.
  */
 export function attachCapacitorBackAdapter(): () => void {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return () => {};
   }
 
-  let removed = false;
-  const w = window as any;
-
-  // 1. Official WebToApk / AppMint synchronous Back handler
-  try {
-    if (w.AppMint && typeof w.AppMint.setBackHandler === 'function') {
-      const appMintHandler = (): boolean => {
-        if (removed) return false;
-        try {
-          return Boolean(executeBackAction());
-        } catch (err) {
-          console.warn('AppMint back handler error:', err);
-          return false;
-        }
-      };
-
-      w.AppMint.setBackHandler(appMintHandler);
-      activeBridgeType = 'appmint';
-
-      return () => {
-        removed = true;
-        activeBridgeType = 'none';
-        try {
-          if (w.AppMint && typeof w.AppMint.setBackHandler === 'function') {
-            w.AppMint.setBackHandler(null);
-          }
-        } catch {
-          // Ignore teardown errors
-        }
-      };
-    }
-  } catch {
-    // Fall through to Capacitor / document fallback if AppMint access throws
-  }
-
-  // 2. Fallback: Capacitor App plugin or document 'backbutton' (only when AppMint is absent)
-  let pluginListenerHandle: CapacitorListenerHandle | null = null;
-  let pendingPromise: Promise<CapacitorListenerHandle> | null = null;
-  let capacitorAttached = false;
-
-  const handleNativeBack = (ev?: any) => {
-    if (removed) return;
-    if (ev && typeof ev.preventDefault === 'function') {
-      ev.preventDefault();
-    }
-
-    const handled = executeBackAction();
-    if (!handled) {
-      // At root screen: allow native Android app to exit/minimize without logging out
-      const cap = (window as any).Capacitor;
-      const appPlugin = cap?.Plugins?.App;
-      if (appPlugin && typeof appPlugin.exitApp === 'function') {
-        try {
-          appPlugin.exitApp();
-        } catch {}
-      }
-    }
-  };
-
-  const cap = w.Capacitor;
-  const appPlugin = cap?.Plugins?.App;
-
-  if (appPlugin && typeof appPlugin.addListener === 'function') {
+  // Se já houver uma instância anterior pendente ou ativa, desarma-a antes de registrar a nova
+  if (activeTearDown) {
     try {
-      const maybePromise = appPlugin.addListener('backButton', handleNativeBack);
-      capacitorAttached = true;
-      activeBridgeType = 'capacitor';
-      if (maybePromise && typeof maybePromise.then === 'function') {
-        pendingPromise = maybePromise;
-        maybePromise
-          .then((handle: CapacitorListenerHandle) => {
-            if (removed) {
-              handle?.remove?.();
-            } else {
-              pluginListenerHandle = handle;
-            }
-          })
-          .catch(() => {});
-      } else if (maybePromise && typeof maybePromise.remove === 'function') {
-        pluginListenerHandle = maybePromise;
-      }
-    } catch {}
-  }
-
-  const onDocumentBackButton = (e: Event) => {
-    handleNativeBack(e);
-  };
-
-  if (!capacitorAttached) {
-    document.addEventListener('backbutton', onDocumentBackButton, false);
-    activeBridgeType = 'cordova-backbutton';
-  }
-
-  return () => {
-    removed = true;
-    activeBridgeType = 'none';
-    if (!capacitorAttached) {
-      document.removeEventListener('backbutton', onDocumentBackButton, false);
+      activeTearDown();
+    } catch {
+      // Ignore previous teardown error
     }
-    if (pluginListenerHandle && typeof pluginListenerHandle.remove === 'function') {
+    activeTearDown = null;
+  }
+
+  const instanceToken = ++activeInstanceToken;
+  let removed = false;
+  let resolvedHandle: PluginListenerHandle | null = null;
+  let registrationPromise: Promise<PluginListenerHandle> | null = null;
+
+  const { isNative, addListener, exitApp } = resolveCapacitorBridge();
+  const shouldAttachNativeListener = isNative || testBridgeOverride !== null;
+
+  const handleNativeBack = (event?: BackButtonListenerEvent) => {
+    if (removed || attachedInstanceToken !== instanceToken) {
+      return;
+    }
+
+    if (event && typeof (event as any).preventDefault === 'function') {
       try {
-        pluginListenerHandle.remove();
-      } catch {}
+        (event as any).preventDefault();
+      } catch {
+        // Ignore preventDefault error
+      }
     }
-    if (pendingPromise) {
-      pendingPromise
-        .then((h) => {
-          try {
-            h?.remove?.();
-          } catch {}
-        })
-        .catch(() => {});
+
+    let handled = false;
+    try {
+      handled = Boolean(executeBackAction());
+    } catch (err) {
+      console.warn('[CapacitorBackAdapter] Erro ao executar ação de Voltar:', err);
+      handled = false;
+    }
+
+    if (!handled) {
+      // Na raiz da aplicação: aplica a saída nativa mantendo credenciais e dados locais intactos
+      try {
+        const maybeExitPromise = exitApp();
+        if (maybeExitPromise && typeof (maybeExitPromise as Promise<void>).catch === 'function') {
+          (maybeExitPromise as Promise<void>).catch(() => {});
+        }
+      } catch {
+        // Ignore exitApp errors on unsupported platforms
+      }
     }
   };
-}
 
+  if (shouldAttachNativeListener) {
+    attachedInstanceToken = instanceToken;
+    try {
+      const maybePromise = addListener('backButton', handleNativeBack);
+      if (maybePromise && typeof (maybePromise as Promise<PluginListenerHandle>).then === 'function') {
+        registrationPromise = maybePromise as Promise<PluginListenerHandle>;
+        registrationPromise
+          .then((handle) => {
+            if (removed || attachedInstanceToken !== instanceToken) {
+              // Se a instância já foi desmontada antes da resolução da Promise (ex.: StrictMode), remove imediatamente
+              try {
+                const removeRes = handle?.remove?.();
+                if (removeRes && typeof (removeRes as Promise<void>).catch === 'function') {
+                  (removeRes as Promise<void>).catch(() => {});
+                }
+              } catch {
+                // Ignore late removal error
+              }
+              return;
+            }
+            resolvedHandle = handle;
+          })
+          .catch(() => {
+            if (attachedInstanceToken === instanceToken) {
+              attachedInstanceToken = null;
+            }
+          });
+      } else if (maybePromise && typeof (maybePromise as PluginListenerHandle).remove === 'function') {
+        resolvedHandle = maybePromise as PluginListenerHandle;
+      }
+    } catch {
+      if (attachedInstanceToken === instanceToken) {
+        attachedInstanceToken = null;
+      }
+    }
+  }
+
+  const detach = () => {
+    if (removed) return;
+    removed = true;
+
+    if (attachedInstanceToken === instanceToken) {
+      attachedInstanceToken = null;
+    }
+    if (activeTearDown === detach) {
+      activeTearDown = null;
+    }
+
+    if (resolvedHandle && typeof resolvedHandle.remove === 'function') {
+      const handleToRemove = resolvedHandle;
+      resolvedHandle = null;
+      try {
+        const removeRes = handleToRemove.remove();
+        if (removeRes && typeof (removeRes as Promise<void>).catch === 'function') {
+          (removeRes as Promise<void>).catch(() => {});
+        }
+      } catch {
+        // Ignore synchronous remove error
+      }
+    }
+  };
+
+  activeTearDown = detach;
+  return detach;
+}
