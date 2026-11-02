@@ -1,9 +1,115 @@
 export type NavMode = 'pointer' | 'remote';
 export type SpatialDirection = 'up' | 'down' | 'left' | 'right';
 
+export interface VirtualContainerController {
+  totalCount: number;
+  getColumns: () => number;
+  ensureIndexMounted: (targetIndex: number) => boolean;
+}
+
+export interface SpatialNavPerfStats {
+  moveCalls: number;
+  computedStyleCalls: number;
+  boundingRectCalls: number;
+  querySelectorCalls: number;
+  virtualWindowExpansions: number;
+}
+
+const spatialPerfStats: SpatialNavPerfStats = {
+  moveCalls: 0,
+  computedStyleCalls: 0,
+  boundingRectCalls: 0,
+  querySelectorCalls: 0,
+  virtualWindowExpansions: 0,
+};
+
+export function getSpatialNavPerfStats(): SpatialNavPerfStats {
+  return { ...spatialPerfStats };
+}
+
+export function resetSpatialNavPerfStats(): void {
+  spatialPerfStats.moveCalls = 0;
+  spatialPerfStats.computedStyleCalls = 0;
+  spatialPerfStats.boundingRectCalls = 0;
+  spatialPerfStats.querySelectorCalls = 0;
+  spatialPerfStats.virtualWindowExpansions = 0;
+}
+
+const virtualControllers = new WeakMap<HTMLElement, VirtualContainerController>();
+
+export function registerVirtualContainer(
+  container: HTMLElement | null,
+  controller: VirtualContainerController
+): void {
+  if (!container) return;
+  virtualControllers.set(container, controller);
+  invalidateCandidateCache();
+}
+
+export function unregisterVirtualContainer(container: HTMLElement | null): void {
+  if (!container) return;
+  virtualControllers.delete(container);
+  invalidateCandidateCache();
+}
+
 let currentNavMode: NavMode = 'pointer';
 const modeListeners = new Set<(mode: NavMode) => void>();
 const focusMemoryStack: HTMLElement[] = [];
+
+// DOM mutation tracking to avoid redundant querySelectorAll scans when DOM is unchanged
+let domMutationVersion = 1;
+let observerAttached = false;
+let observerDoc: Document | null = null;
+let cachedScopeRoot: HTMLElement | null = null;
+let cachedScopeMutationVersion = -1;
+let cachedRawCandidates: HTMLElement[] = [];
+
+export function invalidateCandidateCache(): void {
+  domMutationVersion++;
+  cachedScopeMutationVersion = -1;
+}
+
+function ensureDomMutationObserver(): void {
+  if (typeof document === 'undefined' || !document.body) return;
+  if (observerAttached && observerDoc === document) return;
+
+  const MutationObs =
+    typeof MutationObserver !== 'undefined'
+      ? MutationObserver
+      : typeof window !== 'undefined' && (window as any).MutationObserver
+        ? (window as any).MutationObserver
+        : null;
+
+  if (!MutationObs) return;
+
+  try {
+    const obs = new MutationObs(() => {
+      domMutationVersion++;
+    });
+    obs.observe(document.documentElement || document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: [
+        'disabled',
+        'hidden',
+        'inert',
+        'aria-hidden',
+        'aria-disabled',
+        'tabindex',
+        'class',
+        'style',
+        'data-focus-scope',
+        'data-nav-item',
+        'data-virtual-index',
+      ],
+    });
+    observerAttached = true;
+    observerDoc = document;
+  } catch {
+    // Fallback if MutationObserver fails in minimal environment
+  }
+}
 
 export function getNavMode(): NavMode {
   return currentNavMode;
@@ -42,7 +148,6 @@ export function pushFocusMemory(element?: HTMLElement | null): void {
       ? document.activeElement
       : null);
   if (target && target !== document.body && target !== document.documentElement) {
-    // Avoid pushing duplicate consecutive references of the exact same element
     if (focusMemoryStack[focusMemoryStack.length - 1] !== target) {
       focusMemoryStack.push(target);
     }
@@ -76,6 +181,7 @@ export function findScrollContainer(el: HTMLElement | null): HTMLElement | null 
     }
     if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
       try {
+        spatialPerfStats.computedStyleCalls++;
         const oy = window.getComputedStyle(curr).overflowY;
         if (oy === 'auto' || oy === 'scroll') {
           return curr;
@@ -101,6 +207,7 @@ export function ensureElementScrolledIntoView(
   // 1. Horizontal row container scroll
   const rowContainer = el.closest<HTMLElement>('[data-nav-row="true"]');
   if (rowContainer && rowContainer !== el) {
+    spatialPerfStats.boundingRectCalls += 2;
     const rowRect = rowContainer.getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
     if (rowRect.width > 0 && elRect.width > 0) {
@@ -132,6 +239,7 @@ export function ensureElementScrolledIntoView(
   // 2. Vertical scroll container
   const scrollContainer = findScrollContainer(el);
   if (scrollContainer) {
+    spatialPerfStats.boundingRectCalls += 2;
     const containerRect = scrollContainer.getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
     const topAnchor = el.closest<HTMLElement>('[data-scroll-top-anchor="true"]');
@@ -158,7 +266,13 @@ export function ensureElementScrolledIntoView(
         ? blockCandidate
         : el;
 
-    const blockRect = targetBlock.getBoundingClientRect();
+    const blockRect =
+      targetBlock === el
+        ? elRect
+        : (() => {
+            spatialPerfStats.boundingRectCalls++;
+            return targetBlock.getBoundingClientRect();
+          })();
 
     if (containerRect.height > 0 && blockRect.height > 0) {
       const padY = 24;
@@ -237,10 +351,79 @@ const FOCUSABLE_SELECTOR = [
   '[data-nav-item="true"]',
 ].join(', ');
 
+const HIDDEN_CLASS_REGEX = /(?:^|\s)hidden(?:\s|$)/;
+const OPACITY_ZERO_CLASS_REGEX = /(?:^|\s)opacity-0(?:\s|$)/;
+
+function isSingleNodeVisible(node: HTMLElement): boolean {
+  if (node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true' || node.hidden) {
+    return false;
+  }
+  const cls = typeof node.className === 'string' ? node.className : '';
+  if (cls) {
+    if (
+      cls.includes('invisible') ||
+      OPACITY_ZERO_CLASS_REGEX.test(cls) ||
+      (HIDDEN_CLASS_REGEX.test(cls) &&
+        !cls.includes('md:flex') &&
+        !cls.includes('md:block') &&
+        !cls.includes('sm:inline'))
+    ) {
+      return false;
+    }
+  }
+
+  if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+    try {
+      spatialPerfStats.computedStyleCalls++;
+      const style = window.getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') {
+        return false;
+      }
+    } catch {}
+  }
+
+  return true;
+}
+
+/**
+ * Top-down recursive visibility check with ancestor memoization.
+ * Shared ancestors (e.g. main, grid wrapper, section) are checked with getComputedStyle
+ * only ONCE per navigation pass instead of once per child candidate.
+ */
+function isSubtreeVisible(
+  node: HTMLElement | null,
+  ancestorCache?: Map<HTMLElement, boolean>
+): boolean {
+  if (!node || node === document.body || node === document.documentElement) {
+    return true;
+  }
+
+  if (ancestorCache) {
+    const cached = ancestorCache.get(node);
+    if (cached !== undefined) {
+      return cached;
+    }
+  }
+
+  // Check parent first so hidden/inert containers short-circuit before inspecting children
+  const parentVisible = isSubtreeVisible(node.parentElement, ancestorCache);
+  if (!parentVisible) {
+    ancestorCache?.set(node, false);
+    return false;
+  }
+
+  const selfVisible = isSingleNodeVisible(node);
+  ancestorCache?.set(node, selfVisible);
+  return selfVisible;
+}
+
 /**
  * Determines whether an element is visible, enabled, not inert, and eligible to receive D-pad focus.
  */
-export function isElementFocusable(el: HTMLElement): boolean {
+export function isElementFocusable(
+  el: HTMLElement,
+  ancestorCache?: Map<HTMLElement, boolean>
+): boolean {
   if (!el || !el.isConnected) return false;
   if ((el as any).disabled || el.getAttribute('aria-disabled') === 'true') return false;
 
@@ -249,49 +432,21 @@ export function isElementFocusable(el: HTMLElement): boolean {
     return false;
   }
 
-  let curr: HTMLElement | null = el;
-  while (curr && curr !== document.body && curr !== document.documentElement) {
-    if (curr.hasAttribute('inert') || curr.getAttribute('aria-hidden') === 'true' || curr.hidden) {
-      return false;
-    }
-    const cls = typeof curr.className === 'string' ? curr.className : '';
-    if (
-      cls.includes('invisible') ||
-      /(?:^|\s)opacity-0(?:\s|$)/.test(cls) ||
-      (/(?:^|\s)hidden(?:\s|$)/.test(cls) &&
-        !cls.includes('md:flex') &&
-        !cls.includes('md:block') &&
-        !cls.includes('sm:inline'))
-    ) {
-      return false;
-    }
-
-    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
-      try {
-        const style = window.getComputedStyle(curr);
-        if (style.display === 'none' || style.visibility === 'hidden') {
-          return false;
-        }
-      } catch {}
-    }
-
-    curr = curr.parentElement;
-  }
-
-  return true;
+  return isSubtreeVisible(el, ancestorCache);
 }
 
 /**
  * Returns the active focus scope container (topmost modal/fullscreen overlay if any, otherwise document.body).
  */
-export function getActiveScopeRoot(): HTMLElement {
+export function getActiveScopeRoot(ancestorCache?: Map<HTMLElement, boolean>): HTMLElement {
   if (typeof document === 'undefined') {
     return null as any;
   }
 
+  const cache = ancestorCache || new Map<HTMLElement, boolean>();
   const scopes = Array.from(
     document.querySelectorAll<HTMLElement>('[data-focus-scope="modal"]')
-  ).filter((scope) => isElementFocusable(scope));
+  ).filter((scope) => isElementFocusable(scope, cache));
 
   if (scopes.length > 0) {
     return scopes[scopes.length - 1];
@@ -300,39 +455,107 @@ export function getActiveScopeRoot(): HTMLElement {
   return document.body;
 }
 
+function queryRawCandidates(root: HTMLElement): HTMLElement[] {
+  ensureDomMutationObserver();
+  if (
+    observerAttached &&
+    cachedScopeRoot === root &&
+    cachedScopeMutationVersion === domMutationVersion &&
+    cachedRawCandidates.length > 0 &&
+    cachedRawCandidates.every((el) => el.isConnected)
+  ) {
+    return cachedRawCandidates;
+  }
+
+  spatialPerfStats.querySelectorCalls++;
+  const rawList = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+  cachedScopeRoot = root;
+  cachedScopeMutationVersion = domMutationVersion;
+  cachedRawCandidates = rawList;
+  return rawList;
+}
+
 /**
  * Lists all focusable elements within the active scope root.
  */
-export function getFocusableElements(scopeRoot?: HTMLElement): HTMLElement[] {
+export function getFocusableElements(
+  scopeRoot?: HTMLElement,
+  ancestorCache?: Map<HTMLElement, boolean>
+): HTMLElement[] {
   if (typeof document === 'undefined') return [];
-  const root = scopeRoot || getActiveScopeRoot();
+  const cache = ancestorCache || new Map<HTMLElement, boolean>();
+  const root = scopeRoot || getActiveScopeRoot(cache);
   if (!root) return [];
 
-  const rawList = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
-  return rawList.filter((el) => isElementFocusable(el));
+  const rawList = queryRawCandidates(root);
+  return rawList.filter((el) => isElementFocusable(el, cache));
 }
 
-function getLogicalZone(el: HTMLElement): string {
+interface NavPassContext {
+  rectCache: Map<HTMLElement, DOMRect>;
+  zoneCache: Map<HTMLElement, string>;
+  rowCache: Map<HTMLElement, HTMLElement | null>;
+  gridCache: Map<HTMLElement, HTMLElement | null>;
+  ancestorCache: Map<HTMLElement, boolean>;
+}
+
+function createNavPassContext(): NavPassContext {
+  return {
+    rectCache: new Map<HTMLElement, DOMRect>(),
+    zoneCache: new Map<HTMLElement, string>(),
+    rowCache: new Map<HTMLElement, HTMLElement | null>(),
+    gridCache: new Map<HTMLElement, HTMLElement | null>(),
+    ancestorCache: new Map<HTMLElement, boolean>(),
+  };
+}
+
+function getCachedRect(el: HTMLElement, ctx: NavPassContext): DOMRect {
+  let rect = ctx.rectCache.get(el);
+  if (!rect) {
+    spatialPerfStats.boundingRectCalls++;
+    rect = el.getBoundingClientRect();
+    ctx.rectCache.set(el, rect);
+  }
+  return rect;
+}
+
+function getLogicalZone(el: HTMLElement, ctx?: NavPassContext): string {
+  if (ctx) {
+    const cached = ctx.zoneCache.get(el);
+    if (cached !== undefined) return cached;
+  }
+
+  let result = 'main';
   const zoneEl = el.closest<HTMLElement>('[data-nav-zone]');
   if (zoneEl) {
     const zone = zoneEl.getAttribute('data-nav-zone') || 'main';
-    // Treat 'episodes' as a vertical continuation of the modal flow so Season tabs -> Episodes connect seamlessly
-    if (zone === 'episodes') {
-      return 'main';
-    }
-    return zone;
+    result = zone === 'episodes' ? 'main' : zone;
+  } else if (el.closest('aside')) {
+    result = 'sidebar';
+  } else if (el.closest('header')) {
+    result = 'header';
   }
-  if (el.closest('aside')) return 'sidebar';
-  if (el.closest('header')) return 'header';
-  return 'main';
+
+  ctx?.zoneCache.set(el, result);
+  return result;
 }
 
-function getLogicalRow(el: HTMLElement): HTMLElement | null {
-  return el.closest<HTMLElement>('[data-nav-row], [data-nav-group]');
+function getLogicalRow(el: HTMLElement, ctx?: NavPassContext): HTMLElement | null {
+  if (ctx && ctx.rowCache.has(el)) {
+    return ctx.rowCache.get(el) ?? null;
+  }
+  const row = el.closest<HTMLElement>('[data-nav-row], [data-nav-group]');
+  ctx?.rowCache.set(el, row);
+  return row;
 }
 
-function getLogicalGrid(el: HTMLElement): HTMLElement | null {
-  return el.closest<HTMLElement>('[data-nav-grid="true"]');
+function getLogicalGrid(el: HTMLElement, ctx?: NavPassContext): HTMLElement | null {
+  if (ctx && ctx.gridCache.has(el)) {
+    return ctx.gridCache.get(el) ?? null;
+  }
+  const grid = el.closest<HTMLElement>('[data-nav-grid="true"]');
+  ctx?.gridCache.set(el, grid);
+  return grid;
 }
 
 interface ZoneBlock {
@@ -341,11 +564,11 @@ interface ZoneBlock {
   items: HTMLElement[];
 }
 
-function buildZoneBlocks(zoneCandidates: HTMLElement[]): ZoneBlock[] {
+function buildZoneBlocks(zoneCandidates: HTMLElement[], ctx: NavPassContext): ZoneBlock[] {
   const blocks: ZoneBlock[] = [];
 
   for (const el of zoneCandidates) {
-    const row = getLogicalRow(el);
+    const row = getLogicalRow(el, ctx);
     if (row) {
       const prev = blocks[blocks.length - 1];
       if (prev && prev.type === 'row' && prev.container === row) {
@@ -356,7 +579,7 @@ function buildZoneBlocks(zoneCandidates: HTMLElement[]): ZoneBlock[] {
       continue;
     }
 
-    const grid = getLogicalGrid(el);
+    const grid = getLogicalGrid(el, ctx);
     if (grid) {
       const prev = blocks[blocks.length - 1];
       if (prev && prev.type === 'grid' && prev.container === grid) {
@@ -376,7 +599,8 @@ function buildZoneBlocks(zoneCandidates: HTMLElement[]): ZoneBlock[] {
 function pickBestItemInBlock(
   current: HTMLElement,
   block: ZoneBlock,
-  hasRealGeometry: boolean
+  hasRealGeometry: boolean,
+  ctx: NavPassContext
 ): HTMLElement {
   if (block.items.length === 1) {
     return block.items[0];
@@ -398,17 +622,16 @@ function pickBestItemInBlock(
     }
   }
 
-  // If moving into a horizontal row or group, prefer horizontally aligned item that is visible in the row
   if (hasRealGeometry) {
-    const currRect = current.getBoundingClientRect();
+    const currRect = getCachedRect(current, ctx);
     const cx = currRect.left + currRect.width / 2;
 
     let pool = block.items;
     if (block.type === 'row') {
-      const rowRect = block.container.getBoundingClientRect();
+      const rowRect = getCachedRect(block.container, ctx);
       if (rowRect.width > 0) {
         const visibleInRow = block.items.filter((item) => {
-          const r = item.getBoundingClientRect();
+          const r = getCachedRect(item, ctx);
           return r.right > rowRect.left + 4 && r.left < rowRect.right - 4;
         });
         if (visibleInRow.length > 0) {
@@ -420,7 +643,7 @@ function pickBestItemInBlock(
     let best = pool[0];
     let bestDist = Infinity;
     for (const item of pool) {
-      const r = item.getBoundingClientRect();
+      const r = getCachedRect(item, ctx);
       const ix = r.left + r.width / 2;
       const dist = Math.abs(ix - cx);
       if (dist < bestDist) {
@@ -438,13 +661,14 @@ function findNextInGridBlock(
   current: HTMLElement,
   gridItems: HTMLElement[],
   direction: SpatialDirection,
-  hasRealGeometry: boolean
+  hasRealGeometry: boolean,
+  ctx: NavPassContext
 ): HTMLElement | null {
   const idx = gridItems.indexOf(current);
   if (idx === -1) return null;
 
   if (hasRealGeometry) {
-    const currentRect = current.getBoundingClientRect();
+    const currentRect = getCachedRect(current, ctx);
     const cx = currentRect.left + currentRect.width / 2;
     const cy = currentRect.top + currentRect.height / 2;
 
@@ -453,7 +677,7 @@ function findNextInGridBlock(
 
     for (const item of gridItems) {
       if (item === current) continue;
-      const r = item.getBoundingClientRect();
+      const r = getCachedRect(item, ctx);
       if (r.width <= 0 || r.height <= 0) continue;
 
       const tx = r.left + r.width / 2;
@@ -508,9 +732,10 @@ function findNextInGridBlock(
 
 function pickPreferredZoneEntry(
   candidates: HTMLElement[],
-  targetZone: string
+  targetZone: string,
+  ctx: NavPassContext
 ): HTMLElement | null {
-  const zoneItems = candidates.filter((c) => getLogicalZone(c) === targetZone);
+  const zoneItems = candidates.filter((c) => getLogicalZone(c, ctx) === targetZone);
   if (zoneItems.length === 0) return null;
 
   if (targetZone === 'categories') {
@@ -554,7 +779,6 @@ function tryScrollFocusedSynopsis(
   }
   const step = 120;
 
-  // 1. Check if the synopsis element itself is scrollable (scrollHeight > clientHeight)
   const selfMaxScroll = Math.max(0, (activeEl.scrollHeight || 0) - (activeEl.clientHeight || 0));
   if (selfMaxScroll > 2) {
     if (direction === 'down' && activeEl.scrollTop < selfMaxScroll - 2) {
@@ -567,7 +791,6 @@ function tryScrollFocusedSynopsis(
     }
   }
 
-  // 2. Check if the enclosing scrollContainer needs to scroll to reveal the clipped synopsis region itself
   const scrollContainer = findScrollContainer(activeEl);
   if (scrollContainer) {
     const containerMaxScroll = Math.max(
@@ -575,6 +798,7 @@ function tryScrollFocusedSynopsis(
       (scrollContainer.scrollHeight || 0) - (scrollContainer.clientHeight || 0)
     );
     if (containerMaxScroll > 2) {
+      spatialPerfStats.boundingRectCalls += 2;
       const cRect = scrollContainer.getBoundingClientRect();
       const aRect = activeEl.getBoundingClientRect();
       const hasRects = cRect.height > 0 && aRect.height > 0;
@@ -607,15 +831,88 @@ function tryScrollFocusedSynopsis(
 }
 
 /**
+ * If activeEl is inside a virtualized container ([data-virtual-container="true"]) and moving in `direction`
+ * targets a logical index that is outside or near the edge of the currently mounted window,
+ * synchronously expands/shifts the virtual window before collecting candidates.
+ */
+function ensureVirtualTargetMountedIfNeeded(
+  activeEl: HTMLElement | null,
+  direction: SpatialDirection
+): void {
+  if (!activeEl) return;
+  const virtualItemEl = activeEl.closest<HTMLElement>('[data-virtual-index]');
+  if (!virtualItemEl) return;
+
+  const virtualContainer = virtualItemEl.closest<HTMLElement>('[data-virtual-container="true"]');
+  if (!virtualContainer) return;
+
+  const controller = virtualControllers.get(virtualContainer);
+  if (!controller || controller.totalCount <= 0) return;
+
+  const currentIndex = parseInt(virtualItemEl.getAttribute('data-virtual-index') || '-1', 10);
+  if (isNaN(currentIndex) || currentIndex < 0) return;
+
+  const cols = Math.max(1, controller.getColumns());
+  let targetIndex = -1;
+
+  if (direction === 'right') {
+    targetIndex = cols > 1 ? currentIndex + 1 : -1;
+  } else if (direction === 'left') {
+    targetIndex = cols > 1 ? currentIndex - 1 : -1;
+  } else if (direction === 'down') {
+    targetIndex = currentIndex + cols;
+  } else if (direction === 'up') {
+    targetIndex = currentIndex - cols;
+  }
+
+  if (targetIndex >= 0 && targetIndex < controller.totalCount) {
+    const existingTarget = virtualContainer.querySelector<HTMLElement>(
+      `[data-virtual-index="${targetIndex}"]`
+    );
+    if (!existingTarget) {
+      const expanded = controller.ensureIndexMounted(targetIndex);
+      if (expanded) {
+        spatialPerfStats.virtualWindowExpansions++;
+        invalidateCandidateCache();
+      }
+    } else {
+      // Pre-expand window if within 1 row of the boundary
+      const aheadIndex =
+        direction === 'down' || direction === 'right'
+          ? Math.min(controller.totalCount - 1, targetIndex + cols)
+          : Math.max(0, targetIndex - cols);
+      const aheadEl = virtualContainer.querySelector<HTMLElement>(
+        `[data-virtual-index="${aheadIndex}"]`
+      );
+      if (!aheadEl) {
+        const expanded = controller.ensureIndexMounted(targetIndex);
+        if (expanded) {
+          spatialPerfStats.virtualWindowExpansions++;
+          invalidateCandidateCache();
+        }
+      }
+    }
+  }
+}
+
+/**
  * Moves focus in the requested direction ('up' | 'down' | 'left' | 'right').
  * Follows visual/DOM zone structure so vertical navigation inside content scrolls through rows
  * and never jumps accidentally to the sidebar or search bar.
  */
 export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | null {
   if (typeof document === 'undefined') return null;
+  spatialPerfStats.moveCalls++;
 
-  const scopeRoot = getActiveScopeRoot();
-  const candidates = getFocusableElements(scopeRoot);
+  const initialActive =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+  // Expand virtual window synchronously if navigating near/across a virtualized list boundary
+  ensureVirtualTargetMountedIfNeeded(initialActive, direction);
+
+  const ctx = createNavPassContext();
+  const scopeRoot = getActiveScopeRoot(ctx.ancestorCache);
+  const candidates = getFocusableElements(scopeRoot, ctx.ancestorCache);
   if (candidates.length === 0) return null;
 
   const activeEl =
@@ -624,7 +921,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       : null;
 
   if (!activeEl || !candidates.includes(activeEl)) {
-    const contentCandidates = candidates.filter((c) => getLogicalZone(c) === 'content');
+    const contentCandidates = candidates.filter((c) => getLogicalZone(c, ctx) === 'content');
     const first =
       candidates.find((c) => c.getAttribute('data-autofocus') === 'true') ||
       contentCandidates[0] ||
@@ -633,20 +930,20 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
     return first;
   }
 
-  const activeRect = activeEl.getBoundingClientRect();
+  const activeRect = getCachedRect(activeEl, ctx);
   const hasRealGeometry =
     activeRect.width > 0 &&
     activeRect.height > 0 &&
     candidates.some((c) => {
       if (c === activeEl) return false;
-      const r = c.getBoundingClientRect();
+      const r = getCachedRect(c, ctx);
       return r.width > 0 && r.height > 0 && (r.left !== activeRect.left || r.top !== activeRect.top);
     });
 
-  const currentZone = getLogicalZone(activeEl);
-  const currentRow = getLogicalRow(activeEl);
-  const currentGrid = getLogicalGrid(activeEl);
-  const sameZoneCandidates = candidates.filter((c) => getLogicalZone(c) === currentZone);
+  const currentZone = getLogicalZone(activeEl, ctx);
+  const currentRow = getLogicalRow(activeEl, ctx);
+  const currentGrid = getLogicalGrid(activeEl, ctx);
+  const sameZoneCandidates = candidates.filter((c) => getLogicalZone(c, ctx) === currentZone);
 
   // ---------------------------------------------------------------------------
   // VERTICAL NAVIGATION ('up' | 'down')
@@ -657,7 +954,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       return activeEl;
     }
 
-    const blocks = buildZoneBlocks(sameZoneCandidates);
+    const blocks = buildZoneBlocks(sameZoneCandidates, ctx);
     const bIdx = blocks.findIndex((b) => b.items.includes(activeEl));
 
     if (bIdx !== -1) {
@@ -665,7 +962,13 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
 
       // 1. If inside a grid block, first try moving vertically within the grid
       if (currentBlock.type === 'grid') {
-        const nextInGrid = findNextInGridBlock(activeEl, currentBlock.items, direction, hasRealGeometry);
+        const nextInGrid = findNextInGridBlock(
+          activeEl,
+          currentBlock.items,
+          direction,
+          hasRealGeometry,
+          ctx
+        );
         if (nextInGrid) {
           focusElementSafely(nextInGrid, direction);
           return nextInGrid;
@@ -676,7 +979,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       const targetBlockIdx = direction === 'down' ? bIdx + 1 : bIdx - 1;
       if (targetBlockIdx >= 0 && targetBlockIdx < blocks.length) {
         const targetBlock = blocks[targetBlockIdx];
-        const nextEl = pickBestItemInBlock(activeEl, targetBlock, hasRealGeometry);
+        const nextEl = pickBestItemInBlock(activeEl, targetBlock, hasRealGeometry, ctx);
         focusElementSafely(nextEl, direction);
         return nextEl;
       }
@@ -684,16 +987,14 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
 
     // 3. At the vertical boundary of the current zone:
     if (direction === 'up') {
-      // Ensure scroll container is fully scrolled to top (0) before leaving the zone
       const scrollContainer = findScrollContainer(activeEl);
       if (scrollContainer && scrollContainer.scrollTop > 0) {
         scrollContainer.scrollTop = 0;
         return activeEl;
       }
 
-      // Deliberate transition to header (search input) ONLY when at the very top of content or categories
       if (currentZone === 'content' || currentZone === 'categories') {
-        const headerTarget = pickPreferredZoneEntry(candidates, 'header');
+        const headerTarget = pickPreferredZoneEntry(candidates, 'header', ctx);
         if (headerTarget) {
           focusElementSafely(headerTarget, direction);
           return headerTarget;
@@ -704,14 +1005,13 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
     }
 
     if (direction === 'down') {
-      // From header (search input), move down into content (or categories if content is empty)
       if (currentZone === 'header') {
-        const contentTarget = pickPreferredZoneEntry(candidates, 'content');
+        const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
         if (contentTarget) {
           focusElementSafely(contentTarget, direction);
           return contentTarget;
         }
-        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
         if (categoriesTarget) {
           focusElementSafely(categoriesTarget, direction);
           return categoriesTarget;
@@ -728,7 +1028,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
   if (direction === 'left' || direction === 'right') {
     // 1. Inside an explicit horizontal row (data-nav-row / data-nav-group)
     if (currentRow) {
-      const rowItems = candidates.filter((c) => getLogicalRow(c) === currentRow);
+      const rowItems = candidates.filter((c) => getLogicalRow(c, ctx) === currentRow);
       const idxInRow = rowItems.indexOf(activeEl);
 
       if (direction === 'right') {
@@ -737,9 +1037,8 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
           focusElementSafely(nextInRow, direction);
           return nextInRow;
         }
-        // At right end of a row in categories (e.g. LiveTvView channel row fav button), allow moving right to content
         if (currentZone === 'categories') {
-          const contentTarget = pickPreferredZoneEntry(candidates, 'content');
+          const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
           if (contentTarget) {
             focusElementSafely(contentTarget, direction);
             return contentTarget;
@@ -754,20 +1053,19 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
           focusElementSafely(prevInRow, direction);
           return prevInRow;
         }
-        // At left boundary of row (idxInRow === 0): deliberate zone transition
         if (currentZone === 'content') {
-          const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+          const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
           if (categoriesTarget) {
             focusElementSafely(categoriesTarget, direction);
             return categoriesTarget;
           }
-          const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+          const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar', ctx);
           if (sidebarTarget) {
             focusElementSafely(sidebarTarget, direction);
             return sidebarTarget;
           }
         } else if (currentZone === 'categories') {
-          const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+          const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar', ctx);
           if (sidebarTarget) {
             focusElementSafely(sidebarTarget, direction);
             return sidebarTarget;
@@ -779,20 +1077,20 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
 
     // 2. Inside a CSS Grid (data-nav-grid="true")
     if (currentGrid) {
-      const gridItems = sameZoneCandidates.filter((c) => getLogicalGrid(c) === currentGrid);
-      const nextInGrid = findNextInGridBlock(activeEl, gridItems, direction, hasRealGeometry);
+      const gridItems = sameZoneCandidates.filter((c) => getLogicalGrid(c, ctx) === currentGrid);
+      const nextInGrid = findNextInGridBlock(activeEl, gridItems, direction, hasRealGeometry, ctx);
       if (nextInGrid) {
         focusElementSafely(nextInGrid, direction);
         return nextInGrid;
       }
 
       if (direction === 'left') {
-        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
         if (categoriesTarget) {
           focusElementSafely(categoriesTarget, direction);
           return categoriesTarget;
         }
-        const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+        const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar', ctx);
         if (sidebarTarget) {
           focusElementSafely(sidebarTarget, direction);
           return sidebarTarget;
@@ -804,23 +1102,23 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
     // 3. Standalone items in sidebar, categories, header, or modal
     if (direction === 'right') {
       if (currentZone === 'sidebar') {
-        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
         if (categoriesTarget) {
           focusElementSafely(categoriesTarget, direction);
           return categoriesTarget;
         }
-        const contentTarget = pickPreferredZoneEntry(candidates, 'content');
+        const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
         if (contentTarget) {
           focusElementSafely(contentTarget, direction);
           return contentTarget;
         }
-        const headerTarget = pickPreferredZoneEntry(candidates, 'header');
+        const headerTarget = pickPreferredZoneEntry(candidates, 'header', ctx);
         if (headerTarget) {
           focusElementSafely(headerTarget, direction);
           return headerTarget;
         }
       } else if (currentZone === 'categories') {
-        const contentTarget = pickPreferredZoneEntry(candidates, 'content');
+        const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
         if (contentTarget) {
           focusElementSafely(contentTarget, direction);
           return contentTarget;
@@ -830,18 +1128,18 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
 
     if (direction === 'left') {
       if (currentZone === 'content' || currentZone === 'header') {
-        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories');
+        const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
         if (categoriesTarget) {
           focusElementSafely(categoriesTarget, direction);
           return categoriesTarget;
         }
-        const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+        const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar', ctx);
         if (sidebarTarget) {
           focusElementSafely(sidebarTarget, direction);
           return sidebarTarget;
         }
       } else if (currentZone === 'categories') {
-        const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar');
+        const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar', ctx);
         if (sidebarTarget) {
           focusElementSafely(sidebarTarget, direction);
           return sidebarTarget;

@@ -15,6 +15,8 @@ import {
   LiveChannelGroup,
   ResolutionQuality,
 } from '../utils/liveChannelGroups';
+import { getOrCreateLiveIndex } from '../utils/catalogIndex';
+import { useVirtualWindow } from '../hooks/useVirtualWindow';
 import {
   useBackHandler,
   BACK_PRIORITY,
@@ -162,8 +164,6 @@ export function LiveTvView({
   const [attemptTrigger, setAttemptTrigger] = useState(0);
   const [fullscreenRequestTrigger, setFullscreenRequestTrigger] = useState(0);
   
-  const [displayCount, setDisplayCount] = useState(100);
-  
   // States for EPG
   const [epgData, setEpgData] = useState<any[]>([]);
   const [loadingEpg, setLoadingEpg] = useState(false);
@@ -183,6 +183,8 @@ export function LiveTvView({
   // References for D-pad focus and scroll preservation between categories, channels, and preview
   const viewRootRef = useRef<HTMLDivElement>(null);
   const categoriesListRef = useRef<HTMLDivElement>(null);
+  const channelsScrollRef = useRef<HTMLDivElement>(null);
+  const channelsListRef = useRef<HTMLDivElement>(null);
   const categoriesScrollTopRef = useRef<number>(0);
   const originCategoryIdRef = useRef<string>('nc_recent');
   const lastPointerDownTimeRef = useRef<number>(0);
@@ -190,6 +192,8 @@ export function LiveTvView({
   const pendingCategoryRestoreFocusRef = useRef<string | null>(null);
   const pendingChannelRestoreFocusRef = useRef<string | null>(null);
   const consumedIntentRequestIdRef = useRef<number | null>(null);
+
+  const liveIndex = useMemo(() => getOrCreateLiveIndex(allLiveStreams), [allLiveStreams]);
 
   // Cancel fallbackTimeoutRef and invalidate active attempt on unmount
   useEffect(() => {
@@ -273,9 +277,9 @@ export function LiveTvView({
   const favoriteChannels = useMemo(() => {
     return favorites
       .filter((f) => f.type === 'live')
-      .map((f) => allLiveStreams.find((s) => String(s.stream_id || s.id) === String(f.id)))
+      .map((f) => liveIndex.getById(f.id))
       .filter(Boolean);
-  }, [favorites, allLiveStreams]);
+  }, [favorites, liveIndex]);
 
   const recentChannels = useMemo(() => {
     if (!allLiveStreams || allLiveStreams.length === 0) return [];
@@ -285,9 +289,7 @@ export function LiveTvView({
     const seenIds = new Set<string | number>();
 
     for (const record of liveRecords) {
-      const item = allLiveStreams.find(
-        (c: any) => String(c.stream_id || c.id) === String(record.id)
-      );
+      const item = liveIndex.getById(record.id);
       if (item) {
         const itemId = item.stream_id || item.id;
         if (!seenIds.has(itemId)) {
@@ -298,7 +300,7 @@ export function LiveTvView({
     }
 
     return result;
-  }, [historyRecords, allLiveStreams]);
+  }, [historyRecords, allLiveStreams.length, liveIndex]);
 
   const extendedCategories = useMemo(() => {
     const virtualCats = [
@@ -331,7 +333,9 @@ export function LiveTvView({
     } else {
       setLoadingCategoryId(null);
     }
-    setDisplayCount(100);
+    if (channelsScrollRef.current) {
+      channelsScrollRef.current.scrollTop = 0;
+    }
     return () => {
       isCurrent = false;
     };
@@ -341,30 +345,30 @@ export function LiveTvView({
   useEffect(() => {
     if (searchQuery) {
       setLeftPaneView('channels');
-      setDisplayCount(100);
+      if (channelsScrollRef.current) {
+        channelsScrollRef.current.scrollTop = 0;
+      }
     }
   }, [searchQuery]);
 
-  // Strictly filter streams by selectedCategoryId for real categories so stale liveStreams from a previous category are never rendered or focused
+  // Strictly filter streams by selectedCategoryId for real categories using O(1) index when allLiveStreams is available
   const rawFilteredStreams = useMemo(() => {
     if (!selectedCategoryId) return [];
     if (selectedCategoryId === 'nc_recent') return recentChannels;
     if (selectedCategoryId === 'nc_fav') return favoriteChannels;
 
     const targetCatId = String(selectedCategoryId);
+    if (allLiveStreams.length > 0) {
+      const indexed = liveIndex.getByCategory(targetCatId);
+      if (indexed.length > 0) {
+        return indexed;
+      }
+    }
     const matchingFromLive = liveStreams.filter(
       (s) => s && String(s.category_id) === targetCatId
     );
-    if (matchingFromLive.length > 0) {
-      return matchingFromLive;
-    }
-    if (allLiveStreams.length > 0) {
-      return allLiveStreams.filter(
-        (s) => s && String(s.category_id) === targetCatId
-      );
-    }
-    return [];
-  }, [selectedCategoryId, recentChannels, favoriteChannels, liveStreams, allLiveStreams]);
+    return matchingFromLive;
+  }, [selectedCategoryId, recentChannels, favoriteChannels, liveStreams, allLiveStreams.length, liveIndex]);
 
   const isRealCategory = Boolean(
     selectedCategoryId &&
@@ -382,10 +386,10 @@ export function LiveTvView({
         liveCatalogStatus === 'idle')
   );
 
-  // Groups streams. When searchQuery is active, groups ALL account streams globally.
+  // Groups streams using cached category/catalog group index
   const groupedChannels = useMemo(() => {
     if (searchQuery && searchQuery.trim().length > 0) {
-      const allGroups = groupLiveStreams(allLiveStreams);
+      const allGroups = liveIndex.getAllGroups();
       return filterLiveChannelGroups(allGroups, searchQuery);
     }
 
@@ -406,10 +410,35 @@ export function LiveTvView({
       });
     }
 
-    return groupLiveStreams(rawFilteredStreams);
-  }, [rawFilteredStreams, allLiveStreams, selectedCategoryId, searchQuery]);
+    if (selectedCategoryId && allLiveStreams.length > 0) {
+      const cachedCatGroups = liveIndex.getGroupsByCategory(selectedCategoryId);
+      if (cachedCatGroups.length > 0) {
+        return cachedCatGroups;
+      }
+    }
 
-  const displayedGroups = groupedChannels.slice(0, displayCount);
+    return groupLiveStreams(rawFilteredStreams);
+  }, [rawFilteredStreams, allLiveStreams.length, liveIndex, selectedCategoryId, searchQuery]);
+
+  const {
+    startIndex: channelStartIndex,
+    endIndex: channelEndIndex,
+    topSpacerPx: channelTopSpacerPx,
+    bottomSpacerPx: channelBottomSpacerPx,
+    ensureIndexMounted: ensureChannelIndexMounted,
+  } = useVirtualWindow({
+    totalCount: groupedChannels.length,
+    mode: 'list',
+    scrollContainerRef: channelsScrollRef,
+    virtualContainerRef: channelsListRef,
+    resetKey: `${selectedCategoryId ?? ''}__${searchQuery}__${leftPaneView}`,
+    maxWindowItems: 80,
+  });
+
+  const displayedGroups = useMemo(
+    () => groupedChannels.slice(channelStartIndex, channelEndIndex),
+    [groupedChannels, channelStartIndex, channelEndIndex]
+  );
 
   // Mini-player states
   const [miniPlayerUrl, setMiniPlayerUrl] = useState<string>('');
@@ -615,7 +644,9 @@ export function LiveTvView({
 
     const sourcePool = allLiveStreams.length > 0 ? allLiveStreams : liveStreams;
     const matchedStream = targetIdStr
-      ? sourcePool.find((s) => s && String(s.stream_id ?? s.id) === targetIdStr)
+      ? (allLiveStreams.length > 0
+          ? liveIndex.getById(targetIdStr) || null
+          : sourcePool.find((s) => s && String(s.stream_id ?? s.id) === targetIdStr))
       : null;
 
     if (matchedStream) {
@@ -624,11 +655,14 @@ export function LiveTvView({
       setSelectedCategoryId(catId);
       setLeftPaneView('channels');
 
-      const catStreams =
-        catId !== 'nc_recent' && catId !== 'nc_fav'
-          ? sourcePool.filter((s) => s && String(s.category_id) === catId)
-          : [matchedStream];
-      const groupsInCat = groupLiveStreams(catStreams.length > 0 ? catStreams : [matchedStream]);
+      const groupsInCat =
+        catId !== 'nc_recent' && catId !== 'nc_fav' && allLiveStreams.length > 0
+          ? liveIndex.getGroupsByCategory(catId)
+          : groupLiveStreams(
+              catId !== 'nc_recent' && catId !== 'nc_fav'
+                ? sourcePool.filter((s) => s && String(s.category_id) === catId)
+                : [matchedStream]
+            );
       const targetGroup =
         groupsInCat.find((g) =>
           g.allStreams.some((s) => String(s.stream_id ?? s.id) === targetIdStr)
@@ -710,6 +744,7 @@ export function LiveTvView({
     initialChannelIntent,
     allLiveStreams,
     liveStreams,
+    liveIndex,
     liveCategories,
     liveCatalogStatus,
     loadingLive,
@@ -768,6 +803,10 @@ export function LiveTvView({
         return;
       }
       const targetId = pendingChannelRestoreFocusRef.current;
+      const targetIdx = groupedChannels.findIndex((g) => g.groupId === targetId);
+      if (targetIdx >= 0) {
+        ensureChannelIndexMounted(targetIdx);
+      }
       const root = viewRootRef.current || document.body;
       const channelBtns = Array.from(
         root.querySelectorAll('button[data-live-channel-id]')
@@ -856,7 +895,9 @@ export function LiveTvView({
     leftPaneView,
     selectedCategoryId,
     isRealCategory,
+    groupedChannels,
     displayedGroups,
+    ensureChannelIndexMounted,
     isCategoryChannelsLoading,
     liveCatalogStatus,
     selectedGroup,
@@ -1057,7 +1098,7 @@ export function LiveTvView({
               </h2>
             </div>
             
-            <div data-scroll-container="true" className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+            <div ref={channelsScrollRef} data-scroll-container="true" className="flex-1 overflow-y-auto p-2 custom-scrollbar">
               {liveError && rawFilteredStreams.length === 0 ? (
                 <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-3 my-4">
                   <p className="text-sm text-red-400">{liveError}</p>
@@ -1079,8 +1120,16 @@ export function LiveTvView({
                    <p className="text-sm">Nenhum canal encontrado.</p>
                  </div>
               ) : (
-                <div className="space-y-2">
+                <div ref={channelsListRef} data-virtual-container="true" className="space-y-2">
+                  {channelTopSpacerPx > 0 && (
+                    <div
+                      aria-hidden="true"
+                      data-virtual-spacer="top"
+                      style={{ height: `${channelTopSpacerPx}px` }}
+                    />
+                  )}
                   {displayedGroups.map((group, idx) => {
+                    const actualIndex = channelStartIndex + idx;
                     const isSelected = selectedGroup?.groupId === group.groupId;
                     const primaryStream = group.primaryStream;
                     const primaryId = primaryStream.stream_id || primaryStream.id;
@@ -1091,6 +1140,7 @@ export function LiveTvView({
                         key={group.groupId}
                         data-nav-row="true"
                         data-scroll-block="true"
+                        data-virtual-index={actualIndex}
                         className={`nc-tv-channel-row w-full flex items-center gap-1 rounded-xl transition-colors border ${
                           isSelected
                             ? 'bg-nc-primary/10 border-nc-primary/30'
@@ -1118,8 +1168,8 @@ export function LiveTvView({
                               alt={group.displayName}
                               itemId={primaryId}
                               itemName={group.displayName}
-                              priority={idx < 15}
-                              loading={idx < 15 ? 'eager' : 'lazy'}
+                              priority={actualIndex < 15}
+                              loading={actualIndex < 15 ? 'eager' : 'lazy'}
                               className="w-full h-full object-contain p-1"
                             />
                           </div>
@@ -1164,14 +1214,12 @@ export function LiveTvView({
                       </div>
                     );
                   })}
-                  
-                  {displayCount < groupedChannels.length && (
-                    <button
-                      onClick={() => setDisplayCount(prev => prev + 100)}
-                      className="w-full py-3 mt-4 text-sm bg-nc-bg-input hover:bg-nc-bg-card rounded-xl text-nc-text-secondary transition-colors font-medium"
-                    >
-                      Carregar Mais
-                    </button>
+                  {channelBottomSpacerPx > 0 && (
+                    <div
+                      aria-hidden="true"
+                      data-virtual-spacer="bottom"
+                      style={{ height: `${channelBottomSpacerPx}px` }}
+                    />
                   )}
                 </div>
               )}

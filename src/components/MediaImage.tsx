@@ -15,6 +15,33 @@ export interface MediaImageProps extends Omit<React.ImgHTMLAttributes<HTMLImageE
 
 type ImageStatus = 'empty' | 'loading' | 'loaded' | 'retrying' | 'failed';
 
+const MAX_LOADED_URL_CACHE_SIZE = 2500;
+const loadedImageUrlsCache = new Set<string>();
+
+function rememberLoadedImageUrl(url: string | null): void {
+  if (!url) return;
+  if (loadedImageUrlsCache.has(url)) {
+    loadedImageUrlsCache.delete(url);
+    loadedImageUrlsCache.add(url);
+    return;
+  }
+  if (loadedImageUrlsCache.size >= MAX_LOADED_URL_CACHE_SIZE) {
+    const oldest = loadedImageUrlsCache.values().next().value;
+    if (oldest !== undefined) {
+      loadedImageUrlsCache.delete(oldest);
+    }
+  }
+  loadedImageUrlsCache.add(url);
+}
+
+export function hasLoadedImageUrl(url: string | null | undefined): boolean {
+  return Boolean(url && loadedImageUrlsCache.has(url));
+}
+
+export function clearLoadedImageUrlCache(): void {
+  loadedImageUrlsCache.clear();
+}
+
 /**
  * Standardized remote image component for channel logos, movie posters, series covers, and backdrops.
  *
@@ -28,15 +55,17 @@ type ImageStatus = 'empty' | 'loading' | 'loaded' | 'retrying' | 'failed';
  * 6. Exactly ONE retry after ~2000ms using the exact same URL upon initial onError.
  * 7. After a second failure, the area remains cleanly empty without native browser broken image indicators.
  * 8. Resets retry budget and cancels pending timers on unmount or when source/serverUrl changes.
- * 9. Normal React re-renders do not reset retry budget or create retry loops.
+ * 9. Normal React re-renders and virtualized card remounts reuse the loaded URL memory cache so
+ *    already-loaded images start in 'loaded' state without opacity-0 flicker.
  * 10. Discrete, detailed diagnostic reporting via `window.ncDebugImages(true)`.
  */
-export function MediaImage({
+function MediaImageInner({
   src,
   serverUrl,
   alt = '',
   className = '',
   loading,
+  decoding,
   priority = false,
   itemId,
   itemName,
@@ -47,8 +76,11 @@ export function MediaImage({
   // Resolve direct provider URL without proxy
   const resolvedUrl = buildDirectImageUrl(src, serverUrl);
 
-  // Status & retry count state
-  const [status, setStatus] = useState<ImageStatus>(() => (resolvedUrl ? 'loading' : 'empty'));
+  // Status & retry count state (reuse loaded URL memory cache to avoid opacity-0 flash on virtual remount)
+  const [status, setStatus] = useState<ImageStatus>(() => {
+    if (!resolvedUrl) return 'empty';
+    return loadedImageUrlsCache.has(resolvedUrl) ? 'loaded' : 'loading';
+  });
   const [attempt, setAttempt] = useState(0);
 
   // Track identity of current source to detect changes
@@ -64,7 +96,13 @@ export function MediaImage({
       retryTimerRef.current = null;
     }
     setAttempt(0);
-    setStatus(resolvedUrl ? 'loading' : 'empty');
+    setStatus(
+      !resolvedUrl
+        ? 'empty'
+        : loadedImageUrlsCache.has(resolvedUrl)
+          ? 'loaded'
+          : 'loading'
+    );
   }
 
   // Cancel any scheduled retry timer on unmount
@@ -78,6 +116,9 @@ export function MediaImage({
   }, []);
 
   const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+    if (resolvedUrl) {
+      loadedImageUrlsCache.delete(resolvedUrl);
+    }
     const isFirstFailure = attempt === 0;
 
     if (isFirstFailure) {
@@ -138,6 +179,7 @@ export function MediaImage({
   };
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+    rememberLoadedImageUrl(resolvedUrl);
     setStatus('loaded');
     onLoad?.(e);
   };
@@ -156,6 +198,7 @@ export function MediaImage({
   }
 
   const effectiveLoading = priority ? 'eager' : loading;
+  const effectiveDecoding = decoding ?? (priority ? 'sync' : 'async');
 
   // While loading or retrying, the <img> is hidden via opacity-0 to prevent native broken icons
   // while retaining natural browser network fetching.
@@ -165,6 +208,7 @@ export function MediaImage({
       src={resolvedUrl}
       alt={alt}
       loading={effectiveLoading}
+      decoding={effectiveDecoding}
       className={`${className} ${status === 'loaded' ? 'opacity-100' : 'opacity-0'} transition-opacity duration-200`}
       onError={handleImageError}
       onLoad={handleImageLoad}
@@ -172,3 +216,5 @@ export function MediaImage({
     />
   );
 }
+
+export const MediaImage = React.memo(MediaImageInner);

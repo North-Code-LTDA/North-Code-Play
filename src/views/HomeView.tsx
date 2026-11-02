@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { useXtreamContext } from '../context/XtreamContext';
@@ -8,6 +8,11 @@ import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
 import { sortByYearAndRating } from '../utils/catalogRanking';
+import {
+  getOrCreateVodIndex,
+  getOrCreateSeriesIndex,
+  getHeroBannerItems,
+} from '../utils/catalogIndex';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 import { formatCategoryLabel } from '../utils/categoryLabel';
 export { formatCategoryLabel };
@@ -28,9 +33,10 @@ interface HomeViewProps {
   ) => void;
   onSelectLiveChannel?: (stream: any) => void;
   searchQuery?: string;
+  isPaused?: boolean;
 }
 
-export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: HomeViewProps) {
+export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaused = false }: HomeViewProps) {
   const { 
     allLiveStreams, allVodStreams, allSeriesStreams,
     liveCategories, vodCategories, seriesCategories,
@@ -49,8 +55,10 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
 
   const historyRecords = useAccountPlaybackHistory(credentials);
+  const vodIndex = useMemo(() => getOrCreateVodIndex(allVodStreams), [allVodStreams]);
+  const seriesIndex = useMemo(() => getOrCreateSeriesIndex(allSeriesStreams), [allSeriesStreams]);
 
-  // Continue Watching logic using account playback history
+  // Continue Watching logic using O(1) indexed lookup by id
   const continueWatching = useMemo(() => {
     if (allVodStreams.length === 0 && allSeriesStreams.length === 0) return [];
 
@@ -63,9 +71,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
 
     for (const record of validRecords) {
       if (record.type === 'movie') {
-        const item = allVodStreams.find(
-          (c: any) => String(c.stream_id || c.id) === String(record.id)
-        );
+        const item = vodIndex.getById(record.id);
         if (item) {
           const itemId = item.stream_id || item.id;
           const rowKey = `movie_${itemId}`;
@@ -76,9 +82,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
         }
       } else if (record.type === 'episode') {
         if (!record.parentSeriesId) continue;
-        const item = allSeriesStreams.find(
-          (c: any) => String(c.series_id || c.id) === String(record.parentSeriesId)
-        );
+        const item = seriesIndex.getById(record.parentSeriesId);
         if (item) {
           const itemId = item.series_id || item.id;
           const rowKey = `series_${itemId}`;
@@ -91,11 +95,9 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
     }
 
     return result;
-  }, [historyRecords, allVodStreams, allSeriesStreams]);
+  }, [historyRecords, allVodStreams.length, allSeriesStreams.length, vodIndex, seriesIndex]);
 
   // Request catalog operations ONLY when the session is ready and status is idle.
-  // This prevents HomeView from enqueueing tasks before the provider reset finishes,
-  // avoiding queue purges of these tasks or false idle states.
   useEffect(() => {
     if (credentials && sessionReady) {
       if (liveCatalogStatus === 'idle') {
@@ -119,7 +121,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
     fetchSeriesStreams,
   ]);
 
-  // Filter content based on search query
+  // Filter content based on search query using cached sorted catalog index when searchQuery is empty
   const filteredLive = useMemo(() => {
     if (!searchQuery) return allLiveStreams;
     const q = searchQuery.toLowerCase();
@@ -128,25 +130,25 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
 
   const filteredVod = useMemo(() => {
     if (!searchQuery) {
-      return sortByYearAndRating(allVodStreams);
+      return vodIndex.getSortedAll();
     }
     const q = searchQuery.toLowerCase();
     return sortByYearAndRating(
       allVodStreams.filter(s => s.name?.toLowerCase().includes(q))
     );
-  }, [allVodStreams, searchQuery]);
+  }, [allVodStreams, vodIndex, searchQuery]);
 
   const filteredSeries = useMemo(() => {
     if (!searchQuery) {
-      return sortByYearAndRating(allSeriesStreams);
+      return seriesIndex.getSortedAll();
     }
     const q = searchQuery.toLowerCase();
     return sortByYearAndRating(
       allSeriesStreams.filter(s => s.name?.toLowerCase().includes(q))
     );
-  }, [allSeriesStreams, searchQuery]);
+  }, [allSeriesStreams, seriesIndex, searchQuery]);
 
-  // Dynamic category rows for Movies (limit to 4 categories with at least 4 items)
+  // Dynamic category rows for Movies (limit to 4 categories with at least 4 items) via pre-indexed categories
   const dynamicVodCategoryRows = useMemo(() => {
     if (allVodStreams.length === 0 || vodCategories.length === 0) return [];
     
@@ -158,15 +160,14 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
     const rows: { categoryId: string; title: string; items: any[] }[] = [];
 
     for (const cat of candidateCategories) {
-      const itemsInCat = allVodStreams.filter(
-        (m: any) => String(m.category_id) === String(cat.category_id)
-      );
+      const catId = String(cat.category_id);
+      const rawInCat = vodIndex.getByCategory(catId);
 
-      if (itemsInCat.length >= 4) {
+      if (rawInCat.length >= 4) {
         rows.push({
-          categoryId: String(cat.category_id),
+          categoryId: catId,
           title: `Filmes: ${formatCategoryLabel(cat.category_name)}`,
-          items: sortByYearAndRating(itemsInCat),
+          items: vodIndex.getSortedByCategory(catId).slice(0, displayCount.vod),
         });
       }
 
@@ -174,9 +175,9 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
     }
 
     return rows;
-  }, [allVodStreams, vodCategories]);
+  }, [allVodStreams.length, vodCategories, vodIndex]);
 
-  // Dynamic category rows for Series (limit to 3 categories with at least 4 items)
+  // Dynamic category rows for Series (limit to 3 categories with at least 4 items) via pre-indexed categories
   const dynamicSeriesCategoryRows = useMemo(() => {
     if (allSeriesStreams.length === 0 || seriesCategories.length === 0) return [];
 
@@ -188,15 +189,14 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
     const rows: { categoryId: string; title: string; items: any[] }[] = [];
 
     for (const cat of candidateCategories) {
-      const itemsInCat = allSeriesStreams.filter(
-        (s: any) => String(s.category_id) === String(cat.category_id)
-      );
+      const catId = String(cat.category_id);
+      const rawInCat = seriesIndex.getByCategory(catId);
 
-      if (itemsInCat.length >= 4) {
+      if (rawInCat.length >= 4) {
         rows.push({
-          categoryId: String(cat.category_id),
+          categoryId: catId,
           title: `Séries: ${formatCategoryLabel(cat.category_name)}`,
-          items: sortByYearAndRating(itemsInCat),
+          items: seriesIndex.getSortedByCategory(catId).slice(0, displayCount.series),
         });
       }
 
@@ -204,9 +204,9 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
     }
 
     return rows;
-  }, [allSeriesStreams, seriesCategories]);
+  }, [allSeriesStreams.length, seriesCategories, seriesIndex]);
 
-  const handlePlayLive = (stream: any) => {
+  const handlePlayLive = useCallback((stream: any) => {
     if (!credentials) return;
     if (onSelectLiveChannel) {
       onSelectLiveChannel(stream);
@@ -225,9 +225,9 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
       setHomePlayError(err?.message || 'Falha ao iniciar canal.');
       setRetryAction(() => () => handlePlayLive(stream));
     }
-  };
+  }, [credentials, onSelectLiveChannel, onPlay]);
 
-  const handlePlayVod = (stream: any) => {
+  const handlePlayVod = useCallback((stream: any) => {
     if (!credentials) return;
     try {
       const url = buildDirectMediaUrl(credentials, {
@@ -245,10 +245,48 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
       setHomePlayError(err?.message || 'Falha ao iniciar filme.');
       setRetryAction(() => () => handlePlayVod(stream));
     }
-  };
+  }, [credentials, onPlay]);
 
-  // Combine VOD and Series for Hero banner
-  const contentForHero = [...allVodStreams, ...allSeriesStreams];
+  // Precomputed HeroBanner items (reused across renders without re-concatenating or re-sorting 27k items)
+  const contentForHero = useMemo(
+    () => getHeroBannerItems(allVodStreams, allSeriesStreams),
+    [allVodStreams, allSeriesStreams]
+  );
+
+  const handleHeroPlay = useCallback(
+    (item: any) => {
+      if (item.stream_type === 'movie' || item.stream_id) {
+        handlePlayVod(item);
+      } else {
+        setSelectedSeries(item);
+      }
+    },
+    [handlePlayVod]
+  );
+
+  const handleHeroInfo = useCallback((item: any) => {
+    if (item.stream_type === 'movie' || item.stream_id) {
+      setSelectedMovie(item);
+    } else {
+      setSelectedSeries(item);
+    }
+  }, []);
+
+  const handleContinueWatchingClick = useCallback((item: any) => {
+    if (typeof item.rowKey === 'string' && item.rowKey.startsWith('series_')) {
+      setSelectedSeries(item);
+    } else if (typeof item.rowKey === 'string' && item.rowKey.startsWith('movie_')) {
+      setSelectedMovie(item);
+    } else if (item.stream_type === 'movie' || (item.stream_id && !item.series_id)) {
+      setSelectedMovie(item);
+    } else {
+      setSelectedSeries(item);
+    }
+  }, []);
+
+  const topLiveRowItems = useMemo(() => filteredLive.slice(0, displayCount.live), [filteredLive]);
+  const topVodRowItems = useMemo(() => filteredVod.slice(0, displayCount.vod), [filteredVod]);
+  const topSeriesRowItems = useMemo(() => filteredSeries.slice(0, displayCount.series), [filteredSeries]);
 
   return (
     <div
@@ -259,20 +297,9 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
       <div data-scroll-top-anchor="true" className="w-full shrink-0">
         <HeroBanner 
           items={contentForHero}
-          onPlay={(item) => {
-            if (item.stream_type === 'movie' || item.stream_id) {
-              handlePlayVod(item);
-            } else {
-              setSelectedSeries(item);
-            }
-          }}
-          onInfo={(item) => {
-            if (item.stream_type === 'movie' || item.stream_id) {
-              setSelectedMovie(item);
-            } else {
-              setSelectedSeries(item);
-            }
-          }}
+          isPaused={Boolean(isPaused || selectedMovie || selectedSeries)}
+          onPlay={handleHeroPlay}
+          onInfo={handleHeroInfo}
         />
       </div>
 
@@ -284,17 +311,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
                title="Continuar Assistindo"
                items={continueWatching}
                type="vod"
-               onItemClick={(item) => {
-                 if (typeof item.rowKey === 'string' && item.rowKey.startsWith('series_')) {
-                   setSelectedSeries(item);
-                 } else if (typeof item.rowKey === 'string' && item.rowKey.startsWith('movie_')) {
-                   setSelectedMovie(item);
-                 } else if (item.stream_type === 'movie' || (item.stream_id && !item.series_id)) {
-                   setSelectedMovie(item);
-                 } else {
-                   setSelectedSeries(item);
-                 }
-               }}
+               onItemClick={handleContinueWatchingClick}
             />
           </div>
         )}
@@ -379,7 +396,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
           <div data-scroll-block="true" className="w-full">
             <HorizontalRow 
                title="Canais Ao Vivo"
-               items={filteredLive.slice(0, displayCount.live)}
+               items={topLiveRowItems}
                type="live"
                onItemClick={handlePlayLive}
             />
@@ -420,9 +437,9 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
           <div data-scroll-block="true" className="w-full">
             <HorizontalRow 
                title="Filmes em Destaque"
-               items={filteredVod.slice(0, displayCount.vod)}
+               items={topVodRowItems}
                type="vod"
-               onItemClick={(item) => setSelectedMovie(item)}
+               onItemClick={setSelectedMovie}
             />
           </div>
         )}
@@ -461,9 +478,9 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
           <div data-scroll-block="true" className="w-full">
             <HorizontalRow 
                title="Séries em Destaque"
-               items={filteredSeries.slice(0, displayCount.series)}
+               items={topSeriesRowItems}
                type="series"
-               onItemClick={(item) => setSelectedSeries(item)}
+               onItemClick={setSelectedSeries}
             />
           </div>
         )}
@@ -473,9 +490,9 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
           <div key={row.categoryId} data-scroll-block="true" className="w-full">
             <HorizontalRow 
               title={row.title}
-              items={row.items.slice(0, displayCount.vod)}
+              items={row.items}
               type="vod"
-              onItemClick={(item) => setSelectedMovie(item)}
+              onItemClick={setSelectedMovie}
             />
           </div>
         ))}
@@ -484,9 +501,9 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '' }: Home
           <div key={row.categoryId} data-scroll-block="true" className="w-full">
             <HorizontalRow 
               title={row.title}
-              items={row.items.slice(0, displayCount.series)}
+              items={row.items}
               type="series"
-              onItemClick={(item) => setSelectedSeries(item)}
+              onItemClick={setSelectedSeries}
             />
           </div>
         ))}

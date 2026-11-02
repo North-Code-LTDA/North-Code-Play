@@ -17,8 +17,18 @@ export {
   pushFocusMemory,
   popFocusMemory,
   clearFocusMemory,
+  registerVirtualContainer,
+  unregisterVirtualContainer,
+  invalidateCandidateCache,
+  getSpatialNavPerfStats,
+  resetSpatialNavPerfStats,
 } from './spatialNav';
-export type { NavMode, SpatialDirection } from './spatialNav';
+export type {
+  NavMode,
+  SpatialDirection,
+  VirtualContainerController,
+  SpatialNavPerfStats,
+} from './spatialNav';
 
 export {
   BACK_PRIORITY,

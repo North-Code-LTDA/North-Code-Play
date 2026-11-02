@@ -5,62 +5,46 @@ import { useXtreamContext } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from './MediaImage';
 import { normalizeImageSource } from '../utils/mediaUtils';
-import { getValidYear, sortByYearAndRating } from '../utils/catalogRanking';
+import { getValidYear } from '../utils/catalogRanking';
+import { computeHeroItemsFromList } from '../utils/catalogIndex';
 
 interface HeroBannerProps {
   items: any[];
   onPlay: (item: any) => void;
   onInfo: (item: any) => void;
+  isPaused?: boolean;
 }
 
-export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
+export const HeroBanner = React.memo(function HeroBanner({
+  items,
+  onPlay,
+  onInfo,
+  isPaused = false,
+}: HeroBannerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const { credentials } = useXtreamContext();
   const [activeDetails, setActiveDetails] = useState<any>(null);
 
   const heroItems = useMemo(() => {
-    if (!items || items.length === 0) return [];
-    
-    const normalize = (name: string) => {
-      if (!name) return '';
-      return name
-        .toLowerCase()
-        .replace(/\b(dublado|legendado|dub|leg|4k|fhd|hd|dual|áudio|audio)\b/g, '')
-        .replace(/[\[\]\(\)]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-    };
-
-    const itemsWithImages = items.filter((item) => item.stream_icon || item.cover || item.backdrop_path);
-    const sortedItems = sortByYearAndRating(itemsWithImages);
-
-    const deduped: any[] = [];
-    const seenNames = new Set<string>();
-
-    for (const item of sortedItems) {
-      const normalizedName = normalize(item.name);
-      if (!seenNames.has(normalizedName)) {
-        seenNames.add(normalizedName);
-        deduped.push(item);
-      }
-      if (deduped.length === 30) break;
-    }
-
-    return deduped;
+    return computeHeroItemsFromList(items);
   }, [items]);
 
   useEffect(() => {
-    if (heroItems.length <= 1) return;
+    setCurrentIndex(0);
+  }, [heroItems]);
+
+  useEffect(() => {
+    if (heroItems.length <= 1 || isPaused) return;
     const timer = setInterval(() => {
       setCurrentIndex((prev) => (prev + 1) % heroItems.length);
     }, 8000);
     return () => clearInterval(timer);
-  }, [heroItems.length]);
+  }, [heroItems.length, isPaused]);
 
   const currentItem = heroItems[currentIndex];
 
   useEffect(() => {
-    if (!currentItem || !credentials) return;
+    if (!currentItem || !credentials || isPaused) return;
     
     let isMounted = true;
     setActiveDetails(null);
@@ -89,7 +73,7 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
     return () => {
       isMounted = false;
     };
-  }, [currentItem, credentials]);
+  }, [currentItem, credentials, isPaused]);
 
   if (heroItems.length === 0 || !currentItem) return null;
 
@@ -178,4 +162,5 @@ export function HeroBanner({ items, onPlay, onInfo }: HeroBannerProps) {
       </div>
     </div>
   );
-}
+});
+

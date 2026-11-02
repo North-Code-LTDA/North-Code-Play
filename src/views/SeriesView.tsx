@@ -1,12 +1,14 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { PlaySquare, Loader2, RefreshCw } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { AnimatePresence } from 'motion/react';
 import { useXtreamContext } from '../context/XtreamContext';
 import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { MediaImage } from '../components/MediaImage';
 import { useAccountPlaybackHistory } from '../utils/playbackHistory';
 import { formatCategoryLabel } from '../utils/categoryLabel';
+import { getOrCreateSeriesIndex } from '../utils/catalogIndex';
+import { useVirtualWindow } from '../hooks/useVirtualWindow';
 import {
   useBackHandler,
   BACK_PRIORITY,
@@ -37,14 +39,14 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
   } = useXtreamContext();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
-  const [displayCount, setDisplayCount] = useState(100);
   const { favorites } = useFavorites();
 
   const historyRecords = useAccountPlaybackHistory(credentials);
+  const seriesIndex = useMemo(() => getOrCreateSeriesIndex(allSeriesStreams), [allSeriesStreams]);
 
   const viewRootRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const prevCategoryRef = useRef<string | undefined>(selectedCategoryId);
   const prevSearchRef = useRef<string>(searchQuery);
 
@@ -93,10 +95,10 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
 
   const favoriteSeries = useMemo(() => {
     return favorites
-      .filter(f => f.type === 'series')
-      .map(f => allSeriesStreams.find(s => String(s.series_id || s.id) === String(f.id)))
+      .filter((f) => f.type === 'series')
+      .map((f) => seriesIndex.getById(f.id))
       .filter(Boolean);
-  }, [favorites, allSeriesStreams]);
+  }, [favorites, seriesIndex]);
 
   const continueWatching = useMemo(() => {
     if (!allSeriesStreams || allSeriesStreams.length === 0) return [];
@@ -109,9 +111,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
 
     for (const record of episodeRecords) {
       if (!record.parentSeriesId) continue;
-      const item = allSeriesStreams.find(
-        (c: any) => String(c.series_id || c.id) === String(record.parentSeriesId)
-      );
+      const item = seriesIndex.getById(record.parentSeriesId);
       if (item) {
         const itemId = item.series_id || item.id;
         if (!seenIds.has(itemId)) {
@@ -122,7 +122,7 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
     }
 
     return result;
-  }, [historyRecords, allSeriesStreams]);
+  }, [historyRecords, allSeriesStreams.length, seriesIndex]);
 
   const extendedCategories = useMemo(() => {
     const virtualCats = [
@@ -149,7 +149,6 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
       if (mainRef.current) {
         mainRef.current.scrollTop = 0;
       }
-      setDisplayCount(100); // Reset display count on category change
     }
   }, [selectedCategoryId, fetchSeriesStreams]);
 
@@ -159,13 +158,13 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
       if (mainRef.current) {
         mainRef.current.scrollTop = 0;
       }
-      setDisplayCount(100); // Reset display count on search change
     }
   }, [searchQuery]);
 
   const filteredStreams = useMemo(() => {
     if (searchQuery) {
-      return allSeriesStreams.filter(item => item.name?.toLowerCase().includes(searchQuery.toLowerCase()));
+      const q = searchQuery.toLowerCase();
+      return allSeriesStreams.filter((item) => item.name?.toLowerCase().includes(q));
     }
     if (selectedCategoryId === 'nc_recent') return continueWatching;
     if (selectedCategoryId === 'nc_fav') return favoriteSeries;
@@ -173,35 +172,25 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
     return seriesStreams;
   }, [searchQuery, selectedCategoryId, continueWatching, favoriteSeries, seriesStreams, allSeriesStreams]);
 
-  useEffect(() => {
-    if (selectedSeries || displayCount >= filteredStreams.length) return;
+  const {
+    startIndex,
+    endIndex,
+    topSpacerPx,
+    bottomSpacerPx,
+  } = useVirtualWindow({
+    totalCount: filteredStreams.length,
+    mode: 'grid',
+    scrollContainerRef: mainRef,
+    virtualContainerRef: gridRef,
+    isFrozen: Boolean(selectedSeries),
+    resetKey: `${selectedCategoryId ?? ''}__${searchQuery}`,
+    maxWindowItems: 96,
+  });
 
-    const root = mainRef.current;
-    const sentinel = sentinelRef.current;
-
-    if (!root || !sentinel) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setDisplayCount(prev => prev + 100);
-        }
-      },
-      {
-        root: root,
-        rootMargin: '200px',
-        threshold: 0,
-      }
-    );
-
-    observer.observe(sentinel);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [selectedSeries, displayCount, filteredStreams.length]);
-
-  const displayedStreams = filteredStreams.slice(0, displayCount);
+  const displayedStreams = useMemo(
+    () => filteredStreams.slice(startIndex, endIndex),
+    [filteredStreams, startIndex, endIndex]
+  );
 
   const handleSeriesClick = (series: any) => {
     setSelectedSeries(series);
@@ -314,44 +303,61 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
              </div>
           ) : (
             <>
-              <div data-nav-grid="true" className="nc-tv-media-grid grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-               {displayedStreams.map((stream, idx) => (
-                 <motion.div
-                   key={stream.series_id}
-                   tabIndex={0}
-                   role="button"
-                   data-nav-item="true"
-                   aria-label={stream.name}
-                   whileHover={{ scale: 1.05 }}
-                   whileTap={{ scale: 0.95 }}
-                   onClick={() => handleSeriesClick(stream)}
-                   className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 transition-colors"
-                 >
-                   <MediaImage
+              {topSpacerPx > 0 && (
+                <div
+                  aria-hidden="true"
+                  data-virtual-spacer="top"
+                  style={{ height: `${topSpacerPx}px` }}
+                />
+              )}
+              <div
+                ref={gridRef}
+                data-nav-grid="true"
+                data-virtual-container="true"
+                className="nc-tv-media-grid grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
+              >
+                {displayedStreams.map((stream, idx) => {
+                  const actualIndex = startIndex + idx;
+                  return (
+                    <div
+                      key={stream.series_id}
+                      tabIndex={0}
+                      role="button"
+                      data-nav-item="true"
+                      data-virtual-index={actualIndex}
+                      aria-label={stream.name}
+                      onClick={() => handleSeriesClick(stream)}
+                      className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 hover:scale-[1.03] active:scale-[0.98] transition-all"
+                    >
+                      <MediaImage
                         src={stream.cover}
                         serverUrl={credentials?.serverUrl}
                         alt={stream.name}
                         itemId={stream.series_id}
                         itemName={stream.name}
-                        priority={idx < 12}
-                        loading={idx < 12 ? "eager" : "lazy"}
+                        priority={actualIndex < 12}
+                        loading={actualIndex < 12 ? 'eager' : 'lazy'}
                         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       />
-                   
-                   <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
-                     <p className="text-white font-medium text-sm line-clamp-2 leading-tight">
-                       {stream.name}
-                     </p>
-                     {stream.rating && stream.rating !== "0" && (
-                        <p className="text-xs text-yellow-500 mt-1">★ {stream.rating}</p>
-                     )}
-                   </div>
-                 </motion.div>
-               ))}
+
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
+                        <p className="text-white font-medium text-sm line-clamp-2 leading-tight">
+                          {stream.name}
+                        </p>
+                        {stream.rating && stream.rating !== '0' && (
+                          <p className="text-xs text-yellow-500 mt-1">★ {stream.rating}</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              
-              {displayCount < filteredStreams.length && (
-                <div ref={sentinelRef} className="h-10 w-full" />
+              {bottomSpacerPx > 0 && (
+                <div
+                  aria-hidden="true"
+                  data-virtual-spacer="bottom"
+                  style={{ height: `${bottomSpacerPx}px` }}
+                />
               )}
             </>
           )}

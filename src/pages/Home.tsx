@@ -375,6 +375,8 @@ function HomeContent({ credentials }: { credentials: any }) {
     </>
   );
 
+  const isHeroPaused = Boolean(activeVideo || isOverlayActive || isDisplaySetupOpen);
+
   const renderView = () => {
     switch (currentView) {
       case 'inicio':
@@ -383,6 +385,7 @@ function HomeContent({ credentials }: { credentials: any }) {
             onPlay={handlePlay}
             onSelectLiveChannel={handleSelectLiveFromHome}
             searchQuery={debouncedSearchQuery}
+            isPaused={isHeroPaused}
           />
         );
       case 'live':
@@ -408,6 +411,7 @@ function HomeContent({ credentials }: { credentials: any }) {
             onPlay={handlePlay}
             onSelectLiveChannel={handleSelectLiveFromHome}
             searchQuery={debouncedSearchQuery}
+            isPaused={isHeroPaused}
           />
         );
     }
@@ -651,7 +655,15 @@ function HomeContent({ credentials }: { credentials: any }) {
           )}
 
           <main className="flex-1 min-w-0 min-h-0 flex overflow-hidden relative">
-            {renderView()}
+            {isDisplaySetupOpen || isAuthRejected ? (
+              <div
+                data-home-deferred="true"
+                aria-hidden="true"
+                className="flex-1 w-full h-full bg-nc-bg"
+              />
+            ) : (
+              renderView()
+            )}
           </main>
         </div>
 

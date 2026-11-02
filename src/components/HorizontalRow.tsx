@@ -12,7 +12,7 @@ interface HorizontalRowProps {
   onItemClick: (item: any) => void;
 }
 
-export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRowProps) {
+export const HorizontalRow = React.memo(function HorizontalRow({ title, items, type, onItemClick }: HorizontalRowProps) {
   const rowRef = useRef<HTMLDivElement>(null);
   const { credentials } = useXtreamContext();
 
@@ -93,4 +93,5 @@ export function HorizontalRow({ title, items, type, onItemClick }: HorizontalRow
       </div>
     </div>
   );
-}
+});
+

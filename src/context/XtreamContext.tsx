@@ -21,6 +21,11 @@ import {
   markCredentialsAuthRejected,
   safeSaveCredentials,
 } from "../utils/accountUtils";
+import {
+  getOrCreateLiveIndex,
+  getOrCreateVodIndex,
+  getOrCreateSeriesIndex,
+} from "../utils/catalogIndex";
 
 export type OperationStatus = "idle" | "loading" | "ready" | "error";
 
@@ -623,13 +628,11 @@ export function XtreamProvider({
       // Record most recent category requested
       latestLiveCategoryRef.current = categoryId;
 
-      // If catalog is already loaded and ready, immediately apply local filter
+      // If catalog is already loaded and ready, immediately apply local filter via O(1) index
       if (liveCatalogStatus === "ready") {
         const source = allLiveStreamsRef.current;
         if (categoryId) {
-          setLiveStreams(
-            source.filter((s) => String(s.category_id) === String(categoryId))
-          );
+          setLiveStreams(getOrCreateLiveIndex(source).getByCategory(categoryId));
         } else {
           setLiveStreams(source);
         }
@@ -646,6 +649,11 @@ export function XtreamProvider({
             signal,
           });
           if (sessionRef.current !== currentSession) return;
+          if (streams.length > 2500) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (sessionRef.current !== currentSession || signal.aborted) return;
+          }
+          const liveIdx = getOrCreateLiveIndex(streams);
           allLiveStreamsRef.current = streams;
           setAllLiveStreams(streams);
           setLiveCatalogStatus("ready");
@@ -653,9 +661,7 @@ export function XtreamProvider({
           // Always respect most recent category selection
           const targetCat = latestLiveCategoryRef.current;
           if (targetCat) {
-            setLiveStreams(
-              streams.filter((s) => String(s.category_id) === String(targetCat))
-            );
+            setLiveStreams(liveIdx.getByCategory(targetCat));
           } else {
             setLiveStreams(streams);
           }
@@ -682,13 +688,11 @@ export function XtreamProvider({
       // Record most recent category requested
       latestVodCategoryRef.current = categoryId;
 
-      // If catalog is already loaded and ready, immediately apply local filter
+      // If catalog is already loaded and ready, immediately apply local filter via O(1) index
       if (vodCatalogStatus === "ready") {
         const source = allVodStreamsRef.current;
         if (categoryId) {
-          setVodStreams(
-            source.filter((s) => String(s.category_id) === String(categoryId))
-          );
+          setVodStreams(getOrCreateVodIndex(source).getByCategory(categoryId));
         } else {
           setVodStreams(source);
         }
@@ -705,6 +709,11 @@ export function XtreamProvider({
             signal,
           });
           if (sessionRef.current !== currentSession) return;
+          if (streams.length > 2500) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (sessionRef.current !== currentSession || signal.aborted) return;
+          }
+          const vodIdx = getOrCreateVodIndex(streams);
           allVodStreamsRef.current = streams;
           setAllVodStreams(streams);
           setVodCatalogStatus("ready");
@@ -712,9 +721,7 @@ export function XtreamProvider({
           // Always respect most recent category selection
           const targetCat = latestVodCategoryRef.current;
           if (targetCat) {
-            setVodStreams(
-              streams.filter((s) => String(s.category_id) === String(targetCat))
-            );
+            setVodStreams(vodIdx.getByCategory(targetCat));
           } else {
             setVodStreams(streams);
           }
@@ -741,13 +748,11 @@ export function XtreamProvider({
       // Record most recent category requested
       latestSeriesCategoryRef.current = categoryId;
 
-      // If catalog is already loaded and ready, immediately apply local filter
+      // If catalog is already loaded and ready, immediately apply local filter via O(1) index
       if (seriesCatalogStatus === "ready") {
         const source = allSeriesStreamsRef.current;
         if (categoryId) {
-          setSeriesStreams(
-            source.filter((s) => String(s.category_id) === String(categoryId))
-          );
+          setSeriesStreams(getOrCreateSeriesIndex(source).getByCategory(categoryId));
         } else {
           setSeriesStreams(source);
         }
@@ -764,6 +769,11 @@ export function XtreamProvider({
             signal,
           });
           if (sessionRef.current !== currentSession) return;
+          if (streams.length > 2500) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (sessionRef.current !== currentSession || signal.aborted) return;
+          }
+          const seriesIdx = getOrCreateSeriesIndex(streams);
           allSeriesStreamsRef.current = streams;
           setAllSeriesStreams(streams);
           setSeriesCatalogStatus("ready");
@@ -771,9 +781,7 @@ export function XtreamProvider({
           // Always respect most recent category selection
           const targetCat = latestSeriesCategoryRef.current;
           if (targetCat) {
-            setSeriesStreams(
-              streams.filter((s) => String(s.category_id) === String(targetCat))
-            );
+            setSeriesStreams(seriesIdx.getByCategory(targetCat));
           } else {
             setSeriesStreams(streams);
           }
@@ -792,6 +800,31 @@ export function XtreamProvider({
     },
     [credentials, seriesCatalogStatus, enqueueOperation, registerErrorAndCheckAuth]
   );
+
+  // Orchestrate initial catalog fetches independently of whether HomeView is mounted,
+  // respecting the max-2 concurrency queue and priorities (live_catalog: 5, vod_catalog: 2, series_catalog: 1)
+  useEffect(() => {
+    if (!credentials || !sessionReady || isAuthRejected) return;
+    if (liveCatalogStatus === "idle") {
+      fetchLiveStreams().catch(() => {});
+    }
+    if (vodCatalogStatus === "idle") {
+      fetchVodStreams().catch(() => {});
+    }
+    if (seriesCatalogStatus === "idle") {
+      fetchSeriesStreams().catch(() => {});
+    }
+  }, [
+    credentials,
+    sessionReady,
+    isAuthRejected,
+    liveCatalogStatus,
+    vodCatalogStatus,
+    seriesCatalogStatus,
+    fetchLiveStreams,
+    fetchVodStreams,
+    fetchSeriesStreams,
+  ]);
 
   // Full session retry (re-verifies authentication if previously rejected and reloads failed categories/catalogs)
   const retrySession = useCallback(async () => {

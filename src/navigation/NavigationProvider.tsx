@@ -70,6 +70,10 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
       setNavMode('pointer');
     };
 
+    let lastRepeatTimestamp = 0;
+    let lastRepeatDirection: SpatialDirection | null = null;
+    const KEY_REPEAT_THROTTLE_MS = 48;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
 
@@ -131,7 +135,20 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
         }
 
         e.preventDefault();
+
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (e.repeat) {
+          if (
+            lastRepeatDirection === direction &&
+            now - lastRepeatTimestamp < KEY_REPEAT_THROTTLE_MS
+          ) {
+            return;
+          }
+        }
+
         moveSpatialFocus(direction);
+        lastRepeatTimestamp = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        lastRepeatDirection = direction;
         return;
       }
 

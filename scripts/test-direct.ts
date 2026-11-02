@@ -5203,6 +5203,853 @@ async function runCapacitorTransportAndAuditFixTests() {
   console.log('✅ Todos os testes de Capacitor 8, CapacitorHttp, normalização de volume/catálogo, storage seguro, timer LiveTV, auto-login/recuperação e safe-area aprovados!');
 }
 
+async function runPerformanceAndVirtualizationTests() {
+  console.log('\n--- 12. Testes de Desempenho (39k Registros), Indexação de Catálogo, Virtualização e Navegação D-Pad ---');
+
+  const {
+    sortByYearAndRating,
+    getValidYear,
+    getValidRating,
+    getCatalogRankingPerfStats,
+    resetCatalogRankingPerfStats,
+  } = await import('../src/utils/catalogRanking');
+  const {
+    getOrCreateVodIndex,
+    getOrCreateSeriesIndex,
+    getOrCreateLiveIndex,
+    computeHeroItemsFromList,
+    getHeroBannerItems,
+    getCatalogIndexPerfStats,
+    resetCatalogIndexPerfStats,
+  } = await import('../src/utils/catalogIndex');
+  const {
+    moveSpatialFocus,
+    getSpatialNavPerfStats,
+    resetSpatialNavPerfStats,
+    NavigationProvider,
+  } = await import('../src/navigation');
+  const {
+    MediaImage,
+    hasLoadedImageUrl,
+    clearLoadedImageUrlCache,
+  } = await import('../src/components/MediaImage');
+
+  // =========================================================================
+  // 12.1. Equivalência funcional exata de sortByYearAndRating + extração única + imutabilidade
+  // =========================================================================
+  const referenceSort = (streams: any[]): any[] => {
+    if (!Array.isArray(streams) || streams.length === 0) return [];
+    const withMeta: any[] = [];
+    const withoutMeta: any[] = [];
+
+    for (const item of streams) {
+      const year = getValidYear(item);
+      const rating = getValidRating(item);
+      if (year > 0 || rating > 0) {
+        withMeta.push(item);
+      } else {
+        withoutMeta.push(item);
+      }
+    }
+
+    withMeta.sort((a, b) => {
+      const yearA = getValidYear(a);
+      const yearB = getValidYear(b);
+      if (yearA !== yearB) return yearB - yearA;
+      const ratingA = getValidRating(a);
+      const ratingB = getValidRating(b);
+      return ratingB - ratingA;
+    });
+
+    return [...withMeta, ...withoutMeta];
+  };
+
+  const sampleItems = [
+    { stream_id: 1, name: 'Filme Clássico (1999)', rating: '8.5', added: '1700000100' },
+    { stream_id: 2, name: 'Lançamento 2025 [4K]', rating: '7.5', added: '1700000500' },
+    { stream_id: 3, name: 'Lançamento [2025] Dublado', rating: '9.0', added: '1700000900' },
+    { stream_id: 4, name: 'Lançamento (2025) Legendado', rating: '9.0', added: '1700000900' }, // empate exato com 3 -> preserva ordem
+    { stream_id: 5, name: 'Sem Ano A', rating: '7.2', added: '1600000000' },
+    { stream_id: 6, name: 'Sem Ano B', rating: '0', added: '1650000000' },
+    { stream_id: 7, name: 'Filme 1080p 2024', year: '2024', rating: '6.8', last_modified: '1710000000' },
+    { stream_id: 8, name: 'Série 2026 Especial', releaseDate: '2026-01-15', rating: '8.1' },
+    { stream_id: 9, name: 'Item Sem Ano Nem Nota 1', rating: '' },
+    { stream_id: 10, name: 'Item Sem Ano Nem Nota 2', rating: null },
+  ];
+  const originalSnapshot = sampleItems.map((x) => ({ ...x }));
+  const referenceSorted = referenceSort(sampleItems);
+
+  resetCatalogRankingPerfStats();
+  const optimizedSorted = sortByYearAndRating(sampleItems);
+  const rankingStatsAfterSample = getCatalogRankingPerfStats();
+
+  assert.deepStrictEqual(
+    optimizedSorted.map((x) => x.stream_id),
+    referenceSorted.map((x) => x.stream_id),
+    'sortByYearAndRating otimizado deve produzir exatamente a mesma ordem funcional do algoritmo original (incluindo desempate estável e itens sem metadados no final)'
+  );
+  assert.deepStrictEqual(
+    sampleItems,
+    originalSnapshot,
+    'sortByYearAndRating não deve mutar o array de entrada original'
+  );
+  assert.strictEqual(
+    rankingStatsAfterSample.sortCalls,
+    1,
+    'Deve contabilizar exatamente 1 chamada a sortByYearAndRating'
+  );
+  assert.strictEqual(
+    rankingStatsAfterSample.metadataExtractions,
+    sampleItems.length,
+    'Cada item deve passar por extração de metadados apenas 1 vez por ordenação (O(N))'
+  );
+
+  // =========================================================================
+  // 12.2. Equivalência exata de getHeroBannerItems (two-pointer merge) vs concat+sort de 27k itens
+  // =========================================================================
+  const heroTestVod = Array.from({ length: 120 }, (_, i) => ({
+    stream_id: 1000 + i,
+    name: `Filme Hero ${i % 15} (${2018 + (i % 8)}) [FHD]`,
+    category_id: String((i % 4) + 1),
+    rating: ((i % 90) / 10).toFixed(1),
+    added: String(1700000000 + i * 10),
+    stream_icon: i % 7 === 0 ? '' : `http://img.test/v_${i}.jpg`,
+  }));
+  const heroTestSeries = Array.from({ length: 80 }, (_, i) => ({
+    series_id: 5000 + i,
+    name: `Série Hero ${i % 12} (${2019 + (i % 7)}) 4K`,
+    category_id: String((i % 3) + 10),
+    rating: ((i % 95) / 10).toFixed(1),
+    last_modified: String(1700000500 + i * 15),
+    cover: i % 9 === 0 ? 'N/A' : `http://img.test/s_${i}.jpg`,
+  }));
+
+  const expectedHero30 = computeHeroItemsFromList([...heroTestVod, ...heroTestSeries]);
+  const actualHero30 = getHeroBannerItems(heroTestVod, heroTestSeries);
+
+  assert.strictEqual(actualHero30.length, 30, 'HeroBanner deve selecionar até 30 destaques únicos com capa válida');
+  assert.deepStrictEqual(
+    actualHero30.map((x) => x.stream_id ?? x.series_id),
+    expectedHero30.map((x) => x.stream_id ?? x.series_id),
+    'getHeroBannerItems otimizado deve selecionar exatamente os mesmos 30 itens que computeHeroItemsFromList([...vod, ...series])'
+  );
+
+  // =========================================================================
+  // 12.3. Benchmark reproduzível em 39.000 registros (12k Canais, 18k Filmes, 9k Séries)
+  // =========================================================================
+  const liveCategories39k = Array.from({ length: 30 }, (_, i) => ({
+    category_id: String(i + 1),
+    category_name: `Categoria TV ${i + 1}`,
+  }));
+  const vodCategories39k = Array.from({ length: 40 }, (_, i) => ({
+    category_id: String(i + 101),
+    category_name: `Categoria Filmes ${i + 1}`,
+  }));
+  const seriesCategories39k = Array.from({ length: 25 }, (_, i) => ({
+    category_id: String(i + 201),
+    category_name: `Categoria Séries ${i + 1}`,
+  }));
+
+  const liveStreams12k = Array.from({ length: 12000 }, (_, i) => {
+    const channelNum = Math.floor(i / 4) + 1;
+    const res = ['SD', 'HD', 'FHD', '4K'][i % 4];
+    const catId = String((channelNum % 30) + 1);
+    return {
+      stream_id: i + 1,
+      name: `Canal Brasil ${channelNum} ${res}`,
+      category_id: catId,
+      stream_icon: `http://img.test/live_${channelNum}.png`,
+      epg_channel_id: `epg_${channelNum}`,
+    };
+  });
+
+  const vodStreams18k = Array.from({ length: 18000 }, (_, i) => {
+    const year = 1995 + (i % 31);
+    const rating = ((i * 7) % 100) / 10;
+    const catId = String(((i * 3) % 40) + 101);
+    return {
+      stream_id: 100000 + i,
+      name: `Filme Titulo ${i % 6000} (${year}) [FHD]`,
+      category_id: catId,
+      rating: rating.toFixed(1),
+      added: String(1700000000 + i * 60),
+      stream_icon: `http://img.test/vod_${i}.jpg`,
+    };
+  });
+
+  const seriesStreams9k = Array.from({ length: 9000 }, (_, i) => {
+    const year = 2005 + (i % 21);
+    const rating = ((i * 11) % 100) / 10;
+    const catId = String(((i * 5) % 25) + 201);
+    return {
+      series_id: 300000 + i,
+      name: `Serie Titulo ${i % 3000} (${year}) 4K`,
+      category_id: catId,
+      rating: rating.toFixed(1),
+      last_modified: String(1700000000 + i * 120),
+      cover: `http://img.test/series_${i}.jpg`,
+    };
+  });
+
+  resetCatalogRankingPerfStats();
+  resetCatalogIndexPerfStats();
+
+  // Passada 1 (Fria): Construção dos índices + HomeView + HeroBanner + 6 categorias de Filmes + 6 de Séries
+  const tColdStart = performance.now();
+  const vodIndex39k = getOrCreateVodIndex(vodStreams18k);
+  const seriesIndex39k = getOrCreateSeriesIndex(seriesStreams9k);
+  const recentMovies20 = vodIndex39k.getSortedAll().slice(0, 20);
+  const recentSeries20 = seriesIndex39k.getSortedAll().slice(0, 20);
+  const heroItems30 = getHeroBannerItems(vodStreams18k, seriesStreams9k);
+  const vodRowsCold = vodCategories39k.slice(0, 6).map((cat) =>
+    vodIndex39k.getSortedByCategory(cat.category_id).slice(0, 20)
+  );
+  const seriesRowsCold = seriesCategories39k.slice(0, 6).map((cat) =>
+    seriesIndex39k.getSortedByCategory(cat.category_id).slice(0, 20)
+  );
+  const coldCatalogPassMs = performance.now() - tColdStart;
+  const coldRankingStats = getCatalogRankingPerfStats();
+
+  assert.strictEqual(recentMovies20.length, 20, 'Deve retornar 20 filmes recentes ordenados');
+  assert.strictEqual(recentSeries20.length, 20, 'Deve retornar 20 séries recentes ordenadas');
+  assert.strictEqual(heroItems30.length, 30, 'Deve retornar 30 itens no HeroBanner sem reordenar 27k itens');
+  assert.strictEqual(vodRowsCold.length, 6);
+  assert.strictEqual(seriesRowsCold.length, 6);
+
+  // Passada 2 (Quente / Reabertura da Home, troca de abas ou 3 ajustes de escala da TV): Zero novas ordenações!
+  resetCatalogRankingPerfStats();
+  const tWarmStart = performance.now();
+  for (let i = 0; i < 3; i++) {
+    const vIdx = getOrCreateVodIndex(vodStreams18k);
+    const sIdx = getOrCreateSeriesIndex(seriesStreams9k);
+    vIdx.getSortedAll().slice(0, 20);
+    sIdx.getSortedAll().slice(0, 20);
+    getHeroBannerItems(vodStreams18k, seriesStreams9k);
+    vodCategories39k.slice(0, 6).forEach((cat) => vIdx.getSortedByCategory(cat.category_id).slice(0, 20));
+    seriesCategories39k.slice(0, 6).forEach((cat) => sIdx.getSortedByCategory(cat.category_id).slice(0, 20));
+  }
+  const warmScaleChange3xMs = performance.now() - tWarmStart;
+  const warmRankingStats = getCatalogRankingPerfStats();
+  assert.strictEqual(
+    warmRankingStats.sortCalls,
+    0,
+    'Reabertura da Home ou alterações de escala da TV devem reutilizar o índice com ZERO novas ordenações'
+  );
+
+  // Agrupamento de canais ao vivo por categoria via LiveIndex vs catálogo inteiro
+  resetCatalogIndexPerfStats();
+  const tLiveCatStart = performance.now();
+  const liveIndex12k = getOrCreateLiveIndex(liveStreams12k);
+  const firstCatGroups = liveIndex12k.getGroupsByCategory(liveCategories39k[0].category_id);
+  const liveCatColdMs = performance.now() - tLiveCatStart;
+
+  const tLiveCatWarmStart = performance.now();
+  const firstCatGroupsWarm = liveIndex12k.getGroupsByCategory(liveCategories39k[0].category_id);
+  const liveCatWarmMs = performance.now() - tLiveCatWarmStart;
+
+  assert(firstCatGroups.length > 0, 'Categoria de TV ao Vivo deve retornar grupos de canais');
+  assert.strictEqual(
+    firstCatGroups,
+    firstCatGroupsWarm,
+    'Segunda leitura da mesma categoria em LiveTvView deve retornar a referência em cache sem reagrupar'
+  );
+  assert.strictEqual(
+    getCatalogIndexPerfStats().liveIndexBuilds,
+    1,
+    'Apenas 1 construção de LiveIndex deve ocorrer para o catálogo'
+  );
+
+  // =========================================================================
+  // 12.4. Abertura inicial com DisplaySetupModal bloqueando montagem pesada da HomeView
+  //       e orquestração em segundo plano no XtreamProvider
+  // =========================================================================
+  windowInstance.localStorage.removeItem(STORAGE_KEY_DISPLAY_PREFS);
+  const creds39k: XtreamCredentials = {
+    serverUrl: 'http://perf.tv:8080',
+    username: 'perfUser',
+    password: 'perfPassword',
+  };
+  windowInstance.localStorage.setItem(CREDENTIALS_KEY, JSON.stringify(creds39k));
+
+  let liveStreamsFetchCount = 0;
+  let vodStreamsFetchCount = 0;
+  let seriesFetchCount = 0;
+
+  (XtreamService as any).getLiveCategories = async () => liveCategories39k.slice(0, 6);
+  (XtreamService as any).getVodCategories = async () => vodCategories39k.slice(0, 6);
+  (XtreamService as any).getSeriesCategories = async () => seriesCategories39k.slice(0, 6);
+  (XtreamService as any).getLiveStreams = async () => {
+    liveStreamsFetchCount++;
+    return liveStreams12k.slice(0, 400);
+  };
+  (XtreamService as any).getVodStreams = async () => {
+    vodStreamsFetchCount++;
+    return vodStreams18k.slice(0, 3000); // > 2500 exercita o yield cooperativo em XtreamContext
+  };
+  (XtreamService as any).getSeries = async () => {
+    seriesFetchCount++;
+    return seriesStreams9k.slice(0, 400);
+  };
+
+  const setupContainer = document.createElement('div');
+  document.body.appendChild(setupContainer);
+  const setupRoot = createRoot(setupContainer);
+
+  await act(async () => {
+    setupRoot.render(
+      React.createElement(
+        MemoryRouter,
+        { initialEntries: ['/home'] },
+        React.createElement(Home, null)
+      )
+    );
+    await new Promise((r) => setTimeout(r, 80));
+  });
+
+  const modalDialog = setupContainer.querySelector('[role="dialog"][aria-modal="true"]');
+  assert(modalDialog !== null, 'DisplaySetupModal deve abrir no primeiro acesso quando não há preferência salva');
+  const deferredPlaceholder = setupContainer.querySelector('[data-home-deferred="true"]');
+  assert(
+    deferredPlaceholder !== null,
+    'Enquanto DisplaySetupModal está aberto no primeiro acesso, o corpo pesado (<main>) deve permanecer diferido ([data-home-deferred="true"])'
+  );
+  assert.strictEqual(
+    setupContainer.querySelector('[data-scroll-top-anchor="true"]'),
+    null,
+    'HeroBanner não deve estar montado enquanto o modal inicial de escolha de dispositivo bloqueia a tela'
+  );
+  assert(
+    liveStreamsFetchCount >= 1 && vodStreamsFetchCount >= 1 && seriesFetchCount >= 1,
+    'XtreamProvider deve iniciar o carregamento dos catálogos em segundo plano mesmo sem HomeView montada'
+  );
+
+  // Selecionar "Outros dispositivos" (step 1) e confirmar em "Confirmar e continuar" (step 1B)
+  const otherDevicesCard = modalDialog!.querySelector(
+    'button[data-device-choice="default"]'
+  ) as HTMLButtonElement | null;
+  assert(otherDevicesCard !== null, 'Botão Outros dispositivos (data-device-choice="default") deve existir no DisplaySetupModal');
+  await act(async () => {
+    otherDevicesCard!.click();
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  const confirmDefaultBtn = modalDialog!.querySelector(
+    'button[data-confirm-default="true"]'
+  ) as HTMLButtonElement | null;
+  assert(confirmDefaultBtn !== null, 'Botão Confirmar e continuar (data-confirm-default="true") deve existir no passo de confirmação');
+  await act(async () => {
+    confirmDefaultBtn!.click();
+    await new Promise((r) => setTimeout(r, 40));
+  });
+
+  assert.strictEqual(
+    setupContainer.querySelector('[data-home-deferred="true"]'),
+    null,
+    'Após concluir a escolha de dispositivo, o placeholder diferido deve sair e liberar a HomeView'
+  );
+  assert(
+    setupContainer.querySelector('[data-scroll-top-anchor="true"]') !== null,
+    'HomeView e HeroBanner devem montar normalmente assim que o DisplaySetupModal fecha'
+  );
+
+  await act(async () => {
+    setupRoot.unmount();
+  });
+  document.body.removeChild(setupContainer);
+
+  // =========================================================================
+  // 12.5. Catálogo vazio, falha parcial, recuperação e troca de conta durante processamento (>2500 itens)
+  // =========================================================================
+  let capturedCtx: any = null;
+  function ContextInspector() {
+    capturedCtx = React.useContext(XtreamContext);
+    return null;
+  }
+
+  // Simular falha parcial em VOD + catálogo vazio em Series + sucesso em Live
+  let shouldFailVod = true;
+  (XtreamService as any).getLiveCategories = async () => [{ category_id: '1', category_name: 'TV Aberta' }];
+  (XtreamService as any).getLiveStreams = async () => liveStreams12k.slice(0, 20);
+  (XtreamService as any).getVodCategories = async () => {
+    if (shouldFailVod) throw new Error('Falha de rede simulada em VOD');
+    return [{ category_id: '10', category_name: 'Ação' }];
+  };
+  (XtreamService as any).getVodStreams = async () => {
+    if (shouldFailVod) throw new Error('Falha de rede simulada em VOD');
+    return vodStreams18k.slice(0, 20);
+  };
+  (XtreamService as any).getSeriesCategories = async () => [];
+  (XtreamService as any).getSeries = async () => [];
+
+  const ctxContainer = document.createElement('div');
+  document.body.appendChild(ctxContainer);
+  const ctxRoot = createRoot(ctxContainer);
+
+  await act(async () => {
+    ctxRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: creds39k },
+        React.createElement(ContextInspector, null)
+      )
+    );
+    await new Promise((r) => setTimeout(r, 80));
+  });
+
+  assert.strictEqual(capturedCtx.liveCatalogStatus, 'ready', 'Catálogo Live deve ficar ready');
+  assert.strictEqual(capturedCtx.vodCatalogStatus, 'error', 'Catálogo VOD com falha parcial deve ficar em status error');
+  assert.strictEqual(capturedCtx.seriesCatalogStatus, 'ready', 'Catálogo Series vazio deve concluir como ready');
+  assert.strictEqual(capturedCtx.allSeriesStreams.length, 0, 'Catálogo Series vazio deve ter 0 itens');
+
+  // Recuperação do catálogo VOD com falha parcial
+  shouldFailVod = false;
+  await act(async () => {
+    await capturedCtx.fetchVodCategories();
+    await capturedCtx.fetchVodStreams();
+    await new Promise((r) => setTimeout(r, 40));
+  });
+  assert.strictEqual(capturedCtx.vodCatalogStatus, 'ready', 'Após retry, catálogo VOD deve recuperar para ready');
+  assert.strictEqual(capturedCtx.allVodStreams.length, 20, 'Filmes carregados após recuperação devem estar disponíveis');
+
+  // Troca de conta durante processamento assíncrono de catálogo grande (> 2500 itens)
+  let resolveSlowAccountAVod: ((val: any[]) => void) | null = null;
+  (XtreamService as any).getVodCategories = async (c: XtreamCredentials) => [
+    { category_id: '10', category_name: `Cat_${c.username}` },
+  ];
+  (XtreamService as any).getVodStreams = (c: XtreamCredentials) => {
+    if (c.username === 'contaLentaA') {
+      return new Promise<any[]>((resolve) => {
+        resolveSlowAccountAVod = resolve;
+      });
+    }
+    return Promise.resolve([
+      { stream_id: 999001, name: 'Filme Exclusivo Conta B (2025)', category_id: '10', rating: '9.5' },
+    ]);
+  };
+
+  const credsContaA: XtreamCredentials = {
+    serverUrl: 'http://perf.tv:8080',
+    username: 'contaLentaA',
+    password: '123',
+  };
+  const credsContaB: XtreamCredentials = {
+    serverUrl: 'http://perf.tv:8080',
+    username: 'contaRapidaB',
+    password: '456',
+  };
+
+  await act(async () => {
+    ctxRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: credsContaA },
+        React.createElement(ContextInspector, null)
+      )
+    );
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  // Antes de contaLentaA terminar o carregamento de 3000 filmes, o usuário troca para contaRapidaB
+  await act(async () => {
+    ctxRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: credsContaB },
+        React.createElement(ContextInspector, null)
+      )
+    );
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  // Agora a resposta atrasada de 3000 itens da contaLentaA chega
+  if (resolveSlowAccountAVod) {
+    await act(async () => {
+      resolveSlowAccountAVod!(vodStreams18k.slice(0, 3000));
+      await new Promise((r) => setTimeout(r, 50));
+    });
+  }
+
+  assert.strictEqual(
+    capturedCtx.credentials?.username,
+    'contaRapidaB',
+    'Credenciais ativas devem permanecer na contaRapidaB'
+  );
+  assert.strictEqual(
+    capturedCtx.allVodStreams.length,
+    1,
+    'Resposta atrasada da conta anterior (mesmo com yield de >2500 itens) jamais deve sobrescrever o catálogo da nova conta'
+  );
+  assert.strictEqual(
+    capturedCtx.allVodStreams[0].stream_id,
+    999001,
+    'O único filme presente deve ser o da contaRapidaB'
+  );
+
+  await act(async () => {
+    ctxRoot.unmount();
+  });
+  document.body.removeChild(ctxContainer);
+
+  // =========================================================================
+  // 12.6. Virtualização em Filmes, Séries e Canais ao Vivo (Rolagem profunda + Preservação de Foco/Scroll + Fronteira D-Pad)
+  // =========================================================================
+  const movies2500 = vodStreams18k.slice(0, 2500).map((m, idx) => ({
+    ...m,
+    category_id: '101',
+    name: `Filme Virtual ${idx + 1} (2024)`,
+  }));
+  const series2500 = seriesStreams9k.slice(0, 2500).map((s, idx) => ({
+    ...s,
+    category_id: '201',
+    name: `Série Virtual ${idx + 1} (2024)`,
+  }));
+  const live3000 = Array.from({ length: 3000 }, (_, idx) => ({
+    stream_id: 700000 + idx,
+    name: `Canal Virtual Exclusivo ${idx + 1} FHD`,
+    category_id: '1',
+    stream_icon: `http://img.test/ch_${idx}.png`,
+  }));
+
+  (XtreamService as any).getVodCategories = async () => [vodCategories39k[0]];
+  (XtreamService as any).getVodStreams = async () => movies2500;
+  (XtreamService as any).getSeriesCategories = async () => [seriesCategories39k[0]];
+  (XtreamService as any).getSeries = async () => series2500;
+  (XtreamService as any).getLiveCategories = async () => [liveCategories39k[0]];
+  (XtreamService as any).getLiveStreams = async () => live3000;
+  (XtreamService as any).getVodInfo = async (creds: any, id: any) => ({
+    info: { name: `Filme Detalhe ${id}`, plot: 'Sinopse de teste', rating: '8.8', releasedate: '2024' },
+    movie_data: { stream_id: Number(id), name: `Filme Detalhe ${id}`, container_extension: 'mp4' },
+  });
+
+  const virtContainer = document.createElement('div');
+  document.body.appendChild(virtContainer);
+  const virtRoot = createRoot(virtContainer);
+
+  const mockOnPlay = () => {};
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: creds39k },
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(MoviesView, { onPlay: mockOnPlay })
+        )
+      )
+    );
+    await new Promise((r) => setTimeout(r, 80));
+  });
+
+  const moviesScrollEl = virtContainer.querySelector('[data-scroll-container="true"]') as HTMLElement;
+  assert(moviesScrollEl, 'Container rolável de MoviesView deve existir');
+  Object.defineProperty(moviesScrollEl, 'clientHeight', { value: 720, configurable: true });
+  Object.defineProperty(moviesScrollEl, 'clientWidth', { value: 1100, configurable: true });
+
+  // Selecionar a categoria 101 (com 2.500 filmes)
+  const catBtnMovies = virtContainer.querySelector('button[data-category-id="101"]') as HTMLButtonElement;
+  assert(catBtnMovies, 'Botão da Categoria 101 em MoviesView deve existir');
+  await act(async () => {
+    catBtnMovies.click();
+    await new Promise((r) => setTimeout(r, 40));
+  });
+
+  const initialMountedMovieCards = virtContainer.querySelectorAll('[data-nav-grid="true"] [data-nav-item="true"]').length;
+  assert(
+    initialMountedMovieCards > 0 && initialMountedMovieCards <= 96,
+    `MoviesView deve montar no máximo 96 cards inicialmente (montou ${initialMountedMovieCards} de 2.500)`
+  );
+
+  // Simular rolagem profunda para scrollTop = 15000 (aprox. metade da grade de 2.500 filmes)
+  await act(async () => {
+    moviesScrollEl.scrollTop = 15000;
+    moviesScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  const deepScrollMountedMovieCards = Array.from(
+    virtContainer.querySelectorAll('[data-nav-grid="true"] [data-nav-item="true"]')
+  ) as HTMLElement[];
+  assert(
+    deepScrollMountedMovieCards.length > 0 && deepScrollMountedMovieCards.length <= 96,
+    `Após rolagem profunda (scrollTop=15000), MoviesView deve manter janela limitada <= 96 cards no DOM (montou ${deepScrollMountedMovieCards.length})`
+  );
+  const firstMountedDeepIdx = Number(deepScrollMountedMovieCards[0].getAttribute('data-virtual-index'));
+  assert(
+    firstMountedDeepIdx > 100,
+    `Após rolagem profunda, a janela virtual deve ter avançado além dos primeiros 100 itens (startIndex=${firstMountedDeepIdx})`
+  );
+
+  // Testar preservação de scrollTop e foco ao abrir e fechar MovieDetails em posição profunda da janela virtual
+  const targetMidCard = deepScrollMountedMovieCards[Math.floor(deepScrollMountedMovieCards.length / 2)];
+  const targetMidVirtualIndex = targetMidCard.getAttribute('data-virtual-index');
+  assert(targetMidVirtualIndex, 'Card no meio da janela virtual deve possuir data-virtual-index');
+
+  await act(async () => {
+    targetMidCard.focus();
+    targetMidCard.click();
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  assert(
+    virtContainer.textContent?.includes('Sinopse de teste'),
+    'Clicar em um filme na janela virtual deve abrir MovieDetails'
+  );
+
+  // Fechar MovieDetails via tecla Escape (política central de Voltar)
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  assert.strictEqual(
+    moviesScrollEl.scrollTop,
+    15000,
+    'Fechar MovieDetails deve preservar exatamente o scrollTop profundo (15000) na grade virtualizada'
+  );
+  const restoredCard = virtContainer.querySelector(
+    `[data-nav-grid="true"] [data-virtual-index="${targetMidVirtualIndex}"]`
+  ) as HTMLElement;
+  assert(restoredCard !== null, 'O card do filme aberto deve continuar montado na janela virtual ao fechar MovieDetails');
+  assertSameElement(
+    document.activeElement,
+    restoredCard,
+    'O foco deve ser restaurado para o mesmo card na grade virtualizada após fechar MovieDetails'
+  );
+
+  // Testar travessia de fronteira da janela virtual via D-Pad (focar último card montado e pressionar ArrowRight)
+  const currentWindowCards = Array.from(
+    virtContainer.querySelectorAll('[data-nav-grid="true"] [data-nav-item="true"]')
+  ) as HTMLElement[];
+  const lastCardInWindow = currentWindowCards[currentWindowCards.length - 1];
+  const lastIdxBeforeMove = Number(lastCardInWindow.getAttribute('data-virtual-index'));
+  await act(async () => {
+    lastCardInWindow.focus();
+  });
+  await act(async () => {
+    moveSpatialFocus('right');
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  const activeAfterBoundaryMove = document.activeElement as HTMLElement;
+  const activeVirtualIndex = Number(activeAfterBoundaryMove?.getAttribute('data-virtual-index'));
+  assert.strictEqual(
+    activeVirtualIndex,
+    lastIdxBeforeMove + 1,
+    `Pressionar seta na borda da janela virtual deve expandir a janela sincronamente e focar o próximo índice (${lastIdxBeforeMove + 1})`
+  );
+
+  // Benchmark de 5 movimentações consecutivas por setas na grade virtualizada de 2.500 filmes + telemetria de spatialNav
+  const gridItemsNow = Array.from(
+    virtContainer.querySelectorAll('[data-nav-grid="true"] [data-nav-item="true"]')
+  ) as HTMLElement[];
+  gridItemsNow.forEach((el, idx) => {
+    const col = idx % 6;
+    const row = Math.floor(idx / 6);
+    el.getBoundingClientRect = () =>
+      ({
+        left: 280 + col * 160,
+        top: 120 + row * 240,
+        right: 280 + col * 160 + 145,
+        bottom: 120 + row * 240 + 220,
+        width: 145,
+        height: 220,
+        x: 280 + col * 160,
+        y: 120 + row * 240,
+        toJSON: () => {},
+      }) as DOMRect;
+  });
+
+  await act(async () => {
+    gridItemsNow[0].focus();
+  });
+  resetSpatialNavPerfStats();
+  const tNavStart = performance.now();
+  const directions: Array<'right' | 'down' | 'left' | 'up'> = ['right', 'right', 'down', 'left', 'down'];
+  for (const dir of directions) {
+    moveSpatialFocus(dir);
+  }
+  const nav5MovesAfterMs = performance.now() - tNavStart;
+  const spatialStats = getSpatialNavPerfStats();
+
+  assert.strictEqual(spatialStats.moveCalls, 5, 'Deve registrar 5 chamadas a moveSpatialFocus');
+  assert(
+    spatialStats.computedStyleCalls < 600,
+    `Com memoização hierárquica e virtualização, 5 movimentos de seta devem fazer menos de 600 chamadas a getComputedStyle (fez ${spatialStats.computedStyleCalls} vs 137.550 antes)`
+  );
+
+  // Verificar virtualização em SeriesView (2.500 séries) e LiveTvView (3.000 canais)
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: creds39k },
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(SeriesView, { onPlay: mockOnPlay })
+        )
+      )
+    );
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  const catBtnSeries = virtContainer.querySelector('button[data-category-id="201"]') as HTMLButtonElement;
+  assert(catBtnSeries, 'Botão da Categoria 201 em SeriesView deve existir');
+  await act(async () => {
+    catBtnSeries.click();
+    await new Promise((r) => setTimeout(r, 40));
+  });
+
+  const seriesScrollEl = virtContainer.querySelector('[data-scroll-container="true"]') as HTMLElement;
+  assert(seriesScrollEl, 'Container rolável de SeriesView deve existir');
+  await act(async () => {
+    seriesScrollEl.scrollTop = 12000;
+    seriesScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  const mountedSeriesCards = virtContainer.querySelectorAll('[data-nav-grid="true"] [data-nav-item="true"]').length;
+  assert(
+    mountedSeriesCards > 0 && mountedSeriesCards <= 96,
+    `SeriesView após rolagem profunda deve manter <= 96 cards montados (montou ${mountedSeriesCards} de 2.500)`
+  );
+
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: creds39k },
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(LiveTvView, { isTvMode: true })
+        )
+      )
+    );
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  // Abrir a categoria 1 de TV ao Vivo (com 3.000 canais)
+  const catBtnLive = virtContainer.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
+  assert(catBtnLive, 'Botão da Categoria 1 na TV ao Vivo deve existir');
+  await act(async () => {
+    catBtnLive.click();
+    await new Promise((r) => setTimeout(r, 40));
+  });
+
+  const liveChannelsScrollEl = virtContainer.querySelector('[data-scroll-container="true"]') as HTMLElement;
+  assert(liveChannelsScrollEl, 'Lista rolável de canais em LiveTvView deve existir');
+  await act(async () => {
+    liveChannelsScrollEl.scrollTop = 18000;
+    liveChannelsScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  const mountedLiveChannelButtons = liveChannelsScrollEl.querySelectorAll('button[data-live-channel-btn="true"]').length;
+  assert(
+    mountedLiveChannelButtons > 0 && mountedLiveChannelButtons <= 80,
+    `LiveTvView após rolagem profunda em 3.000 canais deve manter <= 80 botões montados no DOM (montou ${mountedLiveChannelButtons})`
+  );
+
+  // =========================================================================
+  // 12.7. Controle de repetição contínua (e.repeat) no NavigationProvider e cache de MediaImage
+  // =========================================================================
+  const firstChannelBtn = liveChannelsScrollEl.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
+  assert(firstChannelBtn, 'Primeiro botão da janela virtual de canais deve existir');
+  await act(async () => {
+    firstChannelBtn.focus();
+  });
+
+  resetSpatialNavPerfStats();
+  // Disparar 6 eventos keydown seguidos com repeat: true no mesmo instante -> apenas o 1º deve acionar moveSpatialFocus imediatamente
+  await act(async () => {
+    for (let i = 0; i < 6; i++) {
+      windowInstance.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'ArrowDown',
+          repeat: true,
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    }
+  });
+  const repeatStats = getSpatialNavPerfStats();
+  assert.strictEqual(
+    repeatStats.moveCalls,
+    1,
+    'Rajada síncrona de keydown com repeat=true deve ser limitada pelo throttle de repetição (1 movimento por intervalo de 48ms)'
+  );
+
+  // Teste de cache de URL carregada no MediaImage
+  clearLoadedImageUrlCache();
+  const testImgUrl = 'http://img.test/poster_cached_test.jpg';
+  assert.strictEqual(hasLoadedImageUrl(testImgUrl), false, 'URL não deve iniciar no cache de imagens carregadas');
+
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(MediaImage, {
+        src: testImgUrl,
+        alt: 'Poster Teste',
+        className: 'w-20 h-20',
+      })
+    );
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  const imgEl1 = virtContainer.querySelector('img') as HTMLImageElement;
+  assert(imgEl1, 'Elemento <img> deve ser renderizado pelo MediaImage');
+  assert(imgEl1.className.includes('opacity-0'), 'Antes do onLoad, imagem não cacheada deve iniciar com opacity-0');
+
+  await act(async () => {
+    imgEl1.dispatchEvent(new windowInstance.Event('load') as unknown as Event);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  assert.strictEqual(hasLoadedImageUrl(testImgUrl), true, 'Após onLoad, URL deve ser registrada no loadedImageUrlsCache');
+  assert(imgEl1.className.includes('opacity-100'), 'Após onLoad, imagem deve ficar com opacity-100');
+
+  // Remontar MediaImage com a mesma URL -> já deve nascer com opacity-100 sem piscar em opacity-0
+  await act(async () => {
+    virtRoot.render(React.createElement('div', null));
+  });
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(MediaImage, {
+        src: testImgUrl,
+        alt: 'Poster Teste Remontado',
+        className: 'w-20 h-20',
+      })
+    );
+  });
+  const imgEl2 = virtContainer.querySelector('img') as HTMLImageElement;
+  assert(
+    imgEl2 && imgEl2.className.includes('opacity-100') && !imgEl2.className.includes('opacity-0'),
+    'Ao remontar MediaImage para uma URL já carregada na sessão, a imagem deve iniciar imediatamente visível (opacity-100)'
+  );
+
+  await act(async () => {
+    virtRoot.unmount();
+  });
+  document.body.removeChild(virtContainer);
+  installDefaultXtreamOfflineMocks();
+
+  console.log(
+    `📊 [Benchmark 39k Registros Otimizado] Passada Fria=${coldCatalogPassMs.toFixed(2)}ms (sorts=${coldRankingStats.sortCalls}) | ` +
+      `3x Escala/Reabertura Quente=${warmScaleChange3xMs.toFixed(2)}ms (sorts=${warmRankingStats.sortCalls}) | ` +
+      `Canais Categoria (Frio=${liveCatColdMs.toFixed(2)}ms / Quente=${liveCatWarmMs.toFixed(3)}ms) | ` +
+      `Cards Montados DeepScroll=${deepScrollMountedMovieCards.length} | ` +
+      `5 Movimentos D-Pad=${nav5MovesAfterMs.toFixed(2)}ms (getComputedStyle=${spatialStats.computedStyleCalls})`
+  );
+  console.log('✅ Todos os testes de desempenho, indexação de catálogo, virtualização e navegação D-Pad aprovados!');
+}
+
 async function main() {
   console.log('🚀 INICIANDO VALIDAÇÃO COMPLETA DOS FAVORITOS SIMPLES E REGRESSÕES\n');
   runDirectUrlTests();
@@ -5216,6 +6063,7 @@ async function main() {
   await runDpadNavigationAndBackPolicyTests();
   await runDisplaySetupPreviewAndLifecycleTests();
   await runCapacitorTransportAndAuditFixTests();
+  await runPerformanceAndVirtualizationTests();
   await cleanupTestEnvironment();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
 }
@@ -5225,6 +6073,8 @@ main().catch(async (err) => {
   await cleanupTestEnvironment();
   process.exitCode = 1;
 });
+
+
 
 
 
