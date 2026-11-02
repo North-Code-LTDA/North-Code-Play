@@ -284,12 +284,16 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
     }
   }, []);
 
+  const [homeScrollContainerEl, setHomeScrollContainerEl] = useState<HTMLDivElement | null>(null);
   const topLiveRowItems = useMemo(() => filteredLive.slice(0, displayCount.live), [filteredLive]);
   const topVodRowItems = useMemo(() => filteredVod.slice(0, displayCount.vod), [filteredVod]);
   const topSeriesRowItems = useMemo(() => filteredSeries.slice(0, displayCount.series), [filteredSeries]);
 
+  let nextRowIndex = 0;
+
   return (
     <div
+      ref={setHomeScrollContainerEl}
       data-nav-zone="content"
       data-scroll-container="true"
       className="flex flex-col w-full h-full overflow-y-auto overflow-x-hidden"
@@ -311,6 +315,8 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
                title="Continuar Assistindo"
                items={continueWatching}
                type="vod"
+               rowIndex={nextRowIndex++}
+               scrollContainer={homeScrollContainerEl}
                onItemClick={handleContinueWatchingClick}
             />
           </div>
@@ -398,6 +404,8 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
                title="Canais Ao Vivo"
                items={topLiveRowItems}
                type="live"
+               rowIndex={nextRowIndex++}
+               scrollContainer={homeScrollContainerEl}
                onItemClick={handlePlayLive}
             />
           </div>
@@ -439,6 +447,8 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
                title="Filmes em Destaque"
                items={topVodRowItems}
                type="vod"
+               rowIndex={nextRowIndex++}
+               scrollContainer={homeScrollContainerEl}
                onItemClick={setSelectedMovie}
             />
           </div>
@@ -480,6 +490,8 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
                title="Séries em Destaque"
                items={topSeriesRowItems}
                type="series"
+               rowIndex={nextRowIndex++}
+               scrollContainer={homeScrollContainerEl}
                onItemClick={setSelectedSeries}
             />
           </div>
@@ -492,6 +504,8 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
               title={row.title}
               items={row.items}
               type="vod"
+              rowIndex={nextRowIndex++}
+              scrollContainer={homeScrollContainerEl}
               onItemClick={setSelectedMovie}
             />
           </div>
@@ -503,6 +517,8 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
               title={row.title}
               items={row.items}
               type="series"
+              rowIndex={nextRowIndex++}
+              scrollContainer={homeScrollContainerEl}
               onItemClick={setSelectedSeries}
             />
           </div>

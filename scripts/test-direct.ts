@@ -112,6 +112,17 @@ Object.defineProperty(windowInstance.HTMLElement.prototype, 'scrollTop', {
   configurable: true,
 });
 
+const scrollLeftMap = new WeakMap<Element, number>();
+Object.defineProperty(windowInstance.HTMLElement.prototype, 'scrollLeft', {
+  get() {
+    return scrollLeftMap.get(this) || 0;
+  },
+  set(val: number) {
+    scrollLeftMap.set(this, val);
+  },
+  configurable: true,
+});
+
 // 1.5 GUARDA DE ISOLAMENTO DE REDE PARA TESTES AUTOMATIZADOS (SEM ACESSO EXTERNO)
 function sanitizeUrlForTestLog(rawUrl: unknown): string {
   if (typeof rawUrl !== 'string' || !rawUrl.trim()) return '[url-vazia]';
@@ -5243,7 +5254,12 @@ async function runPerformanceAndVirtualizationTests() {
     MediaImage,
     hasLoadedImageUrl,
     clearLoadedImageUrlCache,
+    getSharedObserverDiagnostics,
+    setMediaImageRetryDelayMsForTest,
+    getActiveMediaImageRetryTimersCount,
   } = await import('../src/components/MediaImage');
+  const { HomeView } = await import('../src/views/HomeView');
+  const { getHistoryKey } = await import('../src/utils/playbackHistory');
 
   // =========================================================================
   // 12.1. Equivalência funcional exata de sortByYearAndRating + extração única + imutabilidade
@@ -7269,6 +7285,812 @@ async function runPerformanceAndVirtualizationTests() {
   assert.strictEqual(getCatalogIndexPerfStats().seriesIndexBuilds, 0);
   assert.strictEqual(getCatalogRankingPerfStats().metadataExtractions, 0);
 
+  // =========================================================================
+  // 12.14. Carregamento Eficiente das Imagens da Home (Visibilidade Vertical + Horizontal + Foco + Ciclo de Vida MediaImage + Fallback sem IntersectionObserver)
+  // =========================================================================
+  console.log('🧪 Testando 12.14: Carregamento eficiente de imagens na HomeView, HorizontalRow e MediaImage...');
+
+  clearLoadedImageUrlCache();
+
+  const credsHomeImg: XtreamCredentials = {
+    serverUrl: 'http://perf.tv:8080',
+    username: 'homeImgPerfUser',
+    password: '123',
+  };
+  const homeHistoryKey = getHistoryKey(credsHomeImg.serverUrl, credsHomeImg.username);
+  windowInstance.localStorage.removeItem(homeHistoryKey);
+
+  // Catálogo sintético determinístico para produzir exatamente 10 fileiras de 24 itens na Home (240 cartões + 1 HeroBanner = 241 imagens):
+  // - 1 fileira Canais Ao Vivo (24 itens)
+  // - 1 fileira Filmes em Destaque (24 itens)
+  // - 1 fileira Séries em Destaque (24 itens)
+  // - 4 fileiras de categorias de Filmes (4 × 24 = 96 itens)
+  // - 3 fileiras de categorias de Séries (3 × 24 = 72 itens)
+  // Total = 10 fileiras × 24 cartões = 240 cartões
+  const homeVodCats4 = Array.from({ length: 4 }, (_, i) => ({
+    category_id: String(501 + i),
+    category_name: `Filmes Cat ${i + 1}`,
+  }));
+  const homeSeriesCats3 = Array.from({ length: 3 }, (_, i) => ({
+    category_id: String(601 + i),
+    category_name: `Séries Cat ${i + 1}`,
+  }));
+  const homeLiveCats1 = [{ category_id: '701', category_name: 'Canais Ao Vivo Cat 1' }];
+
+  const homeLiveStreams30 = Array.from({ length: 30 }, (_, i) => ({
+    stream_id: 910000 + i,
+    name: `Canal Home ${i + 1} FHD`,
+    category_id: '701',
+    stream_icon: `http://img.test/home_live_${i + 1}.png`,
+  }));
+
+  const homeVodStreams520 = Array.from({ length: 520 }, (_, i) => {
+    const catId = String(501 + (i % 4));
+    return {
+      stream_id: 920000 + i,
+      name: `Filme Home ${i + 1} (2025)`,
+      category_id: catId,
+      rating: '8.7',
+      added: String(1710000000 + i * 10),
+      stream_icon: `http://img.test/home_vod_${i + 1}.jpg`,
+    };
+  });
+
+  const homeSeriesStreams120 = Array.from({ length: 120 }, (_, i) => {
+    const catId = String(601 + (i % 3));
+    return {
+      series_id: 930000 + i,
+      name: `Série Home ${i + 1} (2025)`,
+      category_id: catId,
+      rating: '8.9',
+      last_modified: String(1710000000 + i * 10),
+      cover: `http://img.test/home_series_${i + 1}.jpg`,
+    };
+  });
+
+  (XtreamService as any).getLiveCategories = async () => homeLiveCats1;
+  (XtreamService as any).getVodCategories = async () => homeVodCats4;
+  (XtreamService as any).getSeriesCategories = async () => homeSeriesCats3;
+  (XtreamService as any).getLiveStreams = async () => homeLiveStreams30;
+  (XtreamService as any).getVodStreams = async () => homeVodStreams520;
+  (XtreamService as any).getSeries = async () => homeSeriesStreams120;
+
+  // Helper para instalar geometria realista de layout vertical (fileiras no container [data-scroll-container="true"])
+  // e horizontal (cartões dentro de cada [data-nav-row="true"])
+  const origProtoGetBCRHome = windowInstance.HTMLElement.prototype.getBoundingClientRect;
+  const installHomeGeometryMock = (rootEl: HTMLElement) => {
+    (windowInstance.HTMLElement.prototype as any).getBoundingClientRect = function (this: HTMLElement): DOMRect {
+      // Container vertical rolável da HomeView
+      if (this.getAttribute('data-nav-zone') === 'content' && this.getAttribute('data-scroll-container') === 'true') {
+        return {
+          top: 0,
+          bottom: 720,
+          left: 0,
+          right: 1280,
+          width: 1280,
+          height: 720,
+          x: 0,
+          y: 0,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+
+      // Wrapper de cada fileira horizontal (possui data-home-row-index)
+      const rowIdxAttr = this.getAttribute('data-home-row-index');
+      if (rowIdxAttr !== null) {
+        const rIdx = Number(rowIdxAttr);
+        const scrollContainer = rootEl.querySelector(
+          '[data-nav-zone="content"][data-scroll-container="true"]'
+        ) as HTMLElement | null;
+        const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+        // Fileira 0 começa em top=520 (visível em viewport de 720px + 240px margem = 960px).
+        // Fileiras 1..N começam em 1020 + (rIdx - 1) * 320 (fora de 960px quando scrollTop = 0).
+        const baseTop = rIdx === 0 ? 520 : 1020 + (rIdx - 1) * 320;
+        const top = baseTop - scrollTop;
+        return {
+          top,
+          bottom: top + 260,
+          left: 48,
+          right: 1232,
+          width: 1184,
+          height: 260,
+          x: 48,
+          y: top,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+
+      // Faixa horizontal rolável [data-nav-row="true"]
+      if (this.getAttribute('data-nav-row') === 'true') {
+        const wrapper = this.closest('[data-home-row-index]') as HTMLElement | null;
+        const wrapperRect = wrapper
+          ? wrapper.getBoundingClientRect()
+          : ({ top: 520, bottom: 780 } as DOMRect);
+        return {
+          top: wrapperRect.top + 40,
+          bottom: wrapperRect.bottom,
+          left: 0,
+          right: 1120,
+          width: 1120,
+          height: 220,
+          x: 0,
+          y: wrapperRect.top + 40,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+
+      // Cartão individual dentro de uma fileira [data-row-card-index]
+      const cardIdxAttr = this.getAttribute('data-row-card-index');
+      if (cardIdxAttr !== null) {
+        const cIdx = Number(cardIdxAttr);
+        const navRow = this.closest('[data-nav-row="true"]') as HTMLElement | null;
+        const scrollLeft = navRow ? navRow.scrollLeft : 0;
+        const rowRect = navRow
+          ? navRow.getBoundingClientRect()
+          : ({ top: 560, bottom: 780 } as DOMRect);
+        // Cada cartão tem largura 165px + gap 20px = passo 185px.
+        // Com largura da fileira = 1120px e lookahead horizontal = 280px (limite direito = 1400px):
+        // Cartões 0..7 têm left = 0..1295 (<= 1400px -> dentro da faixa visível/antecipada).
+        // Cartões 8..N têm left >= 1480 (> 1400px -> fora da faixa horizontal quando scrollLeft = 0).
+        const left = cIdx * 185 - scrollLeft;
+        return {
+          top: rowRect.top,
+          bottom: rowRect.bottom,
+          left,
+          right: left + 165,
+          width: 165,
+          height: 220,
+          x: left,
+          y: rowRect.top,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+
+      return origProtoGetBCRHome.call(this);
+    };
+  };
+
+  installHomeGeometryMock(virtContainer);
+
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: credsHomeImg },
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(HomeView, { onPlay: mockOnPlay })
+        )
+      )
+    );
+    await new Promise((r) => setTimeout(r, 120));
+  });
+
+  // Forçar reavaliação da geometria inicial com scrollTop = 0 e scrollLeft = 0
+  const homeScrollEl = virtContainer.querySelector(
+    '[data-nav-zone="content"][data-scroll-container="true"]'
+  ) as HTMLElement;
+  assert(homeScrollEl !== null, '[12.14.3] Container interno rolável da HomeView deve existir');
+  Object.defineProperty(homeScrollEl, 'clientHeight', { value: 720, configurable: true });
+  Object.defineProperty(homeScrollEl, 'clientWidth', { value: 1280, configurable: true });
+
+  const allHomeRowWrappers = Array.from(
+    virtContainer.querySelectorAll('[data-home-row-index]')
+  ) as HTMLElement[];
+  const allHomeNavRows = Array.from(
+    virtContainer.querySelectorAll('[data-nav-row="true"]')
+  ) as HTMLElement[];
+  allHomeNavRows.forEach((rowEl) => {
+    Object.defineProperty(rowEl, 'clientWidth', { value: 1120, configurable: true });
+    Object.defineProperty(rowEl, 'clientHeight', { value: 220, configurable: true });
+  });
+
+  await act(async () => {
+    homeScrollEl.scrollTop = 0;
+    homeScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    allHomeNavRows.forEach((rowEl) => {
+      rowEl.scrollLeft = 0;
+      rowEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    });
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  // -------------------------------------------------------------------------
+  // Cenário Sintético A (10 fileiras × 24 itens = 240 cartões + 1 HeroBanner = 241 imagens)
+  // -------------------------------------------------------------------------
+  const mountedCards240 = virtContainer.querySelectorAll('[data-nav-row="true"] [data-nav-item="true"]').length;
+  const activeImgs240 = virtContainer.querySelectorAll('img[src]').length;
+  const eagerImgs240 = virtContainer.querySelectorAll('img[loading="eager"]').length;
+  const syncDecodingImgs240 = virtContainer.querySelectorAll('img[decoding="sync"]').length;
+  const asyncDecodingImgs240 = virtContainer.querySelectorAll('img[decoding="async"]').length;
+  const deferredPlaceholders240 = virtContainer.querySelectorAll('[data-media-image-deferred="true"]').length;
+
+  assert.strictEqual(
+    allHomeRowWrappers.length,
+    10,
+    `[12.14] Cenário sintético padrão da Home deve montar 10 fileiras (montou ${allHomeRowWrappers.length})`
+  );
+  assert.strictEqual(
+    mountedCards240,
+    240,
+    `[12.14] Todos os 240 cartões das 10 fileiras devem permanecer montados e acessíveis (montou ${mountedCards240})`
+  );
+  assert.strictEqual(
+    activeImgs240,
+    9,
+    `[12.14] Em scrollTop=0 e scrollLeft=0, apenas 9 imagens devem ter src ativo (1 HeroBanner + 8 cartões visíveis da 1ª fileira), obteve ${activeImgs240} (antes: 241)`
+  );
+  assert.strictEqual(
+    deferredPlaceholders240,
+    232,
+    `[12.14] As 232 imagens fora da área visível/antecipada (16 da 1ª fileira + 216 das 9 fileiras distantes) devem aguardar diferidas, obteve ${deferredPlaceholders240}`
+  );
+  assert.strictEqual(
+    eagerImgs240,
+    1,
+    `[12.14] Apenas 1 imagem (HeroBanner) deve usar loading="eager", obteve ${eagerImgs240} (antes: 81)`
+  );
+  assert.strictEqual(
+    syncDecodingImgs240,
+    0,
+    `[12.14] Nenhuma imagem deve usar decoding="sync" por padrão, obteve ${syncDecodingImgs240} (antes: 81)`
+  );
+  assert.strictEqual(
+    asyncDecodingImgs240,
+    activeImgs240,
+    `[12.14] Todas as imagens ativas (incluindo HeroBanner) devem usar decoding="async"`
+  );
+
+  const heroImgEl = virtContainer.querySelector('[data-scroll-top-anchor="true"] img') as HTMLImageElement | null;
+  assert(heroImgEl !== null, '[12.14] Imagem principal do HeroBanner deve estar ativa imediatamente');
+  assert.strictEqual(heroImgEl!.getAttribute('loading'), 'eager', '[12.14] HeroBanner deve ter loading="eager"');
+  assert.strictEqual(heroImgEl!.getAttribute('decoding'), 'async', '[12.14] HeroBanner deve ter decoding="async"');
+  assert.strictEqual(heroImgEl!.getAttribute('fetchpriority'), 'high', '[12.14] HeroBanner deve ter fetchpriority="high"');
+
+  // -------------------------------------------------------------------------
+  // Teste 3: Uso do contêiner interno correto ([data-scroll-container="true"]) e compartilhamento de observers
+  // -------------------------------------------------------------------------
+  const observerDiag = getSharedObserverDiagnostics();
+  assert(
+    observerDiag.verticalObserverRoots.includes(homeScrollEl),
+    '[12.14.3] O observer vertical das fileiras da HomeView deve usar exatamente o container interno [data-nav-zone="content"][data-scroll-container="true"] como root'
+  );
+  assert.strictEqual(
+    observerDiag.verticalObserverRoots.length,
+    1,
+    `[12.14.3] Todas as 10 fileiras da HomeView devem compartilhar 1 única instância de observer vertical para o container rolável (obteve ${observerDiag.verticalObserverRoots.length})`
+  );
+  assert.strictEqual(
+    observerDiag.horizontalObserverRoots.length,
+    10,
+    `[12.14.3] Cada fileira [data-nav-row="true"] deve compartilhar 1 instância de observer horizontal para seus 24 cartões (obteve ${observerDiag.horizontalObserverRoots.length})`
+  );
+
+  // -------------------------------------------------------------------------
+  // Teste 1: Fileira distante aguardando em scrollTop = 0 e iniciando imagens ao se aproximar verticalmente
+  // -------------------------------------------------------------------------
+  const distantRow3Wrapper = virtContainer.querySelector('[data-home-row-index="3"]') as HTMLElement;
+  assert(distantRow3Wrapper !== null, '[12.14.1] Fileira distante (índice 3) deve estar montada');
+  assert.strictEqual(
+    distantRow3Wrapper.querySelectorAll('img[src]').length,
+    0,
+    '[12.14.1] Em scrollTop=0, fileira verticalmente distante (índice 3) deve ter 0 imagens iniciadas mesmo para seus primeiros cartões horizontais'
+  );
+
+  // Rolar verticalmente para aproximar a fileira 3 (baseTop = 1020 + 2 * 320 = 1660; com scrollTop = 1050, top = 610 -> visível!)
+  await act(async () => {
+    homeScrollEl.scrollTop = 1050;
+    homeScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  const row3ActiveImgsAfterVerticalScroll = distantRow3Wrapper.querySelectorAll('img[src]').length;
+  assert.strictEqual(
+    row3ActiveImgsAfterVerticalScroll,
+    8,
+    `[12.14.1] Ao aproximar a fileira 3 verticalmente (scrollTop=1050), exatamente as 8 imagens dentro da faixa horizontal visível/antecipada devem iniciar (obteve ${row3ActiveImgsAfterVerticalScroll})`
+  );
+  assert.strictEqual(
+    distantRow3Wrapper.querySelector('[data-row-card-index="12"] img'),
+    null,
+    '[12.14.1] Cartões fora da faixa horizontal (ex.: índice 12) na fileira 3 devem continuar aguardando até que haja rolagem horizontal ou foco'
+  );
+
+  // Retornar scrollTop para 0 -> as 8 imagens já autorizadas na fileira 3 devem preservar seu estado (não desautorizar)
+  await act(async () => {
+    homeScrollEl.scrollTop = 0;
+    homeScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  assert.strictEqual(
+    distantRow3Wrapper.querySelectorAll('img[src]').length,
+    8,
+    '[12.14.5] Ao sair da área visível verticalmente, as imagens já autorizadas na fileira 3 devem manter seu elemento <img> e estado'
+  );
+
+  // -------------------------------------------------------------------------
+  // Teste 2: Imagem fora da faixa horizontal aguardando em scrollLeft = 0 e iniciando ao se aproximar horizontalmente
+  // -------------------------------------------------------------------------
+  const row0Wrapper = virtContainer.querySelector('[data-home-row-index="0"]') as HTMLElement;
+  const row0NavEl = row0Wrapper.querySelector('[data-nav-row="true"]') as HTMLElement;
+  const row0Card12 = row0Wrapper.querySelector('[data-row-card-index="12"]') as HTMLElement;
+  assert(row0Card12 !== null, '[12.14.2] Cartão 12 da fileira 0 deve existir');
+  assert.strictEqual(
+    row0Card12.querySelector('img[src]'),
+    null,
+    '[12.14.2] Em scrollLeft=0, o cartão 12 (left=2220 > 1400) deve aguardar sem iniciar requisição de imagem'
+  );
+
+  // Rolar horizontalmente a fileira 0 (scrollLeft = 1500 -> cartão 12 passa a ter left = 2220 - 1500 = 720, visível!)
+  await act(async () => {
+    row0NavEl.scrollLeft = 1500;
+    row0NavEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  const row0Card12Img = row0Card12.querySelector('img[src]') as HTMLImageElement | null;
+  assert(
+    row0Card12Img !== null,
+    '[12.14.2] Ao aproximar o cartão 12 horizontalmente (scrollLeft=1500), sua imagem deve iniciar imediatamente'
+  );
+  assert.strictEqual(row0Card12Img!.getAttribute('loading'), 'lazy');
+  assert.strictEqual(row0Card12Img!.getAttribute('decoding'), 'async');
+
+  // -------------------------------------------------------------------------
+  // Teste 4: Ativação da imagem ao receber foco por teclado ou controle remoto
+  // -------------------------------------------------------------------------
+  const distantRow6Wrapper = virtContainer.querySelector('[data-home-row-index="6"]') as HTMLElement;
+  const distantRow6Card18 = distantRow6Wrapper.querySelector('[data-row-card-index="18"]') as HTMLElement;
+  assert(distantRow6Card18 !== null, '[12.14.4] Cartão 18 da fileira distante 6 deve estar montado');
+  assert.strictEqual(
+    distantRow6Card18.querySelector('img[src]'),
+    null,
+    '[12.14.4] Antes do foco, o cartão distante (fileira 6, cartão 18) não deve ter <img> ativo'
+  );
+
+  await act(async () => {
+    distantRow6Card18.focus();
+    await new Promise((r) => setTimeout(r, 25));
+  });
+
+  assertSameElement(
+    document.activeElement,
+    distantRow6Card18,
+    '[12.14.4] O foco por teclado/controle remoto deve permanecer no cartão focado'
+  );
+  assert(
+    distantRow6Card18.querySelector('img[src]') !== null,
+    '[12.14.4] Focar um cartão via teclado/controle remoto deve autorizar e iniciar imediatamente sua imagem'
+  );
+
+  // -------------------------------------------------------------------------
+  // Cenário Sintético B: 500 itens elegíveis em "Continuar Assistindo" + 10 fileiras de 24 (740 cartões, 741 imagens)
+  // -------------------------------------------------------------------------
+  const historyMap500: Record<string, any> = {};
+  for (let i = 0; i < 500; i++) {
+    const movie = homeVodStreams520[i];
+    const idStr = String(movie.stream_id);
+    historyMap500[`movie:${idStr}`] = {
+      id: idStr,
+      type: 'movie',
+      updatedAt: 1715000000000 - i * 1000,
+      positionSec: 180, // > 30s (elegível para Continuar Assistindo)
+    };
+  }
+  windowInstance.localStorage.setItem(homeHistoryKey, JSON.stringify(historyMap500));
+
+  await act(async () => {
+    windowInstance.dispatchEvent(new windowInstance.Event('northcode_history_updated'));
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  const allHomeNavRowsWithCW = Array.from(
+    virtContainer.querySelectorAll('[data-nav-row="true"]')
+  ) as HTMLElement[];
+  allHomeNavRowsWithCW.forEach((rowEl) => {
+    Object.defineProperty(rowEl, 'clientWidth', { value: 1120, configurable: true });
+    Object.defineProperty(rowEl, 'clientHeight', { value: 220, configurable: true });
+  });
+
+  // Resetar para uma montagem limpa no topo (scrollTop = 0, scrollLeft = 0) com os 500 itens de Continuar Assistindo
+  await act(async () => {
+    virtRoot.render(React.createElement('div', null));
+  });
+  clearLoadedImageUrlCache();
+
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: credsHomeImg },
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(HomeView, { onPlay: mockOnPlay })
+        )
+      )
+    );
+    await new Promise((r) => setTimeout(r, 120));
+  });
+
+  const homeScrollElCW = virtContainer.querySelector(
+    '[data-nav-zone="content"][data-scroll-container="true"]'
+  ) as HTMLElement;
+  Object.defineProperty(homeScrollElCW, 'clientHeight', { value: 720, configurable: true });
+  Object.defineProperty(homeScrollElCW, 'clientWidth', { value: 1280, configurable: true });
+  const navRowsCW = Array.from(virtContainer.querySelectorAll('[data-nav-row="true"]')) as HTMLElement[];
+  navRowsCW.forEach((rowEl) => {
+    Object.defineProperty(rowEl, 'clientWidth', { value: 1120, configurable: true });
+    Object.defineProperty(rowEl, 'clientHeight', { value: 220, configurable: true });
+  });
+
+  await act(async () => {
+    homeScrollElCW.scrollTop = 0;
+    homeScrollElCW.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    navRowsCW.forEach((rowEl) => {
+      rowEl.scrollLeft = 0;
+      rowEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    });
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  const continueWatchingRowWrapper = virtContainer.querySelector('[data-home-row-index="0"]') as HTMLElement;
+  const continueWatchingCards = continueWatchingRowWrapper.querySelectorAll('[data-nav-item="true"]');
+  const mountedCards740 = virtContainer.querySelectorAll('[data-nav-row="true"] [data-nav-item="true"]').length;
+  const activeImgs740 = virtContainer.querySelectorAll('img[src]').length;
+  const eagerImgs740 = virtContainer.querySelectorAll('img[loading="eager"]').length;
+  const syncDecodingImgs740 = virtContainer.querySelectorAll('img[decoding="sync"]').length;
+
+  assert.strictEqual(
+    continueWatchingCards.length,
+    500,
+    `[12.14] Todos os 500 itens elegíveis de "Continuar Assistindo" devem permanecer montados e acessíveis (montou ${continueWatchingCards.length})`
+  );
+  assert.strictEqual(
+    mountedCards740,
+    740,
+    `[12.14] Total de cartões montados na Home com 500 itens em Continuar Assistindo + 10 fileiras de 24 deve ser 740 (montou ${mountedCards740})`
+  );
+  assert.strictEqual(
+    activeImgs740,
+    9,
+    `[12.14] Mesmo com 500 itens em Continuar Assistindo (741 imagens totais), apenas 9 imagens devem iniciar em scrollTop=0/scrollLeft=0 (1 HeroBanner + 8 primeiros de Continuar Assistindo), obteve ${activeImgs740} (antes: 741)`
+  );
+  assert.strictEqual(
+    eagerImgs740,
+    1,
+    `[12.14] Em 741 imagens totais, apenas 1 (HeroBanner) deve ser eager, obteve ${eagerImgs740} (antes: 89)`
+  );
+  assert.strictEqual(
+    syncDecodingImgs740,
+    0,
+    `[12.14] Em 741 imagens totais, 0 imagens devem ter decoding="sync", obteve ${syncDecodingImgs740} (antes: 89)`
+  );
+
+  // Verificar que o 500º item de "Continuar Assistindo" (índice 499) é acessível e ativa sua imagem ao receber foco
+  const cwCard499 = continueWatchingCards[499] as HTMLElement;
+  assert.strictEqual(
+    cwCard499.querySelector('img[src]'),
+    null,
+    '[12.14] 500º cartão de Continuar Assistindo deve aguardar diferido antes de ser rolado ou focado'
+  );
+  await act(async () => {
+    cwCard499.focus();
+    await new Promise((r) => setTimeout(r, 25));
+  });
+  assert(
+    cwCard499.querySelector('img[src]') !== null,
+    '[12.14] Focar o 500º cartão de Continuar Assistindo deve iniciar imediatamente sua imagem'
+  );
+
+  windowInstance.localStorage.removeItem(homeHistoryKey);
+
+  // -------------------------------------------------------------------------
+  // Teste 5 e Teste 6: Reentrada na área visível, re-renderizações preservando estado,
+  // nova tentativa única após ~2s, troca de origem e limpeza de observers/timers na desmontagem
+  // -------------------------------------------------------------------------
+  await act(async () => {
+    virtRoot.render(React.createElement('div', null));
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  const diagAfterHomeUnmount = getSharedObserverDiagnostics();
+  assert.strictEqual(
+    diagAfterHomeUnmount.activeObserverInstances,
+    0,
+    `[12.14.6] Após desmontar a HomeView, todas as instâncias compartilhadas de IntersectionObserver devem ser desconectadas e limpas (restaram ${diagAfterHomeUnmount.activeObserverInstances})`
+  );
+  assert.strictEqual(
+    diagAfterHomeUnmount.activeTargetSubscriptions,
+    0,
+    `[12.14.6] Após desmontar a HomeView, nenhuma assinatura de elemento deve restar ativa (restaram ${diagAfterHomeUnmount.activeTargetSubscriptions})`
+  );
+
+  // 5A: Preservação do estado carregado (loaded) ao sair e reentrar na área visível e durante re-renderizações
+  clearLoadedImageUrlCache();
+  const reenterUrl = 'http://img.test/reenter_preserve.jpg';
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(MediaImage, {
+        src: reenterUrl,
+        itemId: 'item_reenter_1',
+        alt: 'Teste Reentrada',
+        active: false,
+        loading: 'lazy',
+        className: 'w-24 h-36',
+      })
+    );
+  });
+  assert.strictEqual(
+    virtContainer.querySelector('img'),
+    null,
+    '[12.14.5] Com active=false inicial, MediaImage deve renderizar apenas a área reservada sem iniciar <img>'
+  );
+
+  // Autorizar (entrar na área visível)
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(MediaImage, {
+        src: reenterUrl,
+        itemId: 'item_reenter_1',
+        alt: 'Teste Reentrada',
+        active: true,
+        loading: 'lazy',
+        className: 'w-24 h-36',
+      })
+    );
+  });
+  const reenterImg1 = virtContainer.querySelector('img') as HTMLImageElement;
+  assert(reenterImg1 !== null, '[12.14.5] Ao mudar active para true, <img> deve ser montado');
+  await act(async () => {
+    reenterImg1.dispatchEvent(new windowInstance.Event('load') as unknown as Event);
+  });
+  assert(reenterImg1.className.includes('opacity-100'), '[12.14.5] Após load, imagem deve estar visível (opacity-100)');
+
+  // Sair da área visível (active=false) e reentrar (active=true) + múltiplas re-renderizações
+  for (const activeState of [false, true, false, true]) {
+    await act(async () => {
+      virtRoot.render(
+        React.createElement(MediaImage, {
+          src: reenterUrl,
+          itemId: 'item_reenter_1',
+          alt: 'Teste Reentrada',
+          active: activeState,
+          loading: 'lazy',
+          className: 'w-24 h-36',
+        })
+      );
+    });
+    const currentImg = virtContainer.querySelector('img') as HTMLImageElement;
+    assert(
+      currentImg !== null && currentImg.className.includes('opacity-100'),
+      `[12.14.5] Sair/reentrar da área visível (active=${activeState}) não deve descartar a imagem carregada nem reiniciar opacidade`
+    );
+  }
+
+  // 6A: Nova tentativa única (~2s), preservação do esgotamento de tentativas ao sair/reentrar, e reinício ao trocar src
+  setMediaImageRetryDelayMsForTest(35);
+  try {
+    const retryUrl1 = 'http://img.test/fail_once_then_exhaust.jpg';
+    await act(async () => {
+      virtRoot.render(
+        React.createElement(MediaImage, {
+          src: retryUrl1,
+          itemId: 'item_retry_1',
+          alt: 'Teste Retry Único',
+          active: true,
+          loading: 'lazy',
+          className: 'w-24 h-36',
+        })
+      );
+    });
+
+    const firstAttemptImg = virtContainer.querySelector('img') as HTMLImageElement;
+    assert(firstAttemptImg !== null, '[12.14.6] 1ª tentativa deve montar <img>');
+
+    // Disparar 1º erro -> deve agendar exatamente 1 timer de retry e ocultar <img> temporariamente
+    await act(async () => {
+      firstAttemptImg.dispatchEvent(new windowInstance.Event('error') as unknown as Event);
+    });
+    assert.strictEqual(
+      getActiveMediaImageRetryTimersCount(),
+      1,
+      '[12.14.6] Após 1º erro, deve haver exatamente 1 timer de nova tentativa ativo'
+    );
+    assert.strictEqual(
+      virtContainer.querySelector('img'),
+      null,
+      '[12.14.6] Enquanto aguarda a nova tentativa, a área reservada permanece sem <img> quebrado'
+    );
+
+    // Aguardar disparo da nova tentativa única
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 55));
+    });
+    assert.strictEqual(
+      getActiveMediaImageRetryTimersCount(),
+      0,
+      '[12.14.6] Após disparo do timer de retry, o contador de timers ativos deve voltar a 0'
+    );
+    const secondAttemptImg = virtContainer.querySelector('img') as HTMLImageElement;
+    assert(secondAttemptImg !== null, '[12.14.6] Após o intervalo de retry, a 2ª tentativa (attempt=1) deve montar <img>');
+
+    // Disparar 2º erro -> deve encerrar definitivamente em fallback visual sem novo timer
+    await act(async () => {
+      secondAttemptImg.dispatchEvent(new windowInstance.Event('error') as unknown as Event);
+    });
+    assert.strictEqual(
+      getActiveMediaImageRetryTimersCount(),
+      0,
+      '[12.14.6] Após falha na nova tentativa única, NÃO deve agendar outro timer'
+    );
+    assert.strictEqual(
+      virtContainer.querySelector('img'),
+      null,
+      '[12.14.6] Após falha definitiva, deve exibir o fallback visual sem <img>'
+    );
+
+    // Sair e reentrar na área visível (active: true -> false -> true) NÃO deve renovar orçamento de tentativas para a mesma imagem
+    await act(async () => {
+      virtRoot.render(
+        React.createElement(MediaImage, {
+          src: retryUrl1,
+          itemId: 'item_retry_1',
+          alt: 'Teste Retry Único',
+          active: false,
+          loading: 'lazy',
+          className: 'w-24 h-36',
+        })
+      );
+    });
+    await act(async () => {
+      virtRoot.render(
+        React.createElement(MediaImage, {
+          src: retryUrl1,
+          itemId: 'item_retry_1',
+          alt: 'Teste Retry Único',
+          active: true,
+          loading: 'lazy',
+          className: 'w-24 h-36',
+        })
+      );
+    });
+    assert.strictEqual(
+      virtContainer.querySelector('img'),
+      null,
+      '[12.14.5/6] Reentrar na área visível com a mesma origem já falha NÃO deve renovar tentativas nem recriar <img>'
+    );
+
+    // Trocar a origem (src) -> deve reiniciar o estado de erro/tentativa e permitir carregar a nova imagem
+    const retryUrl2 = 'http://img.test/new_source_after_error.jpg';
+    await act(async () => {
+      virtRoot.render(
+        React.createElement(MediaImage, {
+          src: retryUrl2,
+          itemId: 'item_retry_1',
+          alt: 'Teste Nova Origem',
+          active: true,
+          loading: 'lazy',
+          className: 'w-24 h-36',
+        })
+      );
+    });
+    const newSourceImg = virtContainer.querySelector('img') as HTMLImageElement;
+    assert(
+      newSourceImg !== null && newSourceImg.getAttribute('src') === retryUrl2,
+      '[12.14.6] Trocar a origem (src) deve reiniciar o estado de tentativa e montar o novo <img>'
+    );
+
+    // Disparar erro na nova origem e desmontar imediatamente -> timer pendente deve ser cancelado na desmontagem
+    await act(async () => {
+      newSourceImg.dispatchEvent(new windowInstance.Event('error') as unknown as Event);
+    });
+    assert.strictEqual(
+      getActiveMediaImageRetryTimersCount(),
+      1,
+      '[12.14.6] Erro na nova origem deve agendar 1 timer de retry'
+    );
+    await act(async () => {
+      virtRoot.render(React.createElement('div', null));
+    });
+    assert.strictEqual(
+      getActiveMediaImageRetryTimersCount(),
+      0,
+      '[12.14.6] Desmontar MediaImage com retry pendente deve cancelar o timer imediatamente'
+    );
+  } finally {
+    setMediaImageRetryDelayMsForTest(2000);
+  }
+
+  // -------------------------------------------------------------------------
+  // Teste 7: Fallback funcional quando IntersectionObserver não está disponível
+  // -------------------------------------------------------------------------
+  const savedWindowIO = (windowInstance as any).IntersectionObserver;
+  const savedGlobalIO = (globalThis as any).IntersectionObserver;
+  delete (windowInstance as any).IntersectionObserver;
+  delete (globalThis as any).IntersectionObserver;
+
+  try {
+    clearLoadedImageUrlCache();
+    await act(async () => {
+      virtRoot.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: credsHomeImg },
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(HomeView, { onPlay: mockOnPlay })
+          )
+        )
+      );
+      await new Promise((r) => setTimeout(r, 120));
+    });
+
+    const fallbackScrollEl = virtContainer.querySelector(
+      '[data-nav-zone="content"][data-scroll-container="true"]'
+    ) as HTMLElement;
+    Object.defineProperty(fallbackScrollEl, 'clientHeight', { value: 720, configurable: true });
+    Object.defineProperty(fallbackScrollEl, 'clientWidth', { value: 1280, configurable: true });
+    const fallbackNavRows = Array.from(
+      virtContainer.querySelectorAll('[data-nav-row="true"]')
+    ) as HTMLElement[];
+    fallbackNavRows.forEach((rowEl) => {
+      Object.defineProperty(rowEl, 'clientWidth', { value: 1120, configurable: true });
+      Object.defineProperty(rowEl, 'clientHeight', { value: 220, configurable: true });
+    });
+
+    await act(async () => {
+      fallbackScrollEl.scrollTop = 0;
+      fallbackScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      fallbackNavRows.forEach((rowEl) => {
+        rowEl.scrollLeft = 0;
+        rowEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      });
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const activeImgsFallbackInitial = virtContainer.querySelectorAll('img[src]').length;
+    assert.strictEqual(
+      activeImgsFallbackInitial,
+      9,
+      `[12.14.7] Sem IntersectionObserver, o fallback funcional deve iniciar exatamente as 9 imagens visíveis/antecipadas (obteve ${activeImgsFallbackInitial})`
+    );
+
+    // Rolagem vertical no modo fallback sem IntersectionObserver
+    await act(async () => {
+      fallbackScrollEl.scrollTop = 750;
+      fallbackScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    const fallbackRow2Wrapper = virtContainer.querySelector('[data-home-row-index="2"]') as HTMLElement;
+    assert.strictEqual(
+      fallbackRow2Wrapper.querySelectorAll('img[src]').length,
+      8,
+      '[12.14.7] Sem IntersectionObserver, rolar verticalmente deve ativar as 8 imagens visíveis da fileira alcançada'
+    );
+
+    // Desmontar e confirmar limpeza do fallback
+    await act(async () => {
+      virtRoot.render(React.createElement('div', null));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      getSharedObserverDiagnostics().activeObserverInstances,
+      0,
+      '[12.14.7] Desmontar no modo fallback deve remover todas as entradas de observação'
+    );
+  } finally {
+    if (savedWindowIO !== undefined) {
+      (windowInstance as any).IntersectionObserver = savedWindowIO;
+    }
+    if (savedGlobalIO !== undefined) {
+      (globalThis as any).IntersectionObserver = savedGlobalIO;
+    }
+    (windowInstance.HTMLElement.prototype as any).getBoundingClientRect = origProtoGetBCRHome;
+  }
+
   await act(async () => {
     virtRoot.unmount();
   });
@@ -7283,9 +8105,11 @@ async function runPerformanceAndVirtualizationTests() {
       `   • Agrupamento de Canais por Categoria: Frio=${liveCatColdMs.toFixed(2)}ms | Quente=${liveCatWarmMs.toFixed(3)}ms\n` +
       `   • Indexação Cooperativa (6k itens, batchSize=1000): lotes=${coopStats.batchesProcessed}, yields=${coopStats.batchYields}, UI intercalada em processed=${uiTaskProcessedSnapshot}\n` +
       `   • Extrações de Metadados (6k itens): Após Indexação=${statsAfterVodIndexBuild.metadataExtractions} | Após 1ª Ordenação=${statsAfterFirstVodSort.metadataExtractions} | Após 2ª Ordenação=${statsAfterSecondVodSort.metadataExtractions}\n` +
-      `   • 5 Movimentos D-Pad em Grade Virtualizada (2.500 itens): ${nav5MovesAfterMs.toFixed(2)}ms (getComputedStyle=${spatialStats.computedStyleCalls})`
+      `   • 5 Movimentos D-Pad em Grade Virtualizada (2.500 itens): ${nav5MovesAfterMs.toFixed(2)}ms (getComputedStyle=${spatialStats.computedStyleCalls})\n` +
+      `   • Home Sintética Padrão (10 fileiras, 240 cartões, 241 imagens): cartões=${mountedCards240} | img[src]=${activeImgs240} (antes: 241) | eager=${eagerImgs240} (antes: 81) | decoding=sync:${syncDecodingImgs240} (antes: 81)\n` +
+      `   • Home c/ 500 em Continuar Assistindo (11 fileiras, 740 cartões, 741 imagens): cartões=${mountedCards740} | img[src]=${activeImgs740} (antes: 741) | eager=${eagerImgs740} (antes: 89) | decoding=sync:${syncDecodingImgs740} (antes: 89)`
   );
-  console.log('✅ Todos os testes de desempenho, geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, imagens da Home (12.14), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {
