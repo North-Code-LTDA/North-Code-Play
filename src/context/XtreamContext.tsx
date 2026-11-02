@@ -25,6 +25,9 @@ import {
   getOrCreateLiveIndex,
   getOrCreateVodIndex,
   getOrCreateSeriesIndex,
+  buildLiveIndexAsync,
+  buildVodIndexAsync,
+  buildSeriesIndexAsync,
 } from "../utils/catalogIndex";
 
 export type OperationStatus = "idle" | "loading" | "ready" | "error";
@@ -649,11 +652,11 @@ export function XtreamProvider({
             signal,
           });
           if (sessionRef.current !== currentSession) return;
-          if (streams.length > 2500) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            if (sessionRef.current !== currentSession || signal.aborted) return;
-          }
-          const liveIdx = getOrCreateLiveIndex(streams);
+          const liveIdx = await buildLiveIndexAsync(streams, {
+            signal,
+            shouldCancel: () => sessionRef.current !== currentSession || signal.aborted,
+          });
+          if (!liveIdx || sessionRef.current !== currentSession || signal.aborted) return;
           allLiveStreamsRef.current = streams;
           setAllLiveStreams(streams);
           setLiveCatalogStatus("ready");
@@ -709,11 +712,11 @@ export function XtreamProvider({
             signal,
           });
           if (sessionRef.current !== currentSession) return;
-          if (streams.length > 2500) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            if (sessionRef.current !== currentSession || signal.aborted) return;
-          }
-          const vodIdx = getOrCreateVodIndex(streams);
+          const vodIdx = await buildVodIndexAsync(streams, {
+            signal,
+            shouldCancel: () => sessionRef.current !== currentSession || signal.aborted,
+          });
+          if (!vodIdx || sessionRef.current !== currentSession || signal.aborted) return;
           allVodStreamsRef.current = streams;
           setAllVodStreams(streams);
           setVodCatalogStatus("ready");
@@ -769,11 +772,11 @@ export function XtreamProvider({
             signal,
           });
           if (sessionRef.current !== currentSession) return;
-          if (streams.length > 2500) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            if (sessionRef.current !== currentSession || signal.aborted) return;
-          }
-          const seriesIdx = getOrCreateSeriesIndex(streams);
+          const seriesIdx = await buildSeriesIndexAsync(streams, {
+            signal,
+            shouldCancel: () => sessionRef.current !== currentSession || signal.aborted,
+          });
+          if (!seriesIdx || sessionRef.current !== currentSession || signal.aborted) return;
           allSeriesStreamsRef.current = streams;
           setAllSeriesStreams(streams);
           setSeriesCatalogStatus("ready");

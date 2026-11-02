@@ -426,6 +426,8 @@ export function LiveTvView({
     topSpacerPx: channelTopSpacerPx,
     bottomSpacerPx: channelBottomSpacerPx,
     ensureIndexMounted: ensureChannelIndexMounted,
+    scrollContainerCallbackRef: channelsScrollCallbackRef,
+    virtualContainerCallbackRef: channelsListCallbackRef,
   } = useVirtualWindow({
     totalCount: groupedChannels.length,
     mode: 'list',
@@ -1098,7 +1100,7 @@ export function LiveTvView({
               </h2>
             </div>
             
-            <div ref={channelsScrollRef} data-scroll-container="true" className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+            <div ref={channelsScrollCallbackRef} data-scroll-container="true" className="flex-1 overflow-y-auto p-2 custom-scrollbar">
               {liveError && rawFilteredStreams.length === 0 ? (
                 <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-3 my-4">
                   <p className="text-sm text-red-400">{liveError}</p>
@@ -1120,7 +1122,7 @@ export function LiveTvView({
                    <p className="text-sm">Nenhum canal encontrado.</p>
                  </div>
               ) : (
-                <div ref={channelsListRef} data-virtual-container="true" className="space-y-2">
+                <div ref={channelsListCallbackRef} data-virtual-container="true" className="space-y-2">
                   {channelTopSpacerPx > 0 && (
                     <div
                       aria-hidden="true"

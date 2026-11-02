@@ -8,6 +8,9 @@ export interface CatalogIndexPerfStats {
   categoryLookups: number;
   idLookups: number;
   heroComputations: number;
+  batchesProcessed: number;
+  batchYields: number;
+  abortedBuilds: number;
 }
 
 const indexPerfStats: CatalogIndexPerfStats = {
@@ -17,6 +20,9 @@ const indexPerfStats: CatalogIndexPerfStats = {
   categoryLookups: 0,
   idLookups: 0,
   heroComputations: 0,
+  batchesProcessed: 0,
+  batchYields: 0,
+  abortedBuilds: 0,
 };
 
 export function getCatalogIndexPerfStats(): CatalogIndexPerfStats {
@@ -30,6 +36,16 @@ export function resetCatalogIndexPerfStats(): void {
   indexPerfStats.categoryLookups = 0;
   indexPerfStats.idLookups = 0;
   indexPerfStats.heroComputations = 0;
+  indexPerfStats.batchesProcessed = 0;
+  indexPerfStats.batchYields = 0;
+  indexPerfStats.abortedBuilds = 0;
+}
+
+export interface CooperativeBuildOptions {
+  batchSize?: number;
+  signal?: AbortSignal;
+  shouldCancel?: () => boolean;
+  onBatchProgress?: (processedCount: number, totalCount: number, batchIndex: number) => void;
 }
 
 export interface RankedCatalogIndex<T> {
@@ -56,42 +72,15 @@ const vodIndexCache = new WeakMap<any[], RankedCatalogIndex<any>>();
 const seriesIndexCache = new WeakMap<any[], RankedCatalogIndex<any>>();
 const liveIndexCache = new WeakMap<any[], LiveCatalogIndex<any>>();
 
-function createRankedCatalogIndex<T extends Record<string, any>>(
-  items: T[],
-  idField: 'stream_id' | 'series_id',
-  domain: 'vod' | 'series'
+const inFlightVodBuilds = new WeakMap<any[], Promise<RankedCatalogIndex<any> | null>>();
+const inFlightSeriesBuilds = new WeakMap<any[], Promise<RankedCatalogIndex<any> | null>>();
+const inFlightLiveBuilds = new WeakMap<any[], Promise<LiveCatalogIndex<any> | null>>();
+
+function instantiateRankedCatalogIndex<T extends Record<string, any>>(
+  safeItems: T[],
+  byId: Map<string, T>,
+  byCategoryId: Map<string, T[]>
 ): RankedCatalogIndex<T> {
-  const safeItems = Array.isArray(items) ? items : [];
-  if (domain === 'vod') {
-    indexPerfStats.vodIndexBuilds++;
-  } else {
-    indexPerfStats.seriesIndexBuilds++;
-  }
-
-  const byId = new Map<string, T>();
-  const byCategoryId = new Map<string, T[]>();
-
-  for (let i = 0; i < safeItems.length; i++) {
-    const item = safeItems[i];
-    if (!item || typeof item !== 'object') continue;
-
-    const rawId = item[idField] ?? item.id;
-    if (rawId !== undefined && rawId !== null && rawId !== '') {
-      const idKey = String(rawId);
-      if (!byId.has(idKey)) {
-        byId.set(idKey, item);
-      }
-    }
-
-    const catKey = String(item.category_id ?? '');
-    let bucket = byCategoryId.get(catKey);
-    if (!bucket) {
-      bucket = [];
-      byCategoryId.set(catKey, bucket);
-    }
-    bucket.push(item);
-  }
-
   let sortedAllCache: T[] | null = null;
   let sortedAllYear = 0;
   const sortedByCategoryCache = new Map<string, { year: number; sorted: T[] }>();
@@ -131,6 +120,87 @@ function createRankedCatalogIndex<T extends Record<string, any>>(
       const sorted = rawCat.length > 0 ? sortByYearAndRating(rawCat) : [];
       sortedByCategoryCache.set(key, { year: maxYear, sorted });
       return sorted;
+    },
+  };
+}
+
+function createRankedCatalogIndex<T extends Record<string, any>>(
+  items: T[],
+  idField: 'stream_id' | 'series_id',
+  domain: 'vod' | 'series'
+): RankedCatalogIndex<T> {
+  const safeItems = Array.isArray(items) ? items : [];
+  if (domain === 'vod') {
+    indexPerfStats.vodIndexBuilds++;
+  } else {
+    indexPerfStats.seriesIndexBuilds++;
+  }
+
+  const byId = new Map<string, T>();
+  const byCategoryId = new Map<string, T[]>();
+
+  for (let i = 0; i < safeItems.length; i++) {
+    const item = safeItems[i];
+    if (!item || typeof item !== 'object') continue;
+
+    const rawId = item[idField] ?? item.id;
+    if (rawId !== undefined && rawId !== null && rawId !== '') {
+      const idKey = String(rawId);
+      if (!byId.has(idKey)) {
+        byId.set(idKey, item);
+      }
+    }
+
+    const catKey = String(item.category_id ?? '');
+    let bucket = byCategoryId.get(catKey);
+    if (!bucket) {
+      bucket = [];
+      byCategoryId.set(catKey, bucket);
+    }
+    bucket.push(item);
+  }
+
+  return instantiateRankedCatalogIndex(safeItems, byId, byCategoryId);
+}
+
+function instantiateLiveCatalogIndex<T = any>(
+  safeItems: T[],
+  byId: Map<string, T>,
+  byCategoryId: Map<string, T[]>
+): LiveCatalogIndex<T> {
+  const groupsByCategoryCache = new Map<string, LiveChannelGroup[]>();
+  let allGroupsCache: LiveChannelGroup[] | null = null;
+
+  return {
+    source: safeItems,
+    byId,
+    byCategoryId,
+    getByCategory(categoryId) {
+      indexPerfStats.categoryLookups++;
+      if (categoryId === undefined || categoryId === null) return [];
+      return byCategoryId.get(String(categoryId)) || [];
+    },
+    getById(id) {
+      indexPerfStats.idLookups++;
+      if (id === undefined || id === null || id === '') return undefined;
+      return byId.get(String(id));
+    },
+    getGroupsByCategory(categoryId) {
+      indexPerfStats.categoryLookups++;
+      if (categoryId === undefined || categoryId === null) return [];
+      const key = String(categoryId);
+      const cachedGroups = groupsByCategoryCache.get(key);
+      if (cachedGroups) return cachedGroups;
+      const rawCat = byCategoryId.get(key) || [];
+      const groups = rawCat.length > 0 ? groupLiveStreams(rawCat) : [];
+      groupsByCategoryCache.set(key, groups);
+      return groups;
+    },
+    getAllGroups() {
+      if (!allGroupsCache) {
+        allGroupsCache = groupLiveStreams(safeItems);
+      }
+      return allGroupsCache;
     },
   };
 }
@@ -183,44 +253,245 @@ export function getOrCreateLiveIndex<T = any>(liveStreams: T[]): LiveCatalogInde
     bucket.push(item);
   }
 
-  const groupsByCategoryCache = new Map<string, LiveChannelGroup[]>();
-  let allGroupsCache: LiveChannelGroup[] | null = null;
-
-  const index: LiveCatalogIndex<T> = {
-    source: safe,
-    byId,
-    byCategoryId,
-    getByCategory(categoryId) {
-      indexPerfStats.categoryLookups++;
-      if (categoryId === undefined || categoryId === null) return [];
-      return byCategoryId.get(String(categoryId)) || [];
-    },
-    getById(id) {
-      indexPerfStats.idLookups++;
-      if (id === undefined || id === null || id === '') return undefined;
-      return byId.get(String(id));
-    },
-    getGroupsByCategory(categoryId) {
-      indexPerfStats.categoryLookups++;
-      if (categoryId === undefined || categoryId === null) return [];
-      const key = String(categoryId);
-      const cachedGroups = groupsByCategoryCache.get(key);
-      if (cachedGroups) return cachedGroups;
-      const rawCat = byCategoryId.get(key) || [];
-      const groups = rawCat.length > 0 ? groupLiveStreams(rawCat) : [];
-      groupsByCategoryCache.set(key, groups);
-      return groups;
-    },
-    getAllGroups() {
-      if (!allGroupsCache) {
-        allGroupsCache = groupLiveStreams(safe);
-      }
-      return allGroupsCache;
-    },
-  };
-
+  const index = instantiateLiveCatalogIndex(safe, byId, byCategoryId);
   liveIndexCache.set(safe, index);
   return index;
+}
+
+async function buildRankedCatalogIndexCooperatively<T extends Record<string, any>>(
+  items: T[],
+  idField: 'stream_id' | 'series_id',
+  domain: 'vod' | 'series',
+  cache: WeakMap<any[], RankedCatalogIndex<any>>,
+  inFlightMap: WeakMap<any[], Promise<RankedCatalogIndex<any> | null>>,
+  options?: CooperativeBuildOptions
+): Promise<RankedCatalogIndex<T> | null> {
+  const safeItems = Array.isArray(items) ? items : [];
+  const isCancelled = () => Boolean(options?.signal?.aborted || options?.shouldCancel?.());
+
+  if (isCancelled()) {
+    indexPerfStats.abortedBuilds++;
+    return null;
+  }
+
+  const cached = cache.get(safeItems);
+  if (cached) {
+    return cached;
+  }
+
+  const existingInFlight = inFlightMap.get(safeItems);
+  if (existingInFlight && !options?.onBatchProgress) {
+    const res = await existingInFlight;
+    if (isCancelled()) {
+      indexPerfStats.abortedBuilds++;
+      return null;
+    }
+    if (res) return res;
+  }
+
+  const batchSize = Math.max(100, Math.floor(options?.batchSize ?? 1000));
+  const maxYear = new Date().getFullYear() + 1;
+
+  const taskPromise = (async (): Promise<RankedCatalogIndex<T> | null> => {
+    const byId = new Map<string, T>();
+    const byCategoryId = new Map<string, T[]>();
+    let batchIdx = 0;
+
+    for (let start = 0; start < safeItems.length; start += batchSize) {
+      if (isCancelled()) {
+        indexPerfStats.abortedBuilds++;
+        return null;
+      }
+
+      const end = Math.min(safeItems.length, start + batchSize);
+      for (let i = start; i < end; i++) {
+        const item = safeItems[i];
+        if (!item || typeof item !== 'object') continue;
+
+        const rawId = item[idField] ?? item.id;
+        if (rawId !== undefined && rawId !== null && rawId !== '') {
+          const idKey = String(rawId);
+          if (!byId.has(idKey)) {
+            byId.set(idKey, item);
+          }
+        }
+
+        const catKey = String(item.category_id ?? '');
+        let bucket = byCategoryId.get(catKey);
+        if (!bucket) {
+          bucket = [];
+          byCategoryId.set(catKey, bucket);
+        }
+        bucket.push(item);
+
+        // Pre-warm ranking metadata in cooperative batches
+        getValidYear(item, maxYear);
+        getValidRating(item);
+      }
+
+      indexPerfStats.batchesProcessed++;
+      batchIdx++;
+      options?.onBatchProgress?.(end, safeItems.length, batchIdx);
+
+      if (isCancelled()) {
+        indexPerfStats.abortedBuilds++;
+        return null;
+      }
+
+      if (end < safeItems.length) {
+        indexPerfStats.batchYields++;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (isCancelled()) {
+          indexPerfStats.abortedBuilds++;
+          return null;
+        }
+      }
+    }
+
+    if (domain === 'vod') {
+      indexPerfStats.vodIndexBuilds++;
+    } else {
+      indexPerfStats.seriesIndexBuilds++;
+    }
+
+    const index = instantiateRankedCatalogIndex(safeItems, byId, byCategoryId);
+    cache.set(safeItems, index);
+    return index;
+  })();
+
+  inFlightMap.set(safeItems, taskPromise);
+  try {
+    return await taskPromise;
+  } finally {
+    if (inFlightMap.get(safeItems) === taskPromise) {
+      inFlightMap.delete(safeItems);
+    }
+  }
+}
+
+export async function buildVodIndexAsync<T = any>(
+  vodStreams: T[],
+  options?: CooperativeBuildOptions
+): Promise<RankedCatalogIndex<T> | null> {
+  return buildRankedCatalogIndexCooperatively(
+    vodStreams as any[],
+    'stream_id',
+    'vod',
+    vodIndexCache,
+    inFlightVodBuilds,
+    options
+  );
+}
+
+export async function buildSeriesIndexAsync<T = any>(
+  seriesStreams: T[],
+  options?: CooperativeBuildOptions
+): Promise<RankedCatalogIndex<T> | null> {
+  return buildRankedCatalogIndexCooperatively(
+    seriesStreams as any[],
+    'series_id',
+    'series',
+    seriesIndexCache,
+    inFlightSeriesBuilds,
+    options
+  );
+}
+
+export async function buildLiveIndexAsync<T = any>(
+  liveStreams: T[],
+  options?: CooperativeBuildOptions
+): Promise<LiveCatalogIndex<T> | null> {
+  const safeItems = Array.isArray(liveStreams) ? liveStreams : [];
+  const isCancelled = () => Boolean(options?.signal?.aborted || options?.shouldCancel?.());
+
+  if (isCancelled()) {
+    indexPerfStats.abortedBuilds++;
+    return null;
+  }
+
+  const cached = liveIndexCache.get(safeItems);
+  if (cached) {
+    return cached;
+  }
+
+  const existingInFlight = inFlightLiveBuilds.get(safeItems);
+  if (existingInFlight && !options?.onBatchProgress) {
+    const res = await existingInFlight;
+    if (isCancelled()) {
+      indexPerfStats.abortedBuilds++;
+      return null;
+    }
+    if (res) return res;
+  }
+
+  const batchSize = Math.max(100, Math.floor(options?.batchSize ?? 1000));
+
+  const taskPromise = (async (): Promise<LiveCatalogIndex<T> | null> => {
+    const byId = new Map<string, T>();
+    const byCategoryId = new Map<string, T[]>();
+    let batchIdx = 0;
+
+    for (let start = 0; start < safeItems.length; start += batchSize) {
+      if (isCancelled()) {
+        indexPerfStats.abortedBuilds++;
+        return null;
+      }
+
+      const end = Math.min(safeItems.length, start + batchSize);
+      for (let i = start; i < end; i++) {
+        const item = safeItems[i] as any;
+        if (!item || typeof item !== 'object') continue;
+
+        const rawId = item.stream_id ?? item.id;
+        if (rawId !== undefined && rawId !== null && rawId !== '') {
+          const idKey = String(rawId);
+          if (!byId.has(idKey)) {
+            byId.set(idKey, item);
+          }
+        }
+
+        const catKey = String(item.category_id ?? '');
+        let bucket = byCategoryId.get(catKey);
+        if (!bucket) {
+          bucket = [];
+          byCategoryId.set(catKey, bucket);
+        }
+        bucket.push(item);
+      }
+
+      indexPerfStats.batchesProcessed++;
+      batchIdx++;
+      options?.onBatchProgress?.(end, safeItems.length, batchIdx);
+
+      if (isCancelled()) {
+        indexPerfStats.abortedBuilds++;
+        return null;
+      }
+
+      if (end < safeItems.length) {
+        indexPerfStats.batchYields++;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (isCancelled()) {
+          indexPerfStats.abortedBuilds++;
+          return null;
+        }
+      }
+    }
+
+    indexPerfStats.liveIndexBuilds++;
+    const index = instantiateLiveCatalogIndex(safeItems, byId, byCategoryId);
+    liveIndexCache.set(safeItems, index);
+    return index;
+  })();
+
+  inFlightLiveBuilds.set(safeItems, taskPromise);
+  try {
+    return await taskPromise;
+  } finally {
+    if (inFlightLiveBuilds.get(safeItems) === taskPromise) {
+      inFlightLiveBuilds.delete(safeItems);
+    }
+  }
 }
 
 const PRECOMPUTED_HERO_SYMBOL = Symbol.for('nc.precomputed.hero');

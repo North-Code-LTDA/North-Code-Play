@@ -5221,13 +5221,23 @@ async function runPerformanceAndVirtualizationTests() {
     getHeroBannerItems,
     getCatalogIndexPerfStats,
     resetCatalogIndexPerfStats,
+    buildVodIndexAsync,
+    buildSeriesIndexAsync,
+    buildLiveIndexAsync,
   } = await import('../src/utils/catalogIndex');
   const {
     moveSpatialFocus,
     getSpatialNavPerfStats,
     resetSpatialNavPerfStats,
+    getActiveVirtualContainerCount,
+    hasRegisteredVirtualContainer,
     NavigationProvider,
   } = await import('../src/navigation');
+  const {
+    computeVirtualWindowBounds,
+    getVirtualWindowDiagnostics,
+    resetVirtualWindowDiagnostics,
+  } = await import('../src/hooks/useVirtualWindow');
   const {
     MediaImage,
     hasLoadedImageUrl,
@@ -6034,6 +6044,621 @@ async function runPerformanceAndVirtualizationTests() {
     'Ao remontar MediaImage para uma URL já carregada na sessão, a imagem deve iniciar imediatamente visível (opacity-100)'
   );
 
+  // =========================================================================
+  // 12.8. [6.A] Último item e última linha incompleta (0, 1, 95, 96, 97, 100, 101, 2500, 2501 itens e múltiplas colunas)
+  // =========================================================================
+  const testedCounts = [0, 1, 95, 96, 97, 100, 101, 2500, 2501];
+  const testedColumns = [2, 3, 4, 5, 6, 10];
+
+  for (const cols of testedColumns) {
+    const alignedWin = Math.max(cols * 6, Math.floor(96 / cols) * cols);
+    for (const total of testedCounts) {
+      const boundsAtZero = computeVirtualWindowBounds({
+        totalCount: total,
+        columns: cols,
+        alignedWindowSize: alignedWin,
+        requestedStartIndex: 0,
+      });
+
+      if (total === 0) {
+        assert.strictEqual(boundsAtZero.startIndex, 0, `[6.A] total=0 cols=${cols} startIndex deve ser 0`);
+        assert.strictEqual(boundsAtZero.endIndex, 0, `[6.A] total=0 cols=${cols} endIndex deve ser 0`);
+        assert.strictEqual(boundsAtZero.totalRows, 0, `[6.A] total=0 cols=${cols} totalRows deve ser 0`);
+        continue;
+      }
+
+      assert.strictEqual(boundsAtZero.startIndex, 0, `[6.A] total=${total} cols=${cols} janela inicial deve iniciar em 0`);
+      assert.strictEqual(
+        boundsAtZero.endIndex,
+        Math.min(total, alignedWin),
+        `[6.A] total=${total} cols=${cols} janela inicial deve terminar em min(total, alignedWin)`
+      );
+
+      // Solicitar montagem do último item (total - 1)
+      const boundsAtEnd = computeVirtualWindowBounds({
+        totalCount: total,
+        columns: cols,
+        alignedWindowSize: alignedWin,
+        requestedStartIndex: total - 1,
+      });
+
+      assert.strictEqual(
+        boundsAtEnd.endIndex,
+        total,
+        `[6.A] total=${total} cols=${cols}: última janela DEVE alcançar exatamente totalCount (${total}), obteve ${boundsAtEnd.endIndex}`
+      );
+      assert(
+        boundsAtEnd.startIndex % cols === 0,
+        `[6.A] total=${total} cols=${cols}: startIndex (${boundsAtEnd.startIndex}) deve permanecer alinhado a múltiplo de colunas`
+      );
+      assert(
+        boundsAtEnd.startIndex <= total - 1 && boundsAtEnd.endIndex > total - 1,
+        `[6.A] total=${total} cols=${cols}: último índice (${total - 1}) deve estar contido em [${boundsAtEnd.startIndex}, ${boundsAtEnd.endIndex})`
+      );
+      assert.strictEqual(
+        boundsAtEnd.totalRows - boundsAtEnd.endRow,
+        0,
+        `[6.A] total=${total} cols=${cols}: na última janela, bottomSpacer rows (totalRows - endRow) deve ser 0`
+      );
+    }
+  }
+
+  // Reprodução direta na grade de MoviesView para 101 itens e 2.500 itens (6 colunas, janela de 96):
+  // Garantir acesso ao índice 100 (em 101 itens) e ao índice 2499 (em 2.500 itens) por rolagem e por D-Pad, e retorno ao início
+  for (const countScenario of [101, 2500, 2501]) {
+    const scenarioMovies = Array.from({ length: countScenario }, (_, idx) => ({
+      stream_id: 800000 + idx,
+      name: `Filme Limite ${idx + 1} (2024)`,
+      category_id: '101',
+      rating: '8.0',
+      stream_icon: `http://img.test/lim_${idx}.jpg`,
+    }));
+
+    (XtreamService as any).getVodCategories = async () => [vodCategories39k[0]];
+    (XtreamService as any).getVodStreams = async () => scenarioMovies;
+
+    await act(async () => {
+      virtRoot.render(
+        React.createElement(
+          XtreamProvider,
+          {
+            credentials: {
+              serverUrl: 'http://perf.tv:8080',
+              username: `user_${countScenario}`,
+              password: '123',
+            },
+          },
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(MoviesView, { onPlay: mockOnPlay })
+          )
+        )
+      );
+      await new Promise((r) => setTimeout(r, 80));
+    });
+
+    const catBtnScenario = virtContainer.querySelector('button[data-category-id="101"]') as HTMLButtonElement;
+    assert(catBtnScenario, `[6.A] Botão da categoria 101 para cenário de ${countScenario} itens deve existir`);
+    await act(async () => {
+      catBtnScenario.click();
+      await new Promise((r) => setTimeout(r, 40));
+    });
+
+    const scrollElScenario = virtContainer.querySelector('main[data-scroll-container="true"]') as HTMLElement;
+    assert(scrollElScenario, `[6.A] Container rolável para ${countScenario} itens deve existir`);
+    Object.defineProperty(scrollElScenario, 'clientHeight', { value: 720, configurable: true });
+
+    // 1. Alcançar o último item (countScenario - 1) via rolagem até o final
+    await act(async () => {
+      scrollElScenario.scrollTop = 300000;
+      scrollElScenario.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const lastItemByScroll = virtContainer.querySelector(
+      `[data-nav-grid="true"] [data-virtual-index="${countScenario - 1}"]`
+    ) as HTMLElement;
+    assert(
+      lastItemByScroll !== null,
+      `[6.A] Em grade com ${countScenario} itens, o último item (índice ${countScenario - 1}) DEVE ser montado ao rolar até o fim`
+    );
+    assert.strictEqual(
+      lastItemByScroll.getAttribute('aria-label'),
+      `Filme Limite ${countScenario} (2024)`,
+      `[6.A] O último item montado em ${countScenario} itens deve preservar o título exato`
+    );
+
+    // 2. Retornar ao início via rolagem (scrollTop = 0) e verificar montagem do índice 0 e remoção de topSpacer
+    await act(async () => {
+      scrollElScenario.scrollTop = 0;
+      scrollElScenario.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const firstItemAtTop = virtContainer.querySelector(
+      '[data-nav-grid="true"] [data-virtual-index="0"]'
+    ) as HTMLElement;
+    assert(
+      firstItemAtTop !== null,
+      `[6.A] Ao retornar scrollTop=0 em ${countScenario} itens, o item 0 deve estar montado`
+    );
+    assert.strictEqual(
+      virtContainer.querySelector('[data-virtual-spacer="top"]'),
+      null,
+      `[6.A] No topo (scrollTop=0), não deve existir espaçador superior (topSpacerPx=0)`
+    );
+
+    // 3. Alcançar o último item via navegação D-Pad (partindo da penúltima janela e avançando com ArrowDown / ArrowRight até o último índice)
+    if (countScenario === 101) {
+      const item95 = virtContainer.querySelector(
+        '[data-nav-grid="true"] [data-virtual-index="95"]'
+      ) as HTMLElement;
+      assert(item95, '[6.A] Em 101 itens, o índice 95 (último da 1ª janela de 96) deve estar montado inicialmente');
+      await act(async () => {
+        item95.focus();
+      });
+      // Pressionar ArrowRight a partir de 95 -> deve montar e focar 96, 97, 98, 99, 100
+      for (let expectedIdx = 96; expectedIdx <= 100; expectedIdx++) {
+        await act(async () => {
+          moveSpatialFocus('right');
+        });
+        const focusedNow = document.activeElement as HTMLElement;
+        assert.strictEqual(
+          Number(focusedNow?.getAttribute('data-virtual-index')),
+          expectedIdx,
+          `[6.A] Navegação D-Pad (right) em 101 itens deve montar e focar o índice ${expectedIdx} da última linha incompleta`
+        );
+      }
+      // Voltar com ArrowUp a partir de 100 (linha 16, col 4) -> deve focar 94 (linha 15, col 4)
+      await act(async () => {
+        moveSpatialFocus('up');
+      });
+      assert.strictEqual(
+        Number((document.activeElement as HTMLElement)?.getAttribute('data-virtual-index')),
+        94,
+        '[6.A] ArrowUp a partir do último item (100) deve focar o item exatamente acima (94)'
+      );
+      // Descer novamente com ArrowDown a partir de 95 (linha 15, col 5) para linha 16 incompleta (que termina na col 4 = índice 100)
+      const item95Again = virtContainer.querySelector(
+        '[data-nav-grid="true"] [data-virtual-index="95"]'
+      ) as HTMLElement;
+      await act(async () => {
+        item95Again.focus();
+        moveSpatialFocus('down');
+      });
+      assert.strictEqual(
+        Number((document.activeElement as HTMLElement)?.getAttribute('data-virtual-index')),
+        100,
+        '[6.A] ArrowDown na última coluna acima de linha final incompleta (95 -> linha 16) deve focar o último item disponível (100)'
+      );
+    }
+  }
+
+  // =========================================================================
+  // 12.9. [6.B] Reabertura da mesma categoria na TV ao Vivo (ciclo categorias -> canais -> categorias -> canais)
+  // =========================================================================
+  (XtreamService as any).getLiveCategories = async () => [liveCategories39k[0]];
+  (XtreamService as any).getLiveStreams = async () => live3000;
+
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: creds39k },
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(LiveTvView, { isTvMode: true })
+        )
+      )
+    );
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  // Realizar 3 ciclos completos de abrir a MESMA categoria ("1") -> rolar -> voltar às categorias -> reabrir a mesma categoria ("1")
+  for (let cycle = 1; cycle <= 3; cycle++) {
+    const catBtnCycle = virtContainer.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
+    assert(catBtnCycle, `[6.B] Ciclo ${cycle}: botão da categoria 1 deve estar visível na tela de categorias`);
+
+    await act(async () => {
+      catBtnCycle.click();
+      await new Promise((r) => setTimeout(r, 40));
+    });
+
+    const diagAfterOpen = getVirtualWindowDiagnostics();
+    assert.strictEqual(
+      diagAfterOpen.activeScrollListeners,
+      1,
+      `[6.B] Ciclo ${cycle}: ao abrir a lista de canais, exatamente 1 listener de scroll virtual deve estar ativo (obteve ${diagAfterOpen.activeScrollListeners})`
+    );
+    assert.strictEqual(
+      getActiveVirtualContainerCount(),
+      1,
+      `[6.B] Ciclo ${cycle}: exatamente 1 controlador virtual deve estar registrado no spatialNav`
+    );
+
+    const channelsVirtualEl = virtContainer.querySelector('[data-virtual-container="true"]') as HTMLElement;
+    const channelsScrollEl = channelsVirtualEl?.closest('[data-scroll-container="true"]') as HTMLElement;
+    assert(channelsScrollEl && channelsVirtualEl, `[6.B] Ciclo ${cycle}: containers de canais devem estar montados`);
+    assert.strictEqual(
+      hasRegisteredVirtualContainer(channelsVirtualEl),
+      true,
+      `[6.B] Ciclo ${cycle}: o novo elemento DOM [data-virtual-container="true"] deve estar registrado no spatialNav`
+    );
+
+    // Rolar profundamente na categoria reaberta até o meio (scrollTop = 18000) e depois até o final (scrollTop = 400000)
+    await act(async () => {
+      channelsScrollEl.scrollTop = 18000;
+      channelsScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const firstMountedRowAfterReopenScroll = channelsVirtualEl.querySelector('[data-virtual-index]') as HTMLElement;
+    const startIdxReopen = Number(firstMountedRowAfterReopenScroll?.getAttribute('data-virtual-index'));
+    assert(
+      startIdxReopen > 100,
+      `[6.B] Ciclo ${cycle}: rolagem após reabrir a mesma categoria DEVE atualizar a janela virtual (startIndex=${startIdxReopen})`
+    );
+
+    // Testar travessia de fronteira por D-Pad (ArrowDown no último canal montado da janela atual)
+    const mountedRowsNow = Array.from(
+      channelsVirtualEl.querySelectorAll('[data-virtual-index]')
+    ) as HTMLElement[];
+    const lastMountedRow = mountedRowsNow[mountedRowsNow.length - 1];
+    const lastMountedIdx = Number(lastMountedRow.getAttribute('data-virtual-index'));
+    const lastMountedBtn = lastMountedRow.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
+    assert(lastMountedBtn, `[6.B] Ciclo ${cycle}: último botão de canal da janela deve existir`);
+
+    await act(async () => {
+      lastMountedBtn.focus();
+      moveSpatialFocus('down');
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const activeRowAfterDown = (document.activeElement as HTMLElement)?.closest('[data-virtual-index]');
+    assert.strictEqual(
+      Number(activeRowAfterDown?.getAttribute('data-virtual-index')),
+      lastMountedIdx + 1,
+      `[6.B] Ciclo ${cycle}: D-Pad ArrowDown na borda da categoria reaberta deve expandir a janela e focar o índice ${lastMountedIdx + 1}`
+    );
+
+    // Rolar até o último canal (índice 2999 de 3.000)
+    await act(async () => {
+      channelsScrollEl.scrollTop = 400000;
+      channelsScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    const lastChannelRow2999 = channelsVirtualEl.querySelector('[data-virtual-index="2999"]') as HTMLElement;
+    assert(
+      lastChannelRow2999 !== null,
+      `[6.B] Ciclo ${cycle}: o último canal (índice 2999) deve ser acessível na categoria reaberta`
+    );
+
+    // Voltar às categorias (exceto no último ciclo onde deixamos verificado ou voltamos para testar desmontagem)
+    const backToCatsBtn = virtContainer.querySelector('button[data-live-back-to-categories="true"]') as HTMLButtonElement;
+    assert(backToCatsBtn, `[6.B] Ciclo ${cycle}: botão Voltar às Categorias deve existir`);
+    await act(async () => {
+      backToCatsBtn.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const diagAfterBack = getVirtualWindowDiagnostics();
+    assert.strictEqual(
+      diagAfterBack.activeScrollListeners,
+      0,
+      `[6.B] Ciclo ${cycle}: ao voltar para categorias, o listener de scroll antigo deve ser removido (obteve ${diagAfterBack.activeScrollListeners})`
+    );
+    assert.strictEqual(
+      getActiveVirtualContainerCount(),
+      0,
+      `[6.B] Ciclo ${cycle}: ao voltar para categorias, o controlador virtual antigo deve ser desregistrado`
+    );
+    assert.strictEqual(
+      hasRegisteredVirtualContainer(channelsVirtualEl),
+      false,
+      `[6.B] Ciclo ${cycle}: o container desmontado não deve permanecer registrado`
+    );
+  }
+
+  // =========================================================================
+  // 12.10. [6.C] Escala de TV (50%, 85%, 100%, 125%), largura real de container e canais de altura variável
+  // =========================================================================
+  (XtreamService as any).getVodCategories = async () => [vodCategories39k[0]];
+  (XtreamService as any).getVodStreams = async () => movies2500;
+
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(
+        XtreamProvider,
+        { credentials: creds39k },
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(MoviesView, { onPlay: mockOnPlay })
+        )
+      )
+    );
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  const catBtnScale = virtContainer.querySelector('button[data-category-id="101"]') as HTMLButtonElement;
+  await act(async () => {
+    catBtnScale.click();
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  const scaleScrollEl = virtContainer.querySelector('main[data-scroll-container="true"]') as HTMLElement;
+  const scaleGridEl = virtContainer.querySelector('[data-virtual-container="true"]') as HTMLElement;
+  Object.defineProperty(scaleScrollEl, 'clientHeight', { value: 720, configurable: true });
+  Object.defineProperty(scaleGridEl, 'clientWidth', { value: 1100, configurable: true });
+
+  resetVirtualWindowDiagnostics();
+  const observedColumnsByScale = new Map<number, number>();
+  const tRealScaleStart = performance.now();
+
+  for (const tvScaleVal of [50, 85, 100, 125]) {
+    await act(async () => {
+      const sessionId = createDisplayPreviewSession();
+      startDisplayPreview('tv', tvScaleVal, sessionId);
+      confirmDisplayPreferences('tv', tvScaleVal, sessionId);
+      windowInstance.dispatchEvent(new windowInstance.Event('resize'));
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    // Descobrir quantas colunas reais o controlador registrou testando um passo ArrowDown a partir do índice 0
+    await act(async () => {
+      scaleScrollEl.scrollTop = 0;
+      scaleScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const card0 = scaleGridEl.querySelector('[data-virtual-index="0"]') as HTMLElement;
+    assert(card0, `[6.C] Card 0 deve existir na escala ${tvScaleVal}%`);
+    await act(async () => {
+      card0.focus();
+      moveSpatialFocus('down');
+    });
+    const downIdx = Number((document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'));
+    assert(
+      downIdx >= 2,
+      `[6.C] Em escala TV ${tvScaleVal}%, ArrowDown a partir de 0 deve avançar pelo número real de colunas (${downIdx})`
+    );
+    observedColumnsByScale.set(tvScaleVal, downIdx);
+
+    // Garantir que o último item (2499) continua acessível por rolagem em todas as escalas (50%, 85%, 100%, 125%)
+    await act(async () => {
+      scaleScrollEl.scrollTop = 500000;
+      scaleScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    const lastCardAtScale = scaleGridEl.querySelector('[data-virtual-index="2499"]');
+    assert(
+      lastCardAtScale !== null,
+      `[6.C] Na escala TV ${tvScaleVal}% (colunas=${downIdx}), o último item (2499) deve permanecer acessível ao rolar até o fim`
+    );
+  }
+  const realScaleRenderAndRemeasureMs = performance.now() - tRealScaleStart;
+
+  assert(
+    observedColumnsByScale.get(50)! > observedColumnsByScale.get(100)! &&
+      observedColumnsByScale.get(100)! > observedColumnsByScale.get(125)!,
+    `[6.C] A contagem de colunas da grade no modo TV deve refletir a escala real (50%=${observedColumnsByScale.get(50)} cols > 100%=${observedColumnsByScale.get(100)} cols > 125%=${observedColumnsByScale.get(125)} cols)`
+  );
+
+  // Testar mudança de largura do container (1280px -> 820px -> 540px) em modo padrão
+  await act(async () => {
+    const sessionId = createDisplayPreviewSession();
+    startDisplayPreview('default', 100, sessionId);
+    confirmDisplayPreferences('default', 100, sessionId);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  const colsByWidth: number[] = [];
+  for (const widthPx of [1280, 820, 540]) {
+    await act(async () => {
+      Object.defineProperty(scaleGridEl, 'clientWidth', { value: widthPx, configurable: true });
+      scaleScrollEl.scrollTop = 0;
+      scaleScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      windowInstance.dispatchEvent(new windowInstance.Event('resize'));
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    const card0 = scaleGridEl.querySelector('[data-virtual-index="0"]') as HTMLElement;
+    await act(async () => {
+      card0.focus();
+      moveSpatialFocus('down');
+    });
+    colsByWidth.push(Number((document.activeElement as HTMLElement)?.getAttribute('data-virtual-index')));
+  }
+  assert.deepStrictEqual(
+    colsByWidth,
+    [6, 4, 2],
+    `[6.C] Mudança de largura do container (1280px, 820px, 540px) deve atualizar as colunas reais para [6, 4, 2], obteve [${colsByWidth.join(', ')}]`
+  );
+
+  // Testar lista de canais com alturas variáveis (nomes curtos de 1 linha vs nomes longos de 3 linhas no modo TV)
+  const variableHeightChannels = Array.from({ length: 300 }, (_, idx) => ({
+    stream_id: 910000 + idx,
+    name:
+      idx % 2 === 0
+        ? `Canal Curto ${idx + 1} FHD`
+        : `Canal Com Nome Muito Longo Para Três Linhas Completas Na Interface De TV Android ${idx + 1} FHD`,
+    category_id: '1',
+    stream_icon: `http://img.test/vh_${idx}.png`,
+  }));
+  (XtreamService as any).getLiveCategories = async () => [liveCategories39k[0]];
+  (XtreamService as any).getLiveStreams = async () => variableHeightChannels;
+
+  await act(async () => {
+    virtRoot.render(
+      React.createElement(
+        XtreamProvider,
+        {
+          credentials: {
+            serverUrl: 'http://perf.tv:8080',
+            username: 'user_var_height',
+            password: '123',
+          },
+        },
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(LiveTvView, { isTvMode: true })
+        )
+      )
+    );
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  const catBtnVarH = virtContainer.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
+  await act(async () => {
+    catBtnVarH.click();
+    await new Promise((r) => setTimeout(r, 40));
+  });
+
+  const varListEl = virtContainer.querySelector('[data-virtual-container="true"]') as HTMLElement;
+  const varScrollEl = varListEl?.closest('[data-scroll-container="true"]') as HTMLElement;
+  assert(varListEl && varScrollEl, '[6.C] Lista de canais com alturas variáveis deve estar montada');
+
+  // Atribuir alturas reais variáveis aos primeiros 80 itens (ex.: 52px para 1 linha e 96px para 3 linhas)
+  const renderedRows0 = Array.from(varListEl.querySelectorAll('[data-virtual-index]')) as HTMLElement[];
+  renderedRows0.forEach((rowEl) => {
+    const idx = Number(rowEl.getAttribute('data-virtual-index'));
+    const h = idx % 2 === 0 ? 52 : 96;
+    Object.defineProperty(rowEl, 'offsetHeight', { value: h, configurable: true });
+  });
+
+  // Disparar resize para medir as alturas reais variáveis e depois rolar para scrollTop = 9000
+  await act(async () => {
+    windowInstance.dispatchEvent(new windowInstance.Event('resize'));
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  await act(async () => {
+    varScrollEl.scrollTop = 9000;
+    varScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+
+  const topSpacerEl = varListEl.querySelector('[data-virtual-spacer="top"]') as HTMLElement;
+  assert(topSpacerEl, '[6.C] Espaçador superior deve existir após rolar lista de canais com alturas variáveis');
+  const topSpacerHeight = parseFloat(topSpacerEl.style.height || '0');
+  assert(
+    topSpacerHeight > 0,
+    `[6.C] topSpacerPx (${topSpacerHeight}px) deve refletir a soma acumulada das alturas medidas dos itens anteriores`
+  );
+
+  // Rolar até o final da lista de alturas variáveis e confirmar acesso ao último canal (índice 299)
+  await act(async () => {
+    varScrollEl.scrollTop = 50000;
+    varScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  assert(
+    varListEl.querySelector('[data-virtual-index="299"]') !== null,
+    '[6.C] Último canal (índice 299) deve ser montado ao final da lista com alturas variáveis'
+  );
+
+  // =========================================================================
+  // 12.11. [6.D] Indexação cooperativa em lotes (intercalação de tarefa de UI entre lotes + abort na troca de sessão)
+  // =========================================================================
+  const cooperativeItems6k = Array.from({ length: 6000 }, (_, i) => ({
+    stream_id: 500000 + i,
+    name: `Filme Lote Cooperativo ${i + 1} (${2000 + (i % 25)})`,
+    category_id: String((i % 10) + 1),
+    rating: ((i % 90) / 10).toFixed(1),
+  }));
+
+  resetCatalogIndexPerfStats();
+  const batchProgressLog: number[] = [];
+  let uiTaskProcessedSnapshot = -1;
+
+  const indexPromise = buildVodIndexAsync(cooperativeItems6k, {
+    batchSize: 1000,
+    onBatchProgress: (processed) => {
+      batchProgressLog.push(processed);
+      if (processed === 2000) {
+        // Agendar tarefa no event loop exatamente após o 2º lote; ela deve rodar ANTES do 3º lote terminar!
+        setTimeout(() => {
+          uiTaskProcessedSnapshot = batchProgressLog[batchProgressLog.length - 1];
+        }, 0);
+      }
+    },
+  });
+
+  const completedIndex = await indexPromise;
+  const coopStats = getCatalogIndexPerfStats();
+
+  assert(completedIndex !== null, '[6.D] buildVodIndexAsync deve retornar o índice completo ao concluir todos os lotes');
+  assert.deepStrictEqual(
+    batchProgressLog,
+    [1000, 2000, 3000, 4000, 5000, 6000],
+    '[6.D] Catálogo de 6.000 itens com batchSize=1000 deve ser processado em 6 lotes cooperativos de 1.000 itens'
+  );
+  assert.strictEqual(
+    coopStats.batchesProcessed,
+    6,
+    '[6.D] Telemetria deve registrar exatamente 6 lotes processados'
+  );
+  assert.strictEqual(
+    coopStats.batchYields,
+    5,
+    '[6.D] Telemetria deve registrar 5 yields cooperativos ao event loop entre os 6 lotes'
+  );
+  assert(
+    uiTaskProcessedSnapshot >= 2000 && uiTaskProcessedSnapshot < 6000,
+    `[6.D] Tarefa de UI agendada no event loop deve executar ENTRE os lotes (executou quando processed=${uiTaskProcessedSnapshot} < 6000)`
+  );
+  assert.strictEqual(
+    completedIndex.byId.size,
+    6000,
+    '[6.D] Índice cooperativo concluído deve conter todos os 6.000 itens'
+  );
+
+  // Testar cancelamento / troca de sessão no meio da indexação cooperativa (após o 2º lote de 5)
+  const abortableItems5k = Array.from({ length: 5000 }, (_, i) => ({
+    stream_id: 600000 + i,
+    name: `Filme Abortado ${i + 1} (2023)`,
+    category_id: '1',
+    rating: '7.0',
+  }));
+
+  resetCatalogIndexPerfStats();
+  let cancelMidway = false;
+  const abortedProgress: number[] = [];
+
+  const abortedResult = await buildVodIndexAsync(abortableItems5k, {
+    batchSize: 1000,
+    shouldCancel: () => cancelMidway,
+    onBatchProgress: (processed) => {
+      abortedProgress.push(processed);
+      if (processed === 2000) {
+        cancelMidway = true;
+      }
+    },
+  });
+
+  const abortStats = getCatalogIndexPerfStats();
+  assert.strictEqual(
+    abortedResult,
+    null,
+    '[6.D] Quando a sessão é cancelada no meio dos lotes, buildVodIndexAsync deve retornar null sem publicar índice parcial'
+  );
+  assert.deepStrictEqual(
+    abortedProgress,
+    [1000, 2000],
+    '[6.D] Ao cancelar após 2.000 itens, os lotes restantes (3000..5000) NÃO devem ser processados'
+  );
+  assert.strictEqual(
+    abortStats.abortedBuilds,
+    1,
+    '[6.D] Telemetria deve registrar 1 build abortado'
+  );
+  assert.strictEqual(
+    abortStats.vodIndexBuilds,
+    0,
+    '[6.D] Build abortado não deve incrementar vodIndexBuilds nem poluir o WeakMap de índices prontos'
+  );
+
   await act(async () => {
     virtRoot.unmount();
   });
@@ -6041,13 +6666,15 @@ async function runPerformanceAndVirtualizationTests() {
   installDefaultXtreamOfflineMocks();
 
   console.log(
-    `📊 [Benchmark 39k Registros Otimizado] Passada Fria=${coldCatalogPassMs.toFixed(2)}ms (sorts=${coldRankingStats.sortCalls}) | ` +
-      `3x Escala/Reabertura Quente=${warmScaleChange3xMs.toFixed(2)}ms (sorts=${warmRankingStats.sortCalls}) | ` +
-      `Canais Categoria (Frio=${liveCatColdMs.toFixed(2)}ms / Quente=${liveCatWarmMs.toFixed(3)}ms) | ` +
-      `Cards Montados DeepScroll=${deepScrollMountedMovieCards.length} | ` +
-      `5 Movimentos D-Pad=${nav5MovesAfterMs.toFixed(2)}ms (getComputedStyle=${spatialStats.computedStyleCalls})`
+    `📊 [Benchmark 39k Registros — Métricas Separadas]\n` +
+      `   • Passada Fria (Indexação + Ranking Inicial): ${coldCatalogPassMs.toFixed(2)}ms (sorts=${coldRankingStats.sortCalls})\n` +
+      `   • Consulta Quente ao Índice em Cache (3x Home/Hero/Categorias): ${warmScaleChange3xMs.toFixed(3)}ms (sorts=${warmRankingStats.sortCalls})\n` +
+      `   • Re-render Real + Recálculo de Layout em 4 Escalas TV (50%/85%/100%/125%): ${realScaleRenderAndRemeasureMs.toFixed(2)}ms (cols=${Array.from(observedColumnsByScale.values()).join('/')})\n` +
+      `   • Agrupamento de Canais por Categoria: Frio=${liveCatColdMs.toFixed(2)}ms | Quente=${liveCatWarmMs.toFixed(3)}ms\n` +
+      `   • Indexação Cooperativa (6k itens, batchSize=1000): lotes=${coopStats.batchesProcessed}, yields=${coopStats.batchYields}, UI intercalada em processed=${uiTaskProcessedSnapshot}\n` +
+      `   • 5 Movimentos D-Pad em Grade Virtualizada (2.500 itens): ${nav5MovesAfterMs.toFixed(2)}ms (getComputedStyle=${spatialStats.computedStyleCalls})`
   );
-  console.log('✅ Todos os testes de desempenho, indexação de catálogo, virtualização e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, indexação cooperativa, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {

@@ -176,6 +176,8 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
     endIndex,
     topSpacerPx,
     bottomSpacerPx,
+    scrollContainerCallbackRef,
+    virtualContainerCallbackRef,
   } = useVirtualWindow({
     totalCount: filteredStreams.length,
     mode: 'grid',
@@ -236,7 +238,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
       </aside>
 
       {/* Main Content - Streams Grid */}
-      <main ref={mainRef} data-nav-zone="content" data-scroll-container="true" className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
+      <main ref={scrollContainerCallbackRef} data-nav-zone="content" data-scroll-container="true" className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
         {/* Mobile Categories Navbar */}
         <div data-nav-zone="categories" data-nav-row="true" className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
           {vodCategoriesError && vodCategories.length === 0 && (
@@ -306,7 +308,7 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
                 />
               )}
               <div
-                ref={gridRef}
+                ref={virtualContainerCallbackRef}
                 data-nav-grid="true"
                 data-virtual-container="true"
                 className="nc-tv-media-grid grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"

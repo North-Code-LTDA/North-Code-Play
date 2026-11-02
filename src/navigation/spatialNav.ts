@@ -4,7 +4,7 @@ export type SpatialDirection = 'up' | 'down' | 'left' | 'right';
 export interface VirtualContainerController {
   totalCount: number;
   getColumns: () => number;
-  ensureIndexMounted: (targetIndex: number) => boolean;
+  ensureIndexMounted: (targetIndex: number, preserveIndex?: number) => boolean;
 }
 
 export interface SpatialNavPerfStats {
@@ -36,6 +36,7 @@ export function resetSpatialNavPerfStats(): void {
 }
 
 const virtualControllers = new WeakMap<HTMLElement, VirtualContainerController>();
+const registeredVirtualContainers = new Set<HTMLElement>();
 
 export function registerVirtualContainer(
   container: HTMLElement | null,
@@ -43,13 +44,24 @@ export function registerVirtualContainer(
 ): void {
   if (!container) return;
   virtualControllers.set(container, controller);
+  registeredVirtualContainers.add(container);
   invalidateCandidateCache();
 }
 
 export function unregisterVirtualContainer(container: HTMLElement | null): void {
   if (!container) return;
   virtualControllers.delete(container);
+  registeredVirtualContainers.delete(container);
   invalidateCandidateCache();
+}
+
+export function getActiveVirtualContainerCount(): number {
+  return registeredVirtualContainers.size;
+}
+
+export function hasRegisteredVirtualContainer(container: HTMLElement | null): boolean {
+  if (!container) return false;
+  return virtualControllers.has(container);
 }
 
 let currentNavMode: NavMode = 'pointer';
@@ -721,6 +733,43 @@ function findNextInGridBlock(
   }
 
   // Structural fallback in headless DOM (0x0 rects)
+  const virtualItemEl = current.closest<HTMLElement>('[data-virtual-index]');
+  const virtualContainer = virtualItemEl?.closest<HTMLElement>('[data-virtual-container="true"]');
+  if (virtualItemEl && virtualContainer) {
+    const controller = virtualControllers.get(virtualContainer);
+    const currentIndex = parseInt(virtualItemEl.getAttribute('data-virtual-index') || '-1', 10);
+    if (controller && controller.totalCount > 0 && currentIndex >= 0) {
+      const cols = Math.max(1, controller.getColumns());
+      const totalCount = controller.totalCount;
+      let targetVirtualIndex = -1;
+
+      if (direction === 'right') {
+        targetVirtualIndex = currentIndex + 1 < totalCount ? currentIndex + 1 : -1;
+      } else if (direction === 'left') {
+        targetVirtualIndex = currentIndex - 1 >= 0 ? currentIndex - 1 : -1;
+      } else if (direction === 'down') {
+        const currentRow = Math.floor(currentIndex / cols);
+        const totalRows = Math.ceil(totalCount / cols);
+        targetVirtualIndex =
+          currentRow < totalRows - 1 ? Math.min(totalCount - 1, currentIndex + cols) : -1;
+      } else if (direction === 'up') {
+        targetVirtualIndex = currentIndex - cols >= 0 ? currentIndex - cols : -1;
+      }
+
+      if (targetVirtualIndex >= 0) {
+        const targetStr = String(targetVirtualIndex);
+        const match = gridItems.find(
+          (item) =>
+            (item.getAttribute('data-virtual-index') ||
+              item.closest<HTMLElement>('[data-virtual-index]')?.getAttribute('data-virtual-index')) ===
+            targetStr
+        );
+        return match || null;
+      }
+      return null;
+    }
+  }
+
   if (direction === 'right' || direction === 'down') {
     return idx < gridItems.length - 1 ? gridItems[idx + 1] : null;
   }
@@ -853,24 +902,28 @@ function ensureVirtualTargetMountedIfNeeded(
   if (isNaN(currentIndex) || currentIndex < 0) return;
 
   const cols = Math.max(1, controller.getColumns());
+  const totalCount = controller.totalCount;
   let targetIndex = -1;
 
   if (direction === 'right') {
-    targetIndex = cols > 1 ? currentIndex + 1 : -1;
+    targetIndex = cols > 1 && currentIndex + 1 < totalCount ? currentIndex + 1 : -1;
   } else if (direction === 'left') {
-    targetIndex = cols > 1 ? currentIndex - 1 : -1;
+    targetIndex = cols > 1 && currentIndex - 1 >= 0 ? currentIndex - 1 : -1;
   } else if (direction === 'down') {
-    targetIndex = currentIndex + cols;
+    const currentRow = Math.floor(currentIndex / cols);
+    const totalRows = Math.ceil(totalCount / cols);
+    targetIndex =
+      currentRow < totalRows - 1 ? Math.min(totalCount - 1, currentIndex + cols) : -1;
   } else if (direction === 'up') {
-    targetIndex = currentIndex - cols;
+    targetIndex = currentIndex - cols >= 0 ? currentIndex - cols : -1;
   }
 
-  if (targetIndex >= 0 && targetIndex < controller.totalCount) {
+  if (targetIndex >= 0 && targetIndex < totalCount) {
     const existingTarget = virtualContainer.querySelector<HTMLElement>(
       `[data-virtual-index="${targetIndex}"]`
     );
     if (!existingTarget) {
-      const expanded = controller.ensureIndexMounted(targetIndex);
+      const expanded = controller.ensureIndexMounted(targetIndex, currentIndex);
       if (expanded) {
         spatialPerfStats.virtualWindowExpansions++;
         invalidateCandidateCache();
@@ -879,13 +932,13 @@ function ensureVirtualTargetMountedIfNeeded(
       // Pre-expand window if within 1 row of the boundary
       const aheadIndex =
         direction === 'down' || direction === 'right'
-          ? Math.min(controller.totalCount - 1, targetIndex + cols)
+          ? Math.min(totalCount - 1, targetIndex + cols)
           : Math.max(0, targetIndex - cols);
       const aheadEl = virtualContainer.querySelector<HTMLElement>(
         `[data-virtual-index="${aheadIndex}"]`
       );
       if (!aheadEl) {
-        const expanded = controller.ensureIndexMounted(targetIndex);
+        const expanded = controller.ensureIndexMounted(targetIndex, currentIndex);
         if (expanded) {
           spatialPerfStats.virtualWindowExpansions++;
           invalidateCandidateCache();

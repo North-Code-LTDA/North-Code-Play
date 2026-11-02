@@ -19,6 +19,8 @@ export {
   clearFocusMemory,
   registerVirtualContainer,
   unregisterVirtualContainer,
+  getActiveVirtualContainerCount,
+  hasRegisteredVirtualContainer,
   invalidateCandidateCache,
   getSpatialNavPerfStats,
   resetSpatialNavPerfStats,
