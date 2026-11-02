@@ -5234,6 +5234,7 @@ async function runPerformanceAndVirtualizationTests() {
     NavigationProvider,
   } = await import('../src/navigation');
   const {
+    useVirtualWindow,
     computeVirtualWindowBounds,
     getVirtualWindowDiagnostics,
     resetVirtualWindowDiagnostics,
@@ -6659,6 +6660,615 @@ async function runPerformanceAndVirtualizationTests() {
     '[6.D] Build abortado não deve incrementar vodIndexBuilds nem poluir o WeakMap de índices prontos'
   );
 
+  // =========================================================================
+  // 12.12. [Auditoria Item 2] Teste de Geometria Dinâmica Durante a Rolagem (600 itens, 6 colunas, janela 96, origem 88px, passo 232px)
+  // =========================================================================
+  const dynMovies600 = Array.from({ length: 600 }, (_, i) => ({
+    stream_id: 950000 + i,
+    name: `Filme Geometria Dinâmica ${i + 1} (2024)`,
+    category_id: '101',
+    rating: '8.4',
+    stream_icon: `http://img.test/dyn_${i}.jpg`,
+  }));
+
+  (XtreamService as any).getVodCategories = async () => [vodCategories39k[0]];
+  (XtreamService as any).getVodStreams = async () => dynMovies600;
+
+  const dynContainer = document.createElement('div');
+  document.body.appendChild(dynContainer);
+  const dynRoot = createRoot(dynContainer);
+
+  const origGetBoundingClientRect = windowInstance.HTMLElement.prototype.getBoundingClientRect;
+  const origConsoleError = console.error;
+  const capturedReactErrors: string[] = [];
+
+  console.error = (...args: any[]) => {
+    const msg = args.map((a) => String(a ?? '')).join(' ');
+    if (
+      msg.includes('Maximum update depth exceeded') ||
+      msg.includes('Too many re-renders') ||
+      msg.includes('Uncaught Error')
+    ) {
+      capturedReactErrors.push(msg);
+    }
+    origConsoleError(...args);
+  };
+
+  // Simular geometria dinâmica real acoplada ao DOM atual (scrollTop + altura atual do espaçador + origem estrutural de 88px)
+  const STRUCTURAL_ORIGIN_PX = 88;
+  const CARD_HEIGHT_PX = 216;
+  const CARD_GAP_Y_PX = 16;
+  const ROW_STRIDE_PX = CARD_HEIGHT_PX + CARD_GAP_Y_PX; // 232px
+  const VIEWPORT_HEIGHT_PX = 720;
+
+  let forceOffsetTopFallback = false;
+  const dynamicGetBoundingClientRect = function (this: HTMLElement): DOMRect {
+    if (dynContainer.contains(this)) {
+      if (this.getAttribute('data-scroll-container') === 'true') {
+        const h = forceOffsetTopFallback ? 0 : VIEWPORT_HEIGHT_PX;
+        return {
+          top: 0,
+          bottom: h,
+          left: 0,
+          right: 1100,
+          width: 1100,
+          height: h,
+          x: 0,
+          y: 0,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+
+      const scrollEl = this.closest('[data-scroll-container="true"]') as HTMLElement | null;
+      const currentScrollTop = scrollEl ? scrollEl.scrollTop || 0 : 0;
+
+      if (this.getAttribute('data-virtual-spacer') === 'top') {
+        const spacerHeight = parseFloat(this.style?.height || '0') || 0;
+        const top = STRUCTURAL_ORIGIN_PX - currentScrollTop;
+        return {
+          top,
+          bottom: top + spacerHeight,
+          left: 0,
+          right: 1050,
+          width: 1050,
+          height: spacerHeight,
+          x: 0,
+          y: top,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+
+      if (this.getAttribute('data-virtual-container') === 'true') {
+        const prevSib = this.previousElementSibling as HTMLElement | null;
+        const currentSpacerH =
+          prevSib && prevSib.getAttribute('data-virtual-spacer') === 'top'
+            ? parseFloat(prevSib.style?.height || '0') || 0
+            : 0;
+        const renderedCardsCount = this.querySelectorAll('[data-virtual-index]').length;
+        const renderedRows = Math.max(1, Math.ceil(renderedCardsCount / 6));
+        const gridHeight = forceOffsetTopFallback ? 0 : renderedRows * ROW_STRIDE_PX;
+        const gridTop = STRUCTURAL_ORIGIN_PX + currentSpacerH - currentScrollTop;
+        return {
+          top: gridTop,
+          bottom: gridTop + gridHeight,
+          left: 0,
+          right: 1050,
+          width: 1050,
+          height: gridHeight,
+          x: 0,
+          y: gridTop,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+
+      if (this.hasAttribute('data-virtual-index')) {
+        const gridEl = this.closest('[data-virtual-container="true"]') as HTMLElement | null;
+        if (gridEl) {
+          const gridRect = gridEl.getBoundingClientRect();
+          const allCards = Array.from(gridEl.querySelectorAll('[data-virtual-index]'));
+          const localIdx = Math.max(0, allCards.indexOf(this));
+          const col = localIdx % 6;
+          const row = Math.floor(localIdx / 6);
+          const cardTop = gridRect.top + row * ROW_STRIDE_PX;
+          const cardLeft = col * 175;
+          return {
+            top: cardTop,
+            bottom: cardTop + CARD_HEIGHT_PX,
+            left: cardLeft,
+            right: cardLeft + 160,
+            width: 160,
+            height: CARD_HEIGHT_PX,
+            x: cardLeft,
+            y: cardTop,
+            toJSON: () => {},
+          } as DOMRect;
+        }
+      }
+    }
+    return origGetBoundingClientRect.call(this) as unknown as DOMRect;
+  };
+  (windowInstance.HTMLElement.prototype as any).getBoundingClientRect = dynamicGetBoundingClientRect;
+
+  try {
+    // Parte A: Exercitar diretamente o hook useVirtualWindow com geometria dinâmica para inspecionar listOffsetTop, rowHeightPx e contagem de renders
+    let latestHookResult: any = null;
+    let hookRenderCount = 0;
+
+    function DynamicGridHookHarness({ totalCount }: { totalCount: number }) {
+      hookRenderCount++;
+      const sRef = React.useRef<HTMLDivElement | null>(null);
+      const gRef = React.useRef<HTMLDivElement | null>(null);
+      const res = useVirtualWindow({
+        totalCount,
+        mode: 'grid',
+        scrollContainerRef: sRef,
+        virtualContainerRef: gRef,
+        maxWindowItems: 96,
+      });
+      latestHookResult = res;
+
+      const items = [];
+      for (let idx = res.startIndex; idx < res.endIndex; idx++) {
+        items.push(
+          React.createElement('div', {
+            key: idx,
+            'data-virtual-index': idx,
+            'data-nav-item': 'true',
+          })
+        );
+      }
+
+      return React.createElement(
+        'div',
+        {
+          ref: res.scrollContainerCallbackRef,
+          'data-scroll-container': 'true',
+        },
+        res.topSpacerPx > 0
+          ? React.createElement('div', {
+              'data-virtual-spacer': 'top',
+              style: { height: `${res.topSpacerPx}px` },
+            })
+          : null,
+        React.createElement(
+          'div',
+          {
+            ref: res.virtualContainerCallbackRef,
+            'data-virtual-container': 'true',
+            'data-nav-grid': 'true',
+          },
+          items
+        ),
+        res.bottomSpacerPx > 0
+          ? React.createElement('div', {
+              'data-virtual-spacer': 'bottom',
+              style: { height: `${res.bottomSpacerPx}px` },
+            })
+          : null
+      );
+    }
+
+    await act(async () => {
+      dynRoot.render(React.createElement(DynamicGridHookHarness, { totalCount: 600 }));
+    });
+
+    assert.strictEqual(
+      capturedReactErrors.length,
+      0,
+      `[Item 2] Nenhum erro do React deve ocorrer na montagem inicial com geometria dinâmica`
+    );
+    assert.strictEqual(
+      latestHookResult.listOffsetTop,
+      STRUCTURAL_ORIGIN_PX,
+      `[Item 2] Origem estrutural inicial medida deve ser ${STRUCTURAL_ORIGIN_PX}px`
+    );
+    assert.strictEqual(
+      latestHookResult.rowHeightPx,
+      ROW_STRIDE_PX,
+      `[Item 2] Passo de linha medido pelos cartões dinâmicos (216 + 16) deve ser ${ROW_STRIDE_PX}px`
+    );
+    assert.strictEqual(latestHookResult.columns, 6, '[Item 2] Colunas medidas devem ser 6');
+    assert.strictEqual(latestHookResult.startIndex, 0, '[Item 2] startIndex inicial deve ser 0');
+    assert.strictEqual(latestHookResult.endIndex, 96, '[Item 2] endIndex inicial deve ser 96');
+
+    const harnessScrollEl = dynContainer.querySelector('[data-scroll-container="true"]') as HTMLElement;
+    const rendersBeforeDeepScroll = hookRenderCount;
+
+    // Rolar do topo para 5.000 pixels (cenário exato que causava Maximum update depth exceeded antes da correção)
+    await act(async () => {
+      harnessScrollEl.scrollTop = 5000;
+      harnessScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const rendersForScroll5000 = hookRenderCount - rendersBeforeDeepScroll;
+    assert.strictEqual(
+      capturedReactErrors.length,
+      0,
+      `[Item 2] Rolagem para 5000px com geometria dinâmica NÃO deve disparar Maximum update depth exceeded (erros=${capturedReactErrors.length})`
+    );
+    assert(
+      rendersForScroll5000 <= 3,
+      `[Item 2] A transição para scrollTop=5000 deve convergir imediatamente sem ciclo de re-renderizações (renderizou ${rendersForScroll5000}x)`
+    );
+
+    // Em scrollTop=5000, origem=88, passo=232:
+    // effectiveScrollTop = 5000 - 88 = 4912 -> rawFirstVisibleRow = floor(4912 / 232) = 21
+    // startRow = 21 - 3 (overscan) = 18 -> startIndex = 18 * 6 = 108, endIndex = 204, topSpacerPx = 18 * 232 = 4176
+    assert.strictEqual(
+      latestHookResult.startIndex,
+      108,
+      `[Item 2] Em scrollTop=5000px, startIndex deve convergir para 108 (obteve ${latestHookResult.startIndex})`
+    );
+    assert.strictEqual(
+      latestHookResult.endIndex,
+      204,
+      `[Item 2] Em scrollTop=5000px, endIndex deve ser 204 (obteve ${latestHookResult.endIndex})`
+    );
+    assert.strictEqual(
+      latestHookResult.topSpacerPx,
+      18 * ROW_STRIDE_PX,
+      `[Item 2] Em scrollTop=5000px, topSpacerPx deve ser 4176px (obteve ${latestHookResult.topSpacerPx})`
+    );
+    assert.strictEqual(
+      latestHookResult.listOffsetTop,
+      STRUCTURAL_ORIGIN_PX,
+      `[Item 2] Deslocar a janela virtual para startIndex=108 NÃO deve alterar listOffsetTop (permanece ${STRUCTURAL_ORIGIN_PX}px)`
+    );
+
+    // Verificar que todos os itens da região visível (linhas 21 a 24 -> índices 126 a 149) estão montados
+    for (let visIdx = 126; visIdx <= 149; visIdx++) {
+      assert(
+        dynContainer.querySelector(`[data-virtual-index="${visIdx}"]`) !== null,
+        `[Item 2] Item visível ${visIdx} na região de 5000px deve estar montado no DOM`
+      );
+    }
+
+    // Executar medições repetidas (5 chamadas diretas a remeasureLayout + eventos resize) e confirmar estabilidade absoluta
+    const rendersBeforeRepeatedMeasure = hookRenderCount;
+    await act(async () => {
+      for (let m = 0; m < 5; m++) {
+        latestHookResult.remeasureLayout();
+        windowInstance.dispatchEvent(new windowInstance.Event('resize'));
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      latestHookResult.startIndex,
+      108,
+      '[Item 2] Medições repetidas devem manter startIndex estável em 108'
+    );
+    assert.strictEqual(
+      latestHookResult.listOffsetTop,
+      STRUCTURAL_ORIGIN_PX,
+      '[Item 2] Medições repetidas devem manter listOffsetTop estável em 88px'
+    );
+    assert.strictEqual(
+      hookRenderCount - rendersBeforeRepeatedMeasure,
+      0,
+      '[Item 2] Medições repetidas sem mudança geométrica não devem disparar re-renderizações extras'
+    );
+
+    // Rolar até o fim (scrollTop = 25000) -> deve montar os últimos itens (até 599) mantendo listOffsetTop = 88
+    await act(async () => {
+      harnessScrollEl.scrollTop = 25000;
+      harnessScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      latestHookResult.endIndex,
+      600,
+      '[Item 2] Rolagem até o fim com geometria dinâmica deve alcançar endIndex=600'
+    );
+    assert(
+      dynContainer.querySelector('[data-virtual-index="599"]') !== null,
+      '[Item 2] Último item (599) deve estar montado ao rolar até o fim'
+    );
+    assert.strictEqual(
+      latestHookResult.listOffsetTop,
+      STRUCTURAL_ORIGIN_PX,
+      '[Item 2] Na última janela (endIndex=600), listOffsetTop deve permanecer 88px'
+    );
+
+    // Rolar para cima (scrollTop = 2500) e depois de volta ao topo (scrollTop = 0)
+    await act(async () => {
+      harnessScrollEl.scrollTop = 2500;
+      harnessScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      latestHookResult.startIndex,
+      42,
+      `[Item 2] Ao subir para scrollTop=2500px, startIndex deve ser 42 (obteve ${latestHookResult.startIndex})`
+    );
+    assert.strictEqual(
+      latestHookResult.listOffsetTop,
+      STRUCTURAL_ORIGIN_PX,
+      '[Item 2] Ao subir para scrollTop=2500px, listOffsetTop deve permanecer 88px'
+    );
+
+    await act(async () => {
+      harnessScrollEl.scrollTop = 0;
+      harnessScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      latestHookResult.startIndex,
+      0,
+      '[Item 2] Ao retornar ao topo (scrollTop=0), startIndex deve voltar a 0'
+    );
+    assert.strictEqual(
+      latestHookResult.topSpacerPx,
+      0,
+      '[Item 2] Ao retornar ao topo (scrollTop=0), topSpacerPx deve voltar a 0'
+    );
+    assert.strictEqual(
+      latestHookResult.listOffsetTop,
+      STRUCTURAL_ORIGIN_PX,
+      '[Item 2] No topo, listOffsetTop deve permanecer 88px'
+    );
+
+    // Parte B: Validar também o caminho de fallback baseado em offsetTop (quando sRect.height/vRect.height retornam 0 mas offsetTop reflete 40 + 88 + topSpacerPx)
+    forceOffsetTopFallback = true;
+    const harnessVirtualEl = dynContainer.querySelector('[data-virtual-container="true"]') as HTMLElement;
+    Object.defineProperty(harnessScrollEl, 'offsetTop', { value: 40, configurable: true });
+    Object.defineProperty(harnessVirtualEl, 'offsetTop', {
+      get(this: HTMLElement) {
+        const prevSib = this.previousElementSibling as HTMLElement | null;
+        const spacerH =
+          prevSib && prevSib.getAttribute('data-virtual-spacer') === 'top'
+            ? parseFloat(prevSib.style?.height || '0') || 0
+            : 0;
+        // Mesmo offsetParent que scrollEl (que tem offsetTop=40) + origem 88 + spacerH
+        return 40 + STRUCTURAL_ORIGIN_PX + spacerH;
+      },
+      configurable: true,
+    });
+
+    await act(async () => {
+      harnessScrollEl.scrollTop = 5000;
+      harnessScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    assert.strictEqual(
+      latestHookResult.listOffsetTop,
+      STRUCTURAL_ORIGIN_PX,
+      '[Item 2] Caminho fallback via offsetTop (considerando offsetTop do scrollContainer e espaçador atual) deve preservar listOffsetTop=88px'
+    );
+    assert.strictEqual(
+      latestHookResult.startIndex,
+      108,
+      '[Item 2] Caminho fallback via offsetTop em scrollTop=5000px deve manter startIndex estável em 108'
+    );
+
+    // Parte C: Exercitar integração completa com MoviesView sob geometria dinâmica
+    forceOffsetTopFallback = false;
+
+    await act(async () => {
+      dynRoot.render(
+        React.createElement(
+          XtreamProvider,
+          {
+            credentials: {
+              serverUrl: 'http://perf.tv:8080',
+              username: 'user_dyn_movies_600',
+              password: '123',
+            },
+          },
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(MoviesView, { onPlay: mockOnPlay })
+          )
+        )
+      );
+      await new Promise((r) => setTimeout(r, 80));
+    });
+
+    const dynCatBtn = dynContainer.querySelector('button[data-category-id="101"]') as HTMLButtonElement;
+    assert(dynCatBtn, '[Item 2] Botão da categoria 101 em MoviesView dinâmico deve existir');
+    await act(async () => {
+      dynCatBtn.click();
+      await new Promise((r) => setTimeout(r, 40));
+    });
+
+    const dynMoviesMain = dynContainer.querySelector('main[data-scroll-container="true"]') as HTMLElement;
+    await act(async () => {
+      dynMoviesMain.scrollTop = 5000;
+      dynMoviesMain.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    assert.strictEqual(
+      capturedReactErrors.length,
+      0,
+      '[Item 2] MoviesView com geometria dinâmica em scrollTop=5000px não deve apresentar erros do React'
+    );
+    const firstCardInMovies5000 = dynContainer.querySelector('[data-nav-grid="true"] [data-virtual-index]') as HTMLElement;
+    assert.strictEqual(
+      Number(firstCardInMovies5000?.getAttribute('data-virtual-index')),
+      108,
+      '[Item 2] MoviesView com geometria dinâmica em scrollTop=5000px deve posicionar janela em startIndex=108'
+    );
+  } finally {
+    windowInstance.HTMLElement.prototype.getBoundingClientRect = origGetBoundingClientRect;
+    console.error = origConsoleError;
+    await act(async () => {
+      dynRoot.unmount();
+    });
+    document.body.removeChild(dynContainer);
+  }
+
+  // =========================================================================
+  // 12.13. [Auditoria Item 4] Teste Isolado de Eliminação do Retrabalho de Metadados (6.000 Filmes e 6.000 Séries)
+  // =========================================================================
+  const isolatedVod6k = Array.from({ length: 6000 }, (_, i) => ({
+    stream_id: 710000 + i,
+    name: i % 10 === 0 ? `Filme Sem Ano ${i + 1}` : `Filme Isolado ${i + 1} (${1998 + (i % 27)})`,
+    category_id: String((i % 8) + 1),
+    rating: i % 10 === 0 ? '0' : (((i * 3) % 95) / 10).toFixed(1),
+  }));
+  const isolatedVodSnapshot = isolatedVod6k.map((item) => ({ ...item }));
+
+  resetCatalogRankingPerfStats();
+  resetCatalogIndexPerfStats();
+
+  let isolatedVodUiInterleavedAt = -1;
+  const isolatedVodProgress: number[] = [];
+  const isolatedVodIdx = await buildVodIndexAsync(isolatedVod6k, {
+    batchSize: 1000,
+    onBatchProgress: (processed) => {
+      isolatedVodProgress.push(processed);
+      if (processed === 2000) {
+        setTimeout(() => {
+          isolatedVodUiInterleavedAt = isolatedVodProgress[isolatedVodProgress.length - 1];
+        }, 0);
+      }
+    },
+  });
+
+  assert(isolatedVodIdx !== null, '[Item 4] buildVodIndexAsync deve construir o índice de 6.000 filmes');
+  const statsAfterVodIndexBuild = getCatalogRankingPerfStats();
+  assert.strictEqual(
+    statsAfterVodIndexBuild.metadataExtractions,
+    0,
+    `[Item 4] A construção cooperativa do índice VOD NÃO deve executar extração de ano (esperado 0, obteve ${statsAfterVodIndexBuild.metadataExtractions})`
+  );
+  assert.strictEqual(
+    statsAfterVodIndexBuild.sortCalls,
+    0,
+    '[Item 4] A construção do índice VOD não deve invocar sortByYearAndRating'
+  );
+  assert(
+    isolatedVodUiInterleavedAt >= 2000 && isolatedVodUiInterleavedAt < 6000,
+    `[Item 4] Tarefa de interface deve continuar executando entre os lotes de VOD (executou em processed=${isolatedVodUiInterleavedAt})`
+  );
+
+  // Primeira ordenação: deve extrair metadados exatamente 1 vez por item (6.000 extrações)
+  const sortedVodFirst = isolatedVodIdx.getSortedAll();
+  const statsAfterFirstVodSort = getCatalogRankingPerfStats();
+  assert.strictEqual(
+    statsAfterFirstVodSort.sortCalls,
+    1,
+    '[Item 4] 1ª chamada a getSortedAll() em VOD deve realizar 1 ordenação'
+  );
+  assert.strictEqual(
+    statsAfterFirstVodSort.metadataExtractions,
+    6000,
+    `[Item 4] 1ª ordenação de 6.000 filmes deve realizar exatamente 6.000 extrações (1 por item, sem duplicar para 12.000; obteve ${statsAfterFirstVodSort.metadataExtractions})`
+  );
+
+  // Segunda consulta à mesma ordenação: deve reutilizar o resultado em cache (0 novas extrações)
+  const sortedVodSecond = isolatedVodIdx.getSortedAll();
+  const statsAfterSecondVodSort = getCatalogRankingPerfStats();
+  assert.strictEqual(
+    sortedVodSecond,
+    sortedVodFirst,
+    '[Item 4] 2ª consulta a getSortedAll() em VOD deve retornar a referência em cache'
+  );
+  assert.strictEqual(
+    statsAfterSecondVodSort.metadataExtractions,
+    6000,
+    '[Item 4] 2ª consulta a getSortedAll() em VOD não deve realizar nenhuma nova extração de metadados'
+  );
+  assert.deepStrictEqual(
+    isolatedVod6k,
+    isolatedVodSnapshot,
+    '[Item 4] O array original de 6.000 filmes deve permanecer intacto (sem mutação)'
+  );
+  assert.strictEqual(
+    getValidYear(sortedVodFirst[0]) >= getValidYear(sortedVodFirst[100]),
+    true,
+    '[Item 4] Ordem final de filmes deve continuar decrescente por ano/nota'
+  );
+  assert.strictEqual(
+    getValidYear(sortedVodFirst[sortedVodFirst.length - 1]),
+    0,
+    '[Item 4] Itens sem metadados devem permanecer no final da ordenação'
+  );
+
+  // Repetir verificação isolada para o construtor de Séries (buildSeriesIndexAsync com 6.000 itens + cancelamento)
+  const isolatedSeries6k = Array.from({ length: 6000 }, (_, i) => ({
+    series_id: 810000 + i,
+    name: i % 12 === 0 ? `Série Sem Ano ${i + 1}` : `Série Isolada ${i + 1} (${2002 + (i % 23)})`,
+    category_id: String((i % 6) + 1),
+    rating: i % 12 === 0 ? '' : (((i * 7) % 95) / 10).toFixed(1),
+  }));
+  const isolatedSeriesSnapshot = isolatedSeries6k.map((item) => ({ ...item }));
+
+  resetCatalogRankingPerfStats();
+  resetCatalogIndexPerfStats();
+
+  let isolatedSeriesUiInterleavedAt = -1;
+  const isolatedSeriesProgress: number[] = [];
+  const isolatedSeriesIdx = await buildSeriesIndexAsync(isolatedSeries6k, {
+    batchSize: 1000,
+    onBatchProgress: (processed) => {
+      isolatedSeriesProgress.push(processed);
+      if (processed === 3000) {
+        setTimeout(() => {
+          isolatedSeriesUiInterleavedAt = isolatedSeriesProgress[isolatedSeriesProgress.length - 1];
+        }, 0);
+      }
+    },
+  });
+
+  assert(isolatedSeriesIdx !== null, '[Item 4] buildSeriesIndexAsync deve construir o índice de 6.000 séries');
+  const statsAfterSeriesIndexBuild = getCatalogRankingPerfStats();
+  assert.strictEqual(
+    statsAfterSeriesIndexBuild.metadataExtractions,
+    0,
+    `[Item 4] A construção cooperativa do índice de Séries NÃO deve executar extração de ano (esperado 0, obteve ${statsAfterSeriesIndexBuild.metadataExtractions})`
+  );
+  assert(
+    isolatedSeriesUiInterleavedAt >= 3000 && isolatedSeriesUiInterleavedAt < 6000,
+    `[Item 4] Tarefa de interface deve continuar executando entre os lotes de Séries (executou em processed=${isolatedSeriesUiInterleavedAt})`
+  );
+
+  const sortedSeriesFirst = isolatedSeriesIdx.getSortedAll();
+  const statsAfterFirstSeriesSort = getCatalogRankingPerfStats();
+  assert.strictEqual(
+    statsAfterFirstSeriesSort.metadataExtractions,
+    6000,
+    `[Item 4] 1ª ordenação de 6.000 séries deve realizar exatamente 6.000 extrações (obteve ${statsAfterFirstSeriesSort.metadataExtractions})`
+  );
+
+  const sortedSeriesSecond = isolatedSeriesIdx.getSortedAll();
+  const statsAfterSecondSeriesSort = getCatalogRankingPerfStats();
+  assert.strictEqual(sortedSeriesSecond, sortedSeriesFirst);
+  assert.strictEqual(
+    statsAfterSecondSeriesSort.metadataExtractions,
+    6000,
+    '[Item 4] 2ª consulta a getSortedAll() em Séries deve reutilizar o cache com 0 novas extrações'
+  );
+  assert.deepStrictEqual(
+    isolatedSeries6k,
+    isolatedSeriesSnapshot,
+    '[Item 4] O array original de 6.000 séries deve permanecer intacto'
+  );
+
+  // Cancelamento durante construção de Séries deve descartar trabalho incompleto com 0 extrações
+  const abortableSeries4k = Array.from({ length: 4000 }, (_, i) => ({
+    series_id: 890000 + i,
+    name: `Série Abortada ${i + 1} (2024)`,
+    category_id: '1',
+    rating: '8.0',
+  }));
+  resetCatalogRankingPerfStats();
+  resetCatalogIndexPerfStats();
+  let cancelSeriesMidway = false;
+  const abortedSeriesRes = await buildSeriesIndexAsync(abortableSeries4k, {
+    batchSize: 1000,
+    shouldCancel: () => cancelSeriesMidway,
+    onBatchProgress: (processed) => {
+      if (processed === 2000) cancelSeriesMidway = true;
+    },
+  });
+  assert.strictEqual(abortedSeriesRes, null, '[Item 4] buildSeriesIndexAsync cancelado deve retornar null');
+  assert.strictEqual(getCatalogIndexPerfStats().abortedBuilds, 1);
+  assert.strictEqual(getCatalogIndexPerfStats().seriesIndexBuilds, 0);
+  assert.strictEqual(getCatalogRankingPerfStats().metadataExtractions, 0);
+
   await act(async () => {
     virtRoot.unmount();
   });
@@ -6672,9 +7282,10 @@ async function runPerformanceAndVirtualizationTests() {
       `   • Re-render Real + Recálculo de Layout em 4 Escalas TV (50%/85%/100%/125%): ${realScaleRenderAndRemeasureMs.toFixed(2)}ms (cols=${Array.from(observedColumnsByScale.values()).join('/')})\n` +
       `   • Agrupamento de Canais por Categoria: Frio=${liveCatColdMs.toFixed(2)}ms | Quente=${liveCatWarmMs.toFixed(3)}ms\n` +
       `   • Indexação Cooperativa (6k itens, batchSize=1000): lotes=${coopStats.batchesProcessed}, yields=${coopStats.batchYields}, UI intercalada em processed=${uiTaskProcessedSnapshot}\n` +
+      `   • Extrações de Metadados (6k itens): Após Indexação=${statsAfterVodIndexBuild.metadataExtractions} | Após 1ª Ordenação=${statsAfterFirstVodSort.metadataExtractions} | Após 2ª Ordenação=${statsAfterSecondVodSort.metadataExtractions}\n` +
       `   • 5 Movimentos D-Pad em Grade Virtualizada (2.500 itens): ${nav5MovesAfterMs.toFixed(2)}ms (getComputedStyle=${spatialStats.computedStyleCalls})`
   );
-  console.log('✅ Todos os testes de desempenho, indexação cooperativa, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {

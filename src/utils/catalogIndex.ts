@@ -290,7 +290,6 @@ async function buildRankedCatalogIndexCooperatively<T extends Record<string, any
   }
 
   const batchSize = Math.max(100, Math.floor(options?.batchSize ?? 1000));
-  const maxYear = new Date().getFullYear() + 1;
 
   const taskPromise = (async (): Promise<RankedCatalogIndex<T> | null> => {
     const byId = new Map<string, T>();
@@ -323,10 +322,6 @@ async function buildRankedCatalogIndexCooperatively<T extends Record<string, any
           byCategoryId.set(catKey, bucket);
         }
         bucket.push(item);
-
-        // Pre-warm ranking metadata in cooperative batches
-        getValidYear(item, maxYear);
-        getValidRating(item);
       }
 
       indexPerfStats.batchesProcessed++;

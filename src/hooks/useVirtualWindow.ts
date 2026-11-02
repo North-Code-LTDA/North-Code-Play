@@ -27,6 +27,7 @@ export interface VirtualWindowResult {
   bottomSpacerPx: number;
   columns: number;
   rowHeightPx: number;
+  listOffsetTop: number;
   ensureIndexMounted: (targetIndex: number, preserveIndex?: number) => boolean;
   scrollContainerCallbackRef: (node: HTMLElement | null) => void;
   virtualContainerCallbackRef: (node: HTMLElement | null) => void;
@@ -206,6 +207,55 @@ function computeListCumulativeOffset(
   return Math.max(0, Math.round(total));
 }
 
+function getCurrentExternalTopSpacerHeightPx(virtualEl: HTMLElement): number {
+  const prevSibling = virtualEl.previousElementSibling as HTMLElement | null;
+  if (!prevSibling || prevSibling.getAttribute('data-virtual-spacer') !== 'top') {
+    return 0;
+  }
+  const rect = prevSibling.getBoundingClientRect();
+  if (rect.height > 0) {
+    return rect.height;
+  }
+  const inlineHeight = parseFloat(prevSibling.style?.height || '');
+  if (Number.isFinite(inlineHeight) && inlineHeight >= 0) {
+    return inlineHeight;
+  }
+  if (prevSibling.offsetHeight > 0) {
+    return prevSibling.offsetHeight;
+  }
+  return 0;
+}
+
+function computeOffsetTopRelativeToScrollContainer(
+  targetEl: HTMLElement,
+  scrollContainerEl: HTMLElement
+): number {
+  let total = 0;
+  let curr: HTMLElement | null = targetEl;
+  let reachedScroll = false;
+  let guard = 0;
+
+  while (curr && curr !== scrollContainerEl && guard < 32) {
+    total += curr.offsetTop || 0;
+    const parent = curr.offsetParent as HTMLElement | null;
+    if (!parent) {
+      break;
+    }
+    if (parent === scrollContainerEl) {
+      reachedScroll = true;
+      break;
+    }
+    curr = parent;
+    guard++;
+  }
+
+  if (!reachedScroll && targetEl.offsetParent === scrollContainerEl.offsetParent) {
+    total -= scrollContainerEl.offsetTop || 0;
+  }
+
+  return Math.max(0, total);
+}
+
 export function useVirtualWindow({
   totalCount,
   mode,
@@ -262,9 +312,9 @@ export function useVirtualWindow({
   const [measuredListOffsetTop, setMeasuredListOffsetTop] = useState<number | null>(null);
   const [heightMeasurementVersion, setHeightMeasurementVersion] = useState<number>(0);
 
-  // Variable item heights map for mode === 'list'
+  // Variable item heights map and visual anchor history for mode === 'list'
   const measuredItemHeightsRef = useRef<Map<number, number>>(new Map());
-  const prevTopSpacerRef = useRef<number>(0);
+  const prevListAnchorTopSpacerRef = useRef<number>(0);
   const prevStartIndexForAnchorRef = useRef<number>(0);
 
   const fallbackColumns =
@@ -324,27 +374,22 @@ export function useVirtualWindow({
     const currentRootRem = getEffectiveRootFontSizePx(displayMode, tvScale);
     const currentScaleFactor = displayMode === 'tv' ? currentRootRem / 16 : 1;
 
-    // 1. Measure listOffsetTop if real geometry is available
+    // 1. Measure listOffsetTop using measurements belonging strictly to the current render
     if (scrollEl && virtualEl) {
       const sRect = scrollEl.getBoundingClientRect();
       const vRect = virtualEl.getBoundingClientRect();
+      const currentExternalSpacerPx = getCurrentExternalTopSpacerHeightPx(virtualEl);
       if (sRect.height > 0 && vRect.height > 0) {
-        const hasExternalTopSpacer =
-          virtualEl.previousElementSibling?.getAttribute('data-virtual-spacer') === 'top';
         const rawOffset =
           vRect.top -
           sRect.top +
           (scrollEl.scrollTop || 0) -
-          (hasExternalTopSpacer ? prevTopSpacerRef.current : 0);
+          currentExternalSpacerPx;
         const clampedOffset = Math.max(0, Math.round(rawOffset));
         setMeasuredListOffsetTop((prev) => (prev !== clampedOffset ? clampedOffset : prev));
       } else if (virtualEl.offsetTop > 0) {
-        const hasExternalTopSpacer =
-          virtualEl.previousElementSibling?.getAttribute('data-virtual-spacer') === 'top';
-        const rawOffset = Math.max(
-          0,
-          virtualEl.offsetTop - (hasExternalTopSpacer ? prevTopSpacerRef.current : 0)
-        );
+        const relativeOffsetTop = computeOffsetTopRelativeToScrollContainer(virtualEl, scrollEl);
+        const rawOffset = Math.max(0, Math.round(relativeOffsetTop - currentExternalSpacerPx));
         setMeasuredListOffsetTop((prev) => (prev !== rawOffset ? rawOffset : prev));
       }
     }
@@ -797,16 +842,16 @@ export function useVirtualWindow({
       mode === 'list' &&
       scrollEl &&
       prevStartIndexForAnchorRef.current === startIndex &&
-      prevTopSpacerRef.current !== topSpacerPx &&
+      prevListAnchorTopSpacerRef.current !== topSpacerPx &&
       scrollEl.scrollTop > 0
     ) {
-      const delta = topSpacerPx - prevTopSpacerRef.current;
+      const delta = topSpacerPx - prevListAnchorTopSpacerRef.current;
       if (Math.abs(delta) > 1) {
         scrollEl.scrollTop = Math.max(0, scrollEl.scrollTop + delta);
       }
     }
     prevStartIndexForAnchorRef.current = startIndex;
-    prevTopSpacerRef.current = topSpacerPx;
+    prevListAnchorTopSpacerRef.current = topSpacerPx;
   }, [mode, scrollEl, startIndex, topSpacerPx]);
 
   return {
@@ -816,6 +861,7 @@ export function useVirtualWindow({
     bottomSpacerPx,
     columns,
     rowHeightPx,
+    listOffsetTop,
     ensureIndexMounted,
     scrollContainerCallbackRef,
     virtualContainerCallbackRef,
