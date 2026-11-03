@@ -9,6 +9,7 @@ import {
   unregisterVirtualContainer,
   invalidateCandidateCache,
   pushFocusMemory,
+  focusElementSafely,
 } from '../navigation';
 import {
   MediaImage,
@@ -278,17 +279,13 @@ export function computeHorizontalVirtualWindow({
   if (pinnedRange) {
     const pinMin = Math.max(0, Math.min(totalCount - 1, pinnedRange.minIndex));
     const pinMax = Math.max(0, Math.min(totalCount - 1, pinnedRange.maxIndex));
-    if (pinMax - pinMin <= windowSpan + 4) {
-      if (
-        pinMin >= startIndex - overscan - 2 &&
-        pinMax <= endIndex + overscan + 2
-      ) {
-        startIndex = Math.max(0, Math.min(startIndex, pinMin));
-        endIndex = Math.min(totalCount, Math.max(endIndex, pinMax + 1));
-      } else {
-        startIndex = Math.max(0, Math.min(totalCount - windowSpan, pinMin - overscan));
-        endIndex = Math.min(totalCount, Math.max(startIndex + windowSpan, pinMax + 1));
-      }
+    if (
+      pinMax - pinMin <= windowSpan + 4 &&
+      pinMin >= startIndex - overscan - 2 &&
+      pinMax <= endIndex + overscan + 2
+    ) {
+      startIndex = Math.max(0, Math.min(startIndex, pinMin));
+      endIndex = Math.min(totalCount, Math.max(endIndex, pinMax + 1));
     }
   }
 
@@ -347,6 +344,11 @@ export const HorizontalRow = React.memo(function HorizontalRow({
     minIndex: number;
     maxIndex: number;
   } | null>(null);
+  const pendingFocusRestoreRef = useRef<{
+    itemKey: string;
+    targetScrollLeft: number;
+  } | null>(null);
+  const isRestoringFocusRef = useRef<boolean>(false);
   const prevItemsRef = useRef<any[]>(items);
   const itemsRef = useRef<any[]>(items);
   itemsRef.current = items;
@@ -1031,6 +1033,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   const scrollByAmount = (amount: number) => {
     const rowEl = rowRef.current;
     if (!rowEl) return;
+    clearPendingFocusRestore();
     programmaticScrollTargetRef.current = null;
     const prevScrollLeft = rowEl.scrollLeft || 0;
     const m = metricsRef.current;

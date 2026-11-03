@@ -9589,6 +9589,349 @@ async function runPerformanceAndVirtualizationTests() {
         null,
         '[12.15.6] Com a janela sincronizada em scrollLeft=0 (startIndex=0), não deve haver espaçador esquerdo residual'
       );
+
+      // ---------------------------------------------------------------------
+      // 12.15.7: REGRESSÃO 3 — Combinação de destino distante (0 <-> 390) e
+      // atualização atrasada de scrollLeft no mesmo cenário + descarte da
+      // restauração pendente em nova navegação, rolagem do usuário ou desmontagem
+      // ---------------------------------------------------------------------
+      const { hasPendingFocusRestore } = await import('../src/navigation');
+
+      // 1) Sentido Direto: do início (scrollLeft=0) até o índice 390 com scrollLeft atrasado
+      await act(async () => {
+        cwNavRow500.style.scrollBehavior = 'auto';
+        cwNavRow500.scrollLeft = 0;
+        cwNavRow500.style.removeProperty('scroll-behavior');
+        cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      const originCardAt0 = cwNavRow500.querySelector('[data-row-card-index="0"]') as HTMLElement;
+      assert(originCardAt0 !== null, '[12.15.7] Cartão 0 deve estar montado no início');
+      const delayedRestoreKey = originCardAt0.getAttribute('data-row-item-key')!;
+      const delayedRestoreStreamId = delayedRestoreKey.replace(/^movie_/, '');
+
+      await act(async () => {
+        originCardAt0.focus();
+        pushFocusForPlay(originCardAt0);
+      });
+
+      // Reordenar exatamente para o índice 390 entre os 500 itens
+      const histFor390 = JSON.parse(windowInstance.localStorage.getItem(homeHistoryKey) || '{}');
+      const otherKeys = Object.keys(histFor390).filter(
+        (k) => k !== `movie:${delayedRestoreStreamId}`
+      );
+      otherKeys.sort((a, b) => histFor390[b].updatedAt - histFor390[a].updatedAt);
+      for (let i = 0; i < otherKeys.length; i++) {
+        const rank = i < 390 ? i : i + 1;
+        histFor390[otherKeys[i]].updatedAt = 1717000000000 - rank * 1000;
+      }
+      histFor390[`movie:${delayedRestoreStreamId}`].updatedAt = 1717000000000 - 390 * 1000;
+      windowInstance.localStorage.setItem(homeHistoryKey, JSON.stringify(histFor390));
+
+      const topMovieStreamId = otherKeys[0].replace(/^movie:/, '');
+      await act(async () => {
+        recordPlaybackPosition(credsHomeImg, {
+          id: topMovieStreamId,
+          type: 'movie',
+          positionSec: 205,
+        });
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      const cardsBeforeForwardRestore = Array.from(
+        cwNavRow500.querySelectorAll('[data-nav-item="true"]')
+      ) as HTMLElement[];
+      const countBeforeForward = cardsBeforeForwardRestore.length;
+      assert.strictEqual(
+        countBeforeForward,
+        14,
+        '[12.15.7] Antes da restauração (0 -> 390), devem estar montados 14 cartões (0..13)'
+      );
+
+      // Ativar atraso de scrollLeft e solicitar restauração de foco para o cartão agora no índice 390
+      forceDelayAllScrollLeftWrites = true;
+      await act(async () => {
+        const popResult = popFocusFromPlay();
+        assert.strictEqual(
+          popResult,
+          true,
+          '[12.15.7] popFocusMemory deve aceitar a restauração pendente para o destino distante (390)'
+        );
+      });
+
+      // ANTES de liberar o deslocamento simulado (scrollLeft ainda é 0):
+      const cardsDuringForwardRestore = Array.from(
+        cwNavRow500.querySelectorAll('[data-nav-item="true"]')
+      ) as HTMLElement[];
+      const indicesDuringForward = cardsDuringForwardRestore.map((el) =>
+        Number(el.getAttribute('data-row-card-index'))
+      );
+      const countDuringForward = cardsDuringForwardRestore.length;
+
+      assert.strictEqual(
+        cwNavRow500.scrollLeft,
+        0,
+        '[12.15.7] Enquanto o deslocamento (0 -> 390) está pendente, scrollLeft efetivo ainda é 0'
+      );
+      assert.strictEqual(
+        hasPendingFocusRestore(cwNavRow500),
+        true,
+        '[12.15.7] Enquanto o deslocamento está pendente, hasPendingFocusRestore deve ser true'
+      );
+      assert.strictEqual(
+        countDuringForward,
+        14,
+        `[12.15.7] Durante o deslocamento pendente (0 -> 390), a quantidade de cartões montados deve permanecer limitada em 14 (obteve ${countDuringForward})`
+      );
+      assert.strictEqual(
+        indicesDuringForward[0],
+        0,
+        '[12.15.7] Os cartões visíveis em scrollLeft=0 (iniciando no índice 0) devem continuar montados enquanto o deslocamento não ocorre'
+      );
+      assert.strictEqual(
+        indicesDuringForward[indicesDuringForward.length - 1],
+        13,
+        '[12.15.7] A janela visível [0..13] deve permanecer intacta sem desmontar a área visível'
+      );
+      assert.strictEqual(
+        cwNavRow500.querySelector('[data-virtual-spacer="left"]'),
+        null,
+        '[12.15.7] Enquanto scrollLeft efetivo é 0, não deve existir espaçador esquerdo cobrindo a área visível'
+      );
+
+      // Liberar o deslocamento simulado para o índice 390 (scrollLeft = 71211px)
+      forceDelayAllScrollLeftWrites = false;
+      await advancePendingSmoothScroll(1);
+
+      const expectedScrollAt390 = 390 * 185 + 165 - 1120 + 16; // 71211px
+      const cardsAfterForwardRestore = Array.from(
+        cwNavRow500.querySelectorAll('[data-nav-item="true"]')
+      ) as HTMLElement[];
+      const indicesAfterForward = cardsAfterForwardRestore.map((el) =>
+        Number(el.getAttribute('data-row-card-index'))
+      );
+      const countAfterForward = cardsAfterForwardRestore.length;
+      const focusedAt390 = document.activeElement as HTMLElement | null;
+
+      assert.strictEqual(
+        cwNavRow500.scrollLeft,
+        expectedScrollAt390,
+        `[12.15.7] Após liberar o deslocamento, scrollLeft efetivo deve ser ${expectedScrollAt390}px`
+      );
+      assert.strictEqual(
+        countAfterForward,
+        14,
+        `[12.15.7] Após o deslocamento para 390, devem estar montados 14 cartões (obteve ${countAfterForward})`
+      );
+      assert.strictEqual(indicesAfterForward[0], 381, '[12.15.7] A janela em 71211px deve iniciar em 381');
+      assert.strictEqual(
+        indicesAfterForward[indicesAfterForward.length - 1],
+        394,
+        '[12.15.7] A janela em 71211px deve terminar em 394 (contendo 390)'
+      );
+      assert(
+        focusedAt390 !== null &&
+          focusedAt390.getAttribute('data-row-item-key') === delayedRestoreKey &&
+          focusedAt390.getAttribute('data-row-card-index') === '390',
+        `[12.15.7] O foco deve ser entregue ao cartão correto no índice 390 pela rowKey (${delayedRestoreKey})`
+      );
+      assert.strictEqual(
+        hasPendingFocusRestore(cwNavRow500),
+        false,
+        '[12.15.7] Após concluir a restauração no índice 390, a operação pendente deve ser limpa'
+      );
+      assert.strictEqual(
+        cwNavRow500.getAttribute('data-pending-focus-restore'),
+        null,
+        '[12.15.7] O atributo data-pending-focus-restore deve ser removido após a conclusão'
+      );
+
+      // 2) Sentido Inverso: do índice 390 (scrollLeft=71211) de volta ao índice 0 com scrollLeft atrasado
+      await act(async () => {
+        focusedAt390!.focus();
+        pushFocusForPlay(focusedAt390!);
+        // Atualizar histórico para mover delayedRestoreKey do índice 390 para o índice 0
+        recordPlaybackPosition(credsHomeImg, {
+          id: delayedRestoreStreamId,
+          type: 'movie',
+          positionSec: 540,
+        });
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      const countBeforeReverse = cwNavRow500.querySelectorAll('[data-nav-item="true"]').length;
+      assert.strictEqual(
+        countBeforeReverse,
+        14,
+        '[12.15.7] Antes da restauração inversa (390 -> 0), devem estar montados 14 cartões (381..394)'
+      );
+
+      forceDelayAllScrollLeftWrites = true;
+      await act(async () => {
+        const popRev = popFocusFromPlay();
+        assert.strictEqual(
+          popRev,
+          true,
+          '[12.15.7] popFocusMemory deve registrar a restauração pendente no sentido inverso (390 -> 0)'
+        );
+      });
+
+      // ANTES de liberar o deslocamento inverso (scrollLeft ainda é 71211px):
+      const cardsDuringReverseRestore = Array.from(
+        cwNavRow500.querySelectorAll('[data-nav-item="true"]')
+      ) as HTMLElement[];
+      const indicesDuringReverse = cardsDuringReverseRestore.map((el) =>
+        Number(el.getAttribute('data-row-card-index'))
+      );
+      const countDuringReverse = cardsDuringReverseRestore.length;
+
+      assert.strictEqual(
+        cwNavRow500.scrollLeft,
+        expectedScrollAt390,
+        '[12.15.7] Enquanto o deslocamento inverso (390 -> 0) está pendente, scrollLeft efetivo ainda é 71211px'
+      );
+      assert.strictEqual(
+        hasPendingFocusRestore(cwNavRow500),
+        true,
+        '[12.15.7] hasPendingFocusRestore deve ser true durante o deslocamento inverso pendente'
+      );
+      assert.strictEqual(
+        countDuringReverse,
+        14,
+        `[12.15.7] Durante o deslocamento inverso pendente (390 -> 0), a quantidade montada deve permanecer limitada em 14 (obteve ${countDuringReverse})`
+      );
+      assert.strictEqual(
+        indicesDuringReverse[0],
+        381,
+        '[12.15.7] Os cartões da área visível em 71211px (381..394) devem continuar montados enquanto scrollLeft não muda'
+      );
+      assert.strictEqual(
+        indicesDuringReverse[indicesDuringReverse.length - 1],
+        394,
+        '[12.15.7] O fim da janela visível em 71211px (394) deve continuar montado durante a transição pendente'
+      );
+
+      // Liberar o deslocamento inverso para scrollLeft = 0
+      forceDelayAllScrollLeftWrites = false;
+      await advancePendingSmoothScroll(1);
+
+      const cardsAfterReverseRestore = Array.from(
+        cwNavRow500.querySelectorAll('[data-nav-item="true"]')
+      ) as HTMLElement[];
+      const indicesAfterReverse = cardsAfterReverseRestore.map((el) =>
+        Number(el.getAttribute('data-row-card-index'))
+      );
+      const countAfterReverse = cardsAfterReverseRestore.length;
+      const focusedAt0 = document.activeElement as HTMLElement | null;
+
+      assert.strictEqual(
+        cwNavRow500.scrollLeft,
+        0,
+        '[12.15.7] Após liberar o deslocamento inverso, scrollLeft efetivo deve ser 0px'
+      );
+      assert.strictEqual(
+        countAfterReverse,
+        14,
+        `[12.15.7] Após concluir o deslocamento inverso para 0, devem estar montados 14 cartões (obteve ${countAfterReverse})`
+      );
+      assert.strictEqual(indicesAfterReverse[0], 0);
+      assert.strictEqual(indicesAfterReverse[indicesAfterReverse.length - 1], 13);
+      assert(
+        focusedAt0 !== null &&
+          focusedAt0.getAttribute('data-row-item-key') === delayedRestoreKey &&
+          focusedAt0.getAttribute('data-row-card-index') === '0',
+        `[12.15.7] O foco deve ser devolvido ao cartão no índice 0 pela rowKey (${delayedRestoreKey})`
+      );
+      assert.strictEqual(
+        hasPendingFocusRestore(cwNavRow500),
+        false,
+        '[12.15.7] A restauração pendente deve estar limpa após concluir o sentido inverso'
+      );
+
+      // 3) Interrupção da restauração pendente por nova navegação, rolagem do usuário e desmontagem
+      // 3.A: Interrupção por nova navegação D-Pad (moveSpatialFocus)
+      const card390Now = (() => {
+        // Obter a chave do item que atualmente ocupa o índice 390
+        const allHistEntries = Object.values(
+          JSON.parse(windowInstance.localStorage.getItem(homeHistoryKey) || '{}')
+        ) as any[];
+        allHistEntries.sort((a, b) => b.updatedAt - a.updatedAt);
+        return `movie_${allHistEntries[390].id}`;
+      })();
+      const { restoreVirtualItemByKey } = await import('../src/navigation');
+
+      forceDelayAllScrollLeftWrites = true;
+      await act(async () => {
+        restoreVirtualItemByKey(cwNavRow500, card390Now, expectedScrollAt390);
+      });
+      assert.strictEqual(
+        hasPendingFocusRestore(cwNavRow500),
+        true,
+        '[12.15.7] Restauração para 390 deve ficar pendente enquanto scrollLeft está retido em 0'
+      );
+
+      // Usuário navega por D-Pad para o cartão 1 antes do deslocamento acontecer
+      await act(async () => {
+        const navMoved = moveSpatialFocus('right');
+        assert(navMoved !== null && navMoved.getAttribute('data-row-card-index') === '1');
+      });
+      assert.strictEqual(
+        hasPendingFocusRestore(cwNavRow500),
+        false,
+        '[12.15.7] Nova navegação espacial (moveSpatialFocus) deve descartar imediatamente a restauração pendente'
+      );
+
+      // Mesmo que o scroll chegue a 71211px depois, a operação descartada NÃO pode roubar o foco para card390Now
+      const heroPlayBtn = virtContainer.querySelector(
+        '[data-scroll-top-anchor="true"] button'
+      ) as HTMLElement;
+      await act(async () => {
+        heroPlayBtn.focus();
+      });
+      forceDelayAllScrollLeftWrites = false;
+      pendingSmoothScrollTarget = expectedScrollAt390;
+      await advancePendingSmoothScroll(1);
+      assertSameElement(
+        document.activeElement,
+        heroPlayBtn,
+        '[12.15.7] Restauração descartada por nova navegação não deve roubar o foco quando a fileira rolar depois'
+      );
+
+      // 3.B: Interrupção por rolagem do usuário (botão lateral / evento de scroll em outra posição)
+      await act(async () => {
+        cwNavRow500.style.scrollBehavior = 'auto';
+        cwNavRow500.scrollLeft = 0;
+        cwNavRow500.style.removeProperty('scroll-behavior');
+        cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      });
+      forceDelayAllScrollLeftWrites = true;
+      await act(async () => {
+        restoreVirtualItemByKey(cwNavRow500, card390Now, expectedScrollAt390);
+      });
+      assert.strictEqual(hasPendingFocusRestore(cwNavRow500), true);
+
+      forceDelayAllScrollLeftWrites = false;
+      await act(async () => {
+        nextChevronBtn.click(); // Rolagem suave iniciada pelo usuário
+      });
+      assert.strictEqual(
+        hasPendingFocusRestore(cwNavRow500),
+        false,
+        '[12.15.7] Rolagem iniciada pelo usuário (botão lateral) deve descartar a restauração pendente'
+      );
+      await advancePendingSmoothScroll(1);
+      assertSameElement(
+        document.activeElement,
+        heroPlayBtn,
+        '[12.15.7] Restauração descartada por rolagem do usuário não deve roubar o foco'
+      );
+
+      console.log(
+        `   • Regressão 12.15.7 (Destino Distante 0 <-> 390 c/ scrollLeft Atrasado): ` +
+          `0->390 [antes=${countBeforeForward}, durante=${countDuringForward} (0..13), depois=${countAfterForward} (381..394)] | ` +
+          `390->0 [antes=${countBeforeReverse}, durante=${countDuringReverse} (381..394), depois=${countAfterReverse} (0..13)]`
+      );
     } finally {
       forceDelayAllScrollLeftWrites = false;
       pendingSmoothScrollTarget = null;

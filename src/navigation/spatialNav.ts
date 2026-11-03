@@ -6,6 +6,8 @@ export interface VirtualContainerController {
   getColumns: () => number;
   ensureIndexMounted: (targetIndex: number, preserveIndex?: number) => boolean;
   ensureItemKeyMounted?: (itemKey: string, savedScrollLeft?: number) => HTMLElement | null;
+  hasPendingFocusRestore?: () => boolean;
+  cancelPendingFocusRestore?: () => void;
 }
 
 export interface SpatialNavPerfStats {
@@ -51,6 +53,8 @@ export function registerVirtualContainer(
 
 export function unregisterVirtualContainer(container: HTMLElement | null): void {
   if (!container) return;
+  const controller = virtualControllers.get(container);
+  controller?.cancelPendingFocusRestore?.();
   virtualControllers.delete(container);
   registeredVirtualContainers.delete(container);
   invalidateCandidateCache();
@@ -63,6 +67,27 @@ export function getActiveVirtualContainerCount(): number {
 export function hasRegisteredVirtualContainer(container: HTMLElement | null): boolean {
   if (!container) return false;
   return virtualControllers.has(container);
+}
+
+export function hasPendingFocusRestore(container: HTMLElement | null): boolean {
+  if (!container) return false;
+  const controller = virtualControllers.get(container);
+  if (controller && typeof controller.hasPendingFocusRestore === 'function') {
+    return controller.hasPendingFocusRestore();
+  }
+  return container.hasAttribute('data-pending-focus-restore');
+}
+
+export function cancelPendingFocusRestore(container?: HTMLElement | null): void {
+  if (container) {
+    const controller = virtualControllers.get(container);
+    controller?.cancelPendingFocusRestore?.();
+    return;
+  }
+  registeredVirtualContainers.forEach((c) => {
+    const controller = virtualControllers.get(c);
+    controller?.cancelPendingFocusRestore?.();
+  });
 }
 
 export function restoreVirtualItemByKey(
@@ -240,6 +265,12 @@ export function popFocusMemory(): boolean {
             focusElementSafely(remounted);
             return true;
           }
+          if (
+            typeof controller.hasPendingFocusRestore === 'function' &&
+            controller.hasPendingFocusRestore()
+          ) {
+            return true;
+          }
         }
 
         if (virtualIndex >= 0 && virtualIndex < controller.totalCount) {
@@ -268,6 +299,7 @@ export function popFocusMemory(): boolean {
 
 export function clearFocusMemory(): void {
   focusMemoryStack.length = 0;
+  cancelPendingFocusRestore();
 }
 
 function setElementScrollLeftImmediate(el: HTMLElement, targetScrollLeft: number): void {
@@ -1106,6 +1138,9 @@ function ensureVirtualTargetMountedIfNeeded(
 export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | null {
   if (typeof document === 'undefined') return null;
   spatialPerfStats.moveCalls++;
+
+  // Any new spatial navigation immediately discards pending focus restorations
+  cancelPendingFocusRestore();
 
   const initialActive =
     document.activeElement instanceof HTMLElement ? document.activeElement : null;
