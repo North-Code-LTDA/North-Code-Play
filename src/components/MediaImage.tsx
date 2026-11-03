@@ -792,6 +792,17 @@ export interface ObserveContainerVisibilityOptions {
   onIntersectChange: (isIntersecting: boolean) => void;
 }
 
+export function notifyContainerScrollForFallback(root: HTMLElement | null): void {
+  if (!root) return;
+  const byKey = sharedObserverPool.get(root);
+  if (!byKey) return;
+  byKey.forEach((entry) => {
+    if (entry.usingFallbackOnly && entry.targets.size > 0) {
+      scheduleFallbackReevaluation(entry);
+    }
+  });
+}
+
 export function observeContainerVisibility({
   target,
   root,
@@ -824,21 +835,26 @@ export function observeContainerVisibility({
   }
 
   // If IntersectionObserver did not synchronously populate lastIntersecting during observe(target),
-  // perform a single initial geometry check reusing the synchronous container measurement.
+  // perform a single initial geometry check reusing the synchronous container measurement
+  // (unless a coalesced fallback frame is already scheduled for this container).
   if (targetRec.lastIntersecting === null) {
-    const rootMetrics = getOrMeasureSyncRootMetrics(poolEntry);
-    const initialEval = inspectElementVisibilityWithRootMetrics(
-      target,
-      rootMetrics,
-      poolEntry.parsedMargins,
-      axis
-    );
-    targetRec.geometryUsable = initialEval.usable;
-    targetRec.lastIntersecting = initialEval.usable ? initialEval.isIntersecting : false;
-    onIntersectChange(targetRec.lastIntersecting);
+    if (poolEntry.usingFallbackOnly && poolEntry.scheduledFallbackRafId !== null) {
+      onIntersectChange(false);
+    } else {
+      const rootMetrics = getOrMeasureSyncRootMetrics(poolEntry);
+      const initialEval = inspectElementVisibilityWithRootMetrics(
+        target,
+        rootMetrics,
+        poolEntry.parsedMargins,
+        axis
+      );
+      targetRec.geometryUsable = initialEval.usable;
+      targetRec.lastIntersecting = initialEval.usable ? initialEval.isIntersecting : false;
+      onIntersectChange(targetRec.lastIntersecting);
 
-    if (!initialEval.usable) {
-      schedulePendingGeometryCheck(poolEntry);
+      if (!initialEval.usable) {
+        schedulePendingGeometryCheck(poolEntry);
+      }
     }
   } else {
     onIntersectChange(targetRec.lastIntersecting);

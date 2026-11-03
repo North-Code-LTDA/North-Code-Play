@@ -15,6 +15,7 @@ import {
 } from '../utils/catalogIndex';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 import { formatCategoryLabel } from '../utils/categoryLabel';
+import { restoreVirtualItemByKey } from '../navigation';
 export { formatCategoryLabel };
 
 const displayCount = { live: 24, vod: 24, series: 24 };
@@ -265,6 +266,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
   );
 
   const handleHeroInfo = useCallback((item: any) => {
+    continueWatchingOriginRef.current = null;
     if (item.stream_type === 'movie' || item.stream_id) {
       setSelectedMovie(item);
     } else {
@@ -272,7 +274,28 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
     }
   }, []);
 
+  const continueWatchingOriginRef = React.useRef<{
+    itemKey: string;
+    scrollLeft: number;
+  } | null>(null);
+
   const handleContinueWatchingClick = useCallback((item: any) => {
+    const itemKey = String(
+      item?.rowKey ?? item?.stream_id ?? item?.series_id ?? item?.id ?? ''
+    );
+    const cwRowEl =
+      typeof document !== 'undefined'
+        ? (document.querySelector(
+            '[data-nav-row="true"][data-virtual-container="true"]'
+          ) as HTMLElement | null)
+        : null;
+    if (itemKey) {
+      continueWatchingOriginRef.current = {
+        itemKey,
+        scrollLeft: cwRowEl ? cwRowEl.scrollLeft || 0 : 0,
+      };
+    }
+
     if (typeof item.rowKey === 'string' && item.rowKey.startsWith('series_')) {
       setSelectedSeries(item);
     } else if (typeof item.rowKey === 'string' && item.rowKey.startsWith('movie_')) {
@@ -283,6 +306,41 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
       setSelectedSeries(item);
     }
   }, []);
+
+  const restoreContinueWatchingOrigin = useCallback(() => {
+    const origin = continueWatchingOriginRef.current;
+    if (!origin) return;
+    const cwRowEl =
+      typeof document !== 'undefined'
+        ? (document.querySelector(
+            '[data-nav-row="true"][data-virtual-container="true"]'
+          ) as HTMLElement | null)
+        : null;
+    if (!cwRowEl) return;
+    restoreVirtualItemByKey(cwRowEl, origin.itemKey, origin.scrollLeft);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedMovie && !selectedSeries && !isPaused && continueWatchingOriginRef.current) {
+      const origin = continueWatchingOriginRef.current;
+      continueWatchingOriginRef.current = null;
+      const cwRowEl =
+        typeof document !== 'undefined'
+          ? (document.querySelector(
+              '[data-nav-row="true"][data-virtual-container="true"]'
+            ) as HTMLElement | null)
+          : null;
+      if (cwRowEl) {
+        const active =
+          typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+        if (!active || active.getAttribute('data-row-item-key') !== origin.itemKey) {
+          restoreVirtualItemByKey(cwRowEl, origin.itemKey, origin.scrollLeft);
+        }
+      }
+    }
+  }, [selectedMovie, selectedSeries, isPaused]);
 
   const [homeScrollContainerEl, setHomeScrollContainerEl] = useState<HTMLDivElement | null>(null);
   const topLiveRowItems = useMemo(() => filteredLive.slice(0, displayCount.live), [filteredLive]);
@@ -318,6 +376,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
                rowIndex={nextRowIndex++}
                scrollContainer={homeScrollContainerEl}
                onItemClick={handleContinueWatchingClick}
+               virtualize={true}
             />
           </div>
         )}
@@ -532,7 +591,10 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
             streamId={selectedMovie.stream_id} 
             streamName={selectedMovie.name}
             streamIcon={selectedMovie.stream_icon}
-            onClose={() => setSelectedMovie(null)} 
+            onClose={() => {
+              setSelectedMovie(null);
+              restoreContinueWatchingOrigin();
+            }} 
             onPlay={onPlay} 
           />
         )}
@@ -542,7 +604,10 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
             seriesId={selectedSeries.series_id || selectedSeries.id}
             seriesName={selectedSeries.name}
             seriesCover={selectedSeries.cover}
-            onClose={() => setSelectedSeries(null)} 
+            onClose={() => {
+              setSelectedSeries(null);
+              restoreContinueWatchingOrigin();
+            }} 
             onPlay={onPlay} 
           />
         )}

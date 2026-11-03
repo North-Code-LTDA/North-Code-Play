@@ -7905,16 +7905,35 @@ async function runPerformanceAndVirtualizationTests() {
     const continueWatchingRowWrapper = virtContainer.querySelector('[data-home-row-index="0"]') as HTMLElement;
     const continueWatchingNavRow = continueWatchingRowWrapper.querySelector('[data-nav-row="true"]') as HTMLElement;
     const continueWatchingCards = continueWatchingRowWrapper.querySelectorAll('[data-nav-item="true"]');
-    const mountedCards740 = virtContainer.querySelectorAll('[data-nav-row="true"] [data-nav-item="true"]').length;
-    const activeImgs740 = virtContainer.querySelectorAll('img[src]').length;
-    const eagerImgs740 = virtContainer.querySelectorAll('img[loading="eager"]').length;
-    const syncDecodingImgs740 = virtContainer.querySelectorAll('img[decoding="sync"]').length;
+    const mountedCardsWith500History = virtContainer.querySelectorAll('[data-nav-row="true"] [data-nav-item="true"]').length;
+    const activeImgsWith500History = virtContainer.querySelectorAll('img[src]').length;
+    const eagerImgsWith500History = virtContainer.querySelectorAll('img[loading="eager"]').length;
+    const syncDecodingImgsWith500History = virtContainer.querySelectorAll('img[decoding="sync"]').length;
+    const diagWith500HistoryAtStart = getSharedObserverDiagnostics();
 
-    assert.strictEqual(continueWatchingCards.length, 500, '[12.14] Todos os 500 itens de Continuar Assistindo devem estar montados');
-    assert.strictEqual(mountedCards740, 740, '[12.14] Total de cartões montados na Home deve ser 740');
-    assert.strictEqual(activeImgs740, 9, '[12.14] Com 500 itens em Continuar Assistindo, apenas 9 imagens devem iniciar ativas no topo');
-    assert.strictEqual(eagerImgs740, 1, '[12.14] Apenas 1 imagem (HeroBanner) deve ser eager');
-    assert.strictEqual(syncDecodingImgs740, 0, '[12.14] 0 imagens devem ter decoding="sync"');
+    assert.strictEqual(
+      continueWatchingNavRow.getAttribute('data-virtual-container'),
+      'true',
+      '[12.14] A fileira Continuar Assistindo deve ter virtualização horizontal ativa (data-virtual-container="true")'
+    );
+    assert.strictEqual(
+      continueWatchingCards.length,
+      14,
+      `[12.14] Com 500 itens em Continuar Assistindo (largura 1120px, passo 185px), apenas a janela inicial de 14 cartões deve estar montada no DOM (obteve ${continueWatchingCards.length}, antes: 500)`
+    );
+    assert.strictEqual(
+      mountedCardsWith500History,
+      254,
+      `[12.14] Total de cartões montados na Home com 500 no histórico deve ser 254 (14 em Continuar Assistindo + 240 nas 10 demais fileiras), obteve ${mountedCardsWith500History} (antes: 740)`
+    );
+    assert.strictEqual(
+      diagWith500HistoryAtStart.activeTargetSubscriptions,
+      265,
+      `[12.14] Total de assinaturas de observer com 500 no histórico deve cair de 751 para 265 (11 fileiras + 254 cartões montados), obteve ${diagWith500HistoryAtStart.activeTargetSubscriptions}`
+    );
+    assert.strictEqual(activeImgsWith500History, 9, '[12.14] Com 500 itens em Continuar Assistindo, apenas 9 imagens devem iniciar ativas no topo');
+    assert.strictEqual(eagerImgsWith500History, 1, '[12.14] Apenas 1 imagem (HeroBanner) deve ser eager');
+    assert.strictEqual(syncDecodingImgsWith500History, 0, '[12.14] 0 imagens devem ter decoding="sync"');
 
     // Sonda de 10 eventos de scroll na fileira de 500 cartões com IntersectionObserver funcional:
     // Deve provocar ZERO varreduras manuais dos retângulos dos cartões e do contêiner!
@@ -7942,7 +7961,7 @@ async function runPerformanceAndVirtualizationTests() {
     assert.strictEqual(
       geomConfig.cardRectReads,
       0,
-      `[12.14.3] Com IntersectionObserver funcional, 10 eventos de scroll em 500 cartões devem fazer 0 leituras manuais de retângulos dos cartões (obteve ${geomConfig.cardRectReads})`
+      `[12.14.3] Com IntersectionObserver funcional, 10 eventos de scroll devem fazer 0 leituras manuais de retângulos dos cartões (obteve ${geomConfig.cardRectReads})`
     );
     assert.strictEqual(
       geomConfig.navRowRectReads,
@@ -7950,14 +7969,19 @@ async function runPerformanceAndVirtualizationTests() {
       `[12.14.3] Com IntersectionObserver funcional, 10 eventos de scroll devem fazer 0 leituras manuais do retângulo do contêiner (obteve ${geomConfig.navRowRectReads})`
     );
 
-    // Verificar que o 500º item de "Continuar Assistindo" (índice 499) é acessível e ativa sua imagem ao receber foco
-    const cwCard499 = continueWatchingCards[499] as HTMLElement;
-    assert(cwCard499.querySelector('img[src]') === null, '[12.14] 500º cartão deve aguardar diferido antes de foco');
+    // Verificar que o 500º item de "Continuar Assistindo" (índice 499) é montado ao rolar até o fim e ativa sua imagem ao receber foco
     await act(async () => {
-      cwCard499.focus();
+      continueWatchingNavRow.scrollLeft = 500 * 185;
+      continueWatchingNavRow.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
       await new Promise((r) => setTimeout(r, 20));
     });
-    assert(cwCard499.querySelector('img[src]') !== null, '[12.14] Focar o 500º cartão deve iniciar imediatamente sua imagem');
+    const cwCard499 = continueWatchingRowWrapper.querySelector('[data-row-card-index="499"]') as HTMLElement | null;
+    assert(cwCard499 !== null, '[12.14] 500º cartão (índice 499) deve ser montado ao alcançar o fim da fileira');
+    await act(async () => {
+      cwCard499!.focus();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert(cwCard499!.querySelector('img[src]') !== null, '[12.14] Focar o 500º cartão deve iniciar imediatamente sua imagem');
 
     windowInstance.localStorage.removeItem(homeHistoryKey);
 
@@ -8283,12 +8307,12 @@ async function runPerformanceAndVirtualizationTests() {
     assert.strictEqual(
       geomConfig.navRowRectReads,
       1,
-      `[12.14.7] Na passada de 500 cartões, a medida do contêiner deve ser lida apenas 1 vez e reutilizada (obteve ${geomConfig.navRowRectReads}, antes: 5000)`
+      `[12.14.7] Na passada agrupada da fileira Continuar Assistindo, a medida do contêiner deve ser lida apenas 1 vez e reutilizada (obteve ${geomConfig.navRowRectReads}, antes: 5000)`
     );
     assert.strictEqual(
       geomConfig.cardRectReads,
-      500,
-      `[12.14.7] Em 10 eventos de scroll agrupados em 1 frame para 500 cartões, deve haver apenas 500 leituras de cartões (obteve ${geomConfig.cardRectReads}, antes: 5000)`
+      14,
+      `[12.14.7] Em 10 eventos de scroll agrupados em 1 frame na fileira virtualizada de 500 itens, deve haver apenas 14 leituras dos cartões montados na janela (obteve ${geomConfig.cardRectReads}, antes s/ virtualização: 500, antes s/ agrupamento: 5000)`
     );
 
     // Agendar mais um evento de scroll no fallback e desmontar imediatamente antes do frame rodar -> tarefa pendente deve ser cancelada!
@@ -8331,6 +8355,647 @@ async function runPerformanceAndVirtualizationTests() {
       0,
       '[12.14.7] Tarefa de fallback cancelada na desmontagem não deve executar após a remoção dos assinantes'
     );
+
+    // -----------------------------------------------------------------------
+    // 12.15: Virtualização Horizontal Exclusiva de "Continuar Assistindo"
+    // - Histórico curto (6 itens) vs 500 itens (início, meio e fim da fileira)
+    // - Espaçadores fora da navegação e acessibilidade + preservação da largura total
+    // - Navegação espacial D-Pad (0 -> 499 e 499 -> 0 sem salto, sem perda de foco e sem saída indevida para sidebar)
+    // - Navegação vertical entre HeroBanner, Continuar Assistindo e fileira seguinte
+    // - Retorno ao cartão de origem pelo identificador estável após detalhes (MovieDetails/SeriesDetails) e reprodução
+    // - Rolagem por botões da fileira e recálculo em diferentes larguras e escalas de TV (50%, 85%, 100%, 125%)
+    // -----------------------------------------------------------------------
+    (windowInstance as any).IntersectionObserver = FunctionalTestIntersectionObserver;
+    (globalThis as any).IntersectionObserver = FunctionalTestIntersectionObserver;
+
+    geomConfig = {
+      ...geomConfig,
+      geometryAvailable: true,
+      scrollContainerHeight: 720,
+      row0BaseTop: 520,
+      otherRowsStartTop: 1020,
+      navRowWidth: 1120,
+      cardWidth: 165,
+      cardStep: 185,
+    };
+
+    // A) Histórico curto (6 itens: 4 filmes + 2 séries)
+    const historyMapShort6: Record<string, any> = {};
+    for (let i = 0; i < 4; i++) {
+      const m = homeVodStreams520[i];
+      historyMapShort6[`movie:${m.stream_id}`] = {
+        id: String(m.stream_id),
+        type: 'movie',
+        updatedAt: 1716000000000 - i * 1000,
+        positionSec: 120,
+      };
+    }
+    for (let i = 0; i < 2; i++) {
+      const s = homeSeriesStreams120[i];
+      const epId = `ep_short_${i + 1}`;
+      historyMapShort6[`episode:${epId}`] = {
+        id: epId,
+        type: 'episode',
+        parentSeriesId: String(s.series_id),
+        updatedAt: 1715999000000 - i * 1000,
+        positionSec: 240,
+      };
+    }
+    windowInstance.localStorage.setItem(homeHistoryKey, JSON.stringify(historyMapShort6));
+    clearLoadedImageUrlCache();
+
+    await act(async () => {
+      virtRoot.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: credsHomeImg },
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              'div',
+              { className: 'flex flex-row w-full h-full' },
+              React.createElement(
+                'aside',
+                { 'data-nav-zone': 'sidebar' },
+                React.createElement(
+                  'button',
+                  { type: 'button', 'data-sidebar-nav-id': 'inicio', 'data-sidebar-active': 'true' },
+                  'Início'
+                )
+              ),
+              React.createElement(HomeView, { onPlay: mockOnPlay })
+            )
+          )
+        )
+      );
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    const cwWrapperShort = virtContainer.querySelector('[data-home-row-index="0"]') as HTMLElement;
+    const cwNavRowShort = cwWrapperShort.querySelector('[data-nav-row="true"]') as HTMLElement;
+    const cwCardsShort = cwWrapperShort.querySelectorAll('[data-nav-item="true"]');
+    const cwSpacersShort = cwWrapperShort.querySelectorAll('[data-virtual-spacer]');
+    const diagShort = getSharedObserverDiagnostics();
+
+    assert.strictEqual(cwCardsShort.length, 6, '[12.15.1] Com histórico curto (6 itens), todos os 6 cartões devem estar montados');
+    assert.strictEqual(cwSpacersShort.length, 0, '[12.15.1] Com histórico curto que cabe na janela, nenhum espaçador deve ser renderizado');
+    assert.strictEqual(
+      diagShort.activeTargetSubscriptions,
+      257,
+      `[12.15.1] Com 6 itens em Continuar Assistindo, activeTargetSubscriptions deve ser 257 (11 fileiras + 6 + 240), obteve ${diagShort.activeTargetSubscriptions}`
+    );
+
+    // Demais fileiras não devem ter data-virtual-container="true"
+    const allNavRowsShort = Array.from(
+      virtContainer.querySelectorAll('[data-home-row-index] [data-nav-row="true"]')
+    ) as HTMLElement[];
+    assert.strictEqual(allNavRowsShort.length, 11, '[12.15.1] Home com Continuar Assistindo deve ter 11 fileiras');
+    assert.strictEqual(
+      allNavRowsShort.filter((r) => r.getAttribute('data-virtual-container') === 'true').length,
+      1,
+      '[12.15.1] Apenas a fileira Continuar Assistindo deve ter data-virtual-container="true"; as 10 demais fileiras mantêm o comportamento atual'
+    );
+
+    // B) Histórico longo com 500 itens (comparando início, meio e fim da fileira)
+    // Incluir 499 filmes e 1 série (no índice 250) para testar também SeriesDetails
+    const historyMap500Mixed: Record<string, any> = {};
+    for (let i = 0; i < 500; i++) {
+      if (i === 251) {
+        const ser = homeSeriesStreams120[0];
+        const epId = 'ep_500_251';
+        historyMap500Mixed[`episode:${epId}`] = {
+          id: epId,
+          type: 'episode',
+          parentSeriesId: String(ser.series_id),
+          updatedAt: 1716000000000 - i * 1000,
+          positionSec: 300,
+        };
+      } else {
+        const movie = homeVodStreams520[i];
+        historyMap500Mixed[`movie:${movie.stream_id}`] = {
+          id: String(movie.stream_id),
+          type: 'movie',
+          updatedAt: 1716000000000 - i * 1000,
+          positionSec: 180,
+        };
+      }
+    }
+    windowInstance.localStorage.setItem(homeHistoryKey, JSON.stringify(historyMap500Mixed));
+    clearLoadedImageUrlCache();
+
+    let lastPlayedUrl = '';
+    let lastPlayedStreamId: string | number | undefined = undefined;
+    const trackingOnPlay = (url: string, _title: string, _startAt?: number, streamId?: string | number) => {
+      lastPlayedUrl = url;
+      lastPlayedStreamId = streamId;
+    };
+
+    await act(async () => {
+      virtRoot.render(React.createElement('div', null));
+    });
+    await act(async () => {
+      virtRoot.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: credsHomeImg },
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              'div',
+              { className: 'flex flex-row w-full h-full' },
+              React.createElement(
+                'aside',
+                { 'data-nav-zone': 'sidebar' },
+                React.createElement(
+                  'button',
+                  { type: 'button', 'data-sidebar-nav-id': 'inicio', 'data-sidebar-active': 'true' },
+                  'Início'
+                )
+              ),
+              React.createElement(HomeView, { onPlay: trackingOnPlay })
+            )
+          )
+        )
+      );
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    const cwWrapper500 = virtContainer.querySelector('[data-home-row-index="0"]') as HTMLElement;
+    const cwNavRow500 = cwWrapper500.querySelector('[data-nav-row="true"]') as HTMLElement;
+
+    // 1. Início da fileira (scrollLeft = 0)
+    const startCards = Array.from(cwNavRow500.querySelectorAll('[data-nav-item="true"]')) as HTMLElement[];
+    const startIndices = startCards.map((c) => Number(c.getAttribute('data-row-card-index')));
+    const startLeftSpacer = cwNavRow500.querySelector('[data-virtual-spacer="left"]') as HTMLElement | null;
+    const startRightSpacer = cwNavRow500.querySelector('[data-virtual-spacer="right"]') as HTMLElement | null;
+    const startDiag = getSharedObserverDiagnostics();
+
+    assert.strictEqual(startCards.length, 14, '[12.15.1] No início (scrollLeft=0), devem estar montados 14 cartões');
+    assert.strictEqual(startIndices[0], 0, '[12.15.1] No início, o 1º cartão montado deve ser o índice 0');
+    assert.strictEqual(startIndices[startIndices.length - 1], 13, '[12.15.1] No início, o último cartão montado deve ser o índice 13');
+    assert(startLeftSpacer === null, '[12.15.1] No início (startIndex=0), não deve existir espaçador esquerdo');
+    assert(startRightSpacer !== null, '[12.15.1] No início, deve existir espaçador direito preservando o restante da largura');
+    assert.strictEqual(startRightSpacer!.getAttribute('aria-hidden'), 'true', '[12.15.3] Espaçador direito deve ter aria-hidden="true"');
+    assert.strictEqual(startRightSpacer!.getAttribute('role'), 'presentation', '[12.15.3] Espaçador direito deve ter role="presentation"');
+    assert(startRightSpacer!.getAttribute('tabindex') === null, '[12.15.3] Espaçador não deve ter tabindex');
+    assert(startRightSpacer!.getAttribute('data-nav-item') === null, '[12.15.3] Espaçador não deve ter data-nav-item');
+    assert.strictEqual(
+      startDiag.activeTargetSubscriptions,
+      265,
+      '[12.15.1] No início com 500 itens, activeTargetSubscriptions deve ser 265 (14 cartões em Continuar Assistindo + 240 demais + 11 fileiras)'
+    );
+
+    // Verificar largura total preservada (14 * 165 + 13 * 20 + 20 + rightSpacerWidth === 500 * 165 + 499 * 20 = 92480)
+    const expectedTotalRowWidth = 500 * 165 + 499 * 20;
+    const startRightSpacerWidth = parseFloat(startRightSpacer!.style.width);
+    const startTotalWidth = 14 * 165 + 13 * 20 + 20 + startRightSpacerWidth;
+    assert.strictEqual(
+      startTotalWidth,
+      expectedTotalRowWidth,
+      `[12.15.1] A soma dos 14 cartões montados + gaps + espaçador direito no início deve preservar exatamente ${expectedTotalRowWidth}px`
+    );
+
+    // 2. Meio da fileira (scrollLeft = 46250, em torno do índice 250)
+    await act(async () => {
+      cwNavRow500.scrollLeft = 250 * 185;
+      cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      deliverTestIntersectionNotifications(cwNavRow500);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const midCards = Array.from(cwNavRow500.querySelectorAll('[data-nav-item="true"]')) as HTMLElement[];
+    const midIndices = midCards.map((c) => Number(c.getAttribute('data-row-card-index')));
+    const midLeftSpacer = cwNavRow500.querySelector('[data-virtual-spacer="left"]') as HTMLElement | null;
+    const midRightSpacer = cwNavRow500.querySelector('[data-virtual-spacer="right"]') as HTMLElement | null;
+    const midDiag = getSharedObserverDiagnostics();
+
+    assert.strictEqual(midCards.length, 14, '[12.15.1] No meio da fileira, devem estar montados exatamente 14 cartões');
+    assert.strictEqual(midIndices[0], 247, '[12.15.1] No meio (firstVisible=250, overscan=3), a janela deve iniciar no índice 247');
+    assert.strictEqual(midIndices[midIndices.length - 1], 260, '[12.15.1] No meio, a janela deve terminar no índice 260');
+    assert(midLeftSpacer !== null && midRightSpacer !== null, '[12.15.1] No meio da fileira, ambos os espaçadores (esquerdo e direito) devem existir');
+    assert.strictEqual(midLeftSpacer!.getAttribute('aria-hidden'), 'true');
+    assert.strictEqual(midLeftSpacer!.getAttribute('role'), 'presentation');
+    assert.strictEqual(
+      midDiag.activeTargetSubscriptions,
+      265,
+      '[12.15.1] No meio da fileira, activeTargetSubscriptions deve permanecer em 265 (sem vazamento de inscrições dos cartões desmontados)'
+    );
+
+    const midLeftWidth = parseFloat(midLeftSpacer!.style.width);
+    const midRightWidth = parseFloat(midRightSpacer!.style.width);
+    const midTotalWidth = midLeftWidth + 20 + (14 * 165 + 13 * 20) + 20 + midRightWidth;
+    assert.strictEqual(
+      midTotalWidth,
+      expectedTotalRowWidth,
+      `[12.15.1] No meio da fileira, espaçador esquerdo + cartões montados + espaçador direito deve preservar exatamente ${expectedTotalRowWidth}px`
+    );
+
+    // 3. Fim da fileira (scrollLeft no limite máximo)
+    await act(async () => {
+      cwNavRow500.scrollLeft = expectedTotalRowWidth;
+      cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      deliverTestIntersectionNotifications(cwNavRow500);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const endCards = Array.from(cwNavRow500.querySelectorAll('[data-nav-item="true"]')) as HTMLElement[];
+    const endIndices = endCards.map((c) => Number(c.getAttribute('data-row-card-index')));
+    const endLeftSpacer = cwNavRow500.querySelector('[data-virtual-spacer="left"]') as HTMLElement | null;
+    const endRightSpacer = cwNavRow500.querySelector('[data-virtual-spacer="right"]') as HTMLElement | null;
+    const endDiag = getSharedObserverDiagnostics();
+
+    assert.strictEqual(endCards.length, 14, '[12.15.1] No fim da fileira, devem estar montados 14 cartões');
+    assert.strictEqual(endIndices[0], 486, '[12.15.1] No fim da fileira, a janela deve iniciar no índice 486');
+    assert.strictEqual(endIndices[endIndices.length - 1], 499, '[12.15.1] No fim da fileira, a janela deve alcançar o último item (índice 499)');
+    assert(endLeftSpacer !== null && endRightSpacer === null, '[12.15.1] No fim da fileira, apenas o espaçador esquerdo deve existir');
+    assert.strictEqual(
+      endDiag.activeTargetSubscriptions,
+      265,
+      '[12.15.1] No fim da fileira, activeTargetSubscriptions deve permanecer em 265'
+    );
+    const endTotalWidth = parseFloat(endLeftSpacer!.style.width) + 20 + (14 * 165 + 13 * 20);
+    assert.strictEqual(
+      endTotalWidth,
+      expectedTotalRowWidth,
+      `[12.15.1] No fim da fileira, espaçador esquerdo + cartões montados deve preservar exatamente ${expectedTotalRowWidth}px`
+    );
+
+    // -----------------------------------------------------------------------
+    // 12.15.2: Navegação espacial D-Pad do primeiro (0) ao último (499) e retorno (499 -> 0)
+    // sem saltos, perda de foco ou saída indevida para a barra lateral + navegação vertical
+    // -----------------------------------------------------------------------
+    const { setNavMode: setNavModeForCW, getFocusableElements: getFocusableForCW } = await import('../src/navigation');
+    setNavModeForCW('remote');
+
+    // Verificar que espaçadores nunca aparecem entre os candidatos focáveis da navegação espacial
+    const allFocusableInContainer = getFocusableForCW(virtContainer);
+    assert.strictEqual(
+      allFocusableInContainer.some((el) => el.hasAttribute('data-virtual-spacer')),
+      false,
+      '[12.15.3] Espaçadores horizontais nunca devem entrar na lista de candidatos focáveis'
+    );
+
+    // Voltar ao início (índice 0) e focar o cartão 0
+    await act(async () => {
+      cwNavRow500.scrollLeft = 0;
+      cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    });
+    const firstCard0 = cwNavRow500.querySelector('[data-row-card-index="0"]') as HTMLElement;
+    assert(firstCard0 !== null, '[12.15.2] Cartão 0 deve estar montado no início');
+    await act(async () => {
+      firstCard0.focus();
+    });
+    assertSameElement(document.activeElement, firstCard0, '[12.15.2] Foco deve iniciar no cartão 0');
+
+    // Avançar passo a passo do índice 0 até o último item (499) via moveSpatialFocus('right')
+    await act(async () => {
+      for (let expectedNext = 1; expectedNext < 500; expectedNext++) {
+        const prevFocused = document.activeElement as HTMLElement;
+        const nextFocused = moveSpatialFocus('right');
+        assert(nextFocused !== null, `[12.15.2] moveSpatialFocus('right') não deve retornar null no passo ${expectedNext}`);
+        const actualIdx = Number(nextFocused!.getAttribute('data-row-card-index'));
+        if (actualIdx !== expectedNext) {
+          assert.strictEqual(
+            actualIdx,
+            expectedNext,
+            `[12.15.2] Avanço para a direita deve ir sem saltos para ${expectedNext} (obteve ${actualIdx})`
+          );
+        }
+        // Na borda da janela, o cartão anterior (prevFocused) deve permanecer conectado até concluir a transferência de foco
+        if (expectedNext <= 25 || expectedNext >= 485) {
+          assert.strictEqual(
+            prevFocused.isConnected,
+            true,
+            `[12.15.2] O cartão anterior (${expectedNext - 1}) deve permanecer montado até concluir a troca de foco para ${expectedNext}`
+          );
+        }
+      }
+    });
+
+    const focusedAtEnd = document.activeElement as HTMLElement;
+    assert.strictEqual(
+      focusedAtEnd.getAttribute('data-row-card-index'),
+      '499',
+      '[12.15.2] Após 499 passos para a direita, o foco deve estar no último item (índice 499)'
+    );
+    assert.strictEqual(
+      focusedAtEnd.getAttribute('data-row-item-key'),
+      `movie_${homeVodStreams520[499].stream_id}`,
+      '[12.15.2] O último item focado deve ter a chave estável movie_10500'
+    );
+
+    // Pressionar ArrowRight no último item (499) deve permanecer em 499
+    await act(async () => {
+      const stayEnd = moveSpatialFocus('right');
+      assertSameElement(stayEnd, focusedAtEnd, '[12.15.2] ArrowRight no último item (499) deve manter o foco no item 499');
+    });
+
+    // Retornar em sentido inverso do índice 499 até o índice 0 via moveSpatialFocus('left')
+    // Nunca deve escapar para a sidebar enquanto o índice for > 0!
+    await act(async () => {
+      for (let expectedPrev = 498; expectedPrev >= 0; expectedPrev--) {
+        const prevFocused = document.activeElement as HTMLElement;
+        const nextFocused = moveSpatialFocus('left');
+        assert(nextFocused !== null, `[12.15.2] moveSpatialFocus('left') não deve retornar null no passo ${expectedPrev}`);
+        const zone = nextFocused!.closest('[data-nav-zone]')?.getAttribute('data-nav-zone');
+        if (zone === 'sidebar') {
+          assert.fail(`[12.15.2] Saída indevida para a sidebar ao pressionar esquerda no índice ${expectedPrev + 1}`);
+        }
+        const actualIdx = Number(nextFocused!.getAttribute('data-row-card-index'));
+        if (actualIdx !== expectedPrev) {
+          assert.strictEqual(
+            actualIdx,
+            expectedPrev,
+            `[12.15.2] Retorno para a esquerda deve ir sem saltos para ${expectedPrev} (obteve ${actualIdx})`
+          );
+        }
+        if (expectedPrev >= 480 || expectedPrev <= 20) {
+          assert.strictEqual(
+            prevFocused.isConnected,
+            true,
+            `[12.15.2] O cartão focado (${expectedPrev + 1}) deve permanecer montado até concluir a troca de foco para ${expectedPrev}`
+          );
+        }
+      }
+    });
+
+    const focusedBackAt0 = document.activeElement as HTMLElement;
+    assert.strictEqual(
+      focusedBackAt0.getAttribute('data-row-card-index'),
+      '0',
+      '[12.15.2] Após retornar todos os passos para a esquerda, o foco deve chegar exatamente ao item 0'
+    );
+
+    // Agora, estando no índice 0, pressionar ArrowLeft DEVE ir para o botão da sidebar
+    await act(async () => {
+      const sidebarFocused = moveSpatialFocus('left');
+      assert(
+        sidebarFocused !== null && sidebarFocused.getAttribute('data-sidebar-nav-id') === 'inicio',
+        '[12.15.2] No índice 0, pressionar esquerda deve mover o foco para a barra lateral (Início)'
+      );
+    });
+
+    // Pressionar ArrowRight na sidebar retorna ao conteúdo, e testar navegação vertical entre Banner <-> Continuar Assistindo <-> Fileira 1
+    const card0Again = cwNavRow500.querySelector('[data-row-card-index="0"]') as HTMLElement;
+    await act(async () => {
+      card0Again.focus();
+    });
+    await act(async () => {
+      const upToHero = moveSpatialFocus('up');
+      assert(
+        upToHero !== null && upToHero.closest('[data-scroll-top-anchor="true"]') !== null,
+        '[12.15.2] ArrowUp a partir de Continuar Assistindo deve subir para o HeroBanner'
+      );
+    });
+    await act(async () => {
+      const downToCW = moveSpatialFocus('down');
+      assert(
+        downToCW !== null && downToCW.closest('[data-home-row-index="0"]') !== null,
+        '[12.15.2] ArrowDown a partir do HeroBanner deve descer para Continuar Assistindo'
+      );
+    });
+    await act(async () => {
+      const downToRow1 = moveSpatialFocus('down');
+      assert(
+        downToRow1 !== null && downToRow1.closest('[data-home-row-index="1"]') !== null,
+        '[12.15.2] ArrowDown a partir de Continuar Assistindo deve descer para a fileira seguinte (rowIndex=1)'
+      );
+    });
+    await act(async () => {
+      const upBackToCW = moveSpatialFocus('up');
+      assert(
+        upBackToCW !== null && upBackToCW.closest('[data-home-row-index="0"]') !== null,
+        '[12.15.2] ArrowUp a partir da fileira 1 deve retornar para Continuar Assistindo'
+      );
+    });
+
+    // -----------------------------------------------------------------------
+    // 12.15.3: Retorno ao cartão de origem pelo identificador estável após detalhes (MovieDetails e SeriesDetails)
+    // e reprodução, mesmo quando o cartão precisa ser remontado
+    // -----------------------------------------------------------------------
+    // Posicionar no meio da fileira (índice 250 = filme, índice 251 = série), com scrollLeft = 46250
+    const savedMidScrollLeft = 250 * 185;
+    await act(async () => {
+      cwNavRow500.scrollLeft = savedMidScrollLeft;
+      cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    });
+
+    const originMovieCard250 = cwNavRow500.querySelector('[data-row-card-index="250"]') as HTMLElement;
+    assert(originMovieCard250 !== null, '[12.15.3] Cartão de filme no índice 250 deve estar montado');
+    const originMovieKey = originMovieCard250.getAttribute('data-row-item-key')!;
+    assert.strictEqual(originMovieKey, `movie_${homeVodStreams520[250].stream_id}`);
+
+    // Abrir MovieDetails clicando no cartão 250
+    await act(async () => {
+      originMovieCard250.focus();
+      originMovieCard250.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const movieModalEl = virtContainer.querySelector('[data-focus-scope="modal"]') as HTMLElement | null;
+    assert(movieModalEl !== null, '[12.15.3] MovieDetails deve abrir ao acionar o cartão 250');
+
+    // Simular que, enquanto MovieDetails estava aberto, a fileira rolou para 0 e desmontou o cartão 250!
+    await act(async () => {
+      cwNavRow500.scrollLeft = 0;
+      cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    });
+    assert(
+      cwNavRow500.querySelector(`[data-row-item-key="${originMovieKey}"]`) === null,
+      '[12.15.3] Cartão 250 deve estar desmontado quando scrollLeft=0 durante o modal aberto'
+    );
+
+    // Acionar reprodução no MovieDetails e fechar o MovieDetails via executeBackAction()
+    const { executeBackAction } = await import('../src/navigation');
+    await act(async () => {
+      executeBackAction();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    assert(
+      virtContainer.querySelector('[data-focus-scope="modal"]') === null,
+      '[12.15.3] MovieDetails deve fechar após executeBackAction()'
+    );
+    const remountedMovieCard250 = cwNavRow500.querySelector(
+      `[data-row-item-key="${originMovieKey}"]`
+    ) as HTMLElement | null;
+    assert(
+      remountedMovieCard250 !== null,
+      '[12.15.3] Ao fechar MovieDetails, o cartão de origem (índice 250) deve ser remontado na janela virtual pelo identificador estável'
+    );
+    assert.strictEqual(
+      cwNavRow500.scrollLeft,
+      savedMidScrollLeft,
+      `[12.15.3] A posição horizontal da fileira (scrollLeft=${savedMidScrollLeft}) deve ser restaurada ao voltar de MovieDetails`
+    );
+    assertSameElement(
+      document.activeElement,
+      remountedMovieCard250,
+      '[12.15.3] O foco deve ser restaurado exatamente no cartão de origem remontado (movie 250)'
+    );
+
+    // Agora testar abertura e fechamento de SeriesDetails no índice 251 (série) após desmontagem do cartão
+    const originSeriesCard251 = cwNavRow500.querySelector('[data-row-card-index="251"]') as HTMLElement;
+    assert(originSeriesCard251 !== null, '[12.15.3] Cartão de série no índice 251 deve estar montado');
+    const originSeriesKey = originSeriesCard251.getAttribute('data-row-item-key')!;
+    assert(originSeriesKey.startsWith('series_'), '[12.15.3] Cartão 251 deve ter chave estável series_*');
+
+    await act(async () => {
+      originSeriesCard251.focus();
+      originSeriesCard251.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    assert(
+      virtContainer.querySelector('[data-focus-scope="modal"]') !== null,
+      '[12.15.3] SeriesDetails deve abrir ao acionar o cartão 251'
+    );
+
+    // Desmontar o cartão 251 rolando a fileira para o fim (scrollLeft = expectedTotalRowWidth)
+    await act(async () => {
+      cwNavRow500.scrollLeft = expectedTotalRowWidth;
+      cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    });
+    assert(
+      cwNavRow500.querySelector(`[data-row-item-key="${originSeriesKey}"]`) === null,
+      '[12.15.3] Cartão 251 deve estar desmontado quando a fileira está no fim'
+    );
+
+    // Fechar SeriesDetails via executeBackAction() -> deve remontar o cartão 251, restaurar scrollLeft e focar o cartão 251
+    await act(async () => {
+      executeBackAction();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const remountedSeriesCard251 = cwNavRow500.querySelector(
+      `[data-row-item-key="${originSeriesKey}"]`
+    ) as HTMLElement | null;
+    assert(
+      remountedSeriesCard251 !== null,
+      '[12.15.3] Ao fechar SeriesDetails, o cartão de origem (série 251) deve ser remontado pelo identificador estável'
+    );
+    assert.strictEqual(
+      cwNavRow500.scrollLeft,
+      savedMidScrollLeft,
+      '[12.15.3] scrollLeft deve ser restaurado ao voltar de SeriesDetails'
+    );
+    assertSameElement(
+      document.activeElement,
+      remountedSeriesCard251,
+      '[12.15.3] O foco deve ser restaurado exatamente no cartão de série 251 remontado'
+    );
+
+    // Testar retorno após reprodução (VideoPlayer) quando recordPlaybackPosition atualiza o histórico e reordena o item pelo identificador estável
+    const { recordPlaybackPosition } = await import('../src/utils/playbackHistory');
+    const { pushFocusMemory: pushFocusForPlay, popFocusMemory: popFocusFromPlay } = await import(
+      '../src/navigation'
+    );
+    const originMovie252 = cwNavRow500.querySelector('[data-row-card-index="252"]') as HTMLElement;
+    assert(originMovie252 !== null, '[12.15.3] Cartão 252 deve estar montado antes da reprodução');
+    const originMovie252Key = originMovie252.getAttribute('data-row-item-key')!;
+    const movie252StreamId = String(homeVodStreams520[252].stream_id);
+
+    await act(async () => {
+      originMovie252.focus();
+      pushFocusForPlay(originMovie252);
+      // Simular atualização de progresso durante a reprodução (move o item para o início do histórico)
+      recordPlaybackPosition(credsHomeImg, {
+        id: movie252StreamId,
+        type: 'movie',
+        positionSec: 420,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    // Ao encerrar a reprodução (popFocusMemory), o cartão deve ser localizado pelo identificador estável (movie_10253), remontado e focado
+    await act(async () => {
+      const restoredAfterPlay = popFocusFromPlay();
+      assert.strictEqual(restoredAfterPlay, true, '[12.15.3] popFocusMemory deve restaurar o cartão de origem após reprodução');
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const activeAfterPlay = document.activeElement as HTMLElement | null;
+    assert(
+      activeAfterPlay !== null &&
+        activeAfterPlay.getAttribute('data-row-item-key') === originMovie252Key,
+      `[12.15.3] Após reprodução que reordena o histórico, o foco deve ser restaurado no cartão de origem pelo identificador estável (${originMovie252Key})`
+    );
+
+    // -----------------------------------------------------------------------
+    // 12.15.4: Rolagem pelos botões da fileira e recálculo em diferentes larguras e escalas de TV (50%, 85%, 100%, 125%)
+    // -----------------------------------------------------------------------
+    await act(async () => {
+      cwNavRow500.scrollLeft = 0;
+      cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    });
+    const nextChevronBtn = cwWrapper500.querySelector('[data-row-scroll-next="true"]') as HTMLButtonElement;
+    const prevChevronBtn = cwWrapper500.querySelector('[data-row-scroll-prev="true"]') as HTMLButtonElement;
+    assert(nextChevronBtn !== null && prevChevronBtn !== null, '[12.15.4] Botões laterais da fileira devem existir');
+
+    await act(async () => {
+      nextChevronBtn.click();
+      nextChevronBtn.click();
+      nextChevronBtn.click();
+    });
+    assert.strictEqual(cwNavRow500.scrollLeft, 900, '[12.15.4] Três cliques no botão avançar da fileira devem avançar scrollLeft para 900px');
+    const indicesAfterChevronNext = Array.from(cwNavRow500.querySelectorAll('[data-nav-item="true"]')).map((el) =>
+      Number(el.getAttribute('data-row-card-index'))
+    );
+    assert(
+      indicesAfterChevronNext[0] > 0,
+      `[12.15.4] Avançar pelos botões da fileira deve deslocar a janela virtual (startIndex=${indicesAfterChevronNext[0]})`
+    );
+
+    await act(async () => {
+      prevChevronBtn.click();
+      prevChevronBtn.click();
+      prevChevronBtn.click();
+    });
+    assert.strictEqual(cwNavRow500.scrollLeft, 0, '[12.15.4] Três cliques no botão recuar da fileira devem retornar scrollLeft para 0');
+
+    // Recálculo em diferentes larguras do contêiner (460px, 1120px, 1680px)
+    const resizeWidthCases = [
+      { width: 460, expectedMounted: 10 }, // ceil(460/185)+1 = 4 visíveis + 6 overscan = 10
+      { width: 1120, expectedMounted: 14 }, // ceil(1120/185)+1 = 8 visíveis + 6 overscan = 14
+      { width: 1680, expectedMounted: 17 }, // ceil(1680/185)+1 = 11 visíveis + 6 overscan = 17
+    ];
+    for (const rc of resizeWidthCases) {
+      geomConfig.navRowWidth = rc.width;
+      await act(async () => {
+        window.dispatchEvent(new windowInstance.Event('resize') as unknown as Event);
+      });
+      const mountedNow = cwNavRow500.querySelectorAll('[data-nav-item="true"]').length;
+      assert.strictEqual(
+        mountedNow,
+        rc.expectedMounted,
+        `[12.15.4] Ao redimensionar a fileira para ${rc.width}px, a janela deve recalcular para ${rc.expectedMounted} cartões montados (obteve ${mountedNow})`
+      );
+    }
+    geomConfig.navRowWidth = 1120;
+
+    // Recálculo nas 4 escalas de TV (50%, 85%, 100%, 125%)
+    const { confirmDisplayPreferences } = await import('../src/platform/tvEnvironment');
+    const tvScaleCases = [
+      { scale: 50, expectedMounted: 21 }, // cardWidth=74, gap=8, stride=82 -> ceil(1120/82)+1=15 + 6 = 21
+      { scale: 85, expectedMounted: 16 }, // cardWidth=125.8, gap=13.6, stride=139.4 -> ceil(1120/139.4)+1=10 + 6 = 16
+      { scale: 100, expectedMounted: 14 }, // cardWidth=148, gap=16, stride=164 (in 25px range of mock 165 -> 14)
+      { scale: 125, expectedMounted: 13 }, // cardWidth=185, gap=20, stride=205 -> ceil(1120/205)+1=7 + 6 = 13
+    ];
+    for (const tc of tvScaleCases) {
+      await act(async () => {
+        confirmDisplayPreferences('tv', tc.scale);
+      });
+      const mountedAtScale = cwNavRow500.querySelectorAll('[data-nav-item="true"]').length;
+      assert.strictEqual(
+        mountedAtScale,
+        tc.expectedMounted,
+        `[12.15.4] Na escala de TV ${tc.scale}%, a janela horizontal de Continuar Assistindo deve recalcular para ${tc.expectedMounted} cartões montados (obteve ${mountedAtScale})`
+      );
+    }
+    await act(async () => {
+      confirmDisplayPreferences('default', 85);
+    });
   } finally {
     windowInstance.localStorage.removeItem(homeHistoryKey);
     if (savedWindowIO !== undefined) {
@@ -8340,13 +9005,14 @@ async function runPerformanceAndVirtualizationTests() {
       (globalThis as any).IntersectionObserver = savedGlobalIO;
     }
     (windowInstance.HTMLElement.prototype as any).getBoundingClientRect = origProtoGetBCRHome;
+    await act(async () => {
+      virtRoot.unmount();
+    });
+    if (virtContainer.parentNode) {
+      document.body.removeChild(virtContainer);
+    }
+    installDefaultXtreamOfflineMocks();
   }
-
-  await act(async () => {
-    virtRoot.unmount();
-  });
-  document.body.removeChild(virtContainer);
-  installDefaultXtreamOfflineMocks();
 
   console.log(
     `📊 [Benchmark 39k Registros — Métricas Separadas]\n` +
@@ -8358,10 +9024,10 @@ async function runPerformanceAndVirtualizationTests() {
       `   • Extrações de Metadados (6k itens): Após Indexação=${statsAfterVodIndexBuild.metadataExtractions} | Após 1ª Ordenação=${statsAfterFirstVodSort.metadataExtractions} | Após 2ª Ordenação=${statsAfterSecondVodSort.metadataExtractions}\n` +
       `   • 5 Movimentos D-Pad em Grade Virtualizada (2.500 itens): ${nav5MovesAfterMs.toFixed(2)}ms (getComputedStyle=${spatialStats.computedStyleCalls})\n` +
       `   • Home Sintética Padrão (10 fileiras, 240 cartões, 241 imagens): cartões=240 | img[src]=9 (antes: 241) | eager=1 (antes: 81) | decoding=sync:0 (antes: 81)\n` +
-      `   • Home c/ 500 em Continuar Assistindo (11 fileiras, 740 cartões, 741 imagens): cartões=740 | img[src]=9 (antes: 741) | eager=1 (antes: 89) | decoding=sync:0 (antes: 89)\n` +
-      `   • Sonda 500 Cartões × 10 Scrolls: c/ IntersectionObserver -> 0 leituras manuais (antes: 5000+5000) | Fallback agrupado -> 1 leitura container + 500 cartões`
+      `   • Home c/ 500 em Continuar Assistindo (11 fileiras): cartões montados=254 (antes: 740; fileira CW=14 no início/meio/fim vs 500) | assinaturas observer=265 (antes: 751) | img[src]=9 (antes: 741)\n` +
+      `   • Sonda 500 Cartões × 10 Scrolls: c/ IntersectionObserver -> 0 leituras manuais | Fallback agrupado -> 1 leitura container + 14 cartões montados (antes: 500 cartões)`
   );
-  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {
@@ -8385,7 +9051,7 @@ async function main() {
 main().catch(async (err) => {
   console.error('\n❌ ERRO NA EXECUÇÃO DOS TESTES:', err);
   await cleanupTestEnvironment();
-  process.exitCode = 1;
+  process.exit(1);
 });
 
 

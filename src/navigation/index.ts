@@ -21,6 +21,7 @@ export {
   unregisterVirtualContainer,
   getActiveVirtualContainerCount,
   hasRegisteredVirtualContainer,
+  restoreVirtualItemByKey,
   invalidateCandidateCache,
   getSpatialNavPerfStats,
   resetSpatialNavPerfStats,

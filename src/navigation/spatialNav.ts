@@ -5,6 +5,7 @@ export interface VirtualContainerController {
   totalCount: number;
   getColumns: () => number;
   ensureIndexMounted: (targetIndex: number, preserveIndex?: number) => boolean;
+  ensureItemKeyMounted?: (itemKey: string, savedScrollLeft?: number) => HTMLElement | null;
 }
 
 export interface SpatialNavPerfStats {
@@ -64,9 +65,38 @@ export function hasRegisteredVirtualContainer(container: HTMLElement | null): bo
   return virtualControllers.has(container);
 }
 
+export function restoreVirtualItemByKey(
+  container: HTMLElement | null,
+  itemKey: string,
+  savedScrollLeft?: number
+): HTMLElement | null {
+  if (!container || !itemKey) return null;
+  const controller = virtualControllers.get(container);
+  if (controller && typeof controller.ensureItemKeyMounted === 'function') {
+    const remounted = controller.ensureItemKeyMounted(itemKey, savedScrollLeft);
+    if (remounted && remounted.isConnected) {
+      const targetScrollLeft = container.scrollLeft;
+      focusElementSafely(remounted);
+      if (typeof savedScrollLeft === 'number' && targetScrollLeft === savedScrollLeft) {
+        container.scrollLeft = targetScrollLeft;
+      }
+      return remounted;
+    }
+  }
+  return null;
+}
+
+interface FocusMemoryEntry {
+  element: HTMLElement;
+  virtualContainer: HTMLElement | null;
+  virtualIndex: number;
+  itemKey: string | null;
+  scrollLeft: number | null;
+}
+
 let currentNavMode: NavMode = 'pointer';
 const modeListeners = new Set<(mode: NavMode) => void>();
-const focusMemoryStack: HTMLElement[] = [];
+const focusMemoryStack: FocusMemoryEntry[] = [];
 
 // DOM mutation tracking to avoid redundant querySelectorAll scans when DOM is unchanged
 let domMutationVersion = 1;
@@ -160,15 +190,85 @@ export function pushFocusMemory(element?: HTMLElement | null): void {
       ? document.activeElement
       : null);
   if (target && target !== document.body && target !== document.documentElement) {
-    if (focusMemoryStack[focusMemoryStack.length - 1] !== target) {
-      focusMemoryStack.push(target);
+    const virtualItemEl =
+      target.closest<HTMLElement>('[data-virtual-index], [data-row-card-index]') || target;
+    const virtualContainer = virtualItemEl.closest<HTMLElement>('[data-virtual-container="true"]');
+    const rawIdx =
+      virtualItemEl.getAttribute('data-virtual-index') ??
+      virtualItemEl.getAttribute('data-row-card-index');
+    const parsedIdx = rawIdx !== null ? parseInt(rawIdx, 10) : -1;
+    const virtualIndex = Number.isFinite(parsedIdx) ? parsedIdx : -1;
+    const itemKey =
+      virtualItemEl.getAttribute('data-row-item-key') ||
+      virtualItemEl.getAttribute('data-virtual-key') ||
+      null;
+    const scrollLeft = virtualContainer ? virtualContainer.scrollLeft : null;
+
+    const top = focusMemoryStack[focusMemoryStack.length - 1];
+    if (
+      top &&
+      top.element === target &&
+      top.itemKey === itemKey &&
+      top.virtualIndex === virtualIndex
+    ) {
+      if (scrollLeft !== null) {
+        top.scrollLeft = scrollLeft;
+      }
+      return;
     }
+
+    focusMemoryStack.push({
+      element: target,
+      virtualContainer,
+      virtualIndex,
+      itemKey,
+      scrollLeft,
+    });
   }
 }
 
 export function popFocusMemory(): boolean {
   while (focusMemoryStack.length > 0) {
-    const candidate = focusMemoryStack.pop();
+    const entry = focusMemoryStack.pop()!;
+    const { element: candidate, virtualContainer, virtualIndex, itemKey, scrollLeft } = entry;
+
+    if (virtualContainer && virtualContainer.isConnected) {
+      const controller = virtualControllers.get(virtualContainer);
+      if (controller) {
+        if (itemKey && typeof controller.ensureItemKeyMounted === 'function') {
+          const remounted = controller.ensureItemKeyMounted(
+            itemKey,
+            scrollLeft !== null ? scrollLeft : undefined
+          );
+          if (remounted && remounted.isConnected && isElementFocusable(remounted)) {
+            const restoredScrollLeft = virtualContainer.scrollLeft;
+            focusElementSafely(remounted);
+            if (scrollLeft !== null && restoredScrollLeft === scrollLeft) {
+              virtualContainer.scrollLeft = restoredScrollLeft;
+            }
+            return true;
+          }
+        }
+
+        if (virtualIndex >= 0 && virtualIndex < controller.totalCount) {
+          controller.ensureIndexMounted(virtualIndex);
+          const byIdx = virtualContainer.querySelector<HTMLElement>(
+            `[data-virtual-index="${virtualIndex}"], [data-row-card-index="${virtualIndex}"]`
+          );
+          if (byIdx && byIdx.isConnected && isElementFocusable(byIdx)) {
+            if (scrollLeft !== null) {
+              virtualContainer.scrollLeft = scrollLeft;
+            }
+            focusElementSafely(byIdx);
+            if (scrollLeft !== null) {
+              virtualContainer.scrollLeft = scrollLeft;
+            }
+            return true;
+          }
+        }
+      }
+    }
+
     if (candidate && candidate.isConnected && isElementFocusable(candidate)) {
       focusElementSafely(candidate);
       return true;
@@ -236,14 +336,16 @@ export function ensureElementScrolledIntoView(
         );
       }
     } else if (direction === 'left' || direction === 'right') {
-      const rowItems = Array.from(
-        rowContainer.querySelectorAll<HTMLElement>('[data-nav-item="true"], button')
-      );
-      const idx = rowItems.indexOf(el);
-      if (idx === 0) {
-        rowContainer.scrollLeft = 0;
-      } else if (idx > 0) {
-        rowContainer.scrollLeft = idx * 160;
+      if (rowContainer.getAttribute('data-virtual-container') !== 'true') {
+        const rowItems = Array.from(
+          rowContainer.querySelectorAll<HTMLElement>('[data-nav-item="true"], button')
+        );
+        const idx = rowItems.indexOf(el);
+        if (idx === 0) {
+          rowContainer.scrollLeft = 0;
+        } else if (idx > 0) {
+          rowContainer.scrollLeft = idx * 160;
+        }
       }
     }
   }
@@ -901,21 +1003,30 @@ function ensureVirtualTargetMountedIfNeeded(
   const currentIndex = parseInt(virtualItemEl.getAttribute('data-virtual-index') || '-1', 10);
   if (isNaN(currentIndex) || currentIndex < 0) return;
 
+  const isHorizontalRow = virtualContainer.getAttribute('data-nav-row') === 'true';
   const cols = Math.max(1, controller.getColumns());
   const totalCount = controller.totalCount;
   let targetIndex = -1;
 
-  if (direction === 'right') {
-    targetIndex = cols > 1 && currentIndex + 1 < totalCount ? currentIndex + 1 : -1;
-  } else if (direction === 'left') {
-    targetIndex = cols > 1 && currentIndex - 1 >= 0 ? currentIndex - 1 : -1;
-  } else if (direction === 'down') {
-    const currentRow = Math.floor(currentIndex / cols);
-    const totalRows = Math.ceil(totalCount / cols);
-    targetIndex =
-      currentRow < totalRows - 1 ? Math.min(totalCount - 1, currentIndex + cols) : -1;
-  } else if (direction === 'up') {
-    targetIndex = currentIndex - cols >= 0 ? currentIndex - cols : -1;
+  if (isHorizontalRow) {
+    if (direction === 'right') {
+      targetIndex = currentIndex + 1 < totalCount ? currentIndex + 1 : -1;
+    } else if (direction === 'left') {
+      targetIndex = currentIndex - 1 >= 0 ? currentIndex - 1 : -1;
+    }
+  } else {
+    if (direction === 'right') {
+      targetIndex = cols > 1 && currentIndex + 1 < totalCount ? currentIndex + 1 : -1;
+    } else if (direction === 'left') {
+      targetIndex = cols > 1 && currentIndex - 1 >= 0 ? currentIndex - 1 : -1;
+    } else if (direction === 'down') {
+      const currentRow = Math.floor(currentIndex / cols);
+      const totalRows = Math.ceil(totalCount / cols);
+      targetIndex =
+        currentRow < totalRows - 1 ? Math.min(totalCount - 1, currentIndex + cols) : -1;
+    } else if (direction === 'up') {
+      targetIndex = currentIndex - cols >= 0 ? currentIndex - cols : -1;
+    }
   }
 
   if (targetIndex >= 0 && targetIndex < totalCount) {
@@ -929,11 +1040,12 @@ function ensureVirtualTargetMountedIfNeeded(
         invalidateCandidateCache();
       }
     } else {
-      // Pre-expand window if within 1 row of the boundary
+      // Pre-expand window if within 1 row (or 2 horizontal cards) of the boundary
+      const lookaheadStep = isHorizontalRow ? 2 : cols;
       const aheadIndex =
         direction === 'down' || direction === 'right'
-          ? Math.min(totalCount - 1, targetIndex + cols)
-          : Math.max(0, targetIndex - cols);
+          ? Math.min(totalCount - 1, targetIndex + lookaheadStep)
+          : Math.max(0, targetIndex - lookaheadStep);
       const aheadEl = virtualContainer.querySelector<HTMLElement>(
         `[data-virtual-index="${aheadIndex}"]`
       );
@@ -1081,6 +1193,89 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
   if (direction === 'left' || direction === 'right') {
     // 1. Inside an explicit horizontal row (data-nav-row / data-nav-group)
     if (currentRow) {
+      const rowController = virtualControllers.get(currentRow);
+      const rawVirtualIdx =
+        activeEl.getAttribute('data-virtual-index') ?? activeEl.getAttribute('data-row-card-index');
+      const currentVirtualIdx = rawVirtualIdx !== null ? parseInt(rawVirtualIdx, 10) : -1;
+
+      if (rowController && rowController.totalCount > 0 && currentVirtualIdx >= 0) {
+        if (direction === 'right') {
+          const nextLogicalIdx = currentVirtualIdx + 1;
+          if (nextLogicalIdx < rowController.totalCount) {
+            let nextEl = currentRow.querySelector<HTMLElement>(
+              `[data-virtual-index="${nextLogicalIdx}"], [data-row-card-index="${nextLogicalIdx}"]`
+            );
+            if (!nextEl) {
+              const expanded = rowController.ensureIndexMounted(nextLogicalIdx, currentVirtualIdx);
+              if (expanded) {
+                spatialPerfStats.virtualWindowExpansions++;
+                invalidateCandidateCache();
+              }
+              nextEl = currentRow.querySelector<HTMLElement>(
+                `[data-virtual-index="${nextLogicalIdx}"], [data-row-card-index="${nextLogicalIdx}"]`
+              );
+            }
+            if (nextEl && isElementFocusable(nextEl)) {
+              focusElementSafely(nextEl, direction);
+              return nextEl;
+            }
+          }
+          if (currentZone === 'categories') {
+            const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
+            if (contentTarget) {
+              focusElementSafely(contentTarget, direction);
+              return contentTarget;
+            }
+          }
+          return activeEl;
+        }
+
+        if (direction === 'left') {
+          if (currentVirtualIdx > 0) {
+            const prevLogicalIdx = currentVirtualIdx - 1;
+            let prevEl = currentRow.querySelector<HTMLElement>(
+              `[data-virtual-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"]`
+            );
+            if (!prevEl) {
+              const expanded = rowController.ensureIndexMounted(prevLogicalIdx, currentVirtualIdx);
+              if (expanded) {
+                spatialPerfStats.virtualWindowExpansions++;
+                invalidateCandidateCache();
+              }
+              prevEl = currentRow.querySelector<HTMLElement>(
+                `[data-virtual-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"]`
+              );
+            }
+            if (prevEl && isElementFocusable(prevEl)) {
+              focusElementSafely(prevEl, direction);
+              return prevEl;
+            }
+            return activeEl;
+          }
+
+          // Only at logical index 0 may ArrowLeft leave the virtualized row for categories/sidebar
+          if (currentZone === 'content') {
+            const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
+            if (categoriesTarget) {
+              focusElementSafely(categoriesTarget, direction);
+              return categoriesTarget;
+            }
+            const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar', ctx);
+            if (sidebarTarget) {
+              focusElementSafely(sidebarTarget, direction);
+              return sidebarTarget;
+            }
+          } else if (currentZone === 'categories') {
+            const sidebarTarget = pickPreferredZoneEntry(candidates, 'sidebar', ctx);
+            if (sidebarTarget) {
+              focusElementSafely(sidebarTarget, direction);
+              return sidebarTarget;
+            }
+          }
+          return activeEl;
+        }
+      }
+
       const rowItems = candidates.filter((c) => getLogicalRow(c, ctx) === currentRow);
       const idxInRow = rowItems.indexOf(activeEl);
 
