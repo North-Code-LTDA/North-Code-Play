@@ -567,22 +567,66 @@ export const HorizontalRow = React.memo(function HorizontalRow({
     [type, displayMode, tvScale, applyWindowState]
   );
 
+  const clearPendingFocusRestore = useCallback(() => {
+    pendingFocusRestoreRef.current = null;
+    programmaticScrollTargetRef.current = null;
+    const rowEl = rowRef.current;
+    if (rowEl && typeof rowEl.removeAttribute === 'function') {
+      rowEl.removeAttribute('data-pending-focus-restore');
+    }
+  }, []);
+
+  const hasPendingFocusRestore = useCallback((): boolean => {
+    return pendingFocusRestoreRef.current !== null;
+  }, []);
+
   const syncWindowForScrollLeft = useCallback(
     (scrollLeft: number, pinnedRange?: { minIndex: number; maxIndex: number } | null) => {
       if (!virtualize) return;
-      const pending = programmaticScrollTargetRef.current;
+
+      const m = metricsRef.current;
+      const currentItems = itemsRef.current;
+      const pendingRestore = pendingFocusRestoreRef.current;
+      let targetIndexToFocus: number | null = null;
       let effectivePinned = pinnedRange ?? null;
-      if (pending) {
-        if (Math.abs(scrollLeft - pending.targetScrollLeft) <= 1) {
-          programmaticScrollTargetRef.current = null;
-        } else if (!effectivePinned) {
-          effectivePinned = { minIndex: pending.minIndex, maxIndex: pending.maxIndex };
+
+      if (pendingRestore) {
+        const targetIndex = currentItems.findIndex(
+          (it, idx) => getHorizontalRowItemKey(it, idx) === pendingRestore.itemKey
+        );
+        if (targetIndex < 0) {
+          clearPendingFocusRestore();
+        } else {
+          const stride = Math.max(1, m.stride);
+          const cardWidth = Math.max(1, m.cardWidth);
+          const rowWidth = Math.max(1, m.rowWidth);
+          const cardLeft = targetIndex * stride;
+          const cardRight = cardLeft + cardWidth;
+          const isTargetVisible =
+            (cardRight > scrollLeft && cardLeft < scrollLeft + rowWidth) ||
+            Math.abs(scrollLeft - pendingRestore.targetScrollLeft) <= 2;
+
+          if (isTargetVisible) {
+            effectivePinned = { minIndex: targetIndex, maxIndex: targetIndex };
+            targetIndexToFocus = targetIndex;
+          } else {
+            // A scroll occurred to a position where the target is still not visible (user scroll interruption)
+            clearPendingFocusRestore();
+          }
+        }
+      } else {
+        const pending = programmaticScrollTargetRef.current;
+        if (pending) {
+          if (Math.abs(scrollLeft - pending.targetScrollLeft) <= 1) {
+            programmaticScrollTargetRef.current = null;
+          } else if (!effectivePinned) {
+            effectivePinned = { minIndex: pending.minIndex, maxIndex: pending.maxIndex };
+          }
         }
       }
 
-      const m = metricsRef.current;
       const win = computeHorizontalVirtualWindow({
-        totalCount: itemsRef.current.length,
+        totalCount: currentItems.length,
         scrollLeft,
         rowWidth: m.rowWidth,
         cardWidth: m.cardWidth,
@@ -590,12 +634,31 @@ export const HorizontalRow = React.memo(function HorizontalRow({
         pinnedRange: effectivePinned,
       });
       applyWindowState(win, m, true);
+
+      if (targetIndexToFocus !== null) {
+        clearPendingFocusRestore();
+        const rowEl = rowRef.current;
+        const targetEl =
+          cardElementsRef.current.get(targetIndexToFocus) ??
+          rowEl?.querySelector<HTMLElement>(`[data-virtual-index="${targetIndexToFocus}"]`) ??
+          rowEl?.querySelector<HTMLElement>(`[data-row-card-index="${targetIndexToFocus}"]`) ??
+          null;
+        if (targetEl) {
+          isRestoringFocusRef.current = true;
+          try {
+            focusElementSafely(targetEl);
+          } finally {
+            isRestoringFocusRef.current = false;
+          }
+        }
+      }
     },
-    [virtualize, applyWindowState]
+    [virtualize, applyWindowState, clearPendingFocusRestore]
   );
 
   const ensureIndexMounted = useCallback(
     (targetIndex: number, preserveIndex?: number): boolean => {
+      clearPendingFocusRestore();
       const totalCount = itemsRef.current.length;
       if (!virtualize || totalCount <= 0) return false;
       const clampedTarget = Math.max(0, Math.min(totalCount - 1, Math.floor(targetIndex)));
@@ -663,19 +726,25 @@ export const HorizontalRow = React.memo(function HorizontalRow({
 
       return applyWindowState(win, m, true);
     },
-    [virtualize, applyWindowState]
+    [virtualize, applyWindowState, clearPendingFocusRestore]
   );
 
   const ensureItemKeyMounted = useCallback(
     (itemKey: string, savedScrollLeft?: number): HTMLElement | null => {
       const rowEl = rowRef.current;
       const currentItems = itemsRef.current;
-      if (!rowEl || currentItems.length === 0) return null;
+      if (!rowEl || currentItems.length === 0) {
+        clearPendingFocusRestore();
+        return null;
+      }
 
       const targetIndex = currentItems.findIndex(
         (it, idx) => getHorizontalRowItemKey(it, idx) === String(itemKey)
       );
-      if (targetIndex < 0) return null;
+      if (targetIndex < 0) {
+        clearPendingFocusRestore();
+        return null;
+      }
 
       if (virtualize) {
         const m = metricsRef.current;
@@ -715,15 +784,9 @@ export const HorizontalRow = React.memo(function HorizontalRow({
         }
 
         const effectiveScrollLeft = setHorizontalScrollLeftImmediate(rowEl, desiredScrollLeft);
-        if (Math.abs(effectiveScrollLeft - desiredScrollLeft) > 1) {
-          programmaticScrollTargetRef.current = {
-            targetScrollLeft: desiredScrollLeft,
-            minIndex: targetIndex,
-            maxIndex: targetIndex,
-          };
-        } else {
-          programmaticScrollTargetRef.current = null;
-        }
+        const isTargetInVisibleArea =
+          (cardRight > effectiveScrollLeft && cardLeft < effectiveScrollLeft + rowWidth) ||
+          Math.abs(effectiveScrollLeft - desiredScrollLeft) <= 2;
 
         const win = computeHorizontalVirtualWindow({
           totalCount: currentItems.length,
@@ -731,10 +794,29 @@ export const HorizontalRow = React.memo(function HorizontalRow({
           rowWidth: m.rowWidth,
           cardWidth: m.cardWidth,
           gap: m.gap,
-          pinnedRange: { minIndex: targetIndex, maxIndex: targetIndex },
+          pinnedRange: isTargetInVisibleArea
+            ? { minIndex: targetIndex, maxIndex: targetIndex }
+            : null,
         });
 
         applyWindowState(win, m, true);
+
+        const isTargetMounted = targetIndex >= win.startIndex && targetIndex < win.endIndex;
+        if (!isTargetInVisibleArea || !isTargetMounted) {
+          pendingFocusRestoreRef.current = {
+            itemKey: String(itemKey),
+            targetScrollLeft: desiredScrollLeft,
+          };
+          programmaticScrollTargetRef.current = null;
+          if (typeof rowEl.setAttribute === 'function') {
+            rowEl.setAttribute('data-pending-focus-restore', String(itemKey));
+          }
+          return null;
+        }
+
+        clearPendingFocusRestore();
+      } else {
+        clearPendingFocusRestore();
       }
 
       return (
@@ -744,7 +826,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
         null
       );
     },
-    [virtualize, applyWindowState]
+    [virtualize, applyWindowState, clearPendingFocusRestore]
   );
 
   // Measure row geometry on mount, item length change, TV scale/mode change, and resize when virtualized
@@ -797,11 +879,33 @@ export const HorizontalRow = React.memo(function HorizontalRow({
       syncWindowForScrollLeft(rowEl.scrollLeft || 0);
     };
 
+    const handleUserScrollInput = () => {
+      if (pendingFocusRestoreRef.current) {
+        clearPendingFocusRestore();
+      }
+    };
+
+    const handleDocumentFocusIn = (e: FocusEvent) => {
+      if (!pendingFocusRestoreRef.current || isRestoringFocusRef.current) return;
+      const target = e.target as HTMLElement | null;
+      if (target && target !== document.body && target !== document.documentElement) {
+        clearPendingFocusRestore();
+      }
+    };
+
     const handleResize = () => {
       measureAndSyncWindow();
     };
 
     rowEl.addEventListener('scroll', handleScroll, { passive: true });
+    rowEl.addEventListener('wheel', handleUserScrollInput, { passive: true });
+    rowEl.addEventListener('touchstart', handleUserScrollInput, { passive: true });
+    rowEl.addEventListener('touchmove', handleUserScrollInput, { passive: true });
+    rowEl.addEventListener('pointerdown', handleUserScrollInput, { passive: true });
+    rowEl.addEventListener('mousedown', handleUserScrollInput, { passive: true });
+    if (typeof document !== 'undefined') {
+      document.addEventListener('focusin', handleDocumentFocusIn);
+    }
     if (typeof window !== 'undefined') {
       window.addEventListener('resize', handleResize);
     }
@@ -826,6 +930,14 @@ export const HorizontalRow = React.memo(function HorizontalRow({
 
     return () => {
       rowEl.removeEventListener('scroll', handleScroll);
+      rowEl.removeEventListener('wheel', handleUserScrollInput);
+      rowEl.removeEventListener('touchstart', handleUserScrollInput);
+      rowEl.removeEventListener('touchmove', handleUserScrollInput);
+      rowEl.removeEventListener('pointerdown', handleUserScrollInput);
+      rowEl.removeEventListener('mousedown', handleUserScrollInput);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('focusin', handleDocumentFocusIn);
+      }
       if (typeof window !== 'undefined') {
         window.removeEventListener('resize', handleResize);
       }
@@ -833,7 +945,16 @@ export const HorizontalRow = React.memo(function HorizontalRow({
         ro.disconnect();
       }
     };
-  }, [virtualize, items.length, displayMode, tvScale, measureAndSyncWindow, syncWindowForScrollLeft, type]);
+  }, [
+    virtualize,
+    items.length,
+    displayMode,
+    tvScale,
+    measureAndSyncWindow,
+    syncWindowForScrollLeft,
+    clearPendingFocusRestore,
+    type,
+  ]);
 
   // Register virtual container controller with spatialNav when virtualize is active
   useLayoutEffect(() => {
@@ -845,13 +966,23 @@ export const HorizontalRow = React.memo(function HorizontalRow({
       getColumns: () => items.length,
       ensureIndexMounted,
       ensureItemKeyMounted,
+      hasPendingFocusRestore,
+      cancelPendingFocusRestore: clearPendingFocusRestore,
     });
 
     return () => {
+      clearPendingFocusRestore();
       unregisterVirtualContainer(rowEl);
       invalidateCandidateCache();
     };
-  }, [virtualize, items.length, ensureIndexMounted, ensureItemKeyMounted]);
+  }, [
+    virtualize,
+    items.length,
+    ensureIndexMounted,
+    ensureItemKeyMounted,
+    hasPendingFocusRestore,
+    clearPendingFocusRestore,
+  ]);
 
   // Observe row vertical visibility inside the Home internal scroll container
   useEffect(() => {
