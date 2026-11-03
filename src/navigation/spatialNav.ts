@@ -75,11 +75,7 @@ export function restoreVirtualItemByKey(
   if (controller && typeof controller.ensureItemKeyMounted === 'function') {
     const remounted = controller.ensureItemKeyMounted(itemKey, savedScrollLeft);
     if (remounted && remounted.isConnected) {
-      const targetScrollLeft = container.scrollLeft;
       focusElementSafely(remounted);
-      if (typeof savedScrollLeft === 'number' && targetScrollLeft === savedScrollLeft) {
-        container.scrollLeft = targetScrollLeft;
-      }
       return remounted;
     }
   }
@@ -241,11 +237,7 @@ export function popFocusMemory(): boolean {
             scrollLeft !== null ? scrollLeft : undefined
           );
           if (remounted && remounted.isConnected && isElementFocusable(remounted)) {
-            const restoredScrollLeft = virtualContainer.scrollLeft;
             focusElementSafely(remounted);
-            if (scrollLeft !== null && restoredScrollLeft === scrollLeft) {
-              virtualContainer.scrollLeft = restoredScrollLeft;
-            }
             return true;
           }
         }
@@ -256,13 +248,10 @@ export function popFocusMemory(): boolean {
             `[data-virtual-index="${virtualIndex}"], [data-row-card-index="${virtualIndex}"]`
           );
           if (byIdx && byIdx.isConnected && isElementFocusable(byIdx)) {
-            if (scrollLeft !== null) {
-              virtualContainer.scrollLeft = scrollLeft;
+            if (scrollLeft !== null && virtualContainer.getAttribute('data-nav-row') !== 'true') {
+              setElementScrollLeftImmediate(virtualContainer, scrollLeft);
             }
             focusElementSafely(byIdx);
-            if (scrollLeft !== null) {
-              virtualContainer.scrollLeft = scrollLeft;
-            }
             return true;
           }
         }
@@ -279,6 +268,34 @@ export function popFocusMemory(): boolean {
 
 export function clearFocusMemory(): void {
   focusMemoryStack.length = 0;
+}
+
+function setElementScrollLeftImmediate(el: HTMLElement, targetScrollLeft: number): void {
+  const next = Math.max(0, targetScrollLeft);
+  const prevBehavior = el.style?.scrollBehavior ?? '';
+  try {
+    if (el.style) {
+      el.style.scrollBehavior = 'auto';
+    }
+    if (typeof el.scrollTo === 'function') {
+      try {
+        el.scrollTo({ left: next, behavior: 'instant' as ScrollBehavior });
+      } catch {
+        el.scrollTo({ left: next, behavior: 'auto' });
+      }
+    }
+    el.scrollLeft = next;
+  } catch {
+    el.scrollLeft = next;
+  } finally {
+    if (el.style) {
+      if (prevBehavior) {
+        el.style.scrollBehavior = prevBehavior;
+      } else {
+        el.style.removeProperty('scroll-behavior');
+      }
+    }
+  }
 }
 
 export function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
@@ -319,32 +336,44 @@ export function ensureElementScrolledIntoView(
   // 1. Horizontal row container scroll
   const rowContainer = el.closest<HTMLElement>('[data-nav-row="true"]');
   if (rowContainer && rowContainer !== el) {
-    spatialPerfStats.boundingRectCalls += 2;
-    const rowRect = rowContainer.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
-    if (rowRect.width > 0 && elRect.width > 0) {
-      const padX = 16;
-      if (elRect.left < rowRect.left + padX) {
-        rowContainer.scrollLeft = Math.max(
-          0,
-          rowContainer.scrollLeft + (elRect.left - rowRect.left) - padX
-        );
-      } else if (elRect.right > rowRect.right - padX) {
-        rowContainer.scrollLeft = Math.max(
-          0,
-          rowContainer.scrollLeft + (elRect.right - rowRect.right) + padX
-        );
+    const virtualController = virtualControllers.get(rowContainer);
+    if (virtualController && rowContainer.getAttribute('data-virtual-container') === 'true') {
+      // Virtualized horizontal rows manage their own immediate scroll + window sync via ensureIndexMounted / ensureItemKeyMounted.
+      // Only when entering vertically (up/down) might a card need alignment via the controller.
+      if (direction === 'up' || direction === 'down') {
+        const rawIdx =
+          el.getAttribute('data-virtual-index') ?? el.getAttribute('data-row-card-index');
+        const parsedIdx = rawIdx !== null ? parseInt(rawIdx, 10) : -1;
+        if (parsedIdx >= 0 && parsedIdx < virtualController.totalCount) {
+          virtualController.ensureIndexMounted(parsedIdx);
+        }
       }
-    } else if (direction === 'left' || direction === 'right') {
-      if (rowContainer.getAttribute('data-virtual-container') !== 'true') {
+    } else {
+      spatialPerfStats.boundingRectCalls += 2;
+      const rowRect = rowContainer.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      if (rowRect.width > 0 && elRect.width > 0) {
+        const padX = 16;
+        if (elRect.left < rowRect.left + padX) {
+          setElementScrollLeftImmediate(
+            rowContainer,
+            Math.max(0, rowContainer.scrollLeft + (elRect.left - rowRect.left) - padX)
+          );
+        } else if (elRect.right > rowRect.right - padX) {
+          setElementScrollLeftImmediate(
+            rowContainer,
+            Math.max(0, rowContainer.scrollLeft + (elRect.right - rowRect.right) + padX)
+          );
+        }
+      } else if (direction === 'left' || direction === 'right') {
         const rowItems = Array.from(
           rowContainer.querySelectorAll<HTMLElement>('[data-nav-item="true"], button')
         );
         const idx = rowItems.indexOf(el);
         if (idx === 0) {
-          rowContainer.scrollLeft = 0;
+          setElementScrollLeftImmediate(rowContainer, 0);
         } else if (idx > 0) {
-          rowContainer.scrollLeft = idx * 160;
+          setElementScrollLeftImmediate(rowContainer, idx * 160);
         }
       }
     }
@@ -1030,6 +1059,15 @@ function ensureVirtualTargetMountedIfNeeded(
   }
 
   if (targetIndex >= 0 && targetIndex < totalCount) {
+    if (isHorizontalRow) {
+      const expanded = controller.ensureIndexMounted(targetIndex, currentIndex);
+      if (expanded) {
+        spatialPerfStats.virtualWindowExpansions++;
+        invalidateCandidateCache();
+      }
+      return;
+    }
+
     const existingTarget = virtualContainer.querySelector<HTMLElement>(
       `[data-virtual-index="${targetIndex}"]`
     );
@@ -1040,8 +1078,8 @@ function ensureVirtualTargetMountedIfNeeded(
         invalidateCandidateCache();
       }
     } else {
-      // Pre-expand window if within 1 row (or 2 horizontal cards) of the boundary
-      const lookaheadStep = isHorizontalRow ? 2 : cols;
+      // Pre-expand window if within 1 row of the boundary
+      const lookaheadStep = cols;
       const aheadIndex =
         direction === 'down' || direction === 'right'
           ? Math.min(totalCount - 1, targetIndex + lookaheadStep)

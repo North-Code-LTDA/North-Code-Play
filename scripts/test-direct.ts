@@ -123,6 +123,44 @@ Object.defineProperty(windowInstance.HTMLElement.prototype, 'scrollLeft', {
   configurable: true,
 });
 
+windowInstance.HTMLElement.prototype.scrollTo = function (
+  optionsOrX?: ScrollToOptions | number,
+  y?: number
+) {
+  if (typeof optionsOrX === 'number') {
+    this.scrollLeft = optionsOrX;
+    if (typeof y === 'number') {
+      this.scrollTop = y;
+    }
+  } else if (optionsOrX && typeof optionsOrX === 'object') {
+    if (typeof optionsOrX.left === 'number') {
+      this.scrollLeft = optionsOrX.left;
+    }
+    if (typeof optionsOrX.top === 'number') {
+      this.scrollTop = optionsOrX.top;
+    }
+  }
+};
+
+windowInstance.HTMLElement.prototype.scrollBy = function (
+  optionsOrX?: ScrollToOptions | number,
+  y?: number
+) {
+  if (typeof optionsOrX === 'number') {
+    this.scrollLeft = (this.scrollLeft || 0) + optionsOrX;
+    if (typeof y === 'number') {
+      this.scrollTop = (this.scrollTop || 0) + y;
+    }
+  } else if (optionsOrX && typeof optionsOrX === 'object') {
+    if (typeof optionsOrX.left === 'number') {
+      this.scrollLeft = (this.scrollLeft || 0) + optionsOrX.left;
+    }
+    if (typeof optionsOrX.top === 'number') {
+      this.scrollTop = (this.scrollTop || 0) + optionsOrX.top;
+    }
+  }
+};
+
 // 1.5 GUARDA DE ISOLAMENTO DE REDE PARA TESTES AUTOMATIZADOS (SEM ACESSO EXTERNO)
 function sanitizeUrlForTestLog(rawUrl: unknown): string {
   if (typeof rawUrl !== 'string' || !rawUrl.trim()) return '[url-vazia]';
@@ -7452,16 +7490,31 @@ async function runPerformanceAndVirtualizationTests() {
         const cIdx = Number(cardIdxAttr);
         const navRow = this.closest('[data-nav-row="true"]') as HTMLElement | null;
         const scrollLeft = navRow ? navRow.scrollLeft : 0;
-        const left = cIdx * geomConfig.cardStep - scrollLeft;
+        const baseLeft = cIdx * geomConfig.cardStep - scrollLeft;
+        const baseWidth = geomConfig.cardWidth;
+        const baseHeight = 220;
+        let scale = 1;
+        const inlineTransform = this.style?.transform || '';
+        const scaleMatch = inlineTransform.match(/scale\(\s*([+-]?\d*\.?\d+)\s*\)/i);
+        if (scaleMatch) {
+          const parsed = parseFloat(scaleMatch[1]);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            scale = parsed;
+          }
+        }
+        const scaledWidth = baseWidth * scale;
+        const scaledHeight = baseHeight * scale;
+        const centerX = baseLeft + baseWidth / 2;
+        const left = centerX - scaledWidth / 2;
         return {
-          top: 560,
-          bottom: 780,
+          top: 560 - (scaledHeight - baseHeight) / 2,
+          bottom: 560 + baseHeight + (scaledHeight - baseHeight) / 2,
           left,
-          right: left + geomConfig.cardWidth,
-          width: geomConfig.cardWidth,
-          height: 220,
+          right: left + scaledWidth,
+          width: scaledWidth,
+          height: scaledHeight,
           x: left,
-          y: 560,
+          y: 560 - (scaledHeight - baseHeight) / 2,
           toJSON: () => {},
         } as DOMRect;
       }
@@ -8996,6 +9049,555 @@ async function runPerformanceAndVirtualizationTests() {
     await act(async () => {
       confirmDisplayPreferences('default', 85);
     });
+
+    // -----------------------------------------------------------------------
+    // 12.15.5: REGRESSÃO 1 — Sincronização da geometria com a janela no meio de
+    // uma fileira de 500 itens (alteração do espaçamento entre cartões sem mudar
+    // startIndex/endIndex + imunidade a transformações de hover/toque)
+    // -----------------------------------------------------------------------
+    geomConfig.navRowWidth = 1120;
+    geomConfig.cardWidth = 165;
+    geomConfig.cardStep = 185; // gap = 20px
+
+    await act(async () => {
+      cwNavRow500.scrollLeft = 27900; // firstVisible = floor(27900/185) = 150 -> janela [147..160]
+      cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      window.dispatchEvent(new windowInstance.Event('resize') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const indicesBeforeGapChange = Array.from(
+      cwNavRow500.querySelectorAll('[data-nav-item="true"]')
+    ).map((el) => Number(el.getAttribute('data-row-card-index')));
+    assert.strictEqual(
+      indicesBeforeGapChange.length,
+      14,
+      '[12.15.5] Antes da mudança de espaçamento, 14 cartões devem estar montados no meio da fileira'
+    );
+    assert.strictEqual(indicesBeforeGapChange[0], 147, '[12.15.5] startIndex antes deve ser 147');
+    assert.strictEqual(
+      indicesBeforeGapChange[indicesBeforeGapChange.length - 1],
+      160,
+      '[12.15.5] último índice montado antes deve ser 160 (endIndex=161)'
+    );
+
+    const leftSpacerBeforeGap = cwNavRow500.querySelector(
+      '[data-virtual-spacer="left"]'
+    ) as HTMLElement | null;
+    const rightSpacerBeforeGap = cwNavRow500.querySelector(
+      '[data-virtual-spacer="right"]'
+    ) as HTMLElement | null;
+    assert(
+      leftSpacerBeforeGap !== null && rightSpacerBeforeGap !== null,
+      '[12.15.5] Espaçadores esquerdo e direito devem existir em torno da janela 147..160'
+    );
+
+    const leftWidthGap20 = parseFloat(leftSpacerBeforeGap!.style.width);
+    const rightWidthGap20 = parseFloat(rightSpacerBeforeGap!.style.width);
+    const expectedLeftGap20 = 147 * 165 + 146 * 20; // 27175px
+    const expectedRightGap20 = 339 * 165 + 338 * 20; // 62695px
+    const expectedTotalGap20 = 500 * 165 + 499 * 20; // 92480px
+    const actualTotalGap20 = leftWidthGap20 + 20 + (14 * 165 + 13 * 20) + 20 + rightWidthGap20;
+
+    assert.strictEqual(
+      leftWidthGap20,
+      expectedLeftGap20,
+      `[12.15.5] Com gap=20px, espaçador esquerdo deve medir ${expectedLeftGap20}px`
+    );
+    assert.strictEqual(
+      rightWidthGap20,
+      expectedRightGap20,
+      `[12.15.5] Com gap=20px, espaçador direito deve medir ${expectedRightGap20}px`
+    );
+    assert.strictEqual(
+      actualTotalGap20,
+      expectedTotalGap20,
+      `[12.15.5] Com gap=20px, largura total da fileira deve ser ${expectedTotalGap20}px`
+    );
+
+    // Alterar a distância entre os cartões de 185px (gap=20px) para 186px (gap=21px).
+    // Em scrollLeft=27900: floor(27900/186) = 150 e ceil(1120/186)+1 = 8 -> startIndex=147 e endIndex=161 continuam IGUAIS!
+    geomConfig.cardStep = 186; // gap = 21px
+    await act(async () => {
+      window.dispatchEvent(new windowInstance.Event('resize') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const indicesAfterGapChange = Array.from(
+      cwNavRow500.querySelectorAll('[data-nav-item="true"]')
+    ).map((el) => Number(el.getAttribute('data-row-card-index')));
+    assert.deepStrictEqual(
+      indicesAfterGapChange,
+      indicesBeforeGapChange,
+      '[12.15.5] Os índices montados (147..160) devem permanecer idênticos após alterar gap de 20px para 21px'
+    );
+
+    const leftSpacerAfterGap = cwNavRow500.querySelector(
+      '[data-virtual-spacer="left"]'
+    ) as HTMLElement | null;
+    const rightSpacerAfterGap = cwNavRow500.querySelector(
+      '[data-virtual-spacer="right"]'
+    ) as HTMLElement | null;
+    const leftWidthGap21 = parseFloat(leftSpacerAfterGap!.style.width);
+    const rightWidthGap21 = parseFloat(rightSpacerAfterGap!.style.width);
+    const expectedLeftGap21 = 147 * 165 + 146 * 21; // 27321px (+146px)
+    const expectedRightGap21 = 339 * 165 + 338 * 21; // 63033px (+338px)
+    const expectedTotalGap21 = 500 * 165 + 499 * 21; // 92979px (+499px)
+    const actualTotalGap21 = leftWidthGap21 + 21 + (14 * 165 + 13 * 21) + 21 + rightWidthGap21;
+
+    assert.strictEqual(
+      leftWidthGap21,
+      expectedLeftGap21,
+      `[12.15.5] Mesmo com startIndex/endIndex inalterados, o espaçador esquerdo deve acompanhar a mudança de gap para ${expectedLeftGap21}px (obteve ${leftWidthGap21}px)`
+    );
+    assert.strictEqual(
+      rightWidthGap21,
+      expectedRightGap21,
+      `[12.15.5] Mesmo com startIndex/endIndex inalterados, o espaçador direito deve acompanhar a mudança de gap para ${expectedRightGap21}px (obteve ${rightWidthGap21}px)`
+    );
+    assert.strictEqual(
+      actualTotalGap21,
+      expectedTotalGap21,
+      `[12.15.5] Largura total da fileira deve acompanhar a mudança de espaçamento para ${expectedTotalGap21}px`
+    );
+
+    // Verificar também que transformações de hover (scale(1.05)) ou toque (scale(0.95)) nos cartões montados
+    // NÃO distorcem a medição de cardWidth, gap ou espaçadores
+    const mountedCard147 = cwNavRow500.querySelector('[data-row-card-index="147"]') as HTMLElement;
+    const mountedCard148 = cwNavRow500.querySelector('[data-row-card-index="148"]') as HTMLElement;
+    mountedCard147.style.transform = 'scale(1.05)';
+    mountedCard148.style.transform = 'scale(0.95)';
+    assert.strictEqual(
+      Math.round(mountedCard147.getBoundingClientRect().width * 100) / 100,
+      173.25,
+      '[12.15.5] getBoundingClientRect() do cartão em hover reflete scale(1.05) = 173.25px'
+    );
+
+    await act(async () => {
+      window.dispatchEvent(new windowInstance.Event('resize') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const leftWidthDuringHoverTap = parseFloat(
+      (cwNavRow500.querySelector('[data-virtual-spacer="left"]') as HTMLElement).style.width
+    );
+    const rightWidthDuringHoverTap = parseFloat(
+      (cwNavRow500.querySelector('[data-virtual-spacer="right"]') as HTMLElement).style.width
+    );
+    assert.strictEqual(
+      leftWidthDuringHoverTap,
+      expectedLeftGap21,
+      '[12.15.5] Transformações de hover/toque (scale(1.05)/scale(0.95)) não devem contaminar a medição da largura ou do espaçamento no espaçador esquerdo'
+    );
+    assert.strictEqual(
+      rightWidthDuringHoverTap,
+      expectedRightGap21,
+      '[12.15.5] Transformações de hover/toque (scale(1.05)/scale(0.95)) não devem contaminar a medição da largura ou do espaçamento no espaçador direito'
+    );
+
+    mountedCard147.style.transform = '';
+    mountedCard148.style.transform = '';
+    geomConfig.cardStep = 185;
+    await act(async () => {
+      window.dispatchEvent(new windowInstance.Event('resize') as unknown as Event);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    // -----------------------------------------------------------------------
+    // 12.15.6: REGRESSÃO 2 — Sincronização de rolagem, montagem e foco sob
+    // rolagem suave atrasada (scrollLeft não atualiza imediatamente em smooth scroll),
+    // travessia de borda por D-Pad e retorno a cartão distante pelo identificador
+    // estável (inclusive após reordenação do histórico)
+    // -----------------------------------------------------------------------
+    let simulatedEffectiveScrollLeft = 0;
+    let pendingSmoothScrollTarget: number | null = null;
+    let smoothScrollByCalls = 0;
+    let immediateScrollCalls = 0;
+    let forceDelayAllScrollLeftWrites = false;
+
+    const origRowScrollDesc = Object.getOwnPropertyDescriptor(
+      windowInstance.HTMLElement.prototype,
+      'scrollLeft'
+    );
+    const origRowScrollTo = cwNavRow500.scrollTo;
+    const origRowScrollBy = cwNavRow500.scrollBy;
+
+    Object.defineProperty(cwNavRow500, 'scrollLeft', {
+      get() {
+        return simulatedEffectiveScrollLeft;
+      },
+      set(val: number) {
+        const clamped = Math.max(0, Number(val) || 0);
+        if (forceDelayAllScrollLeftWrites) {
+          pendingSmoothScrollTarget = clamped;
+          return;
+        }
+        // Em um elemento com classe scroll-smooth, atribuição direta sem scrollBehavior='auto' não atualiza no instante t=0
+        if (this.style?.scrollBehavior === 'auto') {
+          simulatedEffectiveScrollLeft = clamped;
+          pendingSmoothScrollTarget = null;
+        } else {
+          pendingSmoothScrollTarget = clamped;
+        }
+      },
+      configurable: true,
+    });
+
+    cwNavRow500.scrollTo = function (optionsOrX?: ScrollToOptions | number, _y?: number) {
+      let targetLeft = simulatedEffectiveScrollLeft;
+      let behavior: string = this.style?.scrollBehavior === 'auto' ? 'auto' : 'smooth';
+      if (typeof optionsOrX === 'number') {
+        targetLeft = Math.max(0, optionsOrX);
+      } else if (optionsOrX && typeof optionsOrX === 'object') {
+        if (typeof optionsOrX.left === 'number') {
+          targetLeft = Math.max(0, optionsOrX.left);
+        }
+        if (optionsOrX.behavior) {
+          behavior = optionsOrX.behavior;
+        }
+      }
+      if (forceDelayAllScrollLeftWrites) {
+        pendingSmoothScrollTarget = targetLeft;
+        return;
+      }
+      if (behavior === 'auto' || behavior === 'instant' || this.style?.scrollBehavior === 'auto') {
+        immediateScrollCalls++;
+        simulatedEffectiveScrollLeft = targetLeft;
+        pendingSmoothScrollTarget = null;
+      } else {
+        pendingSmoothScrollTarget = targetLeft;
+      }
+    };
+
+    cwNavRow500.scrollBy = function (optionsOrX?: ScrollToOptions | number, _y?: number) {
+      let deltaLeft = 0;
+      let behavior: string = 'smooth';
+      if (typeof optionsOrX === 'number') {
+        deltaLeft = optionsOrX;
+      } else if (optionsOrX && typeof optionsOrX === 'object') {
+        if (typeof optionsOrX.left === 'number') {
+          deltaLeft = optionsOrX.left;
+        }
+        if (optionsOrX.behavior) {
+          behavior = optionsOrX.behavior;
+        }
+      }
+      const base = pendingSmoothScrollTarget !== null ? pendingSmoothScrollTarget : simulatedEffectiveScrollLeft;
+      const targetLeft = Math.max(0, base + deltaLeft);
+      if (behavior === 'smooth' && this.style?.scrollBehavior !== 'auto') {
+        smoothScrollByCalls++;
+        pendingSmoothScrollTarget = targetLeft;
+      } else {
+        simulatedEffectiveScrollLeft = targetLeft;
+        pendingSmoothScrollTarget = null;
+      }
+    };
+
+    const advancePendingSmoothScroll = async (fraction: number) => {
+      if (pendingSmoothScrollTarget === null) return;
+      if (fraction >= 1) {
+        simulatedEffectiveScrollLeft = pendingSmoothScrollTarget;
+        pendingSmoothScrollTarget = null;
+      } else {
+        simulatedEffectiveScrollLeft = Math.round(
+          simulatedEffectiveScrollLeft +
+            (pendingSmoothScrollTarget - simulatedEffectiveScrollLeft) * fraction
+        );
+      }
+      await act(async () => {
+        cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+        deliverTestIntersectionNotifications(cwNavRow500);
+      });
+    };
+
+    try {
+      // Resetar no início com reposicionamento imediato
+      await act(async () => {
+        cwNavRow500.style.scrollBehavior = 'auto';
+        cwNavRow500.scrollLeft = 0;
+        cwNavRow500.style.removeProperty('scroll-behavior');
+        cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      // A) Botões laterais preservam rolagem suave (behavior: 'smooth') e a janela acompanha scrollLeft efetivo
+      smoothScrollByCalls = 0;
+      await act(async () => {
+        nextChevronBtn.click();
+      });
+      assert.strictEqual(
+        smoothScrollByCalls,
+        1,
+        '[12.15.6] Botão lateral avançar deve acionar scrollBy({ behavior: "smooth" })'
+      );
+      assert.strictEqual(
+        cwNavRow500.scrollLeft,
+        0,
+        '[12.15.6] No instante t=0 de uma rolagem suave, scrollLeft ainda é 0'
+      );
+      assert.strictEqual(
+        pendingSmoothScrollTarget,
+        300,
+        '[12.15.6] O alvo pendente da rolagem suave deve ser 300px'
+      );
+      const mountedAtT0 = Array.from(cwNavRow500.querySelectorAll('[data-nav-item="true"]')).map((el) =>
+        Number(el.getAttribute('data-row-card-index'))
+      );
+      assert.strictEqual(
+        mountedAtT0[0],
+        0,
+        '[12.15.6] Enquanto scrollLeft efetivo é 0, a janela deve corresponder a scrollLeft=0 (startIndex=0)'
+      );
+
+      // Avançar mais 2 cliques suaves (alvo = 900px) e progredir a animação em 2 quadros
+      await act(async () => {
+        nextChevronBtn.click();
+        nextChevronBtn.click();
+      });
+      assert.strictEqual(pendingSmoothScrollTarget, 900);
+      await advancePendingSmoothScroll(0.5); // scrollLeft = 450px
+      assert.strictEqual(cwNavRow500.scrollLeft, 450);
+      await advancePendingSmoothScroll(1); // scrollLeft = 900px
+      assert.strictEqual(cwNavRow500.scrollLeft, 900);
+      const mountedAt900 = Array.from(cwNavRow500.querySelectorAll('[data-nav-item="true"]')).map((el) =>
+        Number(el.getAttribute('data-row-card-index'))
+      );
+      assert.strictEqual(
+        mountedAt900[0],
+        1,
+        '[12.15.6] Ao concluir a rolagem suave em 900px (firstVisible=4), a janela deve iniciar em startIndex=1'
+      );
+
+      // B) Travessia de borda da janela por D-Pad enquanto uma rolagem suave estava pendente:
+      // O D-Pad usa reposicionamento imediato explícito, cancela a rolagem suave pendente,
+      // mantém o cartão anterior montado até concluir a troca de foco e sincroniza janela com scrollLeft efetivo
+      await act(async () => {
+        prevChevronBtn.click(); // Inicia rolagem suave pendente para 600px, mas scrollLeft efetivo ainda é 900px
+      });
+      assert.strictEqual(cwNavRow500.scrollLeft, 900);
+      assert.strictEqual(pendingSmoothScrollTarget, 600);
+
+      const cardAt10 = cwNavRow500.querySelector('[data-row-card-index="10"]') as HTMLElement;
+      assert(cardAt10 !== null, '[12.15.6] Cartão 10 deve estar montado em scrollLeft=900');
+      await act(async () => {
+        cardAt10.focus();
+      });
+
+      const immediateCallsBeforeDpad = immediateScrollCalls;
+      await act(async () => {
+        for (let targetIdx = 11; targetIdx <= 22; targetIdx++) {
+          const prevCard = document.activeElement as HTMLElement;
+          const nextCard = moveSpatialFocus('right');
+          assert(nextCard !== null, `[12.15.6] moveSpatialFocus('right') deve focar o cartão ${targetIdx}`);
+          assert.strictEqual(
+            Number(nextCard!.getAttribute('data-row-card-index')),
+            targetIdx,
+            `[12.15.6] O foco deve avançar exatamente para o cartão ${targetIdx}`
+          );
+          assert.strictEqual(
+            prevCard.isConnected,
+            true,
+            `[12.15.6] Na travessia para ${targetIdx}, o cartão anterior (${targetIdx - 1}) deve permanecer montado até concluir a troca de foco`
+          );
+          const effectiveScroll = cwNavRow500.scrollLeft;
+          const expectedStartForEffective = Math.max(0, Math.floor(effectiveScroll / 185) - 3);
+          const currentMountedIndices = Array.from(
+            cwNavRow500.querySelectorAll('[data-nav-item="true"]')
+          ).map((el) => Number(el.getAttribute('data-row-card-index')));
+          assert(
+            currentMountedIndices[0] <= expectedStartForEffective,
+            `[12.15.6] A janela montada (${currentMountedIndices[0]}..${currentMountedIndices[currentMountedIndices.length - 1]}) deve corresponder ao scrollLeft efetivo (${effectiveScroll}px)`
+          );
+        }
+      });
+      assert(
+        immediateScrollCalls > immediateCallsBeforeDpad,
+        '[12.15.6] A travessia de borda por D-Pad deve acionar reposicionamento imediato explícito'
+      );
+      assert.strictEqual(
+        pendingSmoothScrollTarget,
+        null,
+        '[12.15.6] O reposicionamento imediato do D-Pad deve cancelar qualquer rolagem suave pendente'
+      );
+
+      // C) Caso extremo: mesmo que o ambiente atrase a atualização de scrollLeft por 1 quadro durante travessia de borda (13 -> 14 em scrollLeft=0),
+      // a janela é calculada pela posição efetiva (0) + pinnedRange (13..14), mantendo 13 e 14 montados e focando 14 sem perda de foco
+      await act(async () => {
+        cwNavRow500.style.scrollBehavior = 'auto';
+        cwNavRow500.scrollLeft = 0;
+        cwNavRow500.style.removeProperty('scroll-behavior');
+        cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      });
+      const borderCard13 = cwNavRow500.querySelector('[data-row-card-index="13"]') as HTMLElement;
+      assert(borderCard13 !== null, '[12.15.6] Cartão 13 na borda direita da janela inicial [0..13] deve estar montado');
+      await act(async () => {
+        borderCard13.focus();
+      });
+
+      forceDelayAllScrollLeftWrites = true;
+      await act(async () => {
+        const focused14 = moveSpatialFocus('right');
+        assert(focused14 !== null, '[12.15.6] Mesmo com scrollLeft atrasado em 0, atravessar a borda 13 -> 14 deve montar e focar o cartão 14');
+        assert.strictEqual(focused14!.getAttribute('data-row-card-index'), '14');
+        assert.strictEqual(
+          borderCard13.isConnected,
+          true,
+          '[12.15.6] Cartão anterior (13) deve continuar montado após a troca de foco para 14'
+        );
+        assert.strictEqual(
+          cwNavRow500.scrollLeft,
+          0,
+          '[12.15.6] Durante o atraso simulado, scrollLeft efetivo ainda é 0'
+        );
+        // Como scrollLeft efetivo é 0, o início da janela deve permanecer em 0 (sem desmontar o início antes da rolagem acontecer)
+        const mountedWhileDelayed = Array.from(cwNavRow500.querySelectorAll('[data-nav-item="true"]')).map(
+          (el) => Number(el.getAttribute('data-row-card-index'))
+        );
+        assert.strictEqual(
+          mountedWhileDelayed[0],
+          0,
+          '[12.15.6] Enquanto scrollLeft efetivo é 0, startIndex deve permanecer sincronizado com a posição efetiva (0)'
+        );
+        assert(
+          mountedWhileDelayed.includes(13) && mountedWhileDelayed.includes(14),
+          '[12.15.6] A janela deve conter tanto o cartão anterior (13) quanto o novo cartão focado (14)'
+        );
+      });
+      forceDelayAllScrollLeftWrites = false;
+      await advancePendingSmoothScroll(1);
+      assert.strictEqual(
+         (document.activeElement as HTMLElement)?.getAttribute('data-row-card-index'),
+        '14',
+        '[12.15.6] Quando o evento de scroll atrasado chega, o foco permanece no cartão 14'
+      );
+
+      // D) Retorno a um cartão distante pelo identificador estável após detalhes e após reprodução com reordenação do histórico:
+      // D.1: Cartão que começou no início (índice 3, movie_10004) e foi reordenado no histórico para uma posição distante (índice 390)
+      await act(async () => {
+        cwNavRow500.style.scrollBehavior = 'auto';
+        cwNavRow500.scrollLeft = 0;
+        cwNavRow500.style.removeProperty('scroll-behavior');
+        cwNavRow500.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      });
+      const cardAtStart3 = cwNavRow500.querySelector('[data-row-card-index="3"]') as HTMLElement;
+      assert(cardAtStart3 !== null, '[12.15.6] Cartão no índice 3 deve estar montado no início');
+      const movedToDistantKey = cardAtStart3.getAttribute('data-row-item-key')!;
+      const movedToDistantStreamId = movedToDistantKey.replace(/^movie_/, '');
+
+      await act(async () => {
+        cardAtStart3.focus();
+        pushFocusForPlay(cardAtStart3);
+      });
+
+      // Reordenar o histórico no localStorage para que movedToDistantKey passe do índice 3 para o índice distante 390
+      const rawCurrentHistory = JSON.parse(
+        windowInstance.localStorage.getItem(homeHistoryKey) || '{}'
+      );
+      const targetHistoryEntry = rawCurrentHistory[`movie:${movedToDistantStreamId}`];
+      assert(targetHistoryEntry !== undefined, '[12.15.6] Entrada do histórico para o cartão de origem deve existir');
+      // Na lista ordenada por updatedAt decrescente, colocar updatedAt entre os itens 390 e 391
+      targetHistoryEntry.updatedAt = 1716000000000 - 390 * 1000 - 500;
+      windowInstance.localStorage.setItem(homeHistoryKey, JSON.stringify(rawCurrentHistory));
+
+      // Forçar re-render da HomeView com o histórico reordenado (como ocorre ao fechar reprodução/detalhes)
+      await act(async () => {
+        // Disparar atualização de progresso em outro item para notificar subscribePlaybackHistory
+        const firstMovieId = String(homeVodStreams520[0].stream_id);
+        recordPlaybackPosition(credsHomeImg, {
+          id: firstMovieId,
+          type: 'movie',
+          positionSec: 195,
+        });
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      // Com scrollLeft=0, o item movido para ~390 está desmontado
+      assert.strictEqual(
+        cwNavRow500.querySelector(`[data-row-item-key="${movedToDistantKey}"]`),
+        null,
+        '[12.15.6] Após reordenação para posição distante (~390) com scrollLeft=0, o cartão deve estar fora da janela inicial'
+      );
+
+      // Restaurar o foco ao encerrar a reprodução via popFocusMemory()
+      await act(async () => {
+        const ok = popFocusFromPlay();
+        assert.strictEqual(
+          ok,
+          true,
+          '[12.15.6] popFocusMemory deve localizar o cartão reordenado para posição distante pelo identificador estável'
+        );
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      const activeAtDistant = document.activeElement as HTMLElement | null;
+      assert(
+        activeAtDistant !== null &&
+          activeAtDistant.getAttribute('data-row-item-key') === movedToDistantKey,
+        `[12.15.6] O foco deve ser restaurado no cartão distante pelo identificador estável (${movedToDistantKey})`
+      );
+      const newDistantIdx = Number(activeAtDistant!.getAttribute('data-row-card-index'));
+      assert(
+        newDistantIdx >= 389 && newDistantIdx <= 391,
+        `[12.15.6] O cartão reordenado deve estar montado em sua nova posição distante (~390, obteve ${newDistantIdx})`
+      );
+      const expectedMinScrollForDistant = newDistantIdx * 185 + 165 - 1120;
+      assert(
+        cwNavRow500.scrollLeft >= expectedMinScrollForDistant,
+        `[12.15.6] A fileira deve ter sido reposicionada imediatamente para exibir o cartão distante (scrollLeft=${cwNavRow500.scrollLeft}px)`
+      );
+
+      // D.2: Agora a partir desse cartão distante (~390), simular reprodução que atualiza sua posição e o move para o índice 0
+      await act(async () => {
+        activeAtDistant!.focus();
+        pushFocusForPlay(activeAtDistant!);
+        recordPlaybackPosition(credsHomeImg, {
+          id: movedToDistantStreamId,
+          type: 'movie',
+          positionSec: 510,
+        });
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      await act(async () => {
+        const okBackTo0 = popFocusFromPlay();
+        assert.strictEqual(
+          okBackTo0,
+          true,
+          '[12.15.6] popFocusMemory deve restaurar o cartão quando reordenado da posição distante (~390) para o índice 0'
+        );
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      const activeAt0AfterReorder = document.activeElement as HTMLElement | null;
+      assert(
+        activeAt0AfterReorder !== null &&
+          activeAt0AfterReorder.getAttribute('data-row-item-key') === movedToDistantKey,
+        '[12.15.6] O foco deve permanecer no mesmo item pelo identificador estável após ir para o índice 0'
+      );
+      assert.strictEqual(
+        activeAt0AfterReorder!.getAttribute('data-row-card-index'),
+        '0',
+        '[12.15.6] O item atualizado deve agora ocupar o índice 0 da fileira'
+      );
+      assert.strictEqual(
+        cwNavRow500.scrollLeft,
+        0,
+        '[12.15.6] O reposicionamento imediato deve trazer scrollLeft exatamente para 0 quando o item reordenado está no índice 0'
+      );
+      assert.strictEqual(
+        cwNavRow500.querySelector('[data-virtual-spacer="left"]'),
+        null,
+        '[12.15.6] Com a janela sincronizada em scrollLeft=0 (startIndex=0), não deve haver espaçador esquerdo residual'
+      );
+    } finally {
+      forceDelayAllScrollLeftWrites = false;
+      pendingSmoothScrollTarget = null;
+      if (origRowScrollDesc) {
+        Object.defineProperty(cwNavRow500, 'scrollLeft', origRowScrollDesc);
+      }
+      cwNavRow500.scrollTo = origRowScrollTo;
+      cwNavRow500.scrollBy = origRowScrollBy;
+    }
   } finally {
     windowInstance.localStorage.removeItem(homeHistoryKey);
     if (savedWindowIO !== undefined) {

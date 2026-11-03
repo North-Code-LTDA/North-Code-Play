@@ -331,13 +331,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
             ) as HTMLElement | null)
           : null;
       if (cwRowEl) {
-        const active =
-          typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
-            ? document.activeElement
-            : null;
-        if (!active || active.getAttribute('data-row-item-key') !== origin.itemKey) {
-          restoreVirtualItemByKey(cwRowEl, origin.itemKey, origin.scrollLeft);
-        }
+        restoreVirtualItemByKey(cwRowEl, origin.itemKey, origin.scrollLeft);
       }
     }
   }, [selectedMovie, selectedSeries, isPaused]);
