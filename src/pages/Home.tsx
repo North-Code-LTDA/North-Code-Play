@@ -835,3 +835,6 @@ export function Home() {
     </XtreamProvider>
   );
 }
+
+export default Home;
+

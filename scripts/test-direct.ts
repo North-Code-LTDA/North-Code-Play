@@ -9959,6 +9959,287 @@ async function runPerformanceAndVirtualizationTests() {
     installDefaultXtreamOfflineMocks();
   }
 
+  // =========================================================================
+  // 12.16. Divisão de JavaScript por rota (AppRoutes + React.lazy para Home):
+  //   1) Abertura sem sessão em "/" não solicita o módulo da Home
+  //   2) Login seguido de acesso a "/home" exibe o indicador de carregamento durante a transição e preserva a sequência dos catálogos
+  //   3) Saída da conta ("Sair") retorna imediatamente ao Login e limpa a sessão
+  //   4) Abertura com sessão salva em "/" (auto-login) e acesso direto a "/home"
+  // =========================================================================
+  console.log('🧪 Testando 12.16: Divisão por rota (Login estático + Home sob demanda)...');
+  const {
+    AppRoutes,
+    getHomeRouteLoadCountForTest,
+    resetHomeRouteLoadCountForTest,
+    setHomeRouteLoaderForTest,
+  } = await import('../src/App');
+  const { MemoryRouter: RouteSplitMemoryRouter } = await import('react-router-dom');
+  const {
+    CREDENTIALS_KEY: ROUTE_CRED_KEY,
+    safeSaveCredentials: saveCredsForRouteTest,
+  } = await import('../src/utils/accountUtils');
+  const { STORAGE_KEY_DISPLAY_PREFS: ROUTE_DISPLAY_PREFS_KEY } = await import(
+    '../src/platform/tvEnvironment'
+  );
+
+  const routeTestContainer = document.createElement('div');
+  document.body.appendChild(routeTestContainer);
+  const routeTestRoot = createRoot(routeTestContainer);
+
+  const prevDisplayPrefsRouteTest = windowInstance.localStorage.getItem(ROUTE_DISPLAY_PREFS_KEY);
+  windowInstance.localStorage.setItem(
+    ROUTE_DISPLAY_PREFS_KEY,
+    JSON.stringify({ version: 1, mode: 'default', tvScale: 85, configured: true })
+  );
+
+  try {
+    // 12.16.1: Abertura sem sessão ("/") mantém Login disponível na abertura e NÃO carrega o pacote da Home
+    windowInstance.localStorage.removeItem(ROUTE_CRED_KEY);
+    setHomeRouteLoaderForTest(null);
+    resetHomeRouteLoadCountForTest();
+
+    await act(async () => {
+      routeTestRoot.render(
+        React.createElement(
+          RouteSplitMemoryRouter,
+          { initialEntries: ['/'] },
+          React.createElement(NavigationProvider, null, React.createElement(AppRoutes, null))
+        )
+      );
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    assert(
+      routeTestContainer.querySelector('[data-login-screen="true"]') !== null,
+      '[12.16.1] Abertura sem sessão em "/" deve renderizar imediatamente a tela de Login'
+    );
+    assert.strictEqual(
+      getHomeRouteLoadCountForTest(),
+      0,
+      '[12.16.1] Abertura sem sessão em "/" NÃO deve disparar o carregamento dinâmico da Home'
+    );
+
+    // 12.16.2: Login seguido de acesso à Home usa o indicador de carregamento na transição e preserva a sequência dos catálogos
+    let resolveDelayedHomeModule: (() => void) | null = null;
+    setHomeRouteLoaderForTest(
+      () =>
+        new Promise((resolve) => {
+          resolveDelayedHomeModule = () => {
+            import('../src/pages/Home').then((m) => resolve({ default: m.Home }));
+          };
+        })
+    );
+    resetHomeRouteLoadCountForTest();
+
+    const catalogCallSequence: string[] = [];
+    (XtreamService as any).authenticate = async () => {
+      catalogCallSequence.push('authenticate');
+      return {
+        user_info: { username: 'splitUser', auth: 1, status: 'Active', allowed_output_formats: ['m3u8'] },
+        server_info: { url: 'http://split.tv', port: '8080' },
+      };
+    };
+    (XtreamService as any).getLiveCategories = async () => {
+      catalogCallSequence.push('getLiveCategories');
+      return [{ category_id: '1', category_name: 'Canais Ao Vivo' }];
+    };
+    (XtreamService as any).getVodCategories = async () => {
+      catalogCallSequence.push('getVodCategories');
+      return [{ category_id: '10', category_name: 'Filmes' }];
+    };
+    (XtreamService as any).getSeriesCategories = async () => {
+      catalogCallSequence.push('getSeriesCategories');
+      return [{ category_id: '20', category_name: 'Séries' }];
+    };
+    (XtreamService as any).getLiveStreams = async () => {
+      catalogCallSequence.push('getLiveStreams');
+      return [];
+    };
+    (XtreamService as any).getVodStreams = async () => {
+      catalogCallSequence.push('getVodStreams');
+      return [];
+    };
+    (XtreamService as any).getSeries = async () => {
+      catalogCallSequence.push('getSeries');
+      return [];
+    };
+
+    await act(async () => {
+      routeTestRoot.render(
+        React.createElement(
+          RouteSplitMemoryRouter,
+          { initialEntries: ['/'] },
+          React.createElement(NavigationProvider, null, React.createElement(AppRoutes, null))
+        )
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const setNativeInputValue = (input: HTMLInputElement, val: string) => {
+      const setter = Object.getOwnPropertyDescriptor(
+        windowInstance.HTMLInputElement.prototype,
+        'value'
+      )?.set;
+      if (setter) {
+        setter.call(input, val);
+      } else {
+        input.value = val;
+      }
+      input.dispatchEvent(new windowInstance.Event('input', { bubbles: true }) as unknown as Event);
+      input.dispatchEvent(new windowInstance.Event('change', { bubbles: true }) as unknown as Event);
+    };
+
+    const serverInput = routeTestContainer.querySelector('#serverUrl') as HTMLInputElement;
+    const userInput = routeTestContainer.querySelector('#username') as HTMLInputElement;
+    const passInput = routeTestContainer.querySelector('#password') as HTMLInputElement;
+    const loginForm = routeTestContainer.querySelector('form') as HTMLFormElement;
+    assert(serverInput && userInput && passInput && loginForm, '[12.16.2] Campos do Login devem existir');
+
+    await act(async () => {
+      setNativeInputValue(serverInput, 'http://split.tv:8080');
+      setNativeInputValue(userInput, 'splitUser');
+      setNativeInputValue(passInput, 'splitPass');
+    });
+
+    await act(async () => {
+      loginForm.dispatchEvent(
+        new windowInstance.Event('submit', { bubbles: true, cancelable: true }) as unknown as Event
+      );
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    assert.strictEqual(
+      getHomeRouteLoadCountForTest(),
+      1,
+      '[12.16.2] Concluir o login e navegar para "/home" deve solicitar o módulo da Home sob demanda (1 vez)'
+    );
+    assert(
+      routeTestContainer.querySelector('[data-route-loading="home"]') !== null,
+      '[12.16.2] Enquanto o módulo da Home está carregando, o indicador de transição ([data-route-loading="home"]) deve ser exibido'
+    );
+
+    assert(resolveDelayedHomeModule !== null, '[12.16.2] Loader da Home deve estar aguardando resolução');
+    await act(async () => {
+      resolveDelayedHomeModule!();
+      await new Promise((r) => setTimeout(r, 80));
+    });
+
+    assert(
+      routeTestContainer.querySelector('[data-home-shell="true"]') !== null,
+      '[12.16.2] Após resolver a importação dinâmica, a estrutura principal da Home ([data-home-shell="true"]) deve estar montada'
+    );
+    assert.deepStrictEqual(
+      catalogCallSequence,
+      [
+        'authenticate',
+        'getLiveCategories',
+        'getVodCategories',
+        'getLiveStreams',
+        'getSeriesCategories',
+        'getVodStreams',
+        'getSeries',
+      ],
+      `[12.16.2] A sequência de carregamento dos catálogos na Home deve ser integralmente preservada (${catalogCallSequence.join(' -> ')})`
+    );
+
+    // 12.16.3: Saída da conta ("Sair") retorna ao Login e remove credenciais sem recarregar a Home
+    const logoutBtn = Array.from(routeTestContainer.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Sair')
+    ) as HTMLButtonElement | undefined;
+    assert(logoutBtn !== undefined, '[12.16.3] Botão "Sair" deve estar disponível na Home');
+
+    await act(async () => {
+      logoutBtn!.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    assert(
+      routeTestContainer.querySelector('[data-login-screen="true"]') !== null,
+      '[12.16.3] Clicar em "Sair" na Home deve retornar imediatamente para a tela de Login'
+    );
+    assert.strictEqual(
+      windowInstance.localStorage.getItem(ROUTE_CRED_KEY),
+      null,
+      '[12.16.3] Clicar em "Sair" deve remover as credenciais salvas do localStorage'
+    );
+    assert.strictEqual(
+      getHomeRouteLoadCountForTest(),
+      1,
+      '[12.16.3] Retornar ao Login não deve disparar novo carregamento da Home'
+    );
+
+    // 12.16.4: Abertura com sessão salva em "/" (auto-login) e acesso direto a "/home"
+    setHomeRouteLoaderForTest(null);
+    resetHomeRouteLoadCountForTest();
+    saveCredsForRouteTest({
+      playlistName: 'Lista Salva',
+      serverUrl: 'http://split.tv:8080',
+      username: 'savedUser',
+      password: 'savedPassword',
+      allowed_output_formats: ['m3u8'],
+    });
+
+    await act(async () => {
+      routeTestRoot.render(React.createElement('div', null));
+    });
+    await act(async () => {
+      routeTestRoot.render(
+        React.createElement(
+          RouteSplitMemoryRouter,
+          { initialEntries: ['/'] },
+          React.createElement(NavigationProvider, null, React.createElement(AppRoutes, null))
+        )
+      );
+      await new Promise((r) => setTimeout(r, 90));
+    });
+
+    assert.strictEqual(
+      getHomeRouteLoadCountForTest(),
+      1,
+      '[12.16.4] Abertura em "/" com sessão salva (auto-login) deve redirecionar para "/home" e carregar a Home sob demanda'
+    );
+    assert(
+      routeTestContainer.querySelector('[data-home-shell="true"]') !== null,
+      '[12.16.4] Após o auto-login, a Home ([data-home-shell="true"]) deve estar montada'
+    );
+
+    // Acesso direto a "/home" sem sessão salva -> redireciona de volta ao Login ("/")
+    windowInstance.localStorage.removeItem(ROUTE_CRED_KEY);
+    await act(async () => {
+      routeTestRoot.render(React.createElement('div', null));
+    });
+    await act(async () => {
+      routeTestRoot.render(
+        React.createElement(
+          RouteSplitMemoryRouter,
+          { initialEntries: ['/home'] },
+          React.createElement(NavigationProvider, null, React.createElement(AppRoutes, null))
+        )
+      );
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    assert(
+      routeTestContainer.querySelector('[data-login-screen="true"]') !== null,
+      '[12.16.4] Acesso direto a "/home" sem sessão salva deve redirecionar com segurança para a tela de Login ("/")'
+    );
+  } finally {
+    setHomeRouteLoaderForTest(null);
+    resetHomeRouteLoadCountForTest();
+    windowInstance.localStorage.removeItem(ROUTE_CRED_KEY);
+    if (prevDisplayPrefsRouteTest !== null) {
+      windowInstance.localStorage.setItem(ROUTE_DISPLAY_PREFS_KEY, prevDisplayPrefsRouteTest);
+    } else {
+      windowInstance.localStorage.removeItem(ROUTE_DISPLAY_PREFS_KEY);
+    }
+    await act(async () => {
+      routeTestRoot.unmount();
+    });
+    if (routeTestContainer.parentNode) {
+      document.body.removeChild(routeTestContainer);
+    }
+    installDefaultXtreamOfflineMocks();
+  }
+
   console.log(
     `📊 [Benchmark 39k Registros — Métricas Separadas]\n` +
       `   • Passada Fria (Indexação + Ranking Inicial): ${coldCatalogPassMs.toFixed(2)}ms (sorts=${coldRankingStats.sortCalls})\n` +
@@ -9972,7 +10253,7 @@ async function runPerformanceAndVirtualizationTests() {
       `   • Home c/ 500 em Continuar Assistindo (11 fileiras): cartões montados=254 (antes: 740; fileira CW=14 no início/meio/fim vs 500) | assinaturas observer=265 (antes: 751) | img[src]=9 (antes: 741)\n` +
       `   • Sonda 500 Cartões × 10 Scrolls: c/ IntersectionObserver -> 0 leituras manuais | Fallback agrupado -> 1 leitura container + 14 cartões montados (antes: 500 cartões)`
   );
-  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {
