@@ -52,7 +52,19 @@ export function VideoPlayer({
   // Fullscreen & PiP states
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isVisuallyExpanded, setIsVisuallyExpanded] = useState(false);
+  const [isExitingFullscreen, setIsExitingFullscreen] = useState(false);
   const [hasPiP, setHasPiP] = useState(false);
+  const isMountedRef = useRef(true);
+  const isExitingFullscreenRef = useRef(false);
+  const forceExitedFullscreenRef = useRef(false);
+
+  const activeSelectionKey = `${String(streamId ?? '')}|${String(streamUrl ?? '')}|${String(channelName ?? '')}`;
+  const activeSelectionKeyRef = useRef(activeSelectionKey);
+  const selectionGenerationRef = useRef(0);
+  if (activeSelectionKeyRef.current !== activeSelectionKey) {
+    activeSelectionKeyRef.current = activeSelectionKey;
+    selectionGenerationRef.current += 1;
+  }
 
   // Retry trigger for internal engine re-attachment
   const [retryTrigger, setRetryTrigger] = useState(0);
@@ -122,6 +134,9 @@ export function VideoPlayer({
           (fsEl === container || container.contains(fsEl as Node))
       );
 
+      if (isFs) {
+        forceExitedFullscreenRef.current = false;
+      }
       setIsFullscreen(isFs);
       if (!isFs) {
         setIsVisuallyExpanded(false);
@@ -134,6 +149,24 @@ export function VideoPlayer({
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
     };
+  }, []);
+
+  const isContainerCurrentlyFullscreen = useCallback(() => {
+    if (forceExitedFullscreenRef.current || typeof document === 'undefined') {
+      return false;
+    }
+    const container = containerRef.current;
+    const fsEl =
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement ||
+      (document as any).mozFullScreenElement ||
+      (document as any).msFullscreenElement;
+
+    return Boolean(
+      container &&
+        fsEl &&
+        (fsEl === container || container.contains(fsEl as Node))
+    );
   }, []);
 
   const pendingFocusControlRef = useRef<string | null>(null);
@@ -245,96 +278,128 @@ export function VideoPlayer({
     };
   }, [isControlsVisible, scheduleAutoHide]);
 
+  const performFullscreenExit = useCallback(async (): Promise<boolean> => {
+    if (isExitingFullscreenRef.current) {
+      return false;
+    }
+
+    const isCurrentContainerFs = isContainerCurrentlyFullscreen();
+    const isFs = isCurrentContainerFs || isFullscreen || isVisuallyExpanded;
+    if (!isFs) {
+      return false;
+    }
+
+    isExitingFullscreenRef.current = true;
+    if (isMountedRef.current) {
+      setIsExitingFullscreen(true);
+    }
+
+    try {
+      if (isCurrentContainerFs && typeof document !== 'undefined') {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if ((document as any).webkitExitFullscreen) {
+          await (document as any).webkitExitFullscreen();
+        } else if ((document as any).mozCancelFullScreen) {
+          await (document as any).mozCancelFullScreen();
+        } else if ((document as any).msExitFullscreen) {
+          await (document as any).msExitFullscreen();
+        }
+      }
+    } catch (err) {
+      forceExitedFullscreenRef.current = true;
+      console.warn('Exit fullscreen failed:', err);
+    } finally {
+      isExitingFullscreenRef.current = false;
+      if (isMountedRef.current) {
+        setIsExitingFullscreen(false);
+        setIsFullscreen(false);
+        setIsVisuallyExpanded(false);
+      }
+    }
+
+    return true;
+  }, [isContainerCurrentlyFullscreen, isFullscreen, isVisuallyExpanded]);
+
   // Fullscreen toggle: container requestFullscreen or visual expansion fallback
   const toggleFullscreen = useCallback(async () => {
     const container = containerRef.current;
     if (!container) return;
     setActivePlayer(playerId);
 
-    const fsEl =
-      document.fullscreenElement ||
-      (document as any).webkitFullscreenElement ||
-      (document as any).mozFullScreenElement ||
-      (document as any).msFullscreenElement;
+    if (isExitingFullscreenRef.current) {
+      return;
+    }
 
-    const isCurrentContainerFs = Boolean(
-      container &&
-        fsEl &&
-        (fsEl === container || container.contains(fsEl as Node))
-    );
-
+    const isCurrentContainerFs = isContainerCurrentlyFullscreen();
     const isFs = isCurrentContainerFs || isFullscreen;
 
     if (isFs || isVisuallyExpanded) {
-      try {
-        if (isCurrentContainerFs) {
-          if (document.exitFullscreen) {
-            await document.exitFullscreen();
-          } else if ((document as any).webkitExitFullscreen) {
-            await (document as any).webkitExitFullscreen();
-          } else if ((document as any).mozCancelFullScreen) {
-            await (document as any).mozCancelFullScreen();
-          } else if ((document as any).msExitFullscreen) {
-            await (document as any).msExitFullscreen();
-          }
-        }
-      } catch (err) {
-        console.warn('Exit fullscreen failed:', err);
-      }
-      setIsFullscreen(false);
-      setIsVisuallyExpanded(false);
+      await performFullscreenExit();
     } else {
+      forceExitedFullscreenRef.current = false;
       try {
         if (container.requestFullscreen) {
           await container.requestFullscreen();
-          setIsFullscreen(true);
+          if (isMountedRef.current) {
+            setIsFullscreen(true);
+          }
         } else if ((container as any).webkitRequestFullscreen) {
           await (container as any).webkitRequestFullscreen();
-          setIsFullscreen(true);
+          if (isMountedRef.current) {
+            setIsFullscreen(true);
+          }
         } else if (
           videoRef.current &&
           (videoRef.current as any).webkitEnterFullscreen
         ) {
           // iOS Safari native video fullscreen
           (videoRef.current as any).webkitEnterFullscreen();
-        } else {
+        } else if (isMountedRef.current) {
           // Fallback visual expansion
           setIsVisuallyExpanded(true);
         }
       } catch (err) {
         console.warn('Fullscreen request failed, applying visual expansion:', err);
-        setIsVisuallyExpanded(true);
+        if (isMountedRef.current) {
+          setIsVisuallyExpanded(true);
+        }
       }
     }
-  }, [playerId, isVisuallyExpanded, isFullscreen]);
+  }, [
+    playerId,
+    isContainerCurrentlyFullscreen,
+    isVisuallyExpanded,
+    isFullscreen,
+    performFullscreenExit,
+  ]);
 
   // Enter fullscreen explicitly when requested by parent (e.g. 2nd OK on already-selected Live TV channel)
   const prevFsRequestRef = useRef(fullscreenRequestTrigger);
   useEffect(() => {
     if (fullscreenRequestTrigger > 0 && fullscreenRequestTrigger !== prevFsRequestRef.current) {
       prevFsRequestRef.current = fullscreenRequestTrigger;
-      const container = containerRef.current;
-      const fsEl =
-        document.fullscreenElement ||
-        (document as any).webkitFullscreenElement ||
-        (document as any).mozFullScreenElement ||
-        (document as any).msFullscreenElement;
-      const isCurrentContainerFs = Boolean(
-        container &&
-          fsEl &&
-          (fsEl === container || container.contains(fsEl as Node))
-      );
+      const isCurrentContainerFs = isContainerCurrentlyFullscreen();
       if (!isCurrentContainerFs && !isFullscreen && !isVisuallyExpanded) {
         toggleFullscreen();
       }
     }
-  }, [fullscreenRequestTrigger, isFullscreen, isVisuallyExpanded, toggleFullscreen]);
+  }, [
+    fullscreenRequestTrigger,
+    isContainerCurrentlyFullscreen,
+    isFullscreen,
+    isVisuallyExpanded,
+    toggleFullscreen,
+  ]);
 
   // Clean exit fullscreen on unmount ONLY if fullscreen belongs to this player instance
   useEffect(() => {
+    isMountedRef.current = true;
     const container = containerRef.current;
     return () => {
-      if (typeof document !== 'undefined') {
+      isMountedRef.current = false;
+      selectionGenerationRef.current += 1;
+      if (typeof document !== 'undefined' && !isExitingFullscreenRef.current) {
         const fsEl =
           document.fullscreenElement ||
           (document as any).webkitFullscreenElement ||
@@ -377,47 +442,77 @@ export function VideoPlayer({
       return;
     }
 
-    const container = containerRef.current;
-    const fsEl =
-      document.fullscreenElement ||
-      (document as any).webkitFullscreenElement ||
-      (document as any).mozFullScreenElement ||
-      (document as any).msFullscreenElement;
+    if (isExitingFullscreenRef.current) {
+      return;
+    }
 
-    const isCurrentContainerFs = Boolean(
-      container &&
-        fsEl &&
-        (fsEl === container || container.contains(fsEl as Node))
-    );
-
+    const isCurrentContainerFs = isContainerCurrentlyFullscreen();
     const isFs = isCurrentContainerFs || isFullscreen || isVisuallyExpanded;
 
     if (embedded && isFs) {
-      await toggleFullscreen();
-      if (getNavMode() === 'remote' && typeof document !== 'undefined') {
+      const exitSelectionGeneration = selectionGenerationRef.current;
+      const exitSelectionKey = activeSelectionKeyRef.current;
+      const initialSelectedChannelBtn =
+        typeof document !== 'undefined'
+          ? document.querySelector<HTMLButtonElement>(
+              'button[data-live-channel-selected="true"]'
+            )
+          : null;
+      const initialSelectedChannelId =
+        initialSelectedChannelBtn?.getAttribute('data-live-channel-id') ?? null;
+
+      const didStartExit = await performFullscreenExit();
+      if (!didStartExit) {
+        return;
+      }
+
+      const isStillSamePlayerAndSelection =
+        isMountedRef.current &&
+        Boolean(containerRef.current && containerRef.current.isConnected) &&
+        selectionGenerationRef.current === exitSelectionGeneration &&
+        activeSelectionKeyRef.current === exitSelectionKey;
+
+      if (
+        isStillSamePlayerAndSelection &&
+        getNavMode() === 'remote' &&
+        typeof document !== 'undefined'
+      ) {
         const selectedChannelBtn = document.querySelector<HTMLButtonElement>(
           'button[data-live-channel-selected="true"]'
         );
-        if (selectedChannelBtn) {
-          focusElementSafely(selectedChannelBtn);
+        if (selectedChannelBtn && selectedChannelBtn.isConnected) {
+          const currentChannelId = selectedChannelBtn.getAttribute(
+            'data-live-channel-id'
+          );
+          const isSameChannelButton =
+            initialSelectedChannelId !== null
+              ? currentChannelId === initialSelectedChannelId
+              : initialSelectedChannelBtn === null ||
+                selectedChannelBtn === initialSelectedChannelBtn;
+
+          if (isSameChannelButton) {
+            focusElementSafely(selectedChannelBtn);
+          }
         }
       }
       return;
     }
 
     if (onBack) {
+      selectionGenerationRef.current += 1;
       onBack();
     }
   }, [
     playerId,
     embedded,
+    isContainerCurrentlyFullscreen,
     isFullscreen,
     isVisuallyExpanded,
     showSettings,
     showDiagnostics,
     closeSettingsMenu,
     closeDiagnosticsModal,
-    toggleFullscreen,
+    performFullscreenExit,
     onBack,
   ]);
 
@@ -439,7 +534,9 @@ export function VideoPlayer({
     showSettings || showDiagnostics
   );
 
-  const isPlayerInFullLayer = Boolean(!embedded || isFullscreen || isVisuallyExpanded);
+  const isPlayerInFullLayer = Boolean(
+    !embedded || isFullscreen || isVisuallyExpanded || isExitingFullscreen
+  );
   useBackHandler(
     `player-fullscreen-${playerId}`,
     BACK_PRIORITY.FULLSCREEN_PLAYER,
@@ -665,7 +762,12 @@ export function VideoPlayer({
               closeSettingsMenu();
             } else if (showDiagnostics) {
               closeDiagnosticsModal();
-            } else if (isFullscreen || isVisuallyExpanded) {
+            } else if (
+              embedded &&
+              (isFullscreen || isVisuallyExpanded || isExitingFullscreen)
+            ) {
+              handleBack();
+            } else if (isFullscreen || isVisuallyExpanded || isExitingFullscreen) {
               toggleFullscreen();
             } else if (!embedded && onBack) {
               onBack();
@@ -691,12 +793,14 @@ export function VideoPlayer({
     session,
     resetInactivityTimer,
     toggleFullscreen,
+    handleBack,
     showSettings,
     showDiagnostics,
     closeSettingsMenu,
     closeDiagnosticsModal,
     isFullscreen,
     isVisuallyExpanded,
+    isExitingFullscreen,
     embedded,
     onBack,
   ]);

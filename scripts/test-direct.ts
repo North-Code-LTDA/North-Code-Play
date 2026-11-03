@@ -1439,6 +1439,526 @@ async function runPlayerBackAndScrollNavigationTests() {
 
   assert.strictEqual(video1.muted, true, 'Após interação com Player 1, atalho afeta apenas Player 1');
 
+  // 1.5 Regressão: Sobreposição de comandos Voltar durante saída assíncrona de tela cheia na TV ao Vivo
+  console.log(
+    'Caso 1.5: Saída assíncrona de tela cheia na TV ao Vivo — único exitFullscreen, foco único, sequência tela cheia -> preview -> canais -> categorias, descarte em troca/desmontagem e resiliência a falha'
+  );
+  {
+    const { NavigationProvider, setNavMode } = await import('../src/navigation');
+    const originalExitFullscreen = (windowInstance.document as any).exitFullscreen;
+
+    const liveChannels = [
+      {
+        stream_id: 101,
+        name: 'Canal Notícias 24h',
+        stream_icon: 'http://server.tv:8080/logo101.jpg',
+        category_id: 'cat_live_1',
+      },
+      {
+        stream_id: 102,
+        name: 'Canal Esportes Ao Vivo',
+        stream_icon: 'http://server.tv:8080/logo102.jpg',
+        category_id: 'cat_live_1',
+      },
+    ];
+
+    const liveOverlapCtx: any = {
+      credentials: testCreds,
+      liveCategories: [{ category_id: 'cat_live_1', category_name: 'Notícias' }],
+      liveStreams: liveChannels,
+      allLiveStreams: liveChannels,
+      vodCategories: [],
+      vodStreams: [],
+      allVodStreams: [],
+      seriesCategories: [],
+      seriesStreams: [],
+      allSeriesStreams: [],
+      loadingLive: false,
+      loadingVod: false,
+      loadingSeries: false,
+      liveCatalogStatus: 'ready',
+      liveCategoriesStatus: 'ready',
+      error: null,
+      fetchLiveStreams: async () => {},
+      fetchVodStreams: async () => {},
+      fetchSeriesStreams: async () => {},
+      fetchLiveCategories: async () => {},
+    };
+
+    try {
+      setNavMode('remote');
+
+      await act(async () => {
+        root.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              XtreamContext.Provider,
+              { value: liveOverlapCtx },
+              React.createElement(LiveTvView, { onPlay: () => {} })
+            )
+          )
+        );
+      });
+
+      // Abrir a categoria Notícias (cat_live_1)
+      const catBtn = container.querySelector(
+        'button[data-live-category-id="cat_live_1"]'
+      ) as any as HTMLButtonElement;
+      assert(catBtn, '[1.5] Botão da categoria Notícias deve existir');
+      await act(async () => {
+        catBtn.focus();
+        catBtn.click();
+      });
+
+      const channelBtns = Array.from(
+        container.querySelectorAll('button[data-live-channel-btn="true"]')
+      ) as any as HTMLButtonElement[];
+      assert.strictEqual(channelBtns.length, 2, '[1.5] Dois canais devem estar renderizados na categoria');
+      const channelBtn1 = channelBtns[0];
+
+      // 1º comando no canal 1: abre o preview
+      await act(async () => {
+        channelBtn1.focus();
+        channelBtn1.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      assert(container.querySelector('video') !== null, '[1.5] Preview de vídeo deve estar montado');
+      assert.strictEqual(
+        channelBtn1.getAttribute('data-live-channel-selected'),
+        'true',
+        '[1.5] Canal 1 deve estar marcado como selecionado'
+      );
+
+      // 2º comando no mesmo canal 1: entra em tela cheia
+      await act(async () => {
+        channelBtn1.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      const fsModalPlayer = container.querySelector(
+        '[data-player-container="true"][data-focus-scope="modal"]'
+      ) as any as HTMLElement;
+      assert(fsModalPlayer, '[1.5] Player deve estar em camada de tela cheia (data-focus-scope="modal")');
+      assertSameElement(
+        (windowInstance.document as any).fullscreenElement,
+        fsModalPlayer,
+        '[1.5] document.fullscreenElement deve apontar para o contêiner do player'
+      );
+
+      // Controlar a conclusão de document.exitFullscreen() e contar restaurações de foco no canal 1
+      let exitFullscreenCalls = 0;
+      let resolvePendingExit: (() => void) | null = null;
+      (windowInstance.document as any).exitFullscreen = () => {
+        exitFullscreenCalls += 1;
+        return new Promise<void>((resolve) => {
+          resolvePendingExit = () => {
+            currentFullscreenElement = null;
+            windowInstance.document.dispatchEvent(new windowInstance.Event('fullscreenchange'));
+            resolve();
+          };
+        });
+      };
+
+      let channel1FocusCalls = 0;
+      const origChannel1Focus = channelBtn1.focus.bind(channelBtn1);
+      channelBtn1.focus = ((options?: FocusOptions) => {
+        channel1FocusCalls += 1;
+        return origChannel1Focus(options);
+      }) as typeof channelBtn1.focus;
+
+      try {
+        // Disparar DOIS comandos Voltar (Escape) enquanto exitFullscreen() ainda está pendente
+        await act(async () => {
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', {
+              key: 'Escape',
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', {
+              key: 'Escape',
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+        });
+
+        assert.strictEqual(
+          exitFullscreenCalls,
+          1,
+          '[1.5.A] Dois comandos Voltar durante a transição pendente devem disparar apenas UMA chamada a document.exitFullscreen()'
+        );
+        assert.strictEqual(
+          channel1FocusCalls,
+          0,
+          '[1.5.A] O foco não deve ser restaurado antes da conclusão de exitFullscreen()'
+        );
+        assert(
+          container.querySelector('video') !== null,
+          '[1.5.A] O segundo Voltar durante a transição pendente deve ser consumido no mesmo fluxo sem fechar o preview'
+        );
+
+        // Concluir a transição assíncrona de saída da tela cheia
+        assert(resolvePendingExit !== null, '[1.5.A] Promessa de exitFullscreen deve estar aguardando resolução');
+        await act(async () => {
+          resolvePendingExit!();
+          await new Promise((r) => setTimeout(r, 20));
+        });
+
+        assert.strictEqual(
+          exitFullscreenCalls,
+          1,
+          '[1.5.A] Após concluir a transição, o total de chamadas a exitFullscreen() deve permanecer em 1'
+        );
+        assert.strictEqual(
+          channel1FocusCalls,
+          1,
+          '[1.5.A] O foco deve ser restaurado ao botão do canal selecionado exatamente UMA vez'
+        );
+        assertSameElement(
+          document.activeElement,
+          channelBtn1,
+          '[1.5.A] O foco ativo deve estar no canal selecionado após sair da tela cheia'
+        );
+        assertSameElement(
+          container.querySelector('[data-player-container="true"][data-focus-scope="modal"]') as any,
+          null,
+          '[1.5.A] O player não deve mais estar em tela cheia após a conclusão'
+        );
+        assert(
+          container.querySelector('video') !== null,
+          '[1.5.A] O preview deve continuar aberto após a conclusão da saída de tela cheia'
+        );
+      } finally {
+        channelBtn1.focus = origChannel1Focus;
+      }
+
+      // Restaurar exitFullscreen padrão para validar a sequência seguinte: preview -> lista de canais -> categorias
+      (windowInstance.document as any).exitFullscreen = originalExitFullscreen;
+
+      // Próximo comando Voltar (após concluir a saída da tela cheia): fecha o preview normalmente
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: 'Escape',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      assertSameElement(
+        container.querySelector('video') as any,
+        null,
+        '[1.5.A] O próximo comando Voltar após concluir a transição deve fechar o preview normalmente'
+      );
+      assertSameElement(
+        document.activeElement,
+        channelBtn1,
+        '[1.5.A] Ao fechar o preview, o foco permanece no canal na lista de canais'
+      );
+
+      // Comando Voltar seguinte: lista de canais -> categorias
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: 'Escape',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      const restoredCatBtn = container.querySelector(
+        'button[data-live-category-id="cat_live_1"]'
+      ) as any as HTMLButtonElement;
+      assert(restoredCatBtn, '[1.5.A] Lista de categorias deve voltar a ser exibida');
+      assertSameElement(
+        document.activeElement,
+        restoredCatBtn,
+        '[1.5.A] Sequência tela cheia -> preview -> lista de canais -> categorias preservada'
+      );
+
+      // -----------------------------------------------------------------------
+      // 1.5.B: Conclusão tardia de exitFullscreen() após mudar de canal não deve mover o foco
+      // -----------------------------------------------------------------------
+      await act(async () => {
+        restoredCatBtn.click();
+      });
+      const chBtnsForSwitch = Array.from(
+        container.querySelectorAll('button[data-live-channel-btn="true"]')
+      ) as any as HTMLButtonElement[];
+      const ch1BtnSwitch = chBtnsForSwitch[0];
+      const ch2BtnSwitch = chBtnsForSwitch[1];
+
+      // Abrir canal 1 no preview e depois em tela cheia
+      await act(async () => {
+        ch1BtnSwitch.focus();
+        ch1BtnSwitch.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      await act(async () => {
+        ch1BtnSwitch.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      assert(
+        container.querySelector('[data-player-container="true"][data-focus-scope="modal"]') !== null,
+        '[1.5.B] Canal 1 novamente em tela cheia'
+      );
+
+      let exitCallsOnChannelSwitch = 0;
+      let resolveChannelSwitchExit: (() => void) | null = null;
+      (windowInstance.document as any).exitFullscreen = () => {
+        exitCallsOnChannelSwitch += 1;
+        return new Promise<void>((resolve) => {
+          resolveChannelSwitchExit = () => {
+            currentFullscreenElement = null;
+            windowInstance.document.dispatchEvent(new windowInstance.Event('fullscreenchange'));
+            resolve();
+          };
+        });
+      };
+
+      // Iniciar saída de tela cheia com Voltar (fica pendente)
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: 'Escape',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      assert.strictEqual(exitCallsOnChannelSwitch, 1, '[1.5.B] Saída de tela cheia iniciada para o canal 1');
+
+      // Trocar para o canal 2 antes da conclusão de exitFullscreen() e posicionar o foco no botão de voltar às categorias
+      const backToCategoriesBtn = container.querySelector(
+        'button[data-live-back-to-categories="true"]'
+      ) as any as HTMLButtonElement;
+      assert(backToCategoriesBtn, '[1.5.B] Botão Voltar às Categorias deve existir');
+
+      await act(async () => {
+        ch2BtnSwitch.click();
+        backToCategoriesBtn.focus();
+      });
+      assertSameElement(
+        document.activeElement,
+        backToCategoriesBtn,
+        '[1.5.B] Foco posicionado em outro elemento após trocar para o canal 2'
+      );
+
+      // Resolver tardiamente a saída de tela cheia iniciada pelo canal 1
+      await act(async () => {
+        resolveChannelSwitchExit!();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      assert.strictEqual(
+        exitCallsOnChannelSwitch,
+        1,
+        '[1.5.B] Desmontar o player anterior na troca de canal não deve disparar outra chamada a exitFullscreen()'
+      );
+      assertSameElement(
+        document.activeElement,
+        backToCategoriesBtn,
+        '[1.5.B] Conclusão tardia da saída de tela cheia após trocar de canal NÃO deve mover o foco'
+      );
+
+      // -----------------------------------------------------------------------
+      // 1.5.C: Mesma instância de VideoPlayer mudando streamId/streamUrl ou sendo desmontada antes da conclusão
+      // -----------------------------------------------------------------------
+      const externalAnchorBtn = document.createElement('button');
+      externalAnchorBtn.type = 'button';
+      externalAnchorBtn.textContent = 'Âncora Externa';
+      document.body.appendChild(externalAnchorBtn);
+
+      const fakeSelectedChannelBtn = document.createElement('button');
+      fakeSelectedChannelBtn.type = 'button';
+      fakeSelectedChannelBtn.setAttribute('data-live-channel-selected', 'true');
+      fakeSelectedChannelBtn.setAttribute('data-live-channel-id', 'ch_101');
+      document.body.appendChild(fakeSelectedChannelBtn);
+
+      try {
+        // Testar troca de seleção na MESMA instância de VideoPlayer sem desmontar
+        await act(async () => {
+          root.render(
+            React.createElement(VideoPlayer, {
+              streamUrl: 'http://server.tv:8080/live/u/p/101.m3u8',
+              streamId: 101,
+              title: 'Canal 101',
+              channelName: 'Canal 101',
+              contentType: 'live',
+              embedded: true,
+              onBack: () => {},
+            })
+          );
+        });
+
+        const sameInstanceContainer = container.querySelector(
+          '[data-player-container="true"]'
+        ) as any as HTMLElement;
+        assert(sameInstanceContainer, '[1.5.C] Contêiner do VideoPlayer deve existir');
+
+        await act(async () => {
+          await (sameInstanceContainer as any).requestFullscreen();
+        });
+
+        let resolveSameInstanceExit: (() => void) | null = null;
+        (windowInstance.document as any).exitFullscreen = () =>
+          new Promise<void>((resolve) => {
+            resolveSameInstanceExit = () => {
+              currentFullscreenElement = null;
+              windowInstance.document.dispatchEvent(new windowInstance.Event('fullscreenchange'));
+              resolve();
+            };
+          });
+
+        const sameInstanceBackBtn = container.querySelector(
+          'button[aria-label="Voltar"]'
+        ) as any as HTMLButtonElement;
+        await act(async () => {
+          sameInstanceBackBtn.click();
+        });
+
+        // Trocar de canal na mesma instância (streamId 101 -> 102) e focar âncora externa antes de resolver exitFullscreen
+        await act(async () => {
+          root.render(
+            React.createElement(VideoPlayer, {
+              streamUrl: 'http://server.tv:8080/live/u/p/102.m3u8',
+              streamId: 102,
+              title: 'Canal 102',
+              channelName: 'Canal 102',
+              contentType: 'live',
+              embedded: true,
+              onBack: () => {},
+            })
+          );
+          externalAnchorBtn.focus();
+        });
+
+        await act(async () => {
+          resolveSameInstanceExit!();
+          await new Promise((r) => setTimeout(r, 20));
+        });
+        assertSameElement(
+          document.activeElement,
+          externalAnchorBtn,
+          '[1.5.C] Conclusão tardia de exitFullscreen após troca de streamId/streamUrl na mesma instância NÃO deve mover o foco'
+        );
+
+        // Testar desmontagem do player antes da conclusão de exitFullscreen
+        await act(async () => {
+          await (sameInstanceContainer as any).requestFullscreen();
+        });
+
+        let resolveUnmountExit: (() => void) | null = null;
+        (windowInstance.document as any).exitFullscreen = () =>
+          new Promise<void>((resolve) => {
+            resolveUnmountExit = () => {
+              currentFullscreenElement = null;
+              windowInstance.document.dispatchEvent(new windowInstance.Event('fullscreenchange'));
+              resolve();
+            };
+          });
+
+        const backBtnBeforeUnmount = container.querySelector(
+          'button[aria-label="Voltar"]'
+        ) as any as HTMLButtonElement;
+        await act(async () => {
+          backBtnBeforeUnmount.click();
+        });
+
+        await act(async () => {
+          root.render(React.createElement('div', null));
+          externalAnchorBtn.focus();
+        });
+
+        await act(async () => {
+          resolveUnmountExit!();
+          await new Promise((r) => setTimeout(r, 20));
+        });
+        assertSameElement(
+          document.activeElement,
+          externalAnchorBtn,
+          '[1.5.C] Conclusão tardia de exitFullscreen após desmontar o player NÃO deve mover o foco'
+        );
+
+        // ---------------------------------------------------------------------
+        // 1.5.D: Falha em document.exitFullscreen() não deve deixar o Voltar bloqueado
+        // ---------------------------------------------------------------------
+        let onBackAfterFailedExit = 0;
+        await act(async () => {
+          root.render(
+            React.createElement(VideoPlayer, {
+              streamUrl: 'http://server.tv:8080/live/u/p/101.m3u8',
+              streamId: 101,
+              title: 'Canal 101',
+              channelName: 'Canal 101',
+              contentType: 'live',
+              embedded: true,
+              onBack: () => {
+                onBackAfterFailedExit += 1;
+              },
+            })
+          );
+        });
+
+        const failExitContainer = container.querySelector(
+          '[data-player-container="true"]'
+        ) as any as HTMLElement;
+        await act(async () => {
+          await (failExitContainer as any).requestFullscreen();
+        });
+
+        (windowInstance.document as any).exitFullscreen = async () => {
+          throw new Error('Falha simulada ao sair de tela cheia');
+        };
+
+        const failExitBackBtn = container.querySelector(
+          'button[aria-label="Voltar"]'
+        ) as any as HTMLButtonElement;
+
+        // 1º Voltar: exitFullscreen rejeita, mas o player trata a falha e sai do modo tela cheia
+        await act(async () => {
+          failExitBackBtn.click();
+          await new Promise((r) => setTimeout(r, 20));
+        });
+        assert.strictEqual(
+          onBackAfterFailedExit,
+          0,
+          '[1.5.D] 1º Voltar com falha em exitFullscreen sai apenas do estado de tela cheia sem fechar o preview'
+        );
+        assertSameElement(
+          container.querySelector('[data-player-container="true"][data-focus-scope="modal"]') as any,
+          null,
+          '[1.5.D] Após falha tratada em exitFullscreen, a camada modal de tela cheia deve ser desfeita'
+        );
+
+        // 2º Voltar: não fica bloqueado e fecha o preview acionando onBack normalmente
+        await act(async () => {
+          failExitBackBtn.click();
+          await new Promise((r) => setTimeout(r, 20));
+        });
+        assert.strictEqual(
+          onBackAfterFailedExit,
+          1,
+          '[1.5.D] Após falha em exitFullscreen, o próximo Voltar NÃO deve ficar bloqueado e deve acionar onBack normalmente'
+        );
+      } finally {
+        if (externalAnchorBtn.parentNode) {
+          externalAnchorBtn.parentNode.removeChild(externalAnchorBtn);
+        }
+        if (fakeSelectedChannelBtn.parentNode) {
+          fakeSelectedChannelBtn.parentNode.removeChild(fakeSelectedChannelBtn);
+        }
+      }
+    } finally {
+      currentFullscreenElement = null;
+      (windowInstance.document as any).exitFullscreen = originalExitFullscreen;
+      setNavMode('pointer');
+    }
+  }
+
   // =========================================================================
   // CENÁRIO 2: SCROLL EM FILMES (MoviesView)
   // =========================================================================
