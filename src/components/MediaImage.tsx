@@ -14,8 +14,8 @@ export interface MediaImageProps extends Omit<React.ImgHTMLAttributes<HTMLImageE
   /**
    * Controls whether the image is authorized to initiate its network request.
    * Defaults to true so all consumers outside visibility-gated rows preserve their contract.
-   * Once authorized for a given (itemId, resolvedUrl) identity, authorization is latched
-   * across re-renders and visibility exits/re-entries.
+   * Once authorized for a given (itemId, resolvedUrl) identity on a mounted instance,
+   * authorization is latched across re-renders and visibility exits/re-entries.
    */
   active?: boolean;
   /**
@@ -66,21 +66,20 @@ export function clearLoadedImageUrlCache(): void {
 }
 
 // ============================================================================
-// Shared Container IntersectionObserver Pool & Fallback Manager
+// Shared Container IntersectionObserver Pool & Coalesced Fallback Manager
 // ============================================================================
 
 export const VERTICAL_HOME_ROOT_MARGIN = '240px 0px';
 export const HORIZONTAL_ROW_ROOT_MARGIN = '0px 280px';
-export const INITIAL_VISIBLE_CARDS_PER_ROW = 8;
 
-interface ParsedRootMargin {
+export interface ParsedRootMargin {
   top: number;
   right: number;
   bottom: number;
   left: number;
 }
 
-function parseRootMarginPx(rawMargin: string): ParsedRootMargin {
+export function parseRootMarginPx(rawMargin: string): ParsedRootMargin {
   const parts = rawMargin
     .trim()
     .split(/\s+/)
@@ -103,76 +102,231 @@ function parseRootMarginPx(rawMargin: string): ParsedRootMargin {
   return { top: 0, right: 0, bottom: 0, left: 0 };
 }
 
+export interface RootContainerMetrics {
+  usable: boolean;
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+  width: number;
+  height: number;
+  scrollTop: number;
+  scrollLeft: number;
+  offsetTop: number;
+  offsetLeft: number;
+}
+
+let perfIoCallbackInvocations = 0;
+let perfFallbackEvaluationPasses = 0;
+let perfRootRectReads = 0;
+let perfTargetRectReads = 0;
+
+export function resetSharedObserverPerfStats(): void {
+  perfIoCallbackInvocations = 0;
+  perfFallbackEvaluationPasses = 0;
+  perfRootRectReads = 0;
+  perfTargetRectReads = 0;
+}
+
+export function measureRootContainer(
+  root: HTMLElement | null,
+  axis: 'vertical' | 'horizontal'
+): RootContainerMetrics {
+  if (root) {
+    perfRootRectReads++;
+    const rect = root.getBoundingClientRect();
+    const scrollTop = root.scrollTop || 0;
+    const scrollLeft = root.scrollLeft || 0;
+    const offsetTop = root.offsetTop || 0;
+    const offsetLeft = root.offsetLeft || 0;
+
+    if (axis === 'vertical') {
+      const rectHeight = rect.height > 0 ? rect.height : Math.max(0, rect.bottom - rect.top);
+      if (rectHeight > 0) {
+        return {
+          usable: true,
+          top: rect.top,
+          bottom: rect.top + rectHeight,
+          left: rect.left,
+          right: rect.right,
+          width: rect.width,
+          height: rectHeight,
+          scrollTop,
+          scrollLeft,
+          offsetTop,
+          offsetLeft,
+        };
+      }
+      if (root.clientHeight > 0) {
+        return {
+          usable: true,
+          top: rect.top,
+          bottom: rect.top + root.clientHeight,
+          left: rect.left,
+          right: rect.right,
+          width: root.clientWidth || 0,
+          height: root.clientHeight,
+          scrollTop,
+          scrollLeft,
+          offsetTop,
+          offsetLeft,
+        };
+      }
+      return {
+        usable: false,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        scrollTop,
+        scrollLeft,
+        offsetTop,
+        offsetLeft,
+      };
+    } else {
+      const rectWidth = rect.width > 0 ? rect.width : Math.max(0, rect.right - rect.left);
+      if (rectWidth > 0) {
+        return {
+          usable: true,
+          top: rect.top,
+          bottom: rect.bottom,
+          left: rect.left,
+          right: rect.left + rectWidth,
+          width: rectWidth,
+          height: rect.height,
+          scrollTop,
+          scrollLeft,
+          offsetTop,
+          offsetLeft,
+        };
+      }
+      if (root.clientWidth > 0) {
+        return {
+          usable: true,
+          top: rect.top,
+          bottom: rect.bottom,
+          left: rect.left,
+          right: rect.left + root.clientWidth,
+          width: root.clientWidth,
+          height: root.clientHeight || 0,
+          scrollTop,
+          scrollLeft,
+          offsetTop,
+          offsetLeft,
+        };
+      }
+      return {
+        usable: false,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        scrollTop,
+        scrollLeft,
+        offsetTop,
+        offsetLeft,
+      };
+    }
+  }
+
+  const winHeight = typeof window !== 'undefined' && window.innerHeight > 0 ? window.innerHeight : 0;
+  const winWidth = typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 0;
+  const usable = axis === 'vertical' ? winHeight > 0 : winWidth > 0;
+
+  return {
+    usable,
+    top: 0,
+    bottom: winHeight,
+    left: 0,
+    right: winWidth,
+    width: winWidth,
+    height: winHeight,
+    scrollTop: typeof window !== 'undefined' ? window.scrollY || 0 : 0,
+    scrollLeft: typeof window !== 'undefined' ? window.scrollX || 0 : 0,
+    offsetTop: 0,
+    offsetLeft: 0,
+  };
+}
+
+export function inspectElementVisibilityWithRootMetrics(
+  target: HTMLElement,
+  rootMetrics: RootContainerMetrics,
+  margins: ParsedRootMargin,
+  axis: 'vertical' | 'horizontal'
+): { usable: boolean; isIntersecting: boolean } {
+  if (!rootMetrics.usable) {
+    return { usable: false, isIntersecting: false };
+  }
+
+  perfTargetRectReads++;
+  const targetRect = target.getBoundingClientRect();
+
+  if (axis === 'vertical') {
+    const targetHeight =
+      targetRect.height > 0 ? targetRect.height : Math.max(0, targetRect.bottom - targetRect.top);
+    if (targetHeight > 0) {
+      const tTop = targetRect.top;
+      const tBottom = targetRect.top + targetHeight;
+      const isIntersecting =
+        tBottom >= rootMetrics.top - margins.top &&
+        tTop <= rootMetrics.bottom + margins.bottom;
+      return { usable: true, isIntersecting };
+    }
+
+    if (target.offsetHeight > 0) {
+      const itemTop = target.offsetTop - rootMetrics.offsetTop;
+      const itemBottom = itemTop + target.offsetHeight;
+      const isIntersecting =
+        itemBottom >= rootMetrics.scrollTop - margins.top &&
+        itemTop <= rootMetrics.scrollTop + rootMetrics.height + margins.bottom;
+      return { usable: true, isIntersecting };
+    }
+
+    return { usable: false, isIntersecting: false };
+  } else {
+    const targetWidth =
+      targetRect.width > 0 ? targetRect.width : Math.max(0, targetRect.right - targetRect.left);
+    if (targetWidth > 0) {
+      const tLeft = targetRect.left;
+      const tRight = targetRect.left + targetWidth;
+      const isIntersecting =
+        tRight >= rootMetrics.left - margins.left &&
+        tLeft <= rootMetrics.right + margins.right;
+      return { usable: true, isIntersecting };
+    }
+
+    if (target.offsetWidth > 0) {
+      const itemLeft = target.offsetLeft - rootMetrics.offsetLeft;
+      const itemRight = itemLeft + target.offsetWidth;
+      const isIntersecting =
+        itemRight >= rootMetrics.scrollLeft - margins.left &&
+        itemLeft <= rootMetrics.scrollLeft + rootMetrics.width + margins.right;
+      return { usable: true, isIntersecting };
+    }
+
+    return { usable: false, isIntersecting: false };
+  }
+}
+
 export function evaluateElementVisibilityInContainer(
   target: HTMLElement,
   root: HTMLElement | null,
   margins: ParsedRootMargin,
   axis: 'vertical' | 'horizontal',
-  index: number
+  _index?: number
 ): boolean {
-  const targetRect = target.getBoundingClientRect();
-  const rootRect = root ? root.getBoundingClientRect() : null;
-
-  if (axis === 'vertical') {
-    const hasMeasuredRects =
-      targetRect.height > 0 &&
-      (rootRect ? rootRect.height > 0 : typeof window !== 'undefined' && window.innerHeight > 0);
-    if (hasMeasuredRects) {
-      const rTop = rootRect ? rootRect.top : 0;
-      const rBottom = rootRect ? rootRect.bottom : window.innerHeight || 720;
-      return (
-        targetRect.bottom >= rTop - margins.top &&
-        targetRect.top <= rBottom + margins.bottom
-      );
-    }
-
-    const scrollTop = root ? root.scrollTop || 0 : typeof window !== 'undefined' ? window.scrollY || 0 : 0;
-    const viewportHeight =
-      root && root.clientHeight > 0
-        ? root.clientHeight
-        : typeof window !== 'undefined' && window.innerHeight > 0
-          ? window.innerHeight
-          : 720;
-    const itemTop = target.offsetTop > 0 ? target.offsetTop : 604 + index * 380;
-    const itemHeight = target.offsetHeight > 0 ? target.offsetHeight : 320;
-    const itemBottom = itemTop + itemHeight;
-    return (
-      itemBottom >= scrollTop - margins.top &&
-      itemTop <= scrollTop + viewportHeight + margins.bottom
-    );
-  } else {
-    const hasMeasuredRects =
-      targetRect.width > 0 &&
-      (rootRect ? rootRect.width > 0 : typeof window !== 'undefined' && window.innerWidth > 0);
-    if (hasMeasuredRects) {
-      const rLeft = rootRect ? rootRect.left : 0;
-      const rRight = rootRect ? rootRect.right : window.innerWidth || 1280;
-      return (
-        targetRect.right >= rLeft - margins.left &&
-        targetRect.left <= rRight + margins.right
-      );
-    }
-
-    const scrollLeft = root ? root.scrollLeft || 0 : typeof window !== 'undefined' ? window.scrollX || 0 : 0;
-    const viewportWidth =
-      root && root.clientWidth > 0
-        ? root.clientWidth
-        : typeof window !== 'undefined' && window.innerWidth > 0
-          ? window.innerWidth
-          : 1200;
-    const itemLeft = target.offsetLeft > 0 ? target.offsetLeft : index * 192;
-    const itemWidth = target.offsetWidth > 0 ? target.offsetWidth : 176;
-    const itemRight = itemLeft + itemWidth;
-    return (
-      itemRight >= scrollLeft - margins.left &&
-      itemLeft <= scrollLeft + viewportWidth + margins.right
-    );
-  }
+  const rootMetrics = measureRootContainer(root, axis);
+  return inspectElementVisibilityWithRootMetrics(target, rootMetrics, margins, axis).isIntersecting;
 }
 
 interface ObservedTargetRecord {
   target: HTMLElement;
   index: number;
+  geometryUsable: boolean;
   lastIntersecting: boolean | null;
   listeners: Set<(isIntersecting: boolean) => void>;
 }
@@ -185,6 +339,14 @@ interface SharedObserverPoolEntry {
   axis: 'vertical' | 'horizontal';
   observer: IntersectionObserver | null;
   usingFallbackOnly: boolean;
+  hasScrollListener: boolean;
+  hasResizeListener: boolean;
+  scheduledFallbackRafId: number | null;
+  scheduledGeometryRafId: number | null;
+  pendingGeometryCheckAttempts: number;
+  syncRootMetricsCache: RootContainerMetrics | null;
+  syncRootMetricsClearQueued: boolean;
+  resizeObserver: ResizeObserver | null;
   targets: Map<HTMLElement, ObservedTargetRecord>;
   disposeListeners: () => void;
 }
@@ -198,6 +360,13 @@ export interface SharedObserverDiagnostics {
   verticalObserverRoots: Array<HTMLElement | null>;
   horizontalObserverRoots: Array<HTMLElement | null>;
   fallbackScrollListeners: number;
+  fallbackResizeListeners: number;
+  pendingFallbackFrames: number;
+  pendingGeometryFrames: number;
+  ioCallbackInvocations: number;
+  fallbackEvaluationPasses: number;
+  rootRectReads: number;
+  targetRectReads: number;
 }
 
 export function getSharedObserverDiagnostics(): SharedObserverDiagnostics {
@@ -205,6 +374,9 @@ export function getSharedObserverDiagnostics(): SharedObserverDiagnostics {
   let activePoolEntries = 0;
   let activeTargetSubscriptions = 0;
   let fallbackScrollListeners = 0;
+  let fallbackResizeListeners = 0;
+  let pendingFallbackFrames = 0;
+  let pendingGeometryFrames = 0;
   const verticalObserverRoots: Array<HTMLElement | null> = [];
   const horizontalObserverRoots: Array<HTMLElement | null> = [];
 
@@ -214,8 +386,17 @@ export function getSharedObserverDiagnostics(): SharedObserverDiagnostics {
       if (entry.observer) {
         activeObserverInstances++;
       }
-      if (entry.usingFallbackOnly) {
+      if (entry.hasScrollListener) {
         fallbackScrollListeners++;
+      }
+      if (entry.hasResizeListener) {
+        fallbackResizeListeners++;
+      }
+      if (entry.scheduledFallbackRafId !== null) {
+        pendingFallbackFrames++;
+      }
+      if (entry.scheduledGeometryRafId !== null) {
+        pendingGeometryFrames++;
       }
       if (entry.axis === 'vertical') {
         verticalObserverRoots.push(entry.root);
@@ -235,6 +416,13 @@ export function getSharedObserverDiagnostics(): SharedObserverDiagnostics {
     verticalObserverRoots,
     horizontalObserverRoots,
     fallbackScrollListeners,
+    fallbackResizeListeners,
+    pendingFallbackFrames,
+    pendingGeometryFrames,
+    ioCallbackInvocations: perfIoCallbackInvocations,
+    fallbackEvaluationPasses: perfFallbackEvaluationPasses,
+    rootRectReads: perfRootRectReads,
+    targetRectReads: perfTargetRectReads,
   };
 }
 
@@ -248,20 +436,216 @@ function getIntersectionObserverConstructor(): typeof IntersectionObserver | nul
   return null;
 }
 
+function getResizeObserverConstructor(): typeof ResizeObserver | null {
+  if (typeof window !== 'undefined' && typeof (window as any).ResizeObserver === 'function') {
+    return (window as any).ResizeObserver;
+  }
+  if (typeof globalThis !== 'undefined' && typeof (globalThis as any).ResizeObserver === 'function') {
+    return (globalThis as any).ResizeObserver;
+  }
+  return null;
+}
+
+function scheduleAnimationFrame(cb: FrameRequestCallback): number {
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    return window.requestAnimationFrame(cb);
+  }
+  if (typeof globalThis !== 'undefined' && typeof (globalThis as any).requestAnimationFrame === 'function') {
+    return (globalThis as any).requestAnimationFrame(cb);
+  }
+  return setTimeout(() => cb(Date.now()), 16) as unknown as number;
+}
+
+function cancelScheduledAnimationFrame(id: number): void {
+  if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+    window.cancelAnimationFrame(id);
+    return;
+  }
+  if (typeof globalThis !== 'undefined' && typeof (globalThis as any).cancelAnimationFrame === 'function') {
+    (globalThis as any).cancelAnimationFrame(id);
+    return;
+  }
+  clearTimeout(id as unknown as ReturnType<typeof setTimeout>);
+}
+
+function getOrMeasureSyncRootMetrics(entry: SharedObserverPoolEntry): RootContainerMetrics {
+  if (entry.syncRootMetricsCache !== null) {
+    return entry.syncRootMetricsCache;
+  }
+  const metrics = measureRootContainer(entry.root, entry.axis);
+  entry.syncRootMetricsCache = metrics;
+  if (!entry.syncRootMetricsClearQueued) {
+    entry.syncRootMetricsClearQueued = true;
+    Promise.resolve().then(() => {
+      entry.syncRootMetricsCache = null;
+      entry.syncRootMetricsClearQueued = false;
+    });
+  }
+  return metrics;
+}
+
+/**
+ * Re-evaluates all targets in a pool entry using a single container measurement,
+ * separating DOM layout reads from listener notifications.
+ */
 function reevaluatePoolEntryTargets(entry: SharedObserverPoolEntry): void {
+  if (entry.targets.size === 0) return;
+  perfFallbackEvaluationPasses++;
+
+  // Phase 1: Single container measurement for the entire pass
+  const rootMetrics = measureRootContainer(entry.root, entry.axis);
+  if (!rootMetrics.usable) {
+    schedulePendingGeometryCheck(entry);
+    return;
+  }
+
+  // Phase 2: Batch all target DOM reads before invoking any state listeners
+  const pendingNotifications: Array<{
+    targetRec: ObservedTargetRecord;
+    isNowIntersecting: boolean;
+  }> = [];
+
   for (const [, targetRec] of entry.targets.entries()) {
-    const isNowIntersecting = evaluateElementVisibilityInContainer(
+    const res = inspectElementVisibilityWithRootMetrics(
       targetRec.target,
-      entry.root,
+      rootMetrics,
       entry.parsedMargins,
-      entry.axis,
-      targetRec.index
+      entry.axis
     );
-    if (targetRec.lastIntersecting !== isNowIntersecting) {
-      targetRec.lastIntersecting = isNowIntersecting;
-      for (const listener of Array.from(targetRec.listeners)) {
-        listener(isNowIntersecting);
+    if (!res.usable) {
+      targetRec.geometryUsable = false;
+      schedulePendingGeometryCheck(entry);
+      continue;
+    }
+    targetRec.geometryUsable = true;
+    if (targetRec.lastIntersecting !== res.isIntersecting) {
+      pendingNotifications.push({
+        targetRec,
+        isNowIntersecting: res.isIntersecting,
+      });
+    }
+  }
+
+  // Phase 3: Organized notifications after all layout reads have completed
+  for (const { targetRec, isNowIntersecting } of pendingNotifications) {
+    targetRec.lastIntersecting = isNowIntersecting;
+    for (const listener of Array.from(targetRec.listeners)) {
+      listener(isNowIntersecting);
+    }
+  }
+}
+
+function scheduleFallbackReevaluation(entry: SharedObserverPoolEntry): void {
+  if (entry.scheduledFallbackRafId !== null || entry.targets.size === 0) {
+    return;
+  }
+  entry.scheduledFallbackRafId = scheduleAnimationFrame(() => {
+    entry.scheduledFallbackRafId = null;
+    reevaluatePoolEntryTargets(entry);
+  });
+}
+
+/**
+ * When initial geometry is temporarily unavailable (0x0 rects/offsets before layout settles),
+ * schedules a coalesced frame re-check (and ResizeObserver if available) until geometry is usable.
+ */
+function schedulePendingGeometryCheck(entry: SharedObserverPoolEntry): void {
+  if (entry.targets.size === 0) return;
+
+  if (!entry.resizeObserver) {
+    const ROConstructor = getResizeObserverConstructor();
+    if (ROConstructor) {
+      try {
+        const ro = new ROConstructor(() => {
+          reevaluatePendingUnavailableTargets(entry);
+        });
+        if (entry.root) {
+          ro.observe(entry.root);
+        }
+        entry.resizeObserver = ro;
+      } catch {
+        entry.resizeObserver = null;
       }
+    }
+  }
+
+  if (entry.scheduledGeometryRafId !== null) {
+    return;
+  }
+
+  entry.scheduledGeometryRafId = scheduleAnimationFrame(() => {
+    entry.scheduledGeometryRafId = null;
+    reevaluatePendingUnavailableTargets(entry);
+  });
+}
+
+function reevaluatePendingUnavailableTargets(entry: SharedObserverPoolEntry): void {
+  if (entry.targets.size === 0) return;
+
+  const unavailableRecords: ObservedTargetRecord[] = [];
+  for (const [, targetRec] of entry.targets.entries()) {
+    if (!targetRec.geometryUsable) {
+      unavailableRecords.push(targetRec);
+    }
+  }
+
+  if (unavailableRecords.length === 0) {
+    entry.pendingGeometryCheckAttempts = 0;
+    if (entry.resizeObserver) {
+      entry.resizeObserver.disconnect();
+      entry.resizeObserver = null;
+    }
+    return;
+  }
+
+  const rootMetrics = measureRootContainer(entry.root, entry.axis);
+  const pendingNotifications: Array<{
+    targetRec: ObservedTargetRecord;
+    isNowIntersecting: boolean;
+  }> = [];
+  let stillUnavailable = false;
+
+  if (rootMetrics.usable) {
+    for (const targetRec of unavailableRecords) {
+      const res = inspectElementVisibilityWithRootMetrics(
+        targetRec.target,
+        rootMetrics,
+        entry.parsedMargins,
+        entry.axis
+      );
+      if (res.usable) {
+        targetRec.geometryUsable = true;
+        if (targetRec.lastIntersecting !== res.isIntersecting) {
+          pendingNotifications.push({
+            targetRec,
+            isNowIntersecting: res.isIntersecting,
+          });
+        }
+      } else {
+        stillUnavailable = true;
+      }
+    }
+  } else {
+    stillUnavailable = true;
+  }
+
+  for (const { targetRec, isNowIntersecting } of pendingNotifications) {
+    targetRec.lastIntersecting = isNowIntersecting;
+    for (const listener of Array.from(targetRec.listeners)) {
+      listener(isNowIntersecting);
+    }
+  }
+
+  if (stillUnavailable) {
+    entry.pendingGeometryCheckAttempts++;
+    if (entry.pendingGeometryCheckAttempts < 10) {
+      schedulePendingGeometryCheck(entry);
+    }
+  } else {
+    entry.pendingGeometryCheckAttempts = 0;
+    if (entry.resizeObserver) {
+      entry.resizeObserver.disconnect();
+      entry.resizeObserver = null;
     }
   }
 }
@@ -285,7 +669,6 @@ function getOrCreateSharedPoolEntry(
 
   const parsedMargins = parseRootMarginPx(rootMargin);
   const IOConstructor = getIntersectionObserverConstructor();
-  let observer: IntersectionObserver | null = null;
 
   const entry: SharedObserverPoolEntry = {
     key,
@@ -295,27 +678,46 @@ function getOrCreateSharedPoolEntry(
     axis,
     observer: null,
     usingFallbackOnly: IOConstructor === null,
+    hasScrollListener: false,
+    hasResizeListener: false,
+    scheduledFallbackRafId: null,
+    scheduledGeometryRafId: null,
+    pendingGeometryCheckAttempts: 0,
+    syncRootMetricsCache: null,
+    syncRootMetricsClearQueued: false,
+    resizeObserver: null,
     targets: new Map<HTMLElement, ObservedTargetRecord>(),
     disposeListeners: () => {},
   };
 
   if (IOConstructor) {
     try {
-      observer = new IOConstructor(
+      const observer = new IOConstructor(
         (ioEntries: IntersectionObserverEntry[]) => {
+          perfIoCallbackInvocations++;
+          const pendingNotifications: Array<{
+            targetRec: ObservedTargetRecord;
+            isIntersecting: boolean;
+          }> = [];
+
           for (const ioEntry of ioEntries) {
             const targetEl = ioEntry.target as HTMLElement;
             const targetRec = entry.targets.get(targetEl);
             if (!targetRec) continue;
+            targetRec.geometryUsable = true;
             const isIntersecting = Boolean(
               ioEntry.isIntersecting ||
                 (typeof ioEntry.intersectionRatio === 'number' && ioEntry.intersectionRatio > 0)
             );
             if (targetRec.lastIntersecting !== isIntersecting) {
-              targetRec.lastIntersecting = isIntersecting;
-              for (const listener of Array.from(targetRec.listeners)) {
-                listener(isIntersecting);
-              }
+              pendingNotifications.push({ targetRec, isIntersecting });
+            }
+          }
+
+          for (const { targetRec, isIntersecting } of pendingNotifications) {
+            targetRec.lastIntersecting = isIntersecting;
+            for (const listener of Array.from(targetRec.listeners)) {
+              listener(isIntersecting);
             }
           }
         },
@@ -326,33 +728,55 @@ function getOrCreateSharedPoolEntry(
         }
       );
       entry.observer = observer;
+      entry.usingFallbackOnly = false;
     } catch {
       entry.observer = null;
       entry.usingFallbackOnly = true;
     }
   }
 
-  const onScrollOrResize = () => {
-    reevaluatePoolEntryTargets(entry);
+  // Only install manual scroll/resize listeners when IntersectionObserver is unavailable (fallback mode)
+  let scrollEventTarget: EventTarget | null = null;
+  const onFallbackScrollOrResize = () => {
+    scheduleFallbackReevaluation(entry);
   };
 
-  const scrollEventTarget: EventTarget | null =
-    root ?? (typeof window !== 'undefined' ? window : null);
-
-  if (scrollEventTarget && typeof scrollEventTarget.addEventListener === 'function') {
-    scrollEventTarget.addEventListener('scroll', onScrollOrResize, { passive: true } as AddEventListenerOptions);
-  }
-  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-    window.addEventListener('resize', onScrollOrResize);
+  if (entry.usingFallbackOnly) {
+    scrollEventTarget = root ?? (typeof window !== 'undefined' ? window : null);
+    if (scrollEventTarget && typeof scrollEventTarget.addEventListener === 'function') {
+      scrollEventTarget.addEventListener('scroll', onFallbackScrollOrResize, {
+        passive: true,
+      } as AddEventListenerOptions);
+      entry.hasScrollListener = true;
+    }
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('resize', onFallbackScrollOrResize);
+      entry.hasResizeListener = true;
+    }
   }
 
   entry.disposeListeners = () => {
-    if (scrollEventTarget && typeof scrollEventTarget.removeEventListener === 'function') {
-      scrollEventTarget.removeEventListener('scroll', onScrollOrResize);
+    if (entry.scheduledFallbackRafId !== null) {
+      cancelScheduledAnimationFrame(entry.scheduledFallbackRafId);
+      entry.scheduledFallbackRafId = null;
     }
-    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
-      window.removeEventListener('resize', onScrollOrResize);
+    if (entry.scheduledGeometryRafId !== null) {
+      cancelScheduledAnimationFrame(entry.scheduledGeometryRafId);
+      entry.scheduledGeometryRafId = null;
     }
+    if (entry.resizeObserver) {
+      entry.resizeObserver.disconnect();
+      entry.resizeObserver = null;
+    }
+    if (entry.hasScrollListener && scrollEventTarget && typeof scrollEventTarget.removeEventListener === 'function') {
+      scrollEventTarget.removeEventListener('scroll', onFallbackScrollOrResize);
+      entry.hasScrollListener = false;
+    }
+    if (entry.hasResizeListener && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('resize', onFallbackScrollOrResize);
+      entry.hasResizeListener = false;
+    }
+    entry.syncRootMetricsCache = null;
   };
 
   byKey.set(key, entry);
@@ -381,17 +805,11 @@ export function observeContainerVisibility({
   const isNewTarget = !targetRec;
 
   if (!targetRec) {
-    const initialIntersecting = evaluateElementVisibilityInContainer(
-      target,
-      root,
-      poolEntry.parsedMargins,
-      axis,
-      index
-    );
     targetRec = {
       target,
       index,
-      lastIntersecting: initialIntersecting,
+      geometryUsable: false,
+      lastIntersecting: null,
       listeners: new Set(),
     };
     poolEntry.targets.set(target, targetRec);
@@ -405,16 +823,26 @@ export function observeContainerVisibility({
     poolEntry.observer.observe(target);
   }
 
-  // Synchronize initial visibility state immediately on subscription
-  const currentVisible = evaluateElementVisibilityInContainer(
-    target,
-    root,
-    poolEntry.parsedMargins,
-    axis,
-    index
-  );
-  targetRec.lastIntersecting = currentVisible;
-  onIntersectChange(currentVisible);
+  // If IntersectionObserver did not synchronously populate lastIntersecting during observe(target),
+  // perform a single initial geometry check reusing the synchronous container measurement.
+  if (targetRec.lastIntersecting === null) {
+    const rootMetrics = getOrMeasureSyncRootMetrics(poolEntry);
+    const initialEval = inspectElementVisibilityWithRootMetrics(
+      target,
+      rootMetrics,
+      poolEntry.parsedMargins,
+      axis
+    );
+    targetRec.geometryUsable = initialEval.usable;
+    targetRec.lastIntersecting = initialEval.usable ? initialEval.isIntersecting : false;
+    onIntersectChange(targetRec.lastIntersecting);
+
+    if (!initialEval.usable) {
+      schedulePendingGeometryCheck(poolEntry);
+    }
+  } else {
+    onIntersectChange(targetRec.lastIntersecting);
+  }
 
   let unsubscribed = false;
   return () => {
@@ -456,11 +884,14 @@ export function observeContainerVisibility({
  *    fetchPriority (`high`/`low`/`auto`), and decoding (`async` by default).
  * 2. Employs explicit lifecycle states: 'empty', 'loading', 'loaded', 'retrying', 'failed'.
  * 3. Never renders `<img src="">` for empty sources or unauthorized deferred images.
- * 4. Separates image identity (`itemId` + `resolvedUrl`) from loading authorization (`active`):
- *    once authorized, state and retry budget are preserved across visibility exits/re-entries and re-renders.
+ * 4. Separates image identity (`itemId` + `resolvedUrl`), loading authorization (`active`), and
+ *    visual cache (`loadedImageUrlsCache`):
+ *    - A new instance with `active=false` remains deferred even if its URL is in `loadedImageUrlsCache`.
+ *    - Once authorized on a mounted instance, authorization, state, and retry budget are preserved
+ *      for the same identity across visibility exits/re-entries and re-renders.
  * 5. Exactly ONE retry after ~2000ms using the exact same URL upon initial onError.
  * 6. Resets retry budget and cancels pending timers on unmount or when source/serverUrl changes.
- * 7. Reuses the loaded URL memory cache (up to 2,500 entries) so already-loaded images render immediately.
+ * 7. Uses `loadedImageUrlsCache` (up to 2,500 entries) to preserve visual state (`loaded`) when authorized.
  */
 function MediaImageInner({
   src,
@@ -487,12 +918,13 @@ function MediaImageInner({
   const prevKeyRef = useRef(currentKey);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const shouldAuthorizeNow = Boolean(active || priority || isCachedLoaded);
+  // Authorization is strictly controlled by `active` (independent of priority hints and loadedImageUrlsCache)
+  const shouldAuthorizeNow = Boolean(active);
   const [latchedAuthorizedKey, setLatchedAuthorizedKey] = useState<string | null>(() =>
     resolvedUrl && shouldAuthorizeNow ? currentKey : null
   );
 
-  // Status & retry count state (reuse loaded URL memory cache to avoid opacity-0 flash on remount)
+  // Status & retry count state (loadedImageUrlsCache preserves visual state once authorized)
   const [status, setStatus] = useState<ImageStatus>(() => {
     if (!resolvedUrl) return 'empty';
     return isCachedLoaded ? 'loaded' : 'loading';
@@ -524,7 +956,7 @@ function MediaImageInner({
   } else if (resolvedUrl && shouldAuthorizeNow && latchedAuthorizedKey !== currentKey) {
     // Latch authorization for this image identity so exiting/re-entering visibility preserves state
     setLatchedAuthorizedKey(currentKey);
-    if (isCachedLoaded && status !== 'loaded') {
+    if (isCachedLoaded && status === 'loading') {
       setStatus('loaded');
     }
   }
@@ -650,4 +1082,3 @@ function MediaImageInner({
 }
 
 export const MediaImage = React.memo(MediaImageInner);
-

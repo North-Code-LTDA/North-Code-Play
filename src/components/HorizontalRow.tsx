@@ -7,7 +7,6 @@ import {
   observeContainerVisibility,
   VERTICAL_HOME_ROOT_MARGIN,
   HORIZONTAL_ROW_ROOT_MARGIN,
-  INITIAL_VISIBLE_CARDS_PER_ROW,
 } from './MediaImage';
 
 interface HorizontalRowProps {
@@ -32,17 +31,11 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   const cardElementsRef = useRef<Map<number, HTMLElement>>(new Map());
   const { credentials } = useXtreamContext();
 
-  const [isRowVerticallyVisible, setIsRowVerticallyVisible] = useState<boolean>(
-    () => rowIndex === 0
+  // Initial authorization derives strictly from real observation/measurement or explicit focus
+  const [isRowVerticallyVisible, setIsRowVerticallyVisible] = useState<boolean>(false);
+  const [horizontallyVisibleIndices, setHorizontallyVisibleIndices] = useState<Set<number>>(
+    () => new Set()
   );
-  const [horizontallyVisibleIndices, setHorizontallyVisibleIndices] = useState<Set<number>>(() => {
-    const initial = new Set<number>();
-    const initialLimit = Math.min(items.length, INITIAL_VISIBLE_CARDS_PER_ROW);
-    for (let i = 0; i < initialLimit; i++) {
-      initial.add(i);
-    }
-    return initial;
-  });
   const [focusedCardIndex, setFocusedCardIndex] = useState<number | null>(null);
 
   const setCardElementRef = useCallback((idx: number, el: HTMLDivElement | null) => {
@@ -79,7 +72,10 @@ export const HorizontalRow = React.memo(function HorizontalRow({
     const rowEl = rowRef.current;
     if (!rowEl || items.length === 0) return;
 
+    let isBatchingInitialSetup = true;
+    const initialVisibleSet = new Set<number>();
     const cleanups: Array<() => void> = [];
+
     for (let idx = 0; idx < items.length; idx++) {
       const cardEl = cardElementsRef.current.get(idx);
       if (!cardEl) continue;
@@ -91,6 +87,14 @@ export const HorizontalRow = React.memo(function HorizontalRow({
         axis: 'horizontal',
         index: idx,
         onIntersectChange: (isVisible) => {
+          if (isBatchingInitialSetup) {
+            if (isVisible) {
+              initialVisibleSet.add(idx);
+            } else {
+              initialVisibleSet.delete(idx);
+            }
+            return;
+          }
           setHorizontallyVisibleIndices((prev) => {
             const alreadyVisible = prev.has(idx);
             if (isVisible === alreadyVisible) return prev;
@@ -106,6 +110,21 @@ export const HorizontalRow = React.memo(function HorizontalRow({
       });
       cleanups.push(unsubscribe);
     }
+
+    isBatchingInitialSetup = false;
+    setHorizontallyVisibleIndices((prev) => {
+      if (prev.size === initialVisibleSet.size) {
+        let identical = true;
+        for (const idx of initialVisibleSet) {
+          if (!prev.has(idx)) {
+            identical = false;
+            break;
+          }
+        }
+        if (identical) return prev;
+      }
+      return initialVisibleSet;
+    });
 
     return () => {
       for (const cleanup of cleanups) {
@@ -237,5 +256,3 @@ export const HorizontalRow = React.memo(function HorizontalRow({
     </div>
   );
 });
-
-
