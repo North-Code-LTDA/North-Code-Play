@@ -56,7 +56,6 @@ export function VideoPlayer({
   const [hasPiP, setHasPiP] = useState(false);
   const isMountedRef = useRef(true);
   const isExitingFullscreenRef = useRef(false);
-  const forceExitedFullscreenRef = useRef(false);
 
   const activeSelectionKey = `${String(streamId ?? '')}|${String(streamUrl ?? '')}|${String(channelName ?? '')}`;
   const activeSelectionKeyRef = useRef(activeSelectionKey);
@@ -134,9 +133,6 @@ export function VideoPlayer({
           (fsEl === container || container.contains(fsEl as Node))
       );
 
-      if (isFs) {
-        forceExitedFullscreenRef.current = false;
-      }
       setIsFullscreen(isFs);
       if (!isFs) {
         setIsVisuallyExpanded(false);
@@ -152,7 +148,7 @@ export function VideoPlayer({
   }, []);
 
   const isContainerCurrentlyFullscreen = useCallback(() => {
-    if (forceExitedFullscreenRef.current || typeof document === 'undefined') {
+    if (typeof document === 'undefined') {
       return false;
     }
     const container = containerRef.current;
@@ -307,15 +303,25 @@ export function VideoPlayer({
         }
       }
     } catch (err) {
-      forceExitedFullscreenRef.current = true;
       console.warn('Exit fullscreen failed:', err);
     } finally {
       isExitingFullscreenRef.current = false;
       if (isMountedRef.current) {
         setIsExitingFullscreen(false);
-        setIsFullscreen(false);
-        setIsVisuallyExpanded(false);
       }
+    }
+
+    const stillContainerFs = isContainerCurrentlyFullscreen();
+    if (stillContainerFs) {
+      if (isMountedRef.current) {
+        setIsFullscreen(true);
+      }
+      return false;
+    }
+
+    if (isMountedRef.current) {
+      setIsFullscreen(false);
+      setIsVisuallyExpanded(false);
     }
 
     return true;
@@ -337,7 +343,6 @@ export function VideoPlayer({
     if (isFs || isVisuallyExpanded) {
       await performFullscreenExit();
     } else {
-      forceExitedFullscreenRef.current = false;
       try {
         if (container.requestFullscreen) {
           await container.requestFullscreen();
@@ -461,8 +466,20 @@ export function VideoPlayer({
       const initialSelectedChannelId =
         initialSelectedChannelBtn?.getAttribute('data-live-channel-id') ?? null;
 
-      const didStartExit = await performFullscreenExit();
-      if (!didStartExit) {
+      const didExitFullscreen = await performFullscreenExit();
+      if (!didExitFullscreen) {
+        if (
+          isMountedRef.current &&
+          containerRef.current &&
+          containerRef.current.isConnected &&
+          isContainerCurrentlyFullscreen() &&
+          getNavMode() === 'remote' &&
+          typeof document !== 'undefined' &&
+          (!document.activeElement ||
+            !containerRef.current.contains(document.activeElement))
+        ) {
+          focusPlayerControl('play-pause');
+        }
         return;
       }
 
@@ -513,6 +530,7 @@ export function VideoPlayer({
     closeSettingsMenu,
     closeDiagnosticsModal,
     performFullscreenExit,
+    focusPlayerControl,
     onBack,
   ]);
 

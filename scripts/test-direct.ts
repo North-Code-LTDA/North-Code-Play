@@ -1884,66 +1884,183 @@ async function runPlayerBackAndScrollNavigationTests() {
         );
 
         // ---------------------------------------------------------------------
-        // 1.5.D: Falha em document.exitFullscreen() não deve deixar o Voltar bloqueado
+        // 1.5.D: Rejeição em document.exitFullscreen() mantendo fullscreenElement no player
         // ---------------------------------------------------------------------
         let onBackAfterFailedExit = 0;
-        await act(async () => {
-          root.render(
-            React.createElement(VideoPlayer, {
-              streamUrl: 'http://server.tv:8080/live/u/p/101.m3u8',
-              streamId: 101,
-              title: 'Canal 101',
-              channelName: 'Canal 101',
-              contentType: 'live',
-              embedded: true,
-              onBack: () => {
-                onBackAfterFailedExit += 1;
-              },
-            })
+        let retryExitAttempts = 0;
+        let fakeChannelFocusCalls = 0;
+        const origFakeChannelFocus = fakeSelectedChannelBtn.focus.bind(fakeSelectedChannelBtn);
+        fakeSelectedChannelBtn.focus = ((options?: FocusOptions) => {
+          fakeChannelFocusCalls += 1;
+          return origFakeChannelFocus(options);
+        }) as typeof fakeSelectedChannelBtn.focus;
+
+        try {
+          await act(async () => {
+            root.render(
+              React.createElement(VideoPlayer, {
+                streamUrl: 'http://server.tv:8080/live/u/p/101.m3u8',
+                streamId: 101,
+                title: 'Canal 101',
+                channelName: 'Canal 101',
+                contentType: 'live',
+                embedded: true,
+                onBack: () => {
+                  onBackAfterFailedExit += 1;
+                },
+              })
+            );
+          });
+
+          const failExitContainer = container.querySelector(
+            '[data-player-container="true"]'
+          ) as any as HTMLElement;
+          await act(async () => {
+            await (failExitContainer as any).requestFullscreen();
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 20));
+          });
+
+          assertSameElement(
+            (windowInstance.document as any).fullscreenElement,
+            failExitContainer,
+            '[1.5.D] Player deve estar em tela cheia nativa antes do 1º Voltar'
           );
-        });
+          assert(
+            failExitContainer.contains(document.activeElement),
+            '[1.5.D] Foco deve estar dentro do player ao entrar em tela cheia'
+          );
 
-        const failExitContainer = container.querySelector(
-          '[data-player-container="true"]'
-        ) as any as HTMLElement;
-        await act(async () => {
-          await (failExitContainer as any).requestFullscreen();
-        });
+          // 1ª chamada a exitFullscreen rejeita mantendo document.fullscreenElement no player;
+          // 2ª chamada conclui a saída nativa com sucesso
+          (windowInstance.document as any).exitFullscreen = async () => {
+            retryExitAttempts += 1;
+            if (retryExitAttempts === 1) {
+              throw new Error('Falha simulada ao sair de tela cheia mantendo fullscreenElement ativo');
+            }
+            currentFullscreenElement = null;
+            windowInstance.document.dispatchEvent(new windowInstance.Event('fullscreenchange'));
+          };
 
-        (windowInstance.document as any).exitFullscreen = async () => {
-          throw new Error('Falha simulada ao sair de tela cheia');
-        };
+          const failExitBackBtn = container.querySelector(
+            'button[aria-label="Voltar"]'
+          ) as any as HTMLButtonElement;
 
-        const failExitBackBtn = container.querySelector(
-          'button[aria-label="Voltar"]'
-        ) as any as HTMLButtonElement;
+          // 1º Voltar: exitFullscreen rejeita e document.fullscreenElement continua no player
+          await act(async () => {
+            failExitBackBtn.click();
+            await new Promise((r) => setTimeout(r, 20));
+          });
 
-        // 1º Voltar: exitFullscreen rejeita, mas o player trata a falha e sai do modo tela cheia
-        await act(async () => {
-          failExitBackBtn.click();
-          await new Promise((r) => setTimeout(r, 20));
-        });
-        assert.strictEqual(
-          onBackAfterFailedExit,
-          0,
-          '[1.5.D] 1º Voltar com falha em exitFullscreen sai apenas do estado de tela cheia sem fechar o preview'
-        );
-        assertSameElement(
-          container.querySelector('[data-player-container="true"][data-focus-scope="modal"]') as any,
-          null,
-          '[1.5.D] Após falha tratada em exitFullscreen, a camada modal de tela cheia deve ser desfeita'
-        );
+          assert.strictEqual(
+            retryExitAttempts,
+            1,
+            '[1.5.D] 1º Voltar deve ter tentado chamar document.exitFullscreen() uma vez'
+          );
+          assertSameElement(
+            (windowInstance.document as any).fullscreenElement,
+            failExitContainer,
+            '[1.5.D] document.fullscreenElement continua pertencendo ao player após a rejeição'
+          );
+          assertSameElement(
+            container.querySelector('[data-player-container="true"][data-focus-scope="modal"]') as any,
+            failExitContainer,
+            '[1.5.D] Quando exitFullscreen rejeita e a tela cheia nativa ainda pertence ao player, o estado de tela cheia deve ser mantido'
+          );
+          assert(
+            failExitContainer.contains(document.activeElement),
+            '[1.5.D] Quando a saída falha com tela cheia ainda ativa, o foco deve permanecer no player (não ir para a lista de canais)'
+          );
+          assert.strictEqual(
+            fakeChannelFocusCalls,
+            0,
+            '[1.5.D] O foco NÃO deve ser restaurado ao canal enquanto a saída da tela cheia não ocorrer'
+          );
+          assert.strictEqual(
+            onBackAfterFailedExit,
+            0,
+            '[1.5.D] O preview NÃO deve ser fechado no 1º Voltar com falha de saída'
+          );
 
-        // 2º Voltar: não fica bloqueado e fecha o preview acionando onBack normalmente
-        await act(async () => {
-          failExitBackBtn.click();
-          await new Promise((r) => setTimeout(r, 20));
-        });
-        assert.strictEqual(
-          onBackAfterFailedExit,
-          1,
-          '[1.5.D] Após falha em exitFullscreen, o próximo Voltar NÃO deve ficar bloqueado e deve acionar onBack normalmente'
-        );
+          // 2º Voltar: tenta sair da tela cheia novamente (não fecha o preview) e desta vez conclui com sucesso
+          await act(async () => {
+            failExitBackBtn.click();
+            await new Promise((r) => setTimeout(r, 20));
+          });
+
+          assert.strictEqual(
+            retryExitAttempts,
+            2,
+            '[1.5.D] O próximo Voltar após falha deve tentar a saída da tela cheia novamente'
+          );
+          assertSameElement(
+            (windowInstance.document as any).fullscreenElement,
+            null,
+            '[1.5.D] Na 2ª tentativa bem-sucedida, a saída nativa da tela cheia deve ocorrer (fullscreenElement === null)'
+          );
+          assertSameElement(
+            container.querySelector('[data-player-container="true"][data-focus-scope="modal"]') as any,
+            null,
+            '[1.5.D] Após a saída nativa bem-sucedida, a camada modal de tela cheia deve ser encerrada'
+          );
+          assert.strictEqual(
+            fakeChannelFocusCalls,
+            1,
+            '[1.5.D] Após confirmar a saída da tela cheia, o foco deve ser restaurado ao canal uma única vez'
+          );
+          assertSameElement(
+            document.activeElement,
+            fakeSelectedChannelBtn,
+            '[1.5.D] O foco ativo deve ter retornado ao botão do canal selecionado'
+          );
+          assert.strictEqual(
+            onBackAfterFailedExit,
+            0,
+            '[1.5.D] Sair da tela cheia na 2ª tentativa deve manter o preview aberto (onBack ainda não chamado)'
+          );
+
+          // 3º Voltar (já fora da tela cheia, no preview): fecha o preview normalmente
+          await act(async () => {
+            failExitBackBtn.click();
+            await new Promise((r) => setTimeout(r, 20));
+          });
+          assert.strictEqual(
+            onBackAfterFailedExit,
+            1,
+            '[1.5.D] Somente o Voltar posterior (já no preview) deve fechar o preview acionando onBack'
+          );
+
+          // Caso complementar: se exitFullscreen rejeitar mas o documento já tiver saído da tela cheia, segue o estado real do documento
+          await act(async () => {
+            await (failExitContainer as any).requestFullscreen();
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 20));
+          });
+          (windowInstance.document as any).exitFullscreen = async () => {
+            currentFullscreenElement = null;
+            windowInstance.document.dispatchEvent(new windowInstance.Event('fullscreenchange'));
+            throw new Error('Rejeição tardia após o documento já ter saído da tela cheia');
+          };
+
+          await act(async () => {
+            failExitBackBtn.click();
+            await new Promise((r) => setTimeout(r, 20));
+          });
+          assertSameElement(
+            container.querySelector('[data-player-container="true"][data-focus-scope="modal"]') as any,
+            null,
+            '[1.5.D] Se a saída nativa já ocorreu apesar da rejeição, o player deve seguir o estado real do documento'
+          );
+          assertSameElement(
+            document.activeElement,
+            fakeSelectedChannelBtn,
+            '[1.5.D] Quando o documento realmente saiu da tela cheia apesar da rejeição, o foco deve voltar ao canal'
+          );
+        } finally {
+          fakeSelectedChannelBtn.focus = origFakeChannelFocus;
+        }
       } finally {
         if (externalAnchorBtn.parentNode) {
           externalAnchorBtn.parentNode.removeChild(externalAnchorBtn);
