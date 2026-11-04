@@ -2058,6 +2058,155 @@ async function runPlayerBackAndScrollNavigationTests() {
             fakeSelectedChannelBtn,
             '[1.5.D] Quando o documento realmente saiu da tela cheia apesar da rejeição, o foco deve voltar ao canal'
           );
+
+          // -------------------------------------------------------------------
+          // 1.5.E: Rejeição tardia de exitFullscreen() pendente após troca de
+          // streamId/streamUrl na mesma instância, com foco fora do player e
+          // tela cheia nativa mantida ativa
+          // -------------------------------------------------------------------
+          let onBackStaleRejectCount = 0;
+          await act(async () => {
+            root.render(
+              React.createElement(VideoPlayer, {
+                streamUrl: 'http://server.tv:8080/live/u/p/101.m3u8',
+                streamId: 101,
+                title: 'Canal 101',
+                channelName: 'Canal 101',
+                contentType: 'live',
+                embedded: true,
+                onBack: () => {
+                  onBackStaleRejectCount += 1;
+                },
+              })
+            );
+          });
+
+          const staleRejectContainer = container.querySelector(
+            '[data-player-container="true"]'
+          ) as any as HTMLElement;
+          await act(async () => {
+            await (staleRejectContainer as any).requestFullscreen();
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 20));
+          });
+
+          let staleRejectExitCalls = 0;
+          let rejectStaleAttempt: ((err: Error) => void) | null = null;
+          (windowInstance.document as any).exitFullscreen = () => {
+            staleRejectExitCalls += 1;
+            if (staleRejectExitCalls === 1) {
+              return new Promise<void>((_resolve, reject) => {
+                rejectStaleAttempt = reject;
+              });
+            }
+            currentFullscreenElement = null;
+            windowInstance.document.dispatchEvent(new windowInstance.Event('fullscreenchange'));
+            return Promise.resolve();
+          };
+
+          const staleRejectBackBtn = container.querySelector(
+            'button[aria-label="Voltar"]'
+          ) as any as HTMLButtonElement;
+
+          // Iniciar saída na seleção 101 (fica pendente)
+          await act(async () => {
+            staleRejectBackBtn.click();
+          });
+          assert.strictEqual(
+            staleRejectExitCalls,
+            1,
+            '[1.5.E] 1ª tentativa de saída iniciada na seleção 101'
+          );
+
+          // Enquanto exitFullscreen() está pendente, mudar streamId/streamUrl na mesma instância e deixar o foco fora do player
+          await act(async () => {
+            root.render(
+              React.createElement(VideoPlayer, {
+                streamUrl: 'http://server.tv:8080/live/u/p/102.m3u8',
+                streamId: 102,
+                title: 'Canal 102',
+                channelName: 'Canal 102',
+                contentType: 'live',
+                embedded: true,
+                onBack: () => {
+                  onBackStaleRejectCount += 1;
+                },
+              })
+            );
+            externalAnchorBtn.focus();
+          });
+          assertSameElement(
+            document.activeElement,
+            externalAnchorBtn,
+            '[1.5.E] Foco posicionado fora do player antes da rejeição da tentativa antiga'
+          );
+
+          const focusCallsBeforeStaleReject = fakeChannelFocusCalls;
+
+          // Rejeitar a tentativa antiga mantendo document.fullscreenElement ativo no player
+          await act(async () => {
+            rejectStaleAttempt!(
+              new Error('Falha tardia na tentativa de saída da seleção anterior mantendo tela cheia ativa')
+            );
+            await new Promise((r) => setTimeout(r, 20));
+          });
+
+          assertSameElement(
+            (windowInstance.document as any).fullscreenElement,
+            staleRejectContainer,
+            '[1.5.E] Tela cheia nativa permanece ativa após a rejeição da tentativa antiga'
+          );
+          assertSameElement(
+            document.activeElement,
+            externalAnchorBtn,
+            '[1.5.E] A rejeição da tentativa antiga NÃO deve mover o foco para dentro do player nem para o canal'
+          );
+          assert.strictEqual(
+            fakeChannelFocusCalls,
+            focusCallsBeforeStaleReject,
+            '[1.5.E] A rejeição da tentativa antiga NÃO deve focar o botão do canal'
+          );
+          assert.strictEqual(
+            onBackStaleRejectCount,
+            0,
+            '[1.5.E] A rejeição da tentativa antiga NÃO deve fechar o preview'
+          );
+          assert(
+            container.querySelector('video') !== null,
+            '[1.5.E] O elemento <video> do preview permanece montado após a rejeição antiga'
+          );
+
+          // Confirmar que a rejeição antiga não impede uma nova tentativa de saída na seleção atual (102)
+          await act(async () => {
+            staleRejectBackBtn.click();
+            await new Promise((r) => setTimeout(r, 20));
+          });
+          assert.strictEqual(
+            staleRejectExitCalls,
+            2,
+            '[1.5.E] Nova tentativa de Voltar na seleção atual deve chamar exitFullscreen() normalmente'
+          );
+          assertSameElement(
+            (windowInstance.document as any).fullscreenElement,
+            null,
+            '[1.5.E] Nova tentativa de saída deve concluir a saída nativa da tela cheia'
+          );
+          assertSameElement(
+            container.querySelector('[data-player-container="true"][data-focus-scope="modal"]') as any,
+            null,
+            '[1.5.E] Camada modal de tela cheia deve ser encerrada após a nova tentativa bem-sucedida'
+          );
+          assertSameElement(
+            document.activeElement,
+            fakeSelectedChannelBtn,
+            '[1.5.E] Após a saída confirmada na seleção atual, o foco deve voltar ao canal'
+          );
+          assert.strictEqual(
+            onBackStaleRejectCount,
+            0,
+            '[1.5.E] Preview permanece aberto logo após sair da tela cheia na nova tentativa'
+          );
         } finally {
           fakeSelectedChannelBtn.focus = origFakeChannelFocus;
         }

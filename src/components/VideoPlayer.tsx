@@ -467,11 +467,19 @@ export function VideoPlayer({
         initialSelectedChannelBtn?.getAttribute('data-live-channel-id') ?? null;
 
       const didExitFullscreen = await performFullscreenExit();
+      const isStillSamePlayerAndSelection =
+        isMountedRef.current &&
+        Boolean(containerRef.current && containerRef.current.isConnected) &&
+        selectionGenerationRef.current === exitSelectionGeneration &&
+        activeSelectionKeyRef.current === exitSelectionKey;
+
+      if (!isStillSamePlayerAndSelection) {
+        return;
+      }
+
       if (!didExitFullscreen) {
         if (
-          isMountedRef.current &&
           containerRef.current &&
-          containerRef.current.isConnected &&
           isContainerCurrentlyFullscreen() &&
           getNavMode() === 'remote' &&
           typeof document !== 'undefined' &&
@@ -483,17 +491,7 @@ export function VideoPlayer({
         return;
       }
 
-      const isStillSamePlayerAndSelection =
-        isMountedRef.current &&
-        Boolean(containerRef.current && containerRef.current.isConnected) &&
-        selectionGenerationRef.current === exitSelectionGeneration &&
-        activeSelectionKeyRef.current === exitSelectionKey;
-
-      if (
-        isStillSamePlayerAndSelection &&
-        getNavMode() === 'remote' &&
-        typeof document !== 'undefined'
-      ) {
+      if (getNavMode() === 'remote' && typeof document !== 'undefined') {
         const selectedChannelBtn = document.querySelector<HTMLButtonElement>(
           'button[data-live-channel-selected="true"]'
         );
