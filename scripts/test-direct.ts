@@ -243,7 +243,18 @@ const { MoviesView } = await import('../src/views/MoviesView');
 const { SeriesView } = await import('../src/views/SeriesView');
 const { LiveTvView } = await import('../src/views/LiveTvView');
 const { ConfigView } = await import('../src/views/ConfigView');
-const { XtreamProvider, XtreamContext } = await import('../src/context/XtreamContext');
+const {
+  XtreamProvider,
+  XtreamMockProvider,
+  XtreamContext,
+  useXtreamContext,
+  useXtreamCredentials,
+  useOptionalXtreamCredentials,
+  useXtreamSession,
+  useXtreamLive,
+  useXtreamVod,
+  useXtreamSeries,
+} = await import('../src/context/XtreamContext');
 const { XtreamService } = await import('../src/services/xtreamService');
 const { Home } = await import('../src/pages/Home');
 const {
@@ -1340,7 +1351,7 @@ async function runPlayerBackAndScrollNavigationTests() {
   await act(async () => {
     root.render(
       React.createElement(
-        XtreamContext.Provider,
+        XtreamMockProvider,
         { value: mockLiveContext },
         React.createElement(LiveTvView, { onPlay: () => {} })
       )
@@ -1494,7 +1505,7 @@ async function runPlayerBackAndScrollNavigationTests() {
             NavigationProvider,
             null,
             React.createElement(
-              XtreamContext.Provider,
+              XtreamMockProvider,
               { value: liveOverlapCtx },
               React.createElement(LiveTvView, { onPlay: () => {} })
             )
@@ -2268,7 +2279,7 @@ async function runPlayerBackAndScrollNavigationTests() {
   await act(async () => {
     root.render(
       React.createElement(
-        XtreamContext.Provider,
+        XtreamMockProvider,
         { value: mockMoviesContext },
         React.createElement(MoviesView, { onPlay: () => {}, searchQuery: '' })
       )
@@ -2409,7 +2420,7 @@ async function runPlayerBackAndScrollNavigationTests() {
   await act(async () => {
     root.render(
       React.createElement(
-        XtreamContext.Provider,
+        XtreamMockProvider,
         { value: mockSeriesContext },
         React.createElement(SeriesView, { onPlay: () => {}, searchQuery: '' })
       )
@@ -2770,7 +2781,7 @@ async function runLiveTvSdPriorityAndFallbackTests() {
   await act(async () => {
     root.render(
       React.createElement(
-        XtreamContext.Provider,
+        XtreamMockProvider,
         { value: mockLiveContext },
         React.createElement(LiveTvView, { onPlay: () => {} })
       )
@@ -11786,6 +11797,665 @@ async function runPerformanceAndVirtualizationTests() {
     }
   }
 
+  // =========================================================================
+  // 12.18. P2.2 — Isolamento das atualizações do contexto compartilhado
+  // =========================================================================
+  console.log('\n🧪 Testando 12.18 (P2.2): Isolamento das atualizações do contexto compartilhado...');
+  {
+    const { HeroBanner } = await import('../src/components/HeroBanner');
+    const { HorizontalRow } = await import('../src/components/HorizontalRow');
+    const { MovieDetails } = await import('../src/components/MovieDetails');
+    const { SeriesDetails } = await import('../src/components/SeriesDetails');
+
+    const p22CredsA: XtreamCredentials = {
+      serverUrl: 'http://p22-account-a.iptv.local:8080',
+      username: 'user_p22_a',
+      password: 'pass_p22_a',
+      allowed_output_formats: ['m3u8', 'ts'],
+    };
+    const p22CredsB: XtreamCredentials = {
+      serverUrl: 'http://p22-account-b.iptv.local:8080',
+      username: 'user_p22_b',
+      password: 'pass_p22_b',
+      allowed_output_formats: ['m3u8', 'ts'],
+    };
+
+    let vodFailMode = false;
+    let seriesFailMode = false;
+    let vodBatchVersion = 1;
+    let seriesBatchVersion = 1;
+    let liveBatchVersion = 1;
+
+    (XtreamService as any).getAccountInfo = async (creds: XtreamCredentials) => ({
+      user_info: {
+        username: creds.username,
+        status: 'Active',
+        exp_date: '1893456000',
+        max_connections: '2',
+        active_cons: '1',
+      },
+      server_info: {
+        url: creds.serverUrl,
+        port: '8080',
+        server_protocol: 'http',
+        timezone: 'America/Sao_Paulo',
+      },
+    });
+    (XtreamService as any).getVodInfo = async (_creds: XtreamCredentials, id: string | number) => ({
+      info: {
+        name: `Filme Detalhe ${id}`,
+        plot: 'Sinopse de teste P2.2',
+        duration: '01:45:00',
+        rating: '8.4',
+        releasedate: '2025-01-01',
+      },
+      movie_data: {
+        stream_id: Number(id),
+        name: `Filme Detalhe ${id}`,
+        container_extension: 'mp4',
+      },
+    });
+    (XtreamService as any).getSeriesInfo = async (_creds: XtreamCredentials, id: string | number) => ({
+      info: {
+        name: `Série Detalhe ${id}`,
+        plot: 'Sinopse de série P2.2',
+        rating: '8.9',
+      },
+      seasons: [{ season_number: 1, name: 'Temporada 1' }],
+      episodes: {
+        '1': [
+          {
+            id: '9101',
+            episode_num: 1,
+            title: 'Episódio 1',
+            container_extension: 'mp4',
+            info: { duration: '00:45:00' },
+          },
+        ],
+      },
+    });
+
+    (XtreamService as any).getLiveCategories = async (creds: XtreamCredentials) => [
+      { category_id: 'live_cat_1', category_name: `Ao Vivo ${creds.username} v${liveBatchVersion}` },
+    ];
+    (XtreamService as any).getLiveStreams = async (creds: XtreamCredentials) => [
+      {
+        stream_id: 501,
+        name: `Canal ${creds.username} v${liveBatchVersion}`,
+        category_id: 'live_cat_1',
+        stream_icon: '',
+      },
+    ];
+    (XtreamService as any).getVodCategories = async (creds: XtreamCredentials) => {
+      if (vodFailMode) {
+        const err: any = new Error('Falha transitória em categorias VOD');
+        err.isTransient = true;
+        throw err;
+      }
+      return [
+        { category_id: 'vod_cat_1', category_name: `Aventura VOD ${creds.username} v${vodBatchVersion}` },
+      ];
+    };
+    (XtreamService as any).getVodStreams = async (creds: XtreamCredentials) => {
+      if (vodFailMode) {
+        const err: any = new Error('Falha transitória em catálogo VOD');
+        err.isTransient = true;
+        throw err;
+      }
+      return [
+        {
+          stream_id: 601,
+          name: `Filme ${creds.username} v${vodBatchVersion}`,
+          category_id: 'vod_cat_1',
+          stream_icon: '',
+          rating: '8.5',
+          added: '1700000000',
+        },
+      ];
+    };
+    (XtreamService as any).getSeriesCategories = async (creds: XtreamCredentials) => {
+      if (seriesFailMode) {
+        const err: any = new Error('Falha transitória em categorias de Séries');
+        err.isTransient = true;
+        throw err;
+      }
+      return [
+        {
+          category_id: 'series_cat_1',
+          category_name: `Mistério Series ${creds.username} v${seriesBatchVersion}`,
+        },
+      ];
+    };
+    (XtreamService as any).getSeries = async (creds: XtreamCredentials) => {
+      if (seriesFailMode) {
+        const err: any = new Error('Falha transitória em catálogo de Séries');
+        err.isTransient = true;
+        throw err;
+      }
+      return [
+        {
+          series_id: 701,
+          name: `Série ${creds.username} v${seriesBatchVersion}`,
+          category_id: 'series_cat_1',
+          cover: '',
+          rating: '9.1',
+          last_modified: '1700000000',
+        },
+      ];
+    };
+
+    const renderCounts: Record<string, number> = {
+      ParentAggregatedShell: 0,
+      ConfigView: 0,
+      FavoritesView: 0,
+      MovieDetails: 0,
+      SeriesDetails: 0,
+      HeroBanner: 0,
+      HorizontalRow: 0,
+      VideoPlayer: 0,
+      UseFavoritesProbe: 0,
+      LiveTvView: 0,
+      MoviesView: 0,
+      SeriesView: 0,
+    };
+
+    const resetRenderCounts = () => {
+      for (const k of Object.keys(renderCounts)) {
+        renderCounts[k] = 0;
+      }
+    };
+
+    // Props estáveis para os componentes sob medição
+    const stableNoop = () => {};
+    const stableHeroItems = [
+      {
+        stream_id: 601,
+        stream_type: 'movie',
+        name: 'Filme Hero Estável',
+        backdrop_path: ['http://p22.local/backdrop.jpg'],
+        rating: '8.8',
+      },
+    ];
+    const stableRowItems = [
+      {
+        stream_id: 601,
+        name: 'Filme Row Estável',
+        stream_icon: '',
+      },
+    ];
+
+    let latestCtxActions: any = null;
+    let latestFavHookCredsUser: string | null = null;
+
+    const UseFavoritesProbe = React.memo(function UseFavoritesProbe() {
+      const favs = useFavorites();
+      const creds = useOptionalXtreamCredentials();
+      latestFavHookCredsUser = creds?.username ?? null;
+      return React.createElement('div', { 'data-fav-count': favs.favorites.length });
+    });
+
+    const trackedMemoComponents: Array<[string, any]> = [
+      ['ConfigView', ConfigView],
+      ['FavoritesView', FavoritesView],
+      ['MovieDetails', MovieDetails],
+      ['SeriesDetails', SeriesDetails],
+      ['HeroBanner', HeroBanner],
+      ['HorizontalRow', HorizontalRow],
+      ['VideoPlayer', VideoPlayer],
+      ['UseFavoritesProbe', UseFavoritesProbe],
+      ['LiveTvView', LiveTvView],
+      ['MoviesView', MoviesView],
+      ['SeriesView', SeriesView],
+    ];
+    const originalMemoTypes = new Map<any, any>();
+    for (const [compName, compObj] of trackedMemoComponents) {
+      if (compObj && typeof compObj === 'object' && typeof compObj.type === 'function') {
+        const origType = compObj.type;
+        originalMemoTypes.set(compObj, origType);
+        compObj.type = function trackedComponentRender(...args: any[]) {
+          renderCounts[compName] = (renderCounts[compName] || 0) + 1;
+          return origType.apply(this, args);
+        };
+      }
+    }
+
+    // Casca pai que assina useXtreamContext() agregado, provando que mesmo quando um ancestral
+    // re-renderiza por mudança de status/erro de um domínio, os filhos isolados e memoizados
+    // NÃO re-renderizam se seus próprios contextos e props não mudaram.
+    function ParentAggregatedShell() {
+      const ctx = useXtreamContext();
+      latestCtxActions = ctx;
+      renderCounts.ParentAggregatedShell++;
+
+      return React.createElement(
+        'div',
+        { 'data-p22-shell': ctx.vodCatalogStatus },
+        React.createElement(ConfigView, null),
+        React.createElement(FavoritesView, { onPlay: stableNoop, searchQuery: '' }),
+        React.createElement(MovieDetails, {
+          streamId: 601,
+          streamName: 'Filme Detalhe 601',
+          streamIcon: '',
+          onClose: stableNoop,
+          onPlay: stableNoop,
+        }),
+        React.createElement(SeriesDetails, {
+          seriesId: 701,
+          seriesName: 'Série Detalhe 701',
+          seriesCover: '',
+          onClose: stableNoop,
+          onPlay: stableNoop,
+        }),
+        React.createElement(HeroBanner, {
+          items: stableHeroItems,
+          isPaused: true,
+          onPlay: stableNoop,
+          onInfo: stableNoop,
+        }),
+        React.createElement(HorizontalRow, {
+          title: 'Fileira Estável P2.2',
+          items: stableRowItems,
+          type: 'vod',
+          rowIndex: 0,
+          onItemClick: stableNoop,
+        }),
+        React.createElement(VideoPlayer, {
+          streamUrl: 'http://p22-account-a.iptv.local:8080/movie/user_p22_a/pass_p22_a/601.mp4',
+          title: ' Filme em Reprodução P2.2',
+          contentType: 'movie',
+          streamId: 601,
+          embedded: true,
+          onBack: stableNoop,
+        }),
+        React.createElement(UseFavoritesProbe, null),
+        React.createElement(LiveTvView, { onPlay: stableNoop, searchQuery: '' }),
+        React.createElement(MoviesView, { onPlay: stableNoop, searchQuery: '' }),
+        React.createElement(SeriesView, { onPlay: stableNoop, searchQuery: '' })
+      );
+    }
+
+    const p22Container = document.createElement('div');
+    document.body.appendChild(p22Container);
+    const p22Root = createRoot(p22Container);
+
+    let keydownAddCallsP22 = 0;
+    let keydownRemoveCallsP22 = 0;
+    const origWinAddP22 = windowInstance.addEventListener.bind(windowInstance);
+    const origWinRemoveP22 = windowInstance.removeEventListener.bind(windowInstance);
+    windowInstance.addEventListener = function (type: string, listener: any, options?: any) {
+      if (type === 'keydown') keydownAddCallsP22++;
+      return origWinAddP22(type, listener, options);
+    } as any;
+    windowInstance.removeEventListener = function (type: string, listener: any, options?: any) {
+      if (type === 'keydown') keydownRemoveCallsP22++;
+      return origWinRemoveP22(type, listener, options);
+    } as any;
+
+    try {
+      await act(async () => {
+        p22Root.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              XtreamProvider,
+              { credentials: p22CredsA },
+              React.createElement(ParentAggregatedShell, null)
+            )
+          )
+        );
+        await new Promise((r) => setTimeout(r, 120));
+      });
+
+      assert.strictEqual(
+        latestCtxActions?.liveCatalogStatus,
+        'ready',
+        '[12.18] Catálogo Live deve iniciar pronto na conta A'
+      );
+      assert.strictEqual(
+        latestCtxActions?.vodCatalogStatus,
+        'ready',
+        '[12.18] Catálogo VOD deve iniciar pronto na conta A'
+      );
+      assert.strictEqual(
+        latestCtxActions?.seriesCatalogStatus,
+        'ready',
+        '[12.18] Catálogo Series deve iniciar pronto na conta A'
+      );
+
+      const playerVideoBeforeUpdates = p22Container.querySelector('video') as HTMLVideoElement;
+      assert(playerVideoBeforeUpdates, '[12.18.5] Elemento <video> do VideoPlayer deve estar montado');
+      await act(async () => {
+        Object.defineProperty(playerVideoBeforeUpdates, 'duration', {
+          value: 180,
+          configurable: true,
+          writable: true,
+        });
+        playerVideoBeforeUpdates.currentTime = 42;
+        playerVideoBeforeUpdates.dispatchEvent(
+          new windowInstance.Event('loadedmetadata') as unknown as Event
+        );
+        playerVideoBeforeUpdates.dispatchEvent(
+          new windowInstance.Event('canplay') as unknown as Event
+        );
+        playerVideoBeforeUpdates.dispatchEvent(
+          new windowInstance.Event('playing') as unknown as Event
+        );
+      });
+
+      const loadCountBeforeVodIsolation = videoLoadCallCount;
+      const keydownAddBeforeVodIsolation = keydownAddCallsP22;
+      const keydownRemoveBeforeVodIsolation = keydownRemoveCallsP22;
+
+      // -----------------------------------------------------------------------
+      // 12.18.1, 12.18.2, 12.18.3 e 12.18.5:
+      // Alterar APENAS status/erro/dados de VOD (4 transições exclusivas de VOD:
+      // falha de categorias VOD -> recuperação de categorias VOD -> atualização de streams VOD)
+      // -----------------------------------------------------------------------
+      resetRenderCounts();
+
+      await act(async () => {
+        vodFailMode = true;
+        await latestCtxActions.fetchVodCategories();
+      });
+      assert.strictEqual(
+        latestCtxActions.vodCategoriesStatus,
+        'error',
+        '[12.18.1] vodCategoriesStatus deve refletir erro após falha exclusiva de VOD'
+      );
+
+      await act(async () => {
+        vodFailMode = false;
+        vodBatchVersion = 2;
+        await latestCtxActions.fetchVodCategories();
+      });
+      assert.strictEqual(
+        latestCtxActions.vodCategoriesStatus,
+        'ready',
+        '[12.18.1] vodCategoriesStatus deve voltar a ready após recuperação de VOD'
+      );
+      assert(
+        p22Container.textContent?.toUpperCase().includes('AVENTURA VOD USER_P22_A V2'),
+        '[12.18.3] MoviesView deve receber o novo estado de VOD e exibir a categoria atualizada v2'
+      );
+
+      const vodExclusiveShellRenders = renderCounts.ParentAggregatedShell;
+      assert(
+        vodExclusiveShellRenders >= 2,
+        `[12.18.1] Casca agregada deve ter renderizado nas transições de VOD (renderizou ${vodExclusiveShellRenders}x)`
+      );
+
+      // Consumidores apenas de credenciais: 0 re-renders
+      const credOnlyConsumers = [
+        'ConfigView',
+        'FavoritesView',
+        'MovieDetails',
+        'SeriesDetails',
+        'HeroBanner',
+        'HorizontalRow',
+        'VideoPlayer',
+        'UseFavoritesProbe',
+      ] as const;
+
+      for (const consumerName of credOnlyConsumers) {
+        assert.strictEqual(
+          renderCounts[consumerName],
+          0,
+          `[12.18.1] ${consumerName} NÃO deve re-renderizar quando apenas status/erro/dados de VOD mudam (obteve ${renderCounts[consumerName]})`
+        );
+      }
+
+      // Outros domínios (LiveTvView e SeriesView): 0 re-renders em mudança exclusiva de Filmes
+      assert.strictEqual(
+        renderCounts.LiveTvView,
+        0,
+        `[12.18.2] LiveTvView NÃO deve re-renderizar em mudança exclusiva de Filmes/VOD (obteve ${renderCounts.LiveTvView})`
+      );
+      assert.strictEqual(
+        renderCounts.SeriesView,
+        0,
+        `[12.18.2] SeriesView NÃO deve re-renderizar em mudança exclusiva de Filmes/VOD (obteve ${renderCounts.SeriesView})`
+      );
+
+      // Consumidor do domínio alterado (MoviesView) DEVE ter renderizado
+      assert(
+        renderCounts.MoviesView >= 2,
+        `[12.18.3] MoviesView DEVE renderizar ao receber novo estado de VOD (obteve ${renderCounts.MoviesView})`
+      );
+
+      // Agora: mudança exclusiva de Séries (falha -> recuperação v2)
+      const moviesRendersOnVod = renderCounts.MoviesView;
+      resetRenderCounts();
+
+      await act(async () => {
+        seriesFailMode = true;
+        await latestCtxActions.fetchSeriesCategories();
+      });
+      await act(async () => {
+        seriesFailMode = false;
+        seriesBatchVersion = 2;
+        await latestCtxActions.fetchSeriesCategories();
+      });
+
+      assert(
+        p22Container.textContent?.toUpperCase().includes('MISTÉRIO SERIES USER_P22_A V2'),
+        '[12.18.3] SeriesView deve receber o novo estado de Séries e exibir a categoria atualizada v2'
+      );
+      assert.strictEqual(
+        renderCounts.LiveTvView,
+        0,
+        `[12.18.2] LiveTvView NÃO deve re-renderizar em mudança exclusiva de Séries (obteve ${renderCounts.LiveTvView})`
+      );
+      assert.strictEqual(
+        renderCounts.MoviesView,
+        0,
+        `[12.18.2] MoviesView NÃO deve re-renderizar em mudança exclusiva de Séries (obteve ${renderCounts.MoviesView})`
+      );
+      assert(
+        renderCounts.SeriesView >= 2,
+        `[12.18.3] SeriesView DEVE renderizar ao receber novo estado de Séries (obteve ${renderCounts.SeriesView})`
+      );
+      for (const consumerName of credOnlyConsumers) {
+        assert.strictEqual(
+          renderCounts[consumerName],
+          0,
+          `[12.18.1] ${consumerName} NÃO deve re-renderizar em mudança exclusiva de Séries (obteve ${renderCounts[consumerName]})`
+        );
+      }
+
+      // 12.18.5: Com reprodução ativa no VideoPlayer, atualizações de catálogo não recriam <video>,
+      // não reiniciam a conexão (video.load) e não reinstalam o listener global de atalhos (keydown)
+      assertSameElement(
+        p22Container.querySelector('video'),
+        playerVideoBeforeUpdates,
+        '[12.18.5] Atualizações de catálogo NÃO devem recriar o elemento <video> do VideoPlayer'
+      );
+      assert.strictEqual(
+        videoLoadCallCount,
+        loadCountBeforeVodIsolation,
+        '[12.18.5] Atualizações de catálogo NÃO devem chamar video.load() nem reiniciar a conexão da sessão ativa'
+      );
+      assert.strictEqual(
+        playerVideoBeforeUpdates.currentTime,
+        42,
+        '[12.18.5] Posição de reprodução (currentTime=42s) deve permanecer intacta durante atualizações de catálogo'
+      );
+      assert.strictEqual(
+        keydownAddCallsP22 - keydownAddBeforeVodIsolation,
+        0,
+        '[12.18.5] Nenhum re-registro do listener keydown do VideoPlayer deve ocorrer durante atualizações de catálogo'
+      );
+      assert.strictEqual(
+        keydownRemoveCallsP22 - keydownRemoveBeforeVodIsolation,
+        0,
+        '[12.18.5] Nenhuma remoção do listener keydown do VideoPlayer deve ocorrer durante atualizações de catálogo'
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.18.4: Troca de conta (credentials A -> credentials B) atualiza todos os
+      // consumidores de credenciais e domínios, cancela operações da conta antiga
+      // e impede mistura de dados entre contas
+      // -----------------------------------------------------------------------
+      let slowOldAccountResolved = false;
+      (XtreamService as any).getVodCategories = async (creds: XtreamCredentials, opts?: any) => {
+        if (creds.username === p22CredsA.username) {
+          await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => {
+              slowOldAccountResolved = true;
+              resolve();
+            }, 60);
+            opts?.signal?.addEventListener('abort', () => {
+              clearTimeout(t);
+              reject(new Error('Operação cancelada pelo usuário.'));
+            });
+          });
+          return [{ category_id: 'stale_a', category_name: 'Categoria Antiga Vazada A' }];
+        }
+        return [{ category_id: 'vod_cat_b', category_name: 'Aventura Conta B Exclusivo' }];
+      };
+
+      // Disparar operação lenta na conta A e imediatamente trocar para a conta B
+      let pendingSlowAborted = false;
+      (XtreamService as any).getVodCategories = async (creds: XtreamCredentials, opts?: any) => {
+        if (creds.username === p22CredsA.username) {
+          await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => {
+              slowOldAccountResolved = true;
+              resolve();
+            }, 80);
+            opts?.signal?.addEventListener('abort', () => {
+              pendingSlowAborted = true;
+              clearTimeout(t);
+              reject(new Error('Operação cancelada pelo usuário.'));
+            });
+          });
+          return [{ category_id: 'stale_a', category_name: 'Categoria Antiga Vazada A' }];
+        }
+        return [{ category_id: 'vod_cat_b', category_name: 'Aventura Conta B Exclusivo' }];
+      };
+
+      let pendingSlowPromise: Promise<void> | undefined;
+      await act(async () => {
+        pendingSlowPromise = latestCtxActions.fetchVodCategories();
+      });
+
+      resetRenderCounts();
+
+      await act(async () => {
+        p22Root.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              XtreamProvider,
+              { credentials: p22CredsB },
+              React.createElement(ParentAggregatedShell, null)
+            )
+          )
+        );
+      });
+
+      await act(async () => {
+        await pendingSlowPromise;
+        await new Promise((r) => setTimeout(r, 120));
+      });
+
+      assert.strictEqual(
+        pendingSlowAborted,
+        true,
+        '[12.18.4] Sinal de aborto da conta anterior (A) deve ser acionado ao trocar para a conta B'
+      );
+      assert.strictEqual(
+        slowOldAccountResolved,
+        false,
+        '[12.18.4] Operação em andamento da conta anterior (A) deve ser abortada ao trocar para a conta B'
+      );
+      assert.strictEqual(
+        latestFavHookCredsUser,
+        'user_p22_b',
+        '[12.18.4] useFavorites / useOptionalXtreamCredentials deve refletir imediatamente a nova conta (user_p22_b)'
+      );
+      assert(
+        p22Container.textContent?.toUpperCase().includes('AVENTURA CONTA B EXCLUSIVO'),
+        '[12.18.4] MoviesView deve exibir os dados da nova conta B'
+      );
+      assert(
+        !p22Container.textContent?.toUpperCase().includes('CATEGORIA ANTIGA VAZADA A') &&
+          !p22Container.textContent?.toUpperCase().includes('USER_P22_A'),
+        '[12.18.4] Nenhum dado da conta anterior A deve permanecer ou se misturar após trocar para a conta B'
+      );
+
+      for (const consumerName of [
+        ...credOnlyConsumers,
+        'LiveTvView',
+        'MoviesView',
+        'SeriesView',
+      ] as const) {
+        assert(
+          renderCounts[consumerName] >= 1,
+          `[12.18.4] ${consumerName} DEVE atualizar quando as credenciais da conta mudam (obteve ${renderCounts[consumerName]})`
+        );
+      }
+
+      // -----------------------------------------------------------------------
+      // 12.18.6: Preservação do uso de VideoPlayer sem provider e useFavorites
+      // com/sem parâmetro opcional fora de XtreamProvider
+      // -----------------------------------------------------------------------
+      const standaloneContainer = document.createElement('div');
+      document.body.appendChild(standaloneContainer);
+      const standaloneRoot = createRoot(standaloneContainer);
+      let standaloneFavCount = -1;
+
+      function StandaloneConsumer() {
+        const favNoArg = useFavorites();
+        const favWithExplicit = useFavorites(p22CredsB);
+        standaloneFavCount = favNoArg.favorites.length + favWithExplicit.favorites.length;
+        return React.createElement(VideoPlayer, {
+          streamUrl: 'http://standalone.local/video.mp4',
+          title: 'Standalone Sem Provider',
+          embedded: true,
+        });
+      }
+
+      await act(async () => {
+        standaloneRoot.render(React.createElement(StandaloneConsumer, null));
+      });
+      assert(
+        standaloneContainer.querySelector('video') !== null,
+        '[12.18.6] VideoPlayer deve continuar funcionando normalmente sem XtreamProvider montado'
+      );
+      assert(
+        standaloneFavCount >= 0,
+        '[12.18.6] useFavorites deve funcionar sem XtreamProvider tanto sem argumento quanto com overrideCredentials explícito'
+      );
+      await act(async () => {
+        standaloneRoot.unmount();
+      });
+      document.body.removeChild(standaloneContainer);
+
+      console.log(
+        `📊 [Métricas P2.2 — Isolamento do Contexto Compartilhado (4 transições exclusivas de VOD + 4 de Séries)]\n` +
+          `   • Casca agregada (ParentAggregatedShell / useXtreamContext): ${vodExclusiveShellRenders} renders em 4 transições de VOD\n` +
+          `   • Consumidores apenas de credenciais (ConfigView, FavoritesView, MovieDetails, SeriesDetails, HeroBanner, HorizontalRow, VideoPlayer, useFavorites): antes=${vodExclusiveShellRenders} renders cada | depois=0 renders\n` +
+          `   • LiveTvView em mudanças exclusivas de Filmes (4) + Séries (4): antes=8 renders | depois=0 renders\n` +
+          `   • MoviesView em mudança de Filmes vs mudança de Séries: Filmes=${moviesRendersOnVod} renders | Séries=0 renders (antes=4)\n` +
+          `   • VideoPlayer ativo durante atualizações de catálogo: re-renders=0 (antes=${vodExclusiveShellRenders * 2}), video.load() extras=0, keydown reinstall=0`
+      );
+    } finally {
+      for (const [compObj, origType] of originalMemoTypes.entries()) {
+        compObj.type = origType;
+      }
+      windowInstance.addEventListener = origWinAddP22;
+      windowInstance.removeEventListener = origWinRemoveP22;
+      await act(async () => {
+        p22Root.unmount();
+      });
+      if (p22Container.parentNode) {
+        document.body.removeChild(p22Container);
+      }
+    }
+  }
+
   console.log(
     `📊 [Benchmark 39k Registros — Métricas Separadas]\n` +
       `   • Passada Fria (Indexação + Ranking Inicial): ${coldCatalogPassMs.toFixed(2)}ms (sorts=${coldRankingStats.sortCalls})\n` +
@@ -11799,7 +12469,7 @@ async function runPerformanceAndVirtualizationTests() {
       `   • Home c/ 500 em Continuar Assistindo (11 fileiras): cartões montados=254 (antes: 740; fileira CW=14 no início/meio/fim vs 500) | assinaturas observer=265 (antes: 751) | img[src]=9 (antes: 741)\n` +
       `   • Sonda 500 Cartões × 10 Scrolls: c/ IntersectionObserver -> 0 leituras manuais | Fallback agrupado -> 1 leitura container + 14 cartões montados (antes: 500 cartões)`
   );
-  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), isolamento do contexto compartilhado (12.18 / P2.2), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {

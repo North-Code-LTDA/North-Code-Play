@@ -18,7 +18,7 @@ import {
   Check,
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useXtreamCredentials } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME, formatCommitShort } from '../version';
 import {
@@ -33,8 +33,8 @@ import {
   focusElementSafely,
 } from '../navigation';
 
-export function ConfigView() {
-  const { credentials } = useXtreamContext();
+export const ConfigView = React.memo(function ConfigView() {
+  const { credentials } = useXtreamCredentials();
   const [accountInfo, setAccountInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -848,4 +848,4 @@ export function ConfigView() {
       />
     </>
   );
-}
+});

@@ -1,6 +1,6 @@
 import { useSyncExternalStore, useCallback, useMemo, useState } from 'react';
 import { XtreamCredentials } from '../types';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useOptionalXtreamCredentials } from '../context/XtreamContext';
 import {
   getFavoritesKey,
   safeReadStorage,
@@ -139,14 +139,8 @@ function ensureStorageListener() {
 export function useFavorites(overrideCredentials?: XtreamCredentials | null) {
   ensureStorageListener();
 
-  // Try to read credentials from context if available
-  let contextCreds: XtreamCredentials | null = null;
-  try {
-    const context = useXtreamContext();
-    contextCreds = context.credentials;
-  } catch {
-    // Context not mounted, fallback to overrideCredentials or null
-  }
+  // Read credentials from isolated XtreamCredentialsContext if mounted
+  const contextCreds = useOptionalXtreamCredentials();
 
   const activeCreds = overrideCredentials !== undefined ? overrideCredentials : contextCreds;
 

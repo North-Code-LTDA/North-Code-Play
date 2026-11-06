@@ -1,7 +1,7 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useCallback } from 'react';
 import { PlaySquare, Loader2, RefreshCw } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useXtreamCredentials, useXtreamSeries } from '../context/XtreamContext';
 import { useFavorites } from '../hooks/useFavorites';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { MediaImage } from '../components/MediaImage';
@@ -31,14 +31,16 @@ interface SeriesViewProps {
   searchQuery?: string;
 }
 
-export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
+export const SeriesView = React.memo(function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
+  const { credentials } = useXtreamCredentials();
   const { 
     seriesCategories, seriesStreams, allSeriesStreams, fetchSeriesStreams, 
     seriesError, seriesCategoriesError, seriesCategoriesStatus, 
-    seriesCatalogStatus, fetchSeriesCategories, credentials 
-  } = useXtreamContext();
+    seriesCatalogStatus, fetchSeriesCategories 
+  } = useXtreamSeries();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
   const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
+  const handleCloseSeriesDetails = useCallback(() => setSelectedSeries(null), []);
   const { favorites } = useFavorites();
 
   const historyRecords = useAccountPlaybackHistory(credentials);
@@ -373,11 +375,11 @@ export function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
             seriesId={selectedSeries.series_id || selectedSeries.id}
             seriesName={selectedSeries.name || ""}
             seriesCover={selectedSeries.cover || ""}
-            onClose={() => setSelectedSeries(null)}
+            onClose={handleCloseSeriesDetails}
             onPlay={onPlay}
           />
         )}
       </AnimatePresence>
     </div>
   );
-}
+});

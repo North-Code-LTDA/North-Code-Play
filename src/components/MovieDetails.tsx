@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Play, ArrowLeft, Loader2, Star, Calendar, Clock, Info, Heart, AlertCircle, X } from 'lucide-react';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useXtreamCredentials } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
@@ -34,8 +34,8 @@ interface MovieDetailsProps {
   ) => void;
 }
 
-export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay }: MovieDetailsProps) {
-  const { credentials } = useXtreamContext();
+export const MovieDetails = React.memo(function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay }: MovieDetailsProps) {
+  const { credentials } = useXtreamCredentials();
   const { isFavorite, toggleFavorite, favoriteError, clearFavoriteError } = useFavorites();
   const [loading, setLoading] = useState(true);
   const [info, setInfo] = useState<any>(null);
@@ -476,5 +476,5 @@ export function MovieDetails({ streamId, streamName, streamIcon, onClose, onPlay
     </div>
   </div>
   );
-}
+});
 

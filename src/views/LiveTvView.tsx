@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { TvMinimalPlay, Loader2, Heart, ArrowLeft, Calendar, AlertCircle, RefreshCw, X, Layers } from 'lucide-react';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useXtreamCredentials, useXtreamLive } from '../context/XtreamContext';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { MediaImage } from '../components/MediaImage';
@@ -139,16 +139,17 @@ interface LiveTvViewProps {
   onConsumeChannelIntent?: (requestId: number) => void;
 }
 
-export function LiveTvView({
+export const LiveTvView = React.memo(function LiveTvView({
   searchQuery = '',
   initialChannelIntent = null,
   onConsumeChannelIntent,
 }: LiveTvViewProps) {
+  const { credentials } = useXtreamCredentials();
   const { 
     liveCategories, liveStreams, allLiveStreams, fetchLiveStreams, 
     loadingLive, liveError, liveCategoriesError, liveCategoriesStatus,
-    liveCatalogStatus, fetchLiveCategories, credentials 
-  } = useXtreamContext();
+    liveCatalogStatus, fetchLiveCategories 
+  } = useXtreamLive();
   
   // Navigation states
   const [leftPaneView, setLeftPaneView] = useState<'categories' | 'channels'>('categories');
@@ -648,7 +649,7 @@ export function LiveTvView({
     const matchedStream = targetIdStr
       ? (allLiveStreams.length > 0
           ? liveIndex.getById(targetIdStr) || null
-          : sourcePool.find((s) => s && String(s.stream_id ?? s.id) === targetIdStr))
+          : sourcePool.find((s: any) => s && String(s.stream_id ?? s.id) === targetIdStr))
       : null;
 
     if (matchedStream) {
@@ -1459,4 +1460,4 @@ export function LiveTvView({
       )}
     </div>
   );
-}
+});

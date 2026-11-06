@@ -1,7 +1,7 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useCallback } from 'react';
 import { Film, Loader2, Play, RefreshCw } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useXtreamCredentials, useXtreamVod } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { useFavorites } from '../hooks/useFavorites';
 import { MediaImage } from '../components/MediaImage';
@@ -31,14 +31,16 @@ interface MoviesViewProps {
   searchQuery?: string;
 }
 
-export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
+export const MoviesView = React.memo(function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
+  const { credentials } = useXtreamCredentials();
   const { 
     vodCategories, vodStreams, allVodStreams, fetchVodStreams, 
     vodError, vodCategoriesError, vodCategoriesStatus,
-    vodCatalogStatus, fetchVodCategories, credentials 
-  } = useXtreamContext();
+    vodCatalogStatus, fetchVodCategories 
+  } = useXtreamVod();
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
   const [selectedMovie, setSelectedMovie] = useState<any>(null);
+  const handleCloseMovieDetails = useCallback(() => setSelectedMovie(null), []);
   const { favorites } = useFavorites();
 
   const historyRecords = useAccountPlaybackHistory(credentials);
@@ -373,11 +375,11 @@ export function MoviesView({ onPlay, searchQuery = '' }: MoviesViewProps) {
             streamId={selectedMovie.stream_id} 
             streamName={selectedMovie.name}
             streamIcon={selectedMovie.stream_icon}
-            onClose={() => setSelectedMovie(null)}
+            onClose={handleCloseMovieDetails}
             onPlay={onPlay}
           />
         )}
       </AnimatePresence>
     </div>
   );
-}
+});

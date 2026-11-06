@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
 import { LogOut, Home as HomeIcon, Tv, Film, PlaySquare, Settings, Menu, X, Search, Heart, AlertCircle, Loader2, RefreshCw, KeyRound } from 'lucide-react';
@@ -11,7 +11,7 @@ import { MoviesView } from '../views/MoviesView';
 import { SeriesView } from '../views/SeriesView';
 import { ConfigView } from '../views/ConfigView';
 import { FavoritesView } from '../views/FavoritesView';
-import { XtreamProvider, useXtreamContext } from '../context/XtreamContext';
+import { XtreamProvider, useXtreamSession } from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
 import { normalizeServerUrl } from '../utils/mediaUtils';
 import { markCredentialsAuthRejected, safeRemoveCredentials } from '../utils/accountUtils';
@@ -62,22 +62,15 @@ function HomeContent({ credentials }: { credentials: any }) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const debouncedSearchQuery = useDebounce(searchQuery, 500);
 
-  // Overlay state & context consumption
+  // Overlay state & isolated session context consumption
   const {
-    sessionReady,
-    liveCategoriesStatus,
-    vodCategoriesStatus,
-    seriesCategoriesStatus,
-    liveCatalogStatus,
-    vodCatalogStatus,
-    seriesCatalogStatus,
-    liveCategoriesError,
-    vodCategoriesError,
-    seriesCategoriesError,
+    allSixFinished,
+    hasTransientCategoriesFailure,
+    transientFailureMessage,
     isAuthRejected,
     authError,
     retrySession,
-  } = useXtreamContext();
+  } = useXtreamSession();
 
   // Back policy: 1) Exit search text editing mode
   useBackHandler(
@@ -169,17 +162,6 @@ function HomeContent({ credentials }: { credentials: any }) {
   const [isOpeningDismissed, setIsOpeningDismissed] = useState(false);
   const [showContinueButton, setShowContinueButton] = useState(false);
 
-  const isStatusFinished = (s: string) => s === 'ready' || s === 'error';
-  const allSixFinished = Boolean(
-    sessionReady &&
-    isStatusFinished(liveCategoriesStatus) &&
-    isStatusFinished(vodCategoriesStatus) &&
-    isStatusFinished(seriesCategoriesStatus) &&
-    isStatusFinished(liveCatalogStatus) &&
-    isStatusFinished(vodCatalogStatus) &&
-    isStatusFinished(seriesCatalogStatus)
-  );
-
   // Automatically close without minimum artificial delay when all six are ready/error or if auth is rejected
   useEffect(() => {
     if (allSixFinished || isAuthRejected) {
@@ -197,20 +179,6 @@ function HomeContent({ credentials }: { credentials: any }) {
   }, [isOpeningDismissed]);
 
   const isOverlayActive = !isOpeningDismissed && !allSixFinished && !isAuthRejected;
-
-  const hasTransientCategoriesFailure = Boolean(
-    !isAuthRejected &&
-      sessionReady &&
-      (liveCategoriesStatus === 'error' ||
-        vodCategoriesStatus === 'error' ||
-        seriesCategoriesStatus === 'error')
-  );
-
-  const transientFailureMessage =
-    liveCategoriesError ||
-    vodCategoriesError ||
-    seriesCategoriesError ||
-    'Falha temporária de conexão com o servidor do provedor.';
 
   const handleReturnToLoginForRecovery = () => {
     const reason =
@@ -284,32 +252,42 @@ function HomeContent({ credentials }: { credentials: any }) {
     navigate('/');
   };
 
-  const handlePlay = (
-    url: string,
-    title: string,
-    startAt?: number,
-    streamId?: string | number,
-    contentType?: 'live' | 'movie' | 'episode',
-    channelName?: string,
-    programTitle?: string,
-    onNext?: () => void,
-    onPrevious?: () => void
-  ) => {
-    pushFocusMemory();
-    setActiveVideo({
-      url,
-      title,
-      startAt,
-      streamId,
-      contentType,
-      channelName,
-      programTitle,
-      onNext,
-      onPrevious,
-    });
-  };
+  const handlePlay = useCallback(
+    (
+      url: string,
+      title: string,
+      startAt?: number,
+      streamId?: string | number,
+      contentType?: 'live' | 'movie' | 'episode',
+      channelName?: string,
+      programTitle?: string,
+      onNext?: () => void,
+      onPrevious?: () => void
+    ) => {
+      pushFocusMemory();
+      setActiveVideo({
+        url,
+        title,
+        startAt,
+        streamId,
+        contentType,
+        channelName,
+        programTitle,
+        onNext,
+        onPrevious,
+      });
+    },
+    []
+  );
 
-  const handleSelectLiveFromHome = (stream: any) => {
+  const handleClosePlayer = useCallback(() => {
+    setActiveVideo(null);
+    if (!popFocusMemory()) {
+      setTimeout(() => popFocusMemory(), 0);
+    }
+  }, []);
+
+  const handleSelectLiveFromHome = useCallback((stream: any) => {
     const reqId = ++liveLaunchReqCounterRef.current;
     const sId = stream?.stream_id ?? stream?.id ?? '';
     setLiveLaunchIntent({
@@ -320,11 +298,11 @@ function HomeContent({ credentials }: { credentials: any }) {
     });
     setCurrentView('live');
     setIsMobileMenuOpen(false);
-  };
+  }, []);
 
-  const handleConsumeLiveIntent = (reqId: number) => {
+  const handleConsumeLiveIntent = useCallback((reqId: number) => {
     setLiveLaunchIntent((prev) => (prev && prev.requestId === reqId ? null : prev));
-  };
+  }, []);
 
   const renderNavItems = () => (
     <>
@@ -436,12 +414,7 @@ function HomeContent({ credentials }: { credentials: any }) {
               contentType={activeVideo.contentType}
               channelName={activeVideo.channelName}
               programTitle={activeVideo.programTitle}
-              onBack={() => {
-                setActiveVideo(null);
-                if (!popFocusMemory()) {
-                  setTimeout(() => popFocusMemory(), 0);
-                }
-              }}
+              onBack={handleClosePlayer}
               startAt={activeVideo.startAt}
               streamId={activeVideo.streamId}
               onNext={activeVideo.onNext}

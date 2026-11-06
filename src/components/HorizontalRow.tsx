@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect, useLayoutEffect, useCallback } from
 import { flushSync } from 'react-dom';
 import { motion } from 'motion/react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useXtreamCredentials } from '../context/XtreamContext';
 import { useDisplayPreferences, DisplayMode } from '../platform/tvEnvironment';
 import {
   registerVirtualContainer,
@@ -353,7 +353,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   const itemsRef = useRef<any[]>(items);
   itemsRef.current = items;
 
-  const { credentials } = useXtreamContext();
+  const { credentials } = useXtreamCredentials();
   const { effectiveMode: displayMode, effectiveTvScale: tvScale } = useDisplayPreferences();
 
   // Initial authorization derives strictly from real observation/measurement or explicit focus

@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Play, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useXtreamCredentials } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from './MediaImage';
 import { normalizeImageSource } from '../utils/mediaUtils';
@@ -22,7 +22,7 @@ export const HeroBanner = React.memo(function HeroBanner({
   isPaused = false,
 }: HeroBannerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
-  const { credentials } = useXtreamContext();
+  const { credentials } = useXtreamCredentials();
   const [activeDetails, setActiveDetails] = useState<any>(null);
 
   const heroItems = useMemo(() => {

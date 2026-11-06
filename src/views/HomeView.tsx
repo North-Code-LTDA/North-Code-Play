@@ -37,7 +37,7 @@ interface HomeViewProps {
   isPaused?: boolean;
 }
 
-export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaused = false }: HomeViewProps) {
+export const HomeView = React.memo(function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaused = false }: HomeViewProps) {
   const { 
     allLiveStreams, allVodStreams, allSeriesStreams,
     liveCategories, vodCategories, seriesCategories,
@@ -320,6 +320,16 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
     restoreVirtualItemByKey(cwRowEl, origin.itemKey, origin.scrollLeft);
   }, []);
 
+  const handleCloseMovieDetails = useCallback(() => {
+    setSelectedMovie(null);
+    restoreContinueWatchingOrigin();
+  }, [restoreContinueWatchingOrigin]);
+
+  const handleCloseSeriesDetails = useCallback(() => {
+    setSelectedSeries(null);
+    restoreContinueWatchingOrigin();
+  }, [restoreContinueWatchingOrigin]);
+
   useEffect(() => {
     if (!selectedMovie && !selectedSeries && !isPaused && continueWatchingOriginRef.current) {
       const origin = continueWatchingOriginRef.current;
@@ -585,10 +595,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
             streamId={selectedMovie.stream_id} 
             streamName={selectedMovie.name}
             streamIcon={selectedMovie.stream_icon}
-            onClose={() => {
-              setSelectedMovie(null);
-              restoreContinueWatchingOrigin();
-            }} 
+            onClose={handleCloseMovieDetails} 
             onPlay={onPlay} 
           />
         )}
@@ -598,10 +605,7 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
             seriesId={selectedSeries.series_id || selectedSeries.id}
             seriesName={selectedSeries.name}
             seriesCover={selectedSeries.cover}
-            onClose={() => {
-              setSelectedSeries(null);
-              restoreContinueWatchingOrigin();
-            }} 
+            onClose={handleCloseSeriesDetails} 
             onPlay={onPlay} 
           />
         )}
@@ -642,4 +646,4 @@ export function HomeView({ onPlay, onSelectLiveChannel, searchQuery = '', isPaus
       </AnimatePresence>
     </div>
   );
-}
+});

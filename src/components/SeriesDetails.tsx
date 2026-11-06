@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, X, ChevronLeft, Loader2, Heart, AlertCircle, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useXtreamCredentials } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { VideoPlayer } from './VideoPlayer';
@@ -27,8 +27,8 @@ interface SeriesDetailsProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
 }
 
-export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose }: SeriesDetailsProps) {
-  const { credentials } = useXtreamContext();
+export const SeriesDetails = React.memo(function SeriesDetails({ seriesId, seriesName, seriesCover, onClose }: SeriesDetailsProps) {
+  const { credentials } = useXtreamCredentials();
   const { isFavorite, toggleFavorite, favoriteError, clearFavoriteError } = useFavorites();
   const [loadingInfo, setLoadingInfo] = useState(true);
   const [seriesInfo, setSeriesInfo] = useState<any | null>(null);
@@ -704,4 +704,4 @@ export function SeriesDetails({ seriesId, seriesName, seriesCover, onClose }: Se
       )}
     </motion.div>
   );
-}
+});

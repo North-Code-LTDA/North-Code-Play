@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useId, useContext } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
 import { AlertCircle, RefreshCw, Wrench, ArrowLeft } from 'lucide-react';
@@ -8,7 +8,7 @@ import { PlayerControls } from './player/PlayerControls';
 import { PlayerSettingsMenu } from './player/PlayerSettingsMenu';
 import { PlayerDiagnosticsModal } from './player/PlayerDiagnosticsModal';
 import { registerPlayer, setActivePlayer, isPlayerActive } from './player/playerRegistry';
-import { XtreamContext } from '../context/XtreamContext';
+import { useOptionalXtreamCredentials } from '../context/XtreamContext';
 import {
   useBackHandler,
   BACK_PRIORITY,
@@ -19,7 +19,7 @@ import {
 
 export type { VideoPlayerProps };
 
-export function VideoPlayer({
+export const VideoPlayer = React.memo(function VideoPlayer({
   streamUrl = '',
   title,
   contentType,
@@ -42,8 +42,7 @@ export function VideoPlayer({
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  const xtreamCtx = useContext(XtreamContext);
-  const credentials = xtreamCtx?.credentials || null;
+  const credentials = useOptionalXtreamCredentials();
 
   // Modals state
   const [showSettings, setShowSettings] = useState(false);
@@ -1045,4 +1044,4 @@ export function VideoPlayer({
   }
 
   return playerContent;
-}
+});

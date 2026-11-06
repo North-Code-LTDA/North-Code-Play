@@ -1,8 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Play, Tv, Film, PlaySquare, Heart, AlertCircle, RefreshCw, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
-import { useXtreamContext } from '../context/XtreamContext';
+import { useXtreamCredentials } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { MediaImage } from '../components/MediaImage';
@@ -25,13 +25,15 @@ interface FavoritesViewProps {
   searchQuery?: string;
 }
 
-export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) {
+export const FavoritesView = React.memo(function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) {
   const { favorites, toggleFavorite, favoriteError, clearFavoriteError } = useFavorites();
-  const { credentials } = useXtreamContext();
+  const { credentials } = useXtreamCredentials();
   const [filterType, setFilterType] = useState<'all' | 'live' | 'movie' | 'series'>('all');
   
   const [selectedMovie, setSelectedMovie] = useState<FavoriteItem | null>(null);
   const [selectedSeries, setSelectedSeries] = useState<FavoriteItem | null>(null);
+  const handleCloseMovieDetails = useCallback(() => setSelectedMovie(null), []);
+  const handleCloseSeriesDetails = useCallback(() => setSelectedSeries(null), []);
   const [favPlayError, setFavPlayError] = useState<string | null>(null);
   const [failedFav, setFailedFav] = useState<FavoriteItem | null>(null);
   const [favActionError, setFavActionError] = useState<string | null>(null);
@@ -113,7 +115,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
             streamId={selectedMovie.id}
             streamName={selectedMovie.name}
             streamIcon={selectedMovie.cover}
-            onClose={() => setSelectedMovie(null)}
+            onClose={handleCloseMovieDetails}
             onPlay={onPlay}
           />
         )}
@@ -125,7 +127,7 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
             seriesId={selectedSeries.id}
             seriesName={selectedSeries.name}
             seriesCover={selectedSeries.cover}
-            onClose={() => setSelectedSeries(null)}
+            onClose={handleCloseSeriesDetails}
             onPlay={onPlay}
           />
         )}
@@ -312,4 +314,4 @@ export function FavoritesView({ onPlay, searchQuery = '' }: FavoritesViewProps) 
       )}
     </div>
   );
-}
+});
