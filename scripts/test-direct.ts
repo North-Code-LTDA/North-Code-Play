@@ -11560,6 +11560,127 @@ async function runPerformanceAndVirtualizationTests() {
         '[12.17.4] Atalho numérico "5" deve buscar 50% da duração atual (50s)'
       );
 
+      // Regressão: Ocultar controles, alterar duração de 100s para 200s, disparar durationchange
+      // e pressionar "5" sem novo timeupdate -> deve buscar 100s na própria tecla pressionada
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 3150));
+      });
+      assert(
+        bottomBar.className.includes('opacity-0'),
+        '[12.17.4] Controles devem estar ocultos antes da mudança de duração 100s -> 200s'
+      );
+
+      await act(async () => {
+        Object.defineProperty(vpVideo, 'duration', {
+          value: 200,
+          configurable: true,
+          writable: true,
+        });
+        vpVideo.dispatchEvent(new windowInstance.Event('durationchange') as unknown as Event);
+      });
+
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: '5',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      assert.strictEqual(
+        vpVideo.currentTime,
+        100,
+        '[12.17.4] Com controles ocultos e mudança de duração de 100s para 200s (durationchange sem novo timeupdate), pressionar "5" deve buscar 100s'
+      );
+      assert(
+        bottomBar.textContent?.includes('01:40 / 03:20'),
+        `[12.17.4] Ao despertar os controles com a tecla "5" após 100s -> 200s, a barra deve exibir "01:40 / 03:20", obteve: "${bottomBar.textContent}"`
+      );
+      assert.strictEqual(
+        videoLoadCallCount,
+        loadCountAfterMount,
+        '[12.17.4] Mudança de duração 100s -> 200s e busca por tecla "5" não devem reinicializar a mídia'
+      );
+
+      // Regressão inversa: Ocultar controles, alterar duração de 200s para 100s, disparar durationchange
+      // e pressionar "5" sem novo timeupdate -> deve buscar 50s na própria tecla pressionada
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 3150));
+      });
+      assert(
+        bottomBar.className.includes('opacity-0'),
+        '[12.17.4] Controles devem estar ocultos antes da mudança de duração 200s -> 100s'
+      );
+
+      await act(async () => {
+        Object.defineProperty(vpVideo, 'duration', {
+          value: 100,
+          configurable: true,
+          writable: true,
+        });
+        vpVideo.dispatchEvent(new windowInstance.Event('durationchange') as unknown as Event);
+      });
+
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: '5',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      assert.strictEqual(
+        vpVideo.currentTime,
+        50,
+        '[12.17.4] Com controles ocultos e mudança de duração de 200s para 100s (durationchange sem novo timeupdate), pressionar "5" deve buscar 50s'
+      );
+      assert(
+        bottomBar.textContent?.includes('00:50 / 01:40'),
+        `[12.17.4] Ao despertar os controles com a tecla "5" após 200s -> 100s, a barra deve exibir "00:50 / 01:40", obteve: "${bottomBar.textContent}"`
+      );
+
+      // Tratamento seguro para durações desconhecidas, inválidas ou infinitas (NaN, Infinity, 0)
+      for (const invalidDur of [NaN, Infinity, 0, -10]) {
+        await act(async () => {
+          Object.defineProperty(vpVideo, 'duration', {
+            value: invalidDur,
+            configurable: true,
+            writable: true,
+          });
+          vpVideo.dispatchEvent(new windowInstance.Event('durationchange') as unknown as Event);
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', {
+              key: '8',
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+        });
+        assert.strictEqual(
+          vpVideo.currentTime,
+          50,
+          `[12.17.4] Duração inválida/infinita (${String(invalidDur)}) deve ser ignorada com segurança pelo atalho numérico`
+        );
+      }
+
+      // Restaurar duração válida de 100s
+      await act(async () => {
+        Object.defineProperty(vpVideo, 'duration', {
+          value: 100,
+          configurable: true,
+          writable: true,
+        });
+        vpVideo.dispatchEvent(new windowInstance.Event('durationchange') as unknown as Event);
+      });
+
       // Atalho 'm' -> alterna mute
       assert.strictEqual(vpVideo.muted, false, '[12.17.4] Vídeo inicia não mutado');
       await act(async () => {

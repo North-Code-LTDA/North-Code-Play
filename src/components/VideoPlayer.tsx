@@ -830,18 +830,13 @@ export function VideoPlayer({
           }
           break;
         default: {
-          const effectiveDuration =
-            ctx.session.duration > 0
-              ? ctx.session.duration
-              : videoRef.current &&
-                Number.isFinite(videoRef.current.duration) &&
-                videoRef.current.duration > 0
-              ? videoRef.current.duration
-              : 0;
-          if (!ctx.session.isLive && /^[0-9]$/.test(e.key) && effectiveDuration > 0) {
-            e.preventDefault();
-            const pct = parseInt(e.key, 10) * 0.1;
-            ctx.session.seek(effectiveDuration * pct);
+          if (!ctx.session.isLive && /^[0-9]$/.test(e.key)) {
+            const effectiveDuration = ctx.session.getEffectiveDuration();
+            if (effectiveDuration > 0) {
+              e.preventDefault();
+              const pct = parseInt(e.key, 10) * 0.1;
+              ctx.session.seek(effectiveDuration * pct);
+            }
           }
           break;
         }

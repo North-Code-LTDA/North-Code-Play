@@ -826,65 +826,68 @@ export function usePlaybackSession({
     }
   }, [videoRef]);
 
+  const getEffectiveDuration = useCallback((): number => {
+    const video = videoRef.current;
+    if (!video) return 0;
+    const dur = video.duration;
+    if (typeof dur === 'number' && Number.isFinite(dur) && !Number.isNaN(dur) && dur > 0) {
+      durationRef.current = dur;
+      return dur;
+    }
+    durationRef.current = 0;
+    return 0;
+  }, [videoRef]);
+
   const seek = useCallback(
     (time: number) => {
       const video = videoRef.current;
-      if (!video) return;
-      const rawDur =
-        durationRef.current > 0
-          ? durationRef.current
-          : isFinite(video.duration) && !isNaN(video.duration) && video.duration > 0
-          ? video.duration
-          : 0;
-      const target = Math.max(0, Math.min(time, rawDur || Infinity));
+      if (!video || !Number.isFinite(time)) return;
+      const rawDur = getEffectiveDuration();
+      const target = Math.max(0, Math.min(time, rawDur > 0 ? rawDur : Infinity));
       video.currentTime = target;
       currentTimeRef.current = target;
       if (shouldPublishControlsRef.current) {
         setCurrentTime(target);
+        if (rawDur > 0) {
+          setDuration(rawDur);
+        }
       }
     },
-    [videoRef]
+    [videoRef, getEffectiveDuration]
   );
 
   const seekBy = useCallback(
     (delta: number) => {
       const video = videoRef.current;
-      if (!video) return;
-      const rawDur =
-        durationRef.current > 0
-          ? durationRef.current
-          : isFinite(video.duration) && !isNaN(video.duration) && video.duration > 0
-          ? video.duration
-          : 0;
-      const target = Math.max(0, Math.min(video.currentTime + delta, rawDur || Infinity));
+      if (!video || !Number.isFinite(delta)) return;
+      const rawDur = getEffectiveDuration();
+      const target = Math.max(0, Math.min(video.currentTime + delta, rawDur > 0 ? rawDur : Infinity));
       video.currentTime = target;
       currentTimeRef.current = target;
       if (shouldPublishControlsRef.current) {
         setCurrentTime(target);
+        if (rawDur > 0) {
+          setDuration(rawDur);
+        }
       }
     },
-    [videoRef]
+    [videoRef, getEffectiveDuration]
   );
 
   const seekToLive = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
-    const rawDur =
-      durationRef.current > 0
-        ? durationRef.current
-        : isFinite(video.duration) && !isNaN(video.duration) && video.duration > 0
-        ? video.duration
-        : 0;
+    const rawDur = getEffectiveDuration();
     if (hlsRef.current && hlsRef.current.liveSyncPosition) {
       video.currentTime = hlsRef.current.liveSyncPosition;
-    } else if (rawDur > 0 && isFinite(rawDur)) {
+    } else if (rawDur > 0) {
       video.currentTime = Math.max(0, rawDur - 2);
     }
     currentTimeRef.current = video.currentTime || 0;
     if (shouldPublishControlsRef.current) {
       setCurrentTime(currentTimeRef.current);
     }
-  }, [videoRef]);
+  }, [videoRef, getEffectiveDuration]);
 
   const setVolume = useCallback(
     (newVol: number) => {
@@ -969,6 +972,7 @@ export function usePlaybackSession({
     isBuffering,
     currentTime,
     duration,
+    getEffectiveDuration,
     bufferedRanges,
     bufferedAhead,
     volume,
