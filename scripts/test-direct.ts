@@ -11026,6 +11026,645 @@ async function runPerformanceAndVirtualizationTests() {
     installDefaultXtreamOfflineMocks();
   }
 
+  // =========================================================================
+  // 12.17. P2.1 — Atualizações do player conforme a visibilidade dos controles e do diagnóstico
+  // =========================================================================
+  console.log('\n--- 12.17. P2.1: Atualizações do Player conforme Visibilidade dos Controles e Diagnóstico ---');
+  {
+    const { usePlaybackSession } = await import('../src/components/player/usePlaybackSession');
+    const { getHistoryKey, readHistoryMap } = await import('../src/utils/playbackHistory');
+    const { setNavMode } = await import('../src/navigation');
+    setNavMode('pointer');
+
+    const p21Account: XtreamCredentials = {
+      serverUrl: 'http://p21.tv:8080',
+      username: 'p21User',
+      password: 'p21Password',
+    };
+    const p21HistoryKey = getHistoryKey(p21Account.serverUrl, p21Account.username);
+    windowInstance.localStorage.removeItem(p21HistoryKey);
+
+    const p21Container = document.createElement('div');
+    document.body.appendChild(p21Container);
+    const p21Root = createRoot(p21Container);
+
+    // -----------------------------------------------------------------------
+    // 12.17.1 & 12.17.2: Comparação direta (Controles/Diagnóstico Ocultos vs Visíveis)
+    //                    + Sincronização imediata ao reabrir controles e diagnóstico
+    // -----------------------------------------------------------------------
+    let hookRenderCount = 0;
+    let bufferedReadCount = 0;
+    let latestSession: ReturnType<typeof usePlaybackSession> | null = null;
+    let currentBufferedEnd = 30;
+    let finalErrorObserved: string | null = null;
+
+    function HookProbe({
+      url,
+      controlsVisible,
+      diagnosticsOpen,
+      streamId = 77701,
+    }: {
+      url: string;
+      controlsVisible: boolean;
+      diagnosticsOpen: boolean;
+      streamId?: number;
+    }) {
+      const vRef = React.useRef<HTMLVideoElement | null>(null);
+      hookRenderCount += 1;
+      const sess = usePlaybackSession({
+        videoRef: vRef,
+        streamUrl: url,
+        contentType: 'movie',
+        streamId,
+        credentials: p21Account,
+        isControlsVisible: controlsVisible,
+        isDiagnosticsOpen: diagnosticsOpen,
+        onPlaybackFinalError: (msg) => {
+          finalErrorObserved = msg;
+        },
+      });
+      latestSession = sess;
+      return React.createElement('video', { ref: vRef });
+    }
+
+    await act(async () => {
+      p21Root.render(
+        React.createElement(HookProbe, {
+          url: 'http://p21.tv:8080/movie/p21User/p21Password/77701.mp4',
+          controlsVisible: true,
+          diagnosticsOpen: false,
+        })
+      );
+    });
+
+    const probeVideo = p21Container.querySelector('video') as HTMLVideoElement;
+    assert(probeVideo, '[12.17.1] Elemento <video> da sonda deve existir');
+
+    Object.defineProperty(probeVideo, 'duration', {
+      value: 200,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(probeVideo, 'videoWidth', {
+      value: 1920,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(probeVideo, 'videoHeight', {
+      value: 1080,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(probeVideo, 'buffered', {
+      get() {
+        bufferedReadCount += 1;
+        return {
+          length: 1,
+          start: () => 0,
+          end: () => currentBufferedEnd,
+        };
+      },
+      configurable: true,
+    });
+
+    await act(async () => {
+      probeVideo.dispatchEvent(new windowInstance.Event('loadedmetadata') as unknown as Event);
+      probeVideo.dispatchEvent(new windowInstance.Event('playing') as unknown as Event);
+    });
+
+    assert.strictEqual(latestSession!.isPlaying, true, '[12.17.1] Sessão deve estar em reprodução');
+    assert.strictEqual(latestSession!.duration, 200, '[12.17.1] Duração inicial deve ser sincronizada (200s)');
+
+    // Medir comportamento com controles ocultos e diagnóstico fechado:
+    // 20 eventos timeupdate + 10 eventos progress + 2.2s de relógio (2 ciclos de 1000ms)
+    await act(async () => {
+      p21Root.render(
+        React.createElement(HookProbe, {
+          url: 'http://p21.tv:8080/movie/p21User/p21Password/77701.mp4',
+          controlsVisible: false,
+          diagnosticsOpen: false,
+        })
+      );
+    });
+
+    const rendersBeforeHiddenBurst = hookRenderCount;
+    const bufferedReadsBeforeHiddenBurst = bufferedReadCount;
+    const statsRefBeforeHiddenBurst = latestSession!.stats;
+
+    await act(async () => {
+      for (let i = 1; i <= 20; i++) {
+        probeVideo.currentTime = i * 2; // avança de 2s até 40s
+        probeVideo.dispatchEvent(new windowInstance.Event('timeupdate') as unknown as Event);
+      }
+      for (let j = 1; j <= 10; j++) {
+        currentBufferedEnd = 40 + j * 5; // avança buffer até 90s
+        probeVideo.dispatchEvent(new windowInstance.Event('progress') as unknown as Event);
+      }
+      await new Promise((r) => setTimeout(r, 2200));
+    });
+
+    const hiddenBurstRenders = hookRenderCount - rendersBeforeHiddenBurst;
+    const hiddenBurstBufferedReads = bufferedReadCount - bufferedReadsBeforeHiddenBurst;
+
+    assert.strictEqual(
+      hiddenBurstRenders,
+      0,
+      `[12.17.1] Com controles e diagnóstico ocultos, 20 timeupdate + 10 progress + 2.2s devem gerar 0 re-renders visuais (obteve ${hiddenBurstRenders}, antes: 32)`
+    );
+    assert.strictEqual(
+      hiddenBurstBufferedReads,
+      0,
+      `[12.17.1] Com controles e diagnóstico ocultos, calculateBufferStats não deve ler video.buffered (obteve ${hiddenBurstBufferedReads} leituras, antes: 32)`
+    );
+    assert.strictEqual(
+      latestSession!.stats,
+      statsRefBeforeHiddenBurst,
+      '[12.17.1] Com diagnóstico fechado, o objeto stats não deve ser republicado por timer periódico'
+    );
+
+    // Confirmar que a persistência do progresso (Continuar Assistindo) continuou funcionando com controles ocultos
+    const savedHistoryHidden = readHistoryMap(p21HistoryKey);
+    const savedMovieRec = savedHistoryHidden?.['movie:77701'];
+    assert.strictEqual(
+      savedMovieRec?.positionSec,
+      36,
+      `[12.17.1] Mesmo com controles ocultos, timeupdate deve persistir o progresso de reprodução na cadência de >=5s (positionSec=${savedMovieRec?.positionSec})`
+    );
+
+    // Simular 2 eventos de waiting (rebuffering) + retorno a playing com controles e diagnóstico ocultos
+    await act(async () => {
+      probeVideo.dispatchEvent(new windowInstance.Event('waiting') as unknown as Event);
+    });
+    assert.strictEqual(
+      latestSession!.isBuffering,
+      true,
+      '[12.17.1] Evento waiting deve continuar atualizando isBuffering mesmo com controles ocultos'
+    );
+    await act(async () => {
+      probeVideo.dispatchEvent(new windowInstance.Event('playing') as unknown as Event);
+      probeVideo.dispatchEvent(new windowInstance.Event('waiting') as unknown as Event);
+      probeVideo.dispatchEvent(new windowInstance.Event('playing') as unknown as Event);
+    });
+    assert.strictEqual(
+      latestSession!.isBuffering,
+      false,
+      '[12.17.1] Evento playing deve limpar isBuffering normalmente com controles ocultos'
+    );
+
+    // Agora reabrir os controles SEM disparar novo timeupdate ou progress -> deve sincronizar imediatamente!
+    await act(async () => {
+      p21Root.render(
+        React.createElement(HookProbe, {
+          url: 'http://p21.tv:8080/movie/p21User/p21Password/77701.mp4',
+          controlsVisible: true,
+          diagnosticsOpen: false,
+        })
+      );
+    });
+
+    assert.strictEqual(
+      latestSession!.currentTime,
+      40,
+      `[12.17.2] Ao reabrir controles, currentTime deve refletir imediatamente o tempo real do vídeo (40s) sem esperar novo timeupdate (obteve ${latestSession!.currentTime})`
+    );
+    assert.strictEqual(
+      latestSession!.bufferedAhead,
+      50,
+      `[12.17.2] Ao reabrir controles, bufferedAhead deve ser sincronizado imediatamente (90 - 40 = 50s, obteve ${latestSession!.bufferedAhead})`
+    );
+    assert.strictEqual(
+      latestSession!.bufferedRanges.length,
+      1,
+      '[12.17.2] Ao reabrir controles, bufferedRanges deve ser sincronizado imediatamente'
+    );
+    assert.strictEqual(
+      latestSession!.bufferedRanges[0].end,
+      90,
+      '[12.17.2] Ao reabrir controles, o fim da faixa de buffer deve ser 90s'
+    );
+
+    // -----------------------------------------------------------------------
+    // 12.17.3: Diagnóstico sob demanda (aberto em reprodução e aberto em pausa)
+    // -----------------------------------------------------------------------
+    // Abrir diagnóstico durante a reprodução -> snapshot imediato + atualização periódica a cada 1s
+    await act(async () => {
+      p21Root.render(
+        React.createElement(HookProbe, {
+          url: 'http://p21.tv:8080/movie/p21User/p21Password/77701.mp4',
+          controlsVisible: true,
+          diagnosticsOpen: true,
+        })
+      );
+    });
+
+    assert.strictEqual(
+      latestSession!.stats.width,
+      1920,
+      '[12.17.3] Ao abrir o diagnóstico, a largura do vídeo (1920) deve estar disponível imediatamente'
+    );
+    assert.strictEqual(
+      latestSession!.stats.height,
+      1080,
+      '[12.17.3] Ao abrir o diagnóstico, a altura do vídeo (1080) deve estar disponível imediatamente'
+    );
+    assert.strictEqual(
+      latestSession!.stats.currentTime,
+      40,
+      '[12.17.3] Ao abrir o diagnóstico, currentTime (40s) deve estar disponível imediatamente'
+    );
+    assert.strictEqual(
+      latestSession!.stats.rebufferingCount,
+      2,
+      '[12.17.3] Ao abrir o diagnóstico, rebufferingCount acumulado enquanto estava fechado (2) deve ser preservado'
+    );
+
+    // Pausar o vídeo, alterar currentTime/buffer e verificar que o diagnóstico continua atualizando em pausa e ao abrir já pausado
+    await act(async () => {
+      p21Root.render(
+        React.createElement(HookProbe, {
+          url: 'http://p21.tv:8080/movie/p21User/p21Password/77701.mp4',
+          controlsVisible: true,
+          diagnosticsOpen: false,
+        })
+      );
+    });
+
+    await act(async () => {
+      probeVideo.currentTime = 75;
+      currentBufferedEnd = 120;
+      probeVideo.dispatchEvent(new windowInstance.Event('pause') as unknown as Event);
+    });
+
+    // Abrir diagnóstico com o vídeo já pausado -> snapshot imediato deve ler 75s e bufferAhead=45s
+    await act(async () => {
+      p21Root.render(
+        React.createElement(HookProbe, {
+          url: 'http://p21.tv:8080/movie/p21User/p21Password/77701.mp4',
+          controlsVisible: true,
+          diagnosticsOpen: true,
+        })
+      );
+    });
+
+    assert.strictEqual(
+      latestSession!.stats.currentTime,
+      75,
+      '[12.17.3] Ao abrir diagnóstico com o vídeo pausado, stats.currentTime deve refletir imediatamente 75s'
+    );
+    assert.strictEqual(
+      latestSession!.stats.bufferedAhead,
+      45,
+      '[12.17.3] Ao abrir diagnóstico com o vídeo pausado, stats.bufferedAhead deve refletir imediatamente 45s'
+    );
+
+    // Enquanto o diagnóstico permanece aberto em pausa, se o buffer avançar (ex.: download em background), o timer de 1s atualiza stats
+    currentBufferedEnd = 140;
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1150));
+    });
+    assert.strictEqual(
+      latestSession!.stats.bufferedAhead,
+      65,
+      '[12.17.3] Com diagnóstico aberto (mesmo em pausa), a atualização periódica deve manter stats.bufferedAhead atualizado (65s)'
+    );
+
+    // Fechar diagnóstico -> parar atualização periódica imediatamente
+    await act(async () => {
+      p21Root.render(
+        React.createElement(HookProbe, {
+          url: 'http://p21.tv:8080/movie/p21User/p21Password/77701.mp4',
+          controlsVisible: false,
+          diagnosticsOpen: false,
+        })
+      );
+    });
+    const statsAfterDiagClosed = latestSession!.stats;
+    currentBufferedEnd = 180;
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1200));
+    });
+    assert.strictEqual(
+      latestSession!.stats,
+      statsAfterDiagClosed,
+      '[12.17.3] Após fechar o diagnóstico, nenhuma atualização periódica de stats deve ocorrer'
+    );
+
+    // Validar que erro de mídia continua funcionando com controles ocultos
+    await act(async () => {
+      Object.defineProperty(probeVideo, 'error', {
+        value: { code: 2 },
+        configurable: true,
+      });
+      probeVideo.dispatchEvent(new windowInstance.Event('error') as unknown as Event);
+    });
+    assert(
+      Boolean(latestSession!.error) && Boolean(finalErrorObserved),
+      '[12.17.1] Erros de mídia e callbacks de fallback (onPlaybackFinalError) devem continuar funcionando com controles ocultos'
+    );
+
+    await act(async () => {
+      p21Root.unmount();
+    });
+
+    // -----------------------------------------------------------------------
+    // 12.17.4 & 12.17.5: VideoPlayer completo — Estabilidade do listener de atalhos
+    //                    e preservação da sessão (<video>, video.load, currentTime)
+    //                    ao alternar controles, configurações e diagnóstico
+    // -----------------------------------------------------------------------
+    const vpContainer = document.createElement('div');
+    document.body.appendChild(vpContainer);
+    const vpRoot = createRoot(vpContainer);
+
+    let keydownAddCalls = 0;
+    let keydownRemoveCalls = 0;
+    const origWinAddEventListener = windowInstance.addEventListener.bind(windowInstance);
+    const origWinRemoveEventListener = windowInstance.removeEventListener.bind(windowInstance);
+
+    windowInstance.addEventListener = ((type: string, listener: any, options?: any) => {
+      if (type === 'keydown' && !options) {
+        keydownAddCalls += 1;
+      }
+      return origWinAddEventListener(type, listener, options);
+    }) as any;
+
+    windowInstance.removeEventListener = ((type: string, listener: any, options?: any) => {
+      if (type === 'keydown' && !options) {
+        keydownRemoveCalls += 1;
+      }
+      return origWinRemoveEventListener(type, listener, options);
+    }) as any;
+
+    try {
+      await act(async () => {
+        vpRoot.render(
+          React.createElement(VideoPlayer, {
+            streamUrl: 'http://p21.tv:8080/movie/p21User/p21Password/88801.mp4',
+            title: 'Filme P2.1 Atalhos e Sessão',
+            contentType: 'movie',
+            streamId: 88801,
+            embedded: true,
+            onBack: () => {},
+          })
+        );
+      });
+
+      assert.strictEqual(
+        keydownAddCalls,
+        1,
+        '[12.17.4] VideoPlayer deve registrar o listener de atalhos keydown exatamente 1 vez na montagem'
+      );
+
+      const vpVideo = vpContainer.querySelector('video') as HTMLVideoElement;
+      assert(vpVideo, '[12.17.4] Elemento <video> do VideoPlayer deve existir');
+      Object.defineProperty(vpVideo, 'duration', {
+        value: 100,
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(vpVideo, 'videoWidth', {
+        value: 1280,
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(vpVideo, 'videoHeight', {
+        value: 720,
+        configurable: true,
+        writable: true,
+      });
+
+      const loadCountAfterMount = videoLoadCallCount;
+      const addCallsAfterMount = keydownAddCalls;
+      const removeCallsAfterMount = keydownRemoveCalls;
+
+      await act(async () => {
+        vpVideo.dispatchEvent(new windowInstance.Event('loadedmetadata') as unknown as Event);
+        vpVideo.dispatchEvent(new windowInstance.Event('playing') as unknown as Event);
+      });
+
+      // Aguardar auto-hide dos controles (3.1s em modo pointer)
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 3150));
+      });
+
+      const bottomBar = vpContainer.querySelector('.bg-gradient-to-t') as HTMLElement;
+      assert(
+        bottomBar && bottomBar.className.includes('opacity-0'),
+        '[12.17.4] Controles devem estar ocultos após inatividade'
+      );
+
+      // Disparar 15 eventos timeupdate + 10 progress + volumechange enquanto oculto e depois visível
+      await act(async () => {
+        for (let i = 1; i <= 15; i++) {
+          vpVideo.currentTime = i * 3; // até 45s
+          vpVideo.dispatchEvent(new windowInstance.Event('timeupdate') as unknown as Event);
+        }
+        for (let j = 1; j <= 10; j++) {
+          vpVideo.dispatchEvent(new windowInstance.Event('progress') as unknown as Event);
+        }
+      });
+
+      assert.strictEqual(
+        keydownAddCalls - addCallsAfterMount,
+        0,
+        `[12.17.4] Atualizações de mídia e auto-hide NÃO devem reinstalar o listener keydown (add=${keydownAddCalls - addCallsAfterMount})`
+      );
+      assert.strictEqual(
+        keydownRemoveCalls - removeCallsAfterMount,
+        0,
+        `[12.17.4] Atualizações de mídia e auto-hide NÃO devem remover/reinstalar o listener keydown (remove=${keydownRemoveCalls - removeCallsAfterMount})`
+      );
+
+      // Reabrir controles via mousemove -> deve exibir imediatamente "00:45 / 01:40" sem novo timeupdate!
+      const playerBox = vpContainer.querySelector('[data-player-container="true"]') as HTMLElement;
+      await act(async () => {
+        playerBox.dispatchEvent(
+          new windowInstance.MouseEvent('mousemove', { bubbles: true }) as unknown as Event
+        );
+      });
+
+      assert(
+        bottomBar.className.includes('opacity-100'),
+        '[12.17.2] Movimento do mouse deve reexibir a barra de controles'
+      );
+      assert(
+        bottomBar.textContent?.includes('00:45 / 01:40'),
+        `[12.17.2] Barra de controles reaberta deve mostrar imediatamente o tempo atual sincronizado ("00:45 / 01:40"), obteve: "${bottomBar.textContent}"`
+      );
+
+      // Testar atalhos de teclado (ArrowDown volume, ArrowRight seekBy +10s, tecla '5' busca 50% = 50s, 'm' mute)
+      // Garantir que nenhum botão interno esteja focado para exercitar o listener global de atalhos
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+
+      const initialVol = vpVideo.volume;
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: 'ArrowDown',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      const volAfterFirstDown = vpVideo.volume;
+      assert(
+        Math.abs(volAfterFirstDown - (initialVol - 0.1)) < 1e-6,
+        `[12.17.4] Atalho ArrowDown deve reduzir volume em 0.1 (de ${initialVol} para ${volAfterFirstDown})`
+      );
+
+      // Segundo ArrowDown consecutivo deve usar o volume atualizado (volAfterFirstDown - 0.1) sem reinstalar o listener
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: 'ArrowDown',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      assert(
+        Math.abs(vpVideo.volume - (volAfterFirstDown - 0.1)) < 1e-6,
+        `[12.17.4] Segundo ArrowDown deve ler o volume atualizado da sessão (${vpVideo.volume})`
+      );
+
+      // Atalho ArrowRight -> avança +10s (de 45s para 55s)
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: 'ArrowRight',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      assert.strictEqual(
+        vpVideo.currentTime,
+        55,
+        '[12.17.4] Atalho ArrowRight deve avançar 10s (de 45s para 55s) sem duplicidade de listeners'
+      );
+
+      // Atalho numérico '5' -> busca 50% da duração (50s de 100s)
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: '5',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      assert.strictEqual(
+        vpVideo.currentTime,
+        50,
+        '[12.17.4] Atalho numérico "5" deve buscar 50% da duração atual (50s)'
+      );
+
+      // Atalho 'm' -> alterna mute
+      assert.strictEqual(vpVideo.muted, false, '[12.17.4] Vídeo inicia não mutado');
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: 'm',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      assert.strictEqual(vpVideo.muted, true, '[12.17.4] Atalho "m" deve ativar mudo');
+
+      // 12.17.5: Abrir e fechar Configurações e Diagnóstico preservando <video>, videoLoadCallCount e currentTime
+      const settingsBtn = vpContainer.querySelector(
+        'button[data-player-control="settings"]'
+      ) as HTMLButtonElement;
+      const diagnosticsBtn = vpContainer.querySelector(
+        'button[data-player-control="diagnostics"]'
+      ) as HTMLButtonElement;
+      assert(settingsBtn && diagnosticsBtn, '[12.17.5] Botões de Configurações e Diagnóstico devem existir');
+
+      await act(async () => {
+        settingsBtn.click();
+      });
+      assert(
+        vpContainer.querySelector('[data-settings-list="true"]') !== null,
+        '[12.17.5] Menu de Configurações deve abrir'
+      );
+      await act(async () => {
+        settingsBtn.click();
+      });
+
+      await act(async () => {
+        diagnosticsBtn.click();
+      });
+      assert(
+        vpContainer.textContent?.includes('Diagnóstico Técnico da Reprodução'),
+        '[12.17.5] Modal de Diagnóstico deve abrir'
+      );
+      assert(
+        vpContainer.textContent?.includes('1280x720'),
+        '[12.17.3] Modal de Diagnóstico deve exibir imediatamente a resolução atual (1280x720) ao abrir'
+      );
+      assert(
+        vpContainer.textContent?.includes('50s / 100s'),
+        '[12.17.3] Modal de Diagnóstico deve exibir imediatamente a posição/duração atual (50s / 100s) ao abrir'
+      );
+
+      const closeDiagBtn = vpContainer.querySelector(
+        'button[aria-label="Fechar diagnóstico"]'
+      ) as HTMLButtonElement;
+      assert(closeDiagBtn, '[12.17.5] Botão de fechar diagnóstico deve existir');
+      await act(async () => {
+        closeDiagBtn.click();
+      });
+
+      assertSameElement(
+        vpContainer.querySelector('video'),
+        vpVideo,
+        '[12.17.5] Alternar controles, configurações e diagnóstico deve preservar a mesma instância DOM de <video>'
+      );
+      assert.strictEqual(
+        videoLoadCallCount,
+        loadCountAfterMount,
+        '[12.17.5] Alternar controles, configurações e diagnóstico NÃO deve chamar video.load() nem recarregar a mídia'
+      );
+      assert.strictEqual(
+        vpVideo.currentTime,
+        50,
+        '[12.17.5] Alternar controles, configurações e diagnóstico deve preservar video.currentTime intacto (50s)'
+      );
+      assert.strictEqual(
+        keydownAddCalls - addCallsAfterMount,
+        0,
+        '[12.17.4] Nenhum re-registro do listener keydown deve ocorrer durante todo o ciclo de uso do player'
+      );
+      assert.strictEqual(
+        keydownRemoveCalls - removeCallsAfterMount,
+        0,
+        '[12.17.4] Nenhuma remoção/reinstalação do listener keydown deve ocorrer antes da desmontagem do player'
+      );
+
+      console.log(
+        `📊 [Métricas P2.1 — Player c/ Controles e Diagnóstico Ocultos (20 timeupdate + 10 progress + 2.2s)]\n` +
+          `   • Re-renders por tempo/buffer/diagnóstico oculto: antes=32 | depois=${hiddenBurstRenders}\n` +
+          `   • Leituras de video.buffered (calculateBufferStats) oculto: antes=32 | depois=${hiddenBurstBufferedReads}\n` +
+          `   • Reinstalações do listener global keydown na sessão: antes=30+ | depois=${keydownAddCalls - addCallsAfterMount}`
+      );
+    } finally {
+      windowInstance.addEventListener = origWinAddEventListener;
+      windowInstance.removeEventListener = origWinRemoveEventListener;
+      windowInstance.localStorage.removeItem(p21HistoryKey);
+      await act(async () => {
+        vpRoot.unmount();
+      });
+      if (vpContainer.parentNode) {
+        document.body.removeChild(vpContainer);
+      }
+      if (p21Container.parentNode) {
+        document.body.removeChild(p21Container);
+      }
+    }
+  }
+
   console.log(
     `📊 [Benchmark 39k Registros — Métricas Separadas]\n` +
       `   • Passada Fria (Indexação + Ranking Inicial): ${coldCatalogPassMs.toFixed(2)}ms (sorts=${coldRankingStats.sortCalls})\n` +
@@ -11039,7 +11678,7 @@ async function runPerformanceAndVirtualizationTests() {
       `   • Home c/ 500 em Continuar Assistindo (11 fileiras): cartões montados=254 (antes: 740; fileira CW=14 no início/meio/fim vs 500) | assinaturas observer=265 (antes: 751) | img[src]=9 (antes: 741)\n` +
       `   • Sonda 500 Cartões × 10 Scrolls: c/ IntersectionObserver -> 0 leituras manuais | Fallback agrupado -> 1 leitura container + 14 cartões montados (antes: 500 cartões)`
   );
-  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {

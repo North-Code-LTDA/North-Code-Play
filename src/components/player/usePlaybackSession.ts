@@ -23,6 +23,8 @@ interface UsePlaybackSessionOptions {
   retryTrigger?: number;
   onPlaybackSuccess?: (attemptId?: number) => void;
   onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
+  isControlsVisible?: boolean;
+  isDiagnosticsOpen?: boolean;
 }
 
 export const VOLUME_STORAGE_KEY = 'nc_player_volume';
@@ -69,6 +71,8 @@ export function usePlaybackSession({
   retryTrigger = 0,
   onPlaybackSuccess,
   onPlaybackFinalError,
+  isControlsVisible = true,
+  isDiagnosticsOpen = false,
 }: UsePlaybackSessionOptions) {
   const activeAccountRef = useRef<AccountIdentity | null>(credentials || null);
 
@@ -104,6 +108,17 @@ export function usePlaybackSession({
   const [bufferedRanges, setBufferedRanges] = useState<BufferedTimeRange[]>([]);
   const [bufferedAhead, setBufferedAhead] = useState(0);
 
+  const currentTimeRef = useRef(0);
+  const durationRef = useRef(0);
+
+  const shouldPublishControls =
+    isControlsVisible || (!isPlaying && !isLoading && !isBuffering);
+  const shouldPublishControlsRef = useRef(shouldPublishControls);
+  shouldPublishControlsRef.current = shouldPublishControls;
+
+  const isDiagnosticsOpenRef = useRef(isDiagnosticsOpen);
+  isDiagnosticsOpenRef.current = isDiagnosticsOpen;
+
   const [volume, setVolumeState] = useState(() => {
     try {
       const saved = localStorage.getItem('nc_player_volume');
@@ -135,12 +150,9 @@ export function usePlaybackSession({
   // Live stream specifics & stats tracking refs to prevent stale closure
   const [liveSyncPosition, setLiveSyncPosition] = useState<number | null>(null);
   const [liveEdgeDistance, setLiveEdgeDistance] = useState<number>(0);
-  const [rebufferingCount, setRebufferingCount] = useState(0);
+  const liveSyncPositionRef = useRef<number | null>(null);
   const rebufferingCountRef = useRef(0);
-  rebufferingCountRef.current = rebufferingCount;
-
   const liveEdgeDistanceRef = useRef(0);
-  liveEdgeDistanceRef.current = liveEdgeDistance;
 
   const lastRecordedTimeRef = useRef<number>(0);
 
@@ -264,6 +276,98 @@ export function usePlaybackSession({
     return { ranges, ahead };
   }, []);
 
+  const syncVisualControlsStateFromVideo = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !streamUrl) return;
+    const cur = video.currentTime || 0;
+    const rawDur = video.duration;
+    const dur = isFinite(rawDur) && !isNaN(rawDur) && rawDur > 0 ? rawDur : 0;
+    currentTimeRef.current = cur;
+    durationRef.current = dur;
+    setCurrentTime(cur);
+    setDuration(dur);
+
+    const { ranges, ahead } = calculateBufferStats(video);
+    setBufferedRanges(ranges);
+    setBufferedAhead(ahead);
+
+    if (isLive && hlsRef.current) {
+      const syncPos = hlsRef.current.liveSyncPosition;
+      if (syncPos !== null && syncPos !== undefined && syncPos > 0) {
+        const dist = Math.max(0, syncPos - cur);
+        liveSyncPositionRef.current = syncPos;
+        liveEdgeDistanceRef.current = dist;
+        setLiveSyncPosition(syncPos);
+        setLiveEdgeDistance(dist);
+      }
+    }
+  }, [videoRef, streamUrl, calculateBufferStats, isLive]);
+
+  const collectAndPublishDiagnosticsStats = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !streamUrl) return;
+    const { ranges, ahead } = calculateBufferStats(video);
+    const syncPos =
+      isLive && hlsRef.current ? hlsRef.current.liveSyncPosition : null;
+    const hasLiveLatency =
+      isLive && syncPos !== null && syncPos !== undefined && syncPos > 0;
+    const currentLiveLatency = hasLiveLatency
+      ? Math.max(0, syncPos - (video.currentTime || 0))
+      : isLive && liveSyncPositionRef.current !== null
+      ? liveEdgeDistanceRef.current
+      : undefined;
+    if (currentLiveLatency !== undefined) {
+      liveEdgeDistanceRef.current = currentLiveLatency;
+    }
+    setStats({
+      width: video.videoWidth,
+      height: video.videoHeight,
+      duration:
+        video.duration && isFinite(video.duration) && !isNaN(video.duration)
+          ? video.duration
+          : 0,
+      currentTime: video.currentTime || 0,
+      bufferedAhead: ahead,
+      bufferedRanges: ranges,
+      networkState: video.networkState,
+      readyState: video.readyState,
+      rebufferingCount: rebufferingCountRef.current,
+      liveLatency:
+        isLive && (hasLiveLatency || liveSyncPositionRef.current !== null)
+          ? currentLiveLatency
+          : undefined,
+      engineLabel: hlsRef.current
+        ? 'HLS (Hls.js / MediaSource)'
+        : inferredTransport === 'hls'
+        ? 'HLS Nativo (Safari / HTML5 Video)'
+        : 'Progressivo Nativo (HTML5 Video)',
+    });
+  }, [videoRef, streamUrl, calculateBufferStats, isLive, inferredTransport]);
+
+  // Synchronize visual controls state immediately when controls become visible
+  const wasPublishingControlsRef = useRef(shouldPublishControls);
+  useEffect(() => {
+    const wasPublishing = wasPublishingControlsRef.current;
+    wasPublishingControlsRef.current = shouldPublishControls;
+    if (!wasPublishing && shouldPublishControls) {
+      syncVisualControlsStateFromVideo();
+    }
+  }, [shouldPublishControls, syncVisualControlsStateFromVideo]);
+
+  // Poll diagnostics stats ONLY when the diagnostics panel is open
+  useEffect(() => {
+    if (!isDiagnosticsOpen || !streamUrl) {
+      return;
+    }
+    collectAndPublishDiagnosticsStats();
+    const statsTimer = setInterval(() => {
+      collectAndPublishDiagnosticsStats();
+    }, 1000);
+    return () => {
+      clearInterval(statsTimer);
+    };
+  }, [isDiagnosticsOpen, streamUrl, retryTrigger, collectAndPublishDiagnosticsStats]);
+
   // Main playback attachment effect (runs ONLY on streamUrl, retryTrigger, or structural media changes)
   useEffect(() => {
     const video = videoRef.current;
@@ -276,16 +380,18 @@ export function usePlaybackSession({
       setError(null);
       setCurrentTime(0);
       setDuration(0);
+      currentTimeRef.current = 0;
+      durationRef.current = 0;
       setBufferedAhead(0);
       setBufferedRanges([]);
       setQualities([]);
       setAudioTracks([]);
       setSubtitleTracks([]);
       setCurrentQuality(-1);
-      setRebufferingCount(0);
       rebufferingCountRef.current = 0;
       setLiveSyncPosition(null);
       setLiveEdgeDistance(0);
+      liveSyncPositionRef.current = null;
       liveEdgeDistanceRef.current = 0;
       lastRecordedTimeRef.current = startAt || 0;
       setStats({
@@ -329,6 +435,7 @@ export function usePlaybackSession({
         seekApplied = true;
         try {
           video.currentTime = startAt;
+          currentTimeRef.current = startAt;
         } catch {
           // ignore
         }
@@ -371,6 +478,9 @@ export function usePlaybackSession({
     const handlePause = () => {
       if (sessionIdRef.current !== currentSessionId) return;
       setIsPlaying(false);
+      if (!shouldPublishControlsRef.current) {
+        syncVisualControlsStateFromVideo();
+      }
       // Save progress on pause for VOD/series
       if (!isLive && streamId && video.currentTime > 5) {
         const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
@@ -388,17 +498,16 @@ export function usePlaybackSession({
     const handleWaiting = () => {
       if (sessionIdRef.current !== currentSessionId) return;
       setIsBuffering(true);
-      setRebufferingCount((prev) => {
-        const next = prev + 1;
-        rebufferingCountRef.current = next;
-        return next;
-      });
+      rebufferingCountRef.current += 1;
+      if (isDiagnosticsOpenRef.current) {
+        collectAndPublishDiagnosticsStats();
+      }
     };
 
     const handleTimeUpdate = () => {
       if (sessionIdRef.current !== currentSessionId) return;
       const cur = video.currentTime;
-      setCurrentTime(cur);
+      currentTimeRef.current = cur;
 
       // Save progress periodically (at most once every 5 seconds) for VOD/series
       if (!isLive && streamId && cur > 5) {
@@ -415,30 +524,43 @@ export function usePlaybackSession({
         }
       }
 
-      // Update buffered stats dynamically
+      // Live latency ref tracking (always kept fresh for diagnostics and live edge calculations)
+      let liveSyncPos: number | null = null;
+      let liveDist = 0;
+      if (isLive && hlsRef.current) {
+        const syncPos = hlsRef.current.liveSyncPosition;
+        if (syncPos !== null && syncPos !== undefined && syncPos > 0) {
+          liveSyncPos = syncPos;
+          liveDist = Math.max(0, syncPos - cur);
+          liveSyncPositionRef.current = syncPos;
+          liveEdgeDistanceRef.current = liveDist;
+        }
+      }
+
+      if (!shouldPublishControlsRef.current) {
+        return;
+      }
+
+      setCurrentTime(cur);
+
+      // Update buffered stats dynamically only when controls are visible
       const { ranges, ahead } = calculateBufferStats(video);
       setBufferedRanges(ranges);
       setBufferedAhead(ahead);
 
-      // Live latency calculation
-      if (isLive && hlsRef.current) {
-        const syncPos = hlsRef.current.liveSyncPosition;
-        if (syncPos !== null && syncPos !== undefined && syncPos > 0) {
-          setLiveSyncPosition(syncPos);
-          const dist = Math.max(0, syncPos - cur);
-          setLiveEdgeDistance(dist);
-          liveEdgeDistanceRef.current = dist;
-        }
+      if (liveSyncPos !== null) {
+        setLiveSyncPosition(liveSyncPos);
+        setLiveEdgeDistance(liveDist);
       }
     };
 
     const handleDurationChange = () => {
       if (sessionIdRef.current !== currentSessionId) return;
       const dur = video.duration;
-      if (isFinite(dur) && !isNaN(dur)) {
-        setDuration(dur);
-      } else {
-        setDuration(0);
+      const normalizedDur = isFinite(dur) && !isNaN(dur) && dur > 0 ? dur : 0;
+      durationRef.current = normalizedDur;
+      if (shouldPublishControlsRef.current) {
+        setDuration(normalizedDur);
       }
     };
 
@@ -456,6 +578,9 @@ export function usePlaybackSession({
 
     const handleProgress = () => {
       if (sessionIdRef.current !== currentSessionId) return;
+      if (!shouldPublishControlsRef.current) {
+        return;
+      }
       const { ranges, ahead } = calculateBufferStats(video);
       setBufferedRanges(ranges);
       setBufferedAhead(ahead);
@@ -481,12 +606,12 @@ export function usePlaybackSession({
       const mediaErr = video.error;
       let msg = 'Falha ao reproduzir mídia diretamente do provedor.';
       if (mediaErr) {
-        if (mediaErr.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+        if (mediaErr.code === 4) {
           msg =
             'Formato não suportado nativamente pelo navegador ou bloqueio de CORS / Mixed Content pelo provedor.';
-        } else if (mediaErr.code === MediaError.MEDIA_ERR_NETWORK) {
+        } else if (mediaErr.code === 2) {
           msg = 'Erro de rede ao conectar à transmissão do provedor.';
-        } else if (mediaErr.code === MediaError.MEDIA_ERR_DECODE) {
+        } else if (mediaErr.code === 3) {
           msg = 'Erro na decodificação do fluxo de vídeo.';
         }
       }
@@ -652,35 +777,7 @@ export function usePlaybackSession({
       video.load();
     }
 
-    // Interval to poll stats periodically using fresh video element readings
-    const statsTimer = setInterval(() => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      if (video) {
-        const { ranges, ahead } = calculateBufferStats(video);
-        const hasLiveLatency = isLive && hlsRef.current && hlsRef.current.liveSyncPosition !== null;
-        setStats({
-          width: video.videoWidth,
-          height: video.videoHeight,
-          duration: video.duration || 0,
-          currentTime: video.currentTime || 0,
-          bufferedAhead: ahead,
-          bufferedRanges: ranges,
-          networkState: video.networkState,
-          readyState: video.readyState,
-          rebufferingCount: rebufferingCountRef.current,
-          liveLatency: hasLiveLatency ? liveEdgeDistanceRef.current : undefined,
-          engineLabel: hlsRef.current
-            ? 'HLS (Hls.js / MediaSource)'
-            : inferredTransport === 'hls'
-            ? 'HLS Nativo (Safari / HTML5 Video)'
-            : 'Progressivo Nativo (HTML5 Video)',
-        });
-      }
-    }, 1000);
-
     return () => {
-      clearInterval(statsTimer);
-
       video.removeEventListener('playing', handlePlaying);
       video.removeEventListener('play', handlePlay);
       video.removeEventListener('pause', handlePause);
@@ -705,7 +802,18 @@ export function usePlaybackSession({
 
       cleanup();
     };
-  }, [streamUrl, retryTrigger, cleanup, isLive, streamId, startAt, inferredTransport, calculateBufferStats]);
+  }, [
+    streamUrl,
+    retryTrigger,
+    cleanup,
+    isLive,
+    streamId,
+    startAt,
+    inferredTransport,
+    calculateBufferStats,
+    syncVisualControlsStateFromVideo,
+    collectAndPublishDiagnosticsStats,
+  ]);
 
   // Actions
   const togglePlay = useCallback(() => {
@@ -722,33 +830,61 @@ export function usePlaybackSession({
     (time: number) => {
       const video = videoRef.current;
       if (!video) return;
-      const target = Math.max(0, Math.min(time, duration || Infinity));
+      const rawDur =
+        durationRef.current > 0
+          ? durationRef.current
+          : isFinite(video.duration) && !isNaN(video.duration) && video.duration > 0
+          ? video.duration
+          : 0;
+      const target = Math.max(0, Math.min(time, rawDur || Infinity));
       video.currentTime = target;
-      setCurrentTime(target);
+      currentTimeRef.current = target;
+      if (shouldPublishControlsRef.current) {
+        setCurrentTime(target);
+      }
     },
-    [videoRef, duration]
+    [videoRef]
   );
 
   const seekBy = useCallback(
     (delta: number) => {
       const video = videoRef.current;
       if (!video) return;
-      const target = Math.max(0, Math.min(video.currentTime + delta, duration || Infinity));
+      const rawDur =
+        durationRef.current > 0
+          ? durationRef.current
+          : isFinite(video.duration) && !isNaN(video.duration) && video.duration > 0
+          ? video.duration
+          : 0;
+      const target = Math.max(0, Math.min(video.currentTime + delta, rawDur || Infinity));
       video.currentTime = target;
-      setCurrentTime(target);
+      currentTimeRef.current = target;
+      if (shouldPublishControlsRef.current) {
+        setCurrentTime(target);
+      }
     },
-    [videoRef, duration]
+    [videoRef]
   );
 
   const seekToLive = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
+    const rawDur =
+      durationRef.current > 0
+        ? durationRef.current
+        : isFinite(video.duration) && !isNaN(video.duration) && video.duration > 0
+        ? video.duration
+        : 0;
     if (hlsRef.current && hlsRef.current.liveSyncPosition) {
       video.currentTime = hlsRef.current.liveSyncPosition;
-    } else if (duration > 0 && isFinite(duration)) {
-      video.currentTime = Math.max(0, duration - 2);
+    } else if (rawDur > 0 && isFinite(rawDur)) {
+      video.currentTime = Math.max(0, rawDur - 2);
     }
-  }, [videoRef, duration]);
+    currentTimeRef.current = video.currentTime || 0;
+    if (shouldPublishControlsRef.current) {
+      setCurrentTime(currentTimeRef.current);
+    }
+  }, [videoRef]);
 
   const setVolume = useCallback(
     (newVol: number) => {

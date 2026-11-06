@@ -88,6 +88,9 @@ export function VideoPlayer({
     retryTrigger: combinedRetryTrigger,
     onPlaybackSuccess,
     onPlaybackFinalError,
+    isControlsVisible:
+      isControlsVisible || !hasStartedPlaying || showSettings || showDiagnostics,
+    isDiagnosticsOpen: showDiagnostics,
   });
 
   const activeError = externalError || session.error;
@@ -700,6 +703,37 @@ export function VideoPlayer({
     };
   }, [isPlayerInFullLayer, areBarsVisible, showSettings, showDiagnostics, activeError, resetInactivityTimer]);
 
+  const shortcutContextRef = useRef({
+    session,
+    resetInactivityTimer,
+    toggleFullscreen,
+    handleBack,
+    showSettings,
+    showDiagnostics,
+    closeSettingsMenu,
+    closeDiagnosticsModal,
+    isFullscreen,
+    isVisuallyExpanded,
+    isExitingFullscreen,
+    embedded,
+    onBack,
+  });
+  shortcutContextRef.current = {
+    session,
+    resetInactivityTimer,
+    toggleFullscreen,
+    handleBack,
+    showSettings,
+    showDiagnostics,
+    closeSettingsMenu,
+    closeDiagnosticsModal,
+    isFullscreen,
+    isVisuallyExpanded,
+    isExitingFullscreen,
+    embedded,
+    onBack,
+  };
+
   // Keyboard shortcuts active only when no form or interactive control is focused
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -726,7 +760,8 @@ export function VideoPlayer({
 
       if (!containerRef.current) return;
 
-      const isCurrentFs = isFullscreen || isVisuallyExpanded;
+      const ctx = shortcutContextRef.current;
+      const isCurrentFs = ctx.isFullscreen || ctx.isVisuallyExpanded;
       const isFocused = Boolean(
         activeEl && containerRef.current.contains(activeEl)
       );
@@ -736,67 +771,80 @@ export function VideoPlayer({
         return;
       }
 
-      resetInactivityTimer();
+      ctx.resetInactivityTimer();
 
       switch (e.key) {
         case ' ':
         case 'k':
         case 'K':
           e.preventDefault();
-          session.togglePlay();
+          ctx.session.togglePlay();
           break;
         case 'f':
         case 'F':
           e.preventDefault();
-          toggleFullscreen();
+          ctx.toggleFullscreen();
           break;
         case 'm':
         case 'M':
           e.preventDefault();
-          session.toggleMute();
+          ctx.session.toggleMute();
           break;
         case 'ArrowLeft':
           e.preventDefault();
-          session.seekBy(-10);
+          ctx.session.seekBy(-10);
           break;
         case 'ArrowRight':
           e.preventDefault();
-          session.seekBy(10);
+          ctx.session.seekBy(10);
           break;
         case 'ArrowUp':
           e.preventDefault();
-          session.setVolume(session.volume + 0.1);
+          ctx.session.setVolume(ctx.session.volume + 0.1);
           break;
         case 'ArrowDown':
           e.preventDefault();
-          session.setVolume(session.volume - 0.1);
+          ctx.session.setVolume(ctx.session.volume - 0.1);
           break;
         case 'Escape':
           if (!isCentralBackPolicyAttached()) {
             e.preventDefault();
-            if (showSettings) {
-              closeSettingsMenu();
-            } else if (showDiagnostics) {
-              closeDiagnosticsModal();
+            if (ctx.showSettings) {
+              ctx.closeSettingsMenu();
+            } else if (ctx.showDiagnostics) {
+              ctx.closeDiagnosticsModal();
             } else if (
-              embedded &&
-              (isFullscreen || isVisuallyExpanded || isExitingFullscreen)
+              ctx.embedded &&
+              (ctx.isFullscreen || ctx.isVisuallyExpanded || ctx.isExitingFullscreen)
             ) {
-              handleBack();
-            } else if (isFullscreen || isVisuallyExpanded || isExitingFullscreen) {
-              toggleFullscreen();
-            } else if (!embedded && onBack) {
-              onBack();
+              ctx.handleBack();
+            } else if (
+              ctx.isFullscreen ||
+              ctx.isVisuallyExpanded ||
+              ctx.isExitingFullscreen
+            ) {
+              ctx.toggleFullscreen();
+            } else if (!ctx.embedded && ctx.onBack) {
+              ctx.onBack();
             }
           }
           break;
-        default:
-          if (!session.isLive && /^[0-9]$/.test(e.key) && session.duration > 0) {
+        default: {
+          const effectiveDuration =
+            ctx.session.duration > 0
+              ? ctx.session.duration
+              : videoRef.current &&
+                Number.isFinite(videoRef.current.duration) &&
+                videoRef.current.duration > 0
+              ? videoRef.current.duration
+              : 0;
+          if (!ctx.session.isLive && /^[0-9]$/.test(e.key) && effectiveDuration > 0) {
             e.preventDefault();
             const pct = parseInt(e.key, 10) * 0.1;
-            session.seek(session.duration * pct);
+            ctx.session.seek(effectiveDuration * pct);
           }
           break;
+        }
       }
     };
 
@@ -804,22 +852,7 @@ export function VideoPlayer({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [
-    playerId,
-    session,
-    resetInactivityTimer,
-    toggleFullscreen,
-    handleBack,
-    showSettings,
-    showDiagnostics,
-    closeSettingsMenu,
-    closeDiagnosticsModal,
-    isFullscreen,
-    isVisuallyExpanded,
-    isExitingFullscreen,
-    embedded,
-    onBack,
-  ]);
+  }, [playerId]);
 
   const handleContainerClick = () => {
     setActivePlayer(playerId);
