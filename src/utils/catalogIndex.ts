@@ -111,15 +111,16 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
       const maxYear = new Date().getFullYear() + 1;
       const trackDiag = isCatalogLoadDiagnosticsEnabled();
       if (sortedAllCache && sortedAllYear === maxYear) {
-        if (trackDiag) {
+        if (trackDiag && sortedAllCache.length >= 2) {
           recordCatalogSortDiagnostic(domain, true, 0, sortedAllCache.length);
         }
         return sortedAllCache;
       }
-      const sortStart = trackDiag ? nowMonotonicMs() : 0;
+      const shouldRecordSort = trackDiag && safeItems.length >= 2;
+      const sortStart = shouldRecordSort ? nowMonotonicMs() : 0;
       sortedAllCache = sortByYearAndRating(safeItems);
       sortedAllYear = maxYear;
-      if (trackDiag) {
+      if (shouldRecordSort) {
         recordCatalogSortDiagnostic(
           domain,
           false,
@@ -137,15 +138,16 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
       const trackDiag = isCatalogLoadDiagnosticsEnabled();
       const existing = sortedByCategoryCache.get(key);
       if (existing && existing.year === maxYear) {
-        if (trackDiag) {
+        if (trackDiag && existing.sorted.length >= 2) {
           recordCatalogSortDiagnostic(domain, true, 0, existing.sorted.length);
         }
         return existing.sorted;
       }
       const rawCat = byCategoryId.get(key) || [];
-      const sortStart = trackDiag && rawCat.length > 0 ? nowMonotonicMs() : 0;
+      const shouldRecordSort = trackDiag && rawCat.length >= 2;
+      const sortStart = shouldRecordSort ? nowMonotonicMs() : 0;
       const sorted = rawCat.length > 0 ? sortByYearAndRating(rawCat) : [];
-      if (trackDiag && rawCat.length > 0) {
+      if (shouldRecordSort) {
         recordCatalogSortDiagnostic(
           domain,
           false,
@@ -227,7 +229,7 @@ function instantiateLiveCatalogIndex<T = any>(
       const trackDiag = isCatalogLoadDiagnosticsEnabled();
       const cachedGroups = groupsByCategoryCache.get(key);
       if (cachedGroups) {
-        if (trackDiag) {
+        if (trackDiag && cachedGroups.length > 0) {
           recordCatalogSortDiagnostic('liveGroups', true, 0, cachedGroups.length);
         }
         return cachedGroups;
@@ -249,14 +251,15 @@ function instantiateLiveCatalogIndex<T = any>(
     getAllGroups() {
       const trackDiag = isCatalogLoadDiagnosticsEnabled();
       if (allGroupsCache) {
-        if (trackDiag) {
+        if (trackDiag && allGroupsCache.length > 0) {
           recordCatalogSortDiagnostic('liveGroups', true, 0, allGroupsCache.length);
         }
         return allGroupsCache;
       }
-      const groupStart = trackDiag ? nowMonotonicMs() : 0;
+      const shouldRecordGroup = trackDiag && safeItems.length > 0;
+      const groupStart = shouldRecordGroup ? nowMonotonicMs() : 0;
       allGroupsCache = groupLiveStreams(safeItems);
-      if (trackDiag) {
+      if (shouldRecordGroup) {
         recordCatalogSortDiagnostic(
           'liveGroups',
           false,

@@ -143,6 +143,7 @@ export interface CatalogSessionDiagnosticsReport {
   manualContinueClickedAtMs: number | null;
   overlayDismissedAtMs: number | null;
   homeAvailableAtMs: number | null;
+  accessRecoveredAtMs: number | null;
   releaseTrigger: CatalogReleaseTrigger;
   wasDisplaySetupShown: boolean;
   displaySetupOpenedAtMs: number | null;
@@ -235,6 +236,7 @@ let nextDiagnosticsSessionSeq = 0;
 
 let activeSessionReport: CatalogSessionDiagnosticsReport | null = null;
 let activeSessionEnded = false;
+let activeSessionSortingClosed = false;
 let publishedSnapshot: CatalogSessionDiagnosticsReport | null = null;
 let pendingPreSessionHomeState: PendingPreSessionHomeState | null = null;
 let latestHomeDisplaySetupOpen = false;
@@ -266,6 +268,7 @@ export function resetCatalogDiagnosticsForTest(enabled: boolean = false): void {
   safeSetStorage(CATALOG_DIAGNOSTICS_ENABLED_KEY, enabled ? 'true' : 'false');
   activeSessionReport = null;
   activeSessionEnded = false;
+  activeSessionSortingClosed = false;
   publishedSnapshot = null;
   pendingPreSessionHomeState = null;
   latestHomeDisplaySetupOpen = false;
@@ -299,6 +302,7 @@ export function syncCatalogLoadDiagnosticsPreferenceFromStorage(): boolean {
     if (!next) {
       activeSessionReport = null;
       activeSessionEnded = false;
+      activeSessionSortingClosed = false;
       pendingPreSessionHomeState = null;
       latestHomeDisplaySetupOpen = false;
       latestHomeDisplaySetupOpenedAtMono = null;
@@ -314,6 +318,7 @@ export function setCatalogLoadDiagnosticsEnabled(enabled: boolean): boolean {
   if (!enabled) {
     activeSessionReport = null;
     activeSessionEnded = false;
+    activeSessionSortingClosed = false;
     pendingPreSessionHomeState = null;
     latestHomeDisplaySetupOpen = false;
     latestHomeDisplaySetupOpenedAtMono = null;
@@ -491,6 +496,7 @@ export function startCatalogDiagnosticsSession(
   if (!isCatalogDiagnosticsEnabled) {
     pendingPreSessionHomeState = null;
     activeSessionEnded = false;
+    activeSessionSortingClosed = false;
     return sessionId;
   }
 
@@ -499,6 +505,7 @@ export function startCatalogDiagnosticsSession(
   const preMount = pendingPreSessionHomeState;
   pendingPreSessionHomeState = null;
   activeSessionEnded = false;
+  activeSessionSortingClosed = false;
 
   const startMonotonic =
     preMount && preMount.recordedAtMonotonicMs <= nowMono
@@ -518,6 +525,7 @@ export function startCatalogDiagnosticsSession(
     manualContinueClickedAtMs: null,
     overlayDismissedAtMs: null,
     homeAvailableAtMs: null,
+    accessRecoveredAtMs: null,
     releaseTrigger: 'pending',
     wasDisplaySetupShown: false,
     displaySetupOpenedAtMs: null,
@@ -560,6 +568,7 @@ export function startCatalogDiagnosticsSession(
     if (preMount.isAuthRejected) {
       report.releaseTrigger = 'auth_rejected';
       report.homeAvailableAtMs = null;
+      activeSessionSortingClosed = true;
     }
   } else if (latestHomeDisplaySetupOpen) {
     report.wasDisplaySetupShown = true;
@@ -584,6 +593,7 @@ export function cancelCatalogDiagnosticsSession(sessionId: number): void {
 
   recordedEventsCountForTest++;
   activeSessionEnded = true;
+  activeSessionSortingClosed = true;
   latestHomeDisplaySetupOpen = false;
   latestHomeDisplaySetupOpenedAtMono = null;
   const nowRel = relativeToSessionMs(activeSessionReport, nowMonotonicMs());
@@ -932,6 +942,7 @@ export function recordCatalogOperationFinished(
   if (op.errorCategory === 'auth_rejected' && report.homeAvailableAtMs === null) {
     report.releaseTrigger = 'auth_rejected';
     report.overlayDismissedAtMs = completedAtMs;
+    activeSessionSortingClosed = true;
   }
 
   const allSixDone = ALL_OPERATION_TYPES.every((t) => {
@@ -950,6 +961,7 @@ export function recordCatalogOperationFinished(
     if (anyAuthRejected && report.homeAvailableAtMs === null) {
       report.releaseTrigger = 'auth_rejected';
       report.overlayDismissedAtMs = completedAtMs;
+      activeSessionSortingClosed = true;
     } else if (report.releaseTrigger === 'pending' && report.manualContinueClickedAtMs === null) {
       report.releaseTrigger = 'auto_all_six';
       report.overlayDismissedAtMs = completedAtMs;
@@ -960,7 +972,9 @@ export function recordCatalogOperationFinished(
 }
 
 /**
- * Records sorting execution, HeroBanner merge, live channel grouping, and cache hits separately.
+ * Records sorting execution, HeroBanner merge, live channel grouping, and cache hits separately
+ * during the Home preparation phase (until the Home becomes interactive for the first time
+ * or the opening is interrupted).
  */
 export function recordCatalogSortDiagnostic(
   domain: CatalogSortDomain,
@@ -968,7 +982,15 @@ export function recordCatalogSortDiagnostic(
   durationMs: number,
   itemsCount: number
 ): void {
-  if (!isCatalogDiagnosticsEnabled || !activeSessionReport) return;
+  if (!isCatalogDiagnosticsEnabled || !activeSessionReport || activeSessionSortingClosed) {
+    return;
+  }
+  if ((domain === 'vod' || domain === 'series') && itemsCount < 2) {
+    return;
+  }
+  if ((domain === 'hero' || domain === 'liveGroups') && itemsCount <= 0) {
+    return;
+  }
 
   recordedEventsCountForTest++;
   const sorting = activeSessionReport.sorting;
@@ -1134,6 +1156,7 @@ export function recordHomeOpeningMilestone(params: {
   }
 
   if (params.isAuthRejected) {
+    activeSessionSortingClosed = true;
     if (report.homeAvailableAtMs === null && report.releaseTrigger !== 'auth_rejected') {
       report.releaseTrigger = 'auth_rejected';
       report.overlayDismissedAtMs = nowRel;
@@ -1150,21 +1173,32 @@ export function recordHomeOpeningMilestone(params: {
   const isHomeInteractiveNow =
     !params.isOverlayActive && !params.isDisplaySetupOpen && !params.isAuthRejected;
 
-  if (isHomeInteractiveNow && report.homeAvailableAtMs === null) {
-    report.homeAvailableAtMs = nowRel;
-    if (report.overlayDismissedAtMs === null) {
-      report.overlayDismissedAtMs = nowRel;
+  if (isHomeInteractiveNow) {
+    // Close startup sorting/merging/grouping collection right after the render that released the Home
+    activeSessionSortingClosed = true;
+    if (report.releaseTrigger === 'auth_rejected') {
+      // Preserve the original interrupted opening outcome (releaseTrigger: 'auth_rejected', homeAvailableAtMs: null)
+      // and record subsequent access recovery in a separate milestone field.
+      if (report.accessRecoveredAtMs === null) {
+        report.accessRecoveredAtMs = nowRel;
+        changed = true;
+      }
+    } else if (report.homeAvailableAtMs === null) {
+      report.homeAvailableAtMs = nowRel;
+      if (report.overlayDismissedAtMs === null) {
+        report.overlayDismissedAtMs = nowRel;
+      }
+      if (report.manualContinueClickedAtMs !== null && !params.allSixFinished) {
+        report.releaseTrigger = 'manual_continue_button';
+      } else if (report.manualContinueClickedAtMs !== null && report.releaseTrigger === 'pending') {
+        report.releaseTrigger = 'manual_continue_button';
+      } else if (report.releaseTrigger === 'pending') {
+        report.releaseTrigger = params.allSixFinished
+          ? 'auto_all_six'
+          : 'manual_continue_button';
+      }
+      changed = true;
     }
-    if (report.manualContinueClickedAtMs !== null && !params.allSixFinished) {
-      report.releaseTrigger = 'manual_continue_button';
-    } else if (report.manualContinueClickedAtMs !== null && report.releaseTrigger === 'pending') {
-      report.releaseTrigger = 'manual_continue_button';
-    } else if (report.releaseTrigger === 'pending') {
-      report.releaseTrigger = params.allSixFinished
-        ? 'auto_all_six'
-        : 'manual_continue_button';
-    }
-    changed = true;
   }
 
   if (changed) {
@@ -1289,15 +1323,26 @@ export function formatCatalogDiagnosticsReport(
   lines.push(
     `• Conclusão das 6 operações iniciais: ${formatMs(report.allSixFinishedAtMs)}`
   );
-  lines.push(
-    `• Liberação da interface Home: ${formatMs(report.homeAvailableAtMs)} | Modo: ${formatReleaseTriggerLabel(
-      report.releaseTrigger
-    )}${
-      report.manualContinueClickedAtMs !== null
-        ? ` (intenção de clique em ${formatMs(report.manualContinueClickedAtMs)})`
-        : ''
-    }`
-  );
+  if (report.releaseTrigger === 'auth_rejected') {
+    lines.push(
+      `• Desfecho da abertura da Home: Abertura interrompida por autenticação (disponibilidade na abertura: indisponível)`
+    );
+    if (report.accessRecoveredAtMs !== null) {
+      lines.push(
+        `• Recuperação de acesso após falha inicial: ${formatMs(report.accessRecoveredAtMs)}`
+      );
+    }
+  } else {
+    lines.push(
+      `• Liberação da interface Home: ${formatMs(report.homeAvailableAtMs)} | Modo: ${formatReleaseTriggerLabel(
+        report.releaseTrigger
+      )}${
+        report.manualContinueClickedAtMs !== null
+          ? ` (intenção de clique em ${formatMs(report.manualContinueClickedAtMs)})`
+          : ''
+      }`
+    );
+  }
   lines.push(
     `• Duração do seletor de apresentação (separada): ${
       report.wasDisplaySetupShown

@@ -14300,8 +14300,23 @@ async function runPerformanceAndVirtualizationTests() {
         return [{ stream_id: 101, name: 'Canal 1', category_id: '1' }];
       };
       (XtreamService as any).getVodStreams = async (_c: any, _cat?: string, opts?: any) => {
-        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
-        return [{ stream_id: 201, name: 'Filme 1 (2024)', category_id: '10', rating: '8.2' }];
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 2, validItemsCount: 2 });
+        return [
+          {
+            stream_id: 201,
+            name: 'Filme 1 (2024)',
+            category_id: '10',
+            rating: '8.2',
+            stream_icon: 'http://img.test/f201.jpg',
+          },
+          {
+            stream_id: 202,
+            name: 'Filme 2 (2025)',
+            category_id: '10',
+            rating: '9.0',
+            stream_icon: 'http://img.test/f202.jpg',
+          },
+        ];
       };
       (XtreamService as any).getSeries = (_c: any, _cat?: string, opts?: any) => {
         return new Promise<any[]>((resolve) => {
@@ -14554,11 +14569,40 @@ async function runPerformanceAndVirtualizationTests() {
         '[12.20.5B] Como a 6ª operação ainda não terminou, allSixFinishedAtMs deve continuar null'
       );
 
+      assert.strictEqual(
+        snapAfterManualRender.sorting.vod.newSortsCount,
+        1,
+        '[12.20.5B] Com filmes prontos (>= 2 itens) e séries pendentes no momento da liberação manual, vod.newSortsCount deve ser 1'
+      );
+      assert.strictEqual(
+        snapAfterManualRender.sorting.series.newSortsCount,
+        0,
+        '[12.20.5B] Enquanto séries está pendente (lista vazia), series.newSortsCount deve ser 0'
+      );
+      assert.strictEqual(
+        snapAfterManualRender.sorting.totalNewSortsCount,
+        1,
+        '[12.20.5B] totalNewSortsCount deve registrar apenas 1 ordenação efetiva na liberação manual'
+      );
+
       // Concluir a 6ª operação (series_catalog) aos 520ms (t = 8520ms), depois da liberação manual
       controlledNowMs = 8520;
       await act(async () => {
         resolveSlowSeriesManual!([
-          { series_id: 302, name: 'Série Tardia Manual (2025)', category_id: '20', rating: '8.7' },
+          {
+            series_id: 302,
+            name: 'Série Tardia Manual 1 (2025)',
+            category_id: '20',
+            rating: '8.7',
+            cover: 'http://img.test/s302.jpg',
+          },
+          {
+            series_id: 303,
+            name: 'Série Tardia Manual 2 (2024)',
+            category_id: '20',
+            rating: '9.1',
+            cover: 'http://img.test/s303.jpg',
+          },
         ]);
         await new Promise((r) => setTimeout(r, 30));
       });
@@ -14588,6 +14632,21 @@ async function runPerformanceAndVirtualizationTests() {
         snapAfterLateSix.operations.series_catalog?.completedAtMs,
         520,
         '[12.20.5B] Tempo de conclusão de series_catalog deve ser medido até o fim (520ms)'
+      );
+      assert.strictEqual(
+        snapAfterLateSix.operations.series_catalog?.validItemsCount,
+        2,
+        '[12.20.5B] Normalização de series_catalog após liberação manual deve registrar os 2 itens válidos'
+      );
+      assert.strictEqual(
+        snapAfterLateSix.operations.series_catalog?.indexedItemsCount,
+        2,
+        '[12.20.5B] Indexação de series_catalog após liberação manual deve registrar os 2 itens indexados'
+      );
+      assert.deepStrictEqual(
+        snapAfterLateSix.sorting,
+        snapAfterManualRender.sorting,
+        '[12.20.5B] Os totais de ordenação/mesclagem/agrupamento da abertura devem ser encerrados quando a Home aceitou interação pela 1ª vez (358ms)'
       );
 
       await act(async () => {
@@ -14829,9 +14888,157 @@ async function runPerformanceAndVirtualizationTests() {
       );
       const reportAuth401Text = catalogDiagMod.formatCatalogDiagnosticsReport(snapAuth401);
       assert(
-        reportAuth401Text.includes('Liberação da interface Home: indisponível | Modo: Abertura interrompida por autenticação'),
-        '[12.20.7]Relatório formatado deve indicar abertura interrompida por autenticação e Home indisponível'
+        reportAuth401Text.includes(
+          '• Desfecho da abertura da Home: Abertura interrompida por autenticação (disponibilidade na abertura: indisponível)'
+        ),
+        '[12.20.7] Relatório formatado deve indicar abertura interrompida por autenticação e disponibilidade na abertura indisponível'
       );
+      assert(
+        !reportAuth401Text.includes('Liberação da interface Home:') &&
+          !reportAuth401Text.includes('Home liberada'),
+        '[12.20.7] Relatório não deve combinar "Home liberada" / "Liberação da interface Home" com "Abertura interrompida por autenticação"'
+      );
+
+      // Agora testar a recuperação de acesso bem-sucedida ("Tentar novamente") após o HTTP 401 na Home real
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const urlStr = String(input);
+        controlledNowMs += 10;
+        if (!urlStr.includes('action=')) {
+          // Chamada de XtreamService.authenticate(credentials)
+          return {
+            ok: true,
+            status: 200,
+            text: async () => {
+              controlledNowMs += 4;
+              return JSON.stringify({
+                user_info: {
+                  auth: 1,
+                  status: 'Active',
+                  exp_date: '1893456000',
+                  active_cons: '1',
+                  max_connections: '2',
+                },
+              });
+            },
+          } as unknown as Response;
+        }
+        if (urlStr.includes('action=get_series&') || urlStr.endsWith('action=get_series')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => {
+              controlledNowMs += 5;
+              return JSON.stringify([
+                {
+                  series_id: 901,
+                  name: 'Série Recuperada 1 (2025)',
+                  category_id: '1',
+                  rating: '9.1',
+                  cover: 'http://img.test/sr1.jpg',
+                },
+                {
+                  series_id: 902,
+                  name: 'Série Recuperada 2 (2024)',
+                  category_id: '1',
+                  rating: '8.6',
+                  cover: 'http://img.test/sr2.jpg',
+                },
+              ]);
+            },
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => {
+            controlledNowMs += 4;
+            if (urlStr.includes('_categories')) {
+              return JSON.stringify([{ category_id: '1', category_name: 'Geral' }]);
+            }
+            return JSON.stringify([{ stream_id: 1, name: 'Item Valido', category_id: '1' }]);
+          },
+        } as unknown as Response;
+      }) as typeof fetch;
+
+      const retryAuthBtn = p31Container.querySelector(
+        'button[data-auth-recovery-retry="true"]'
+      ) as HTMLButtonElement | null;
+      assert(
+        retryAuthBtn !== null,
+        '[12.20.7] Botão "Tentar novamente" no modal de recuperação de acesso deve existir'
+      );
+
+      controlledNowMs = 12450;
+      await act(async () => {
+        retryAuthBtn!.click();
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      const authRecoveryModalAfterRetry = p31Container.querySelector('[data-auth-recovery="true"]');
+      assert.strictEqual(
+        authRecoveryModalAfterRetry,
+        null,
+        '[12.20.7] Após recuperação bem-sucedida com "Tentar novamente", o modal de recuperação deve fechar'
+      );
+      const homeShell401 = p31Container.querySelector('[data-home-shell="true"]') as HTMLElement;
+      assert.strictEqual(
+        homeShell401.hasAttribute('inert'),
+        false,
+        '[12.20.7] Após recuperação bem-sucedida, a Home deve voltar a operar normalmente e aceitar interação (inert=false)'
+      );
+
+      const snapAfterAuthRecovery = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAfterAuthRecovery.releaseTrigger,
+        'auth_rejected',
+        '[12.20.7] Após recuperar o acesso com "Tentar novamente", releaseTrigger DEVE preservar o desfecho original da abertura (auth_rejected)'
+      );
+      assert.strictEqual(
+        snapAfterAuthRecovery.homeAvailableAtMs,
+        null,
+        '[12.20.7] Após recuperar o acesso com "Tentar novamente", homeAvailableAtMs no registro da abertura DEVE permanecer null'
+      );
+      assert(
+        snapAfterAuthRecovery.accessRecoveredAtMs !== null &&
+          snapAfterAuthRecovery.accessRecoveredAtMs >= 450,
+        '[12.20.7] A recuperação de acesso deve ser registrada em um marco separado (accessRecoveredAtMs)'
+      );
+      assert.strictEqual(
+        snapAfterAuthRecovery.operations.series_catalog?.outcome,
+        'error',
+        '[12.20.7] O registro original da 6ª operação (series_catalog com HTTP 401) deve ser preservado após a recuperação'
+      );
+      assert.strictEqual(
+        snapAfterAuthRecovery.operations.series_catalog?.errorCategory,
+        'auth_rejected',
+        '[12.20.7] errorCategory original de series_catalog (auth_rejected) deve ser preservado'
+      );
+      assert.deepStrictEqual(
+        snapAfterAuthRecovery.sorting,
+        snapAuth401.sorting,
+        '[12.20.7] Os totais de ordenação da abertura interrompida não devem ser alterados pela recuperação posterior'
+      );
+
+      const reportAfterRecoveryText =
+        catalogDiagMod.formatCatalogDiagnosticsReport(snapAfterAuthRecovery);
+      assert(
+        reportAfterRecoveryText.includes(
+          '• Desfecho da abertura da Home: Abertura interrompida por autenticação (disponibilidade na abertura: indisponível)'
+        ),
+        '[12.20.7] Relatório após recuperação deve preservar a linha de abertura interrompida por autenticação'
+      );
+      assert(
+        reportAfterRecoveryText.includes('• Recuperação de acesso após falha inicial:'),
+        '[12.20.7] Relatório após recuperação deve exibir a recuperação em uma linha de marco separado'
+      );
+      for (const line of reportAfterRecoveryText.split('\n')) {
+        if (line.includes('Abertura interrompida por autenticação')) {
+          assert(
+            !line.includes('Home liberada') && !line.includes('Liberação da interface Home'),
+            `[12.20.7] Nenhuma linha do relatório deve combinar "Home liberada" / "Liberação da interface Home" com "Abertura interrompida por autenticação" ("${line}")`
+          );
+        }
+      }
 
       await act(async () => {
         auth401Root.unmount();
@@ -15322,13 +15529,295 @@ async function runPerformanceAndVirtualizationTests() {
         '[12.20.10] Relatório formatado deve exibir "1 mesclagens (3.0 ms, itens=4)"'
       );
 
+      // -----------------------------------------------------------------------
+      // 12.20.11: Home e XtreamProvider REAIS — (1) listas vazias ou com 1 item não contam ordenação;
+      // (2) filmes prontos e séries pendentes contam exatamente 1 ordenação;
+      // (3) conclusão da abertura inclui o trabalho da renderização que liberou a Home;
+      // (4) navegação posterior em TV ao vivo e abertura de categoria não alteram os totais da abertura.
+      // -----------------------------------------------------------------------
+      controlledNowMs = 35000;
+      startCatalogDiagnosticsSession(undefined, 2);
+
+      // (1) Listas vazias (0 itens) ou com 1 item retornam o mesmo resultado sem incrementar ordenações
+      const emptyVodIdx = getOrCreateVodIndex([]);
+      const singleVodItem = [{ stream_id: 555, name: 'Filme Único (2025)', category_id: '10', rating: '8.0' }];
+      const singleVodIdx = getOrCreateVodIndex(singleVodItem);
+      assert.deepStrictEqual(emptyVodIdx.getSortedAll(), [], '[12.20.11] Lista vazia deve retornar []');
+      assert.deepStrictEqual(emptyVodIdx.getSortedByCategory('10'), [], '[12.20.11] Categoria vazia deve retornar []');
+      assert.deepStrictEqual(
+        singleVodIdx.getSortedAll(),
+        singleVodItem,
+        '[12.20.11] Lista com 1 item deve retornar [item]'
+      );
+      assert.deepStrictEqual(
+        singleVodIdx.getSortedByCategory('10'),
+        singleVodItem,
+        '[12.20.11] Categoria com 1 item deve retornar [item]'
+      );
+      // Chamadas repetidas em cache para 0 e 1 item também não devem contar ordenação nem acerto de cache de ordenação
+      emptyVodIdx.getSortedAll();
+      singleVodIdx.getSortedAll();
+      singleVodIdx.getSortedByCategory('10');
+
+      const snapZeroAndOneItem = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapZeroAndOneItem.sorting.totalNewSortsCount,
+        0,
+        '[12.20.11] Listas vazias ou com 1 item NÃO devem incrementar totalNewSortsCount'
+      );
+      assert.strictEqual(
+        snapZeroAndOneItem.sorting.totalSortCacheHitsCount,
+        0,
+        '[12.20.11] Listas vazias ou com 1 item NÃO devem incrementar totalSortCacheHitsCount'
+      );
+
+      // (2) Montar a Home REAL e o XtreamProvider REAL com filmes prontos (3 itens) e séries ainda pendentes
+      setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });
+      globalThis.fetch = savedFetchP31;
+      windowInstance.localStorage.setItem(
+        STORAGE_KEY_DISPLAY_PREFS,
+        JSON.stringify({ version: 1, mode: 'default', tvScale: 100, configured: true })
+      );
+      windowInstance.localStorage.setItem(
+        CREDENTIALS_KEY,
+        JSON.stringify({
+          serverUrl: 'http://real-home-sort-nav.tv:8080',
+          username: 'real_home_user',
+          password: 'real_home_password',
+          playlistName: 'Lista Home Real',
+        })
+      );
+
+      let resolveRealHomePendingSeries: ((items: any[]) => void) | null = null;
+
+      (XtreamService as any).getLiveCategories = async (_c: any, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 2, validItemsCount: 2 });
+        return [
+          { category_id: '1', category_name: 'Esportes' },
+          { category_id: '2', category_name: 'Notícias' },
+        ];
+      };
+      (XtreamService as any).getVodCategories = async (_c: any, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ category_id: '10', category_name: 'Ação' }];
+      };
+      (XtreamService as any).getSeriesCategories = async (_c: any, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ category_id: '20', category_name: 'Drama' }];
+      };
+      (XtreamService as any).getLiveStreams = async (_c: any, _cat?: string, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 2, rawItemsCount: 3, validItemsCount: 3 });
+        return [
+          { stream_id: 101, name: 'ESPN Brasil HD', category_id: '1' },
+          { stream_id: 102, name: 'ESPN Brasil FHD', category_id: '1' },
+          { stream_id: 201, name: 'CNN Brasil HD', category_id: '2' },
+        ];
+      };
+      (XtreamService as any).getVodStreams = async (_c: any, _cat?: string, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 2, rawItemsCount: 3, validItemsCount: 3 });
+        return [
+          {
+            stream_id: 501,
+            name: 'Filme Real A (2023)',
+            category_id: '10',
+            rating: '7.8',
+            stream_icon: 'http://img.test/ra.jpg',
+          },
+          {
+            stream_id: 502,
+            name: 'Filme Real B (2025)',
+            category_id: '10',
+            rating: '9.1',
+            stream_icon: 'http://img.test/rb.jpg',
+          },
+          {
+            stream_id: 503,
+            name: 'Filme Real C (2024)',
+            category_id: '10',
+            rating: '8.4',
+            stream_icon: 'http://img.test/rc.jpg',
+          },
+        ];
+      };
+      (XtreamService as any).getSeries = (_c: any, _cat?: string, opts?: any) => {
+        return new Promise<any[]>((resolve) => {
+          resolveRealHomePendingSeries = (items) => {
+            opts?.diagOp?.recordNormalization({
+              durationMs: 2,
+              rawItemsCount: items.length,
+              validItemsCount: items.length,
+            });
+            resolve(items);
+          };
+        });
+      };
+
+      controlledNowMs = 36000;
+      const realHomeSortNavRoot = createRoot(p31Container);
+      await act(async () => {
+        realHomeSortNavRoot.render(
+          React.createElement(
+            MemoryRouter,
+            { initialEntries: ['/home'] },
+            React.createElement(Home, null)
+          )
+        );
+        await new Promise((r) => setTimeout(r, 40));
+      });
+
+      const snapWhileSeriesPending = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapWhileSeriesPending.operations.vod_catalog?.outcome,
+        'success',
+        '[12.20.11] vod_catalog deve estar concluído na Home real'
+      );
+      assert.strictEqual(
+        snapWhileSeriesPending.operations.series_catalog?.outcome,
+        'running',
+        '[12.20.11] series_catalog ainda deve estar pendente (running) na Home real'
+      );
+      assert.strictEqual(
+        snapWhileSeriesPending.sorting.vod.newSortsCount,
+        1,
+        '[12.20.11] Na Home real com filmes prontos (3 itens) e séries pendentes, vod.newSortsCount deve ser 1'
+      );
+      assert.strictEqual(
+        snapWhileSeriesPending.sorting.series.newSortsCount,
+        0,
+        '[12.20.11] Na Home real com séries ainda pendentes (lista vazia), series.newSortsCount deve ser 0'
+      );
+      assert.strictEqual(
+        snapWhileSeriesPending.sorting.totalNewSortsCount,
+        1,
+        '[12.20.11] Na Home real com filmes prontos e séries pendentes, uma ordenação de filmes deve aparecer como exatamente 1 ordenação'
+      );
+      assert.strictEqual(
+        snapWhileSeriesPending.sorting.heroMergesCount,
+        1,
+        '[12.20.11] Mesclagem do HeroBanner com filmes prontos deve ser contada separadamente (1)'
+      );
+      assert(
+        snapWhileSeriesPending.sorting.vod.cacheHitsCount >= 1 &&
+          snapWhileSeriesPending.sorting.series.cacheHitsCount === 0,
+        '[12.20.11] Acertos de cache de Filmes devem ser contados separadamente sem contar o catálogo vazio de Séries'
+      );
+
+      // (3) Concluir series_catalog (com 3 séries) liberando a Home automaticamente e incluindo o trabalho da renderização que liberou a Home
+      controlledNowMs = 36240;
+      await act(async () => {
+        resolveRealHomePendingSeries!([
+          {
+            series_id: 601,
+            name: 'Série Real X (2022)',
+            category_id: '20',
+            rating: '7.9',
+            cover: 'http://img.test/sx.jpg',
+          },
+          {
+            series_id: 602,
+            name: 'Série Real Y (2025)',
+            category_id: '20',
+            rating: '9.3',
+            cover: 'http://img.test/sy.jpg',
+          },
+          {
+            series_id: 603,
+            name: 'Série Real Z (2024)',
+            category_id: '20',
+            rating: '8.8',
+            cover: 'http://img.test/sz.jpg',
+          },
+        ]);
+        await new Promise((r) => setTimeout(r, 35));
+      });
+
+      const snapAtHomeRelease = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAtHomeRelease.releaseTrigger,
+        'auto_all_six',
+        '[12.20.11] Após concluir a 6ª operação, a Home deve ser liberada com auto_all_six'
+      );
+      assert.strictEqual(
+        snapAtHomeRelease.homeAvailableAtMs,
+        240,
+        '[12.20.11] homeAvailableAtMs deve ser 240ms'
+      );
+      assert.strictEqual(
+        snapAtHomeRelease.sorting.vod.newSortsCount,
+        1,
+        '[12.20.11] Ao liberar a Home, vod.newSortsCount deve ser 1'
+      );
+      assert.strictEqual(
+        snapAtHomeRelease.sorting.series.newSortsCount,
+        1,
+        '[12.20.11] O trabalho de ordenar Séries que ocorreu na renderização que liberou a Home DEVE ser incluído (series.newSortsCount = 1)'
+      );
+      assert.strictEqual(
+        snapAtHomeRelease.sorting.totalNewSortsCount,
+        2,
+        '[12.20.11] Ao liberar a Home com Filmes e Séries prontos, totalNewSortsCount deve ser 2'
+      );
+      assert.strictEqual(
+        snapAtHomeRelease.sorting.heroMergesCount,
+        2,
+        '[12.20.11] A mesclagem do HeroBanner na renderização que liberou a Home deve estar incluída (2)'
+      );
+      assert.strictEqual(
+        snapAtHomeRelease.sorting.liveGroupingsCount,
+        0,
+        '[12.20.11] Antes de navegar para TV ao Vivo, liveGroupingsCount deve ser 0'
+      );
+
+      // (4) Navegar para TV ao Vivo e abrir uma categoria de canais DEPOIS que a Home já aceitou interação
+      controlledNowMs = 36500;
+      const liveSidebarBtn = p31Container.querySelector(
+        'button[data-sidebar-nav-id="live"]'
+      ) as HTMLButtonElement | null;
+      assert(liveSidebarBtn !== null, '[12.20.11] Botão "TV ao Vivo" na barra lateral da Home real deve existir');
+      await act(async () => {
+        liveSidebarBtn!.click();
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      // Clicar na categoria "Notícias" (ou "Esportes") dentro da LiveTvView real para disparar getGroupsByCategory
+      const liveCategoryButtons = Array.from(
+        p31Container.querySelectorAll('button[data-live-category-id]')
+      ) as HTMLButtonElement[];
+      const targetLiveCatBtn =
+        liveCategoryButtons.find((b) => b.getAttribute('data-live-category-id') === '2') ||
+        liveCategoryButtons.find((b) => b.getAttribute('data-live-category-id') === '1');
+      assert(
+        targetLiveCatBtn !== undefined,
+        '[12.20.11] Botões de categorias de TV ao vivo devem estar montados na LiveTvView'
+      );
+      await act(async () => {
+        targetLiveCatBtn!.click();
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      const snapAfterLiveNavigation = getCatalogDiagnosticsSnapshot()!;
+      assert.deepStrictEqual(
+        snapAfterLiveNavigation.sorting,
+        snapAtHomeRelease.sorting,
+        '[12.20.11] Navegar para TV ao vivo e abrir uma categoria depois da liberação da Home NÃO deve alterar os totais de ordenações, mesclagens, agrupamentos ou cache da abertura'
+      );
+      assert.strictEqual(
+        snapAfterLiveNavigation.sorting.liveGroupingsCount,
+        0,
+        '[12.20.11] Agrupamentos executados durante a navegação posterior em TV ao vivo não devem entrar no relatório de abertura'
+      );
+
+      await act(async () => {
+        realHomeSortNavRoot.unmount();
+      });
+
       console.log(
         `📊 [Métricas P3.1 — Diagnóstico do Carregamento Inicial dos Catálogos (Auditado)]\n` +
           `   • Coleta desativada por padrão: eventos capturados=0 | requisições iniciais=6 (0 extras)\n` +
           `   • Transporte Web (fetch): espera resposta=35ms | leitura corpo=20ms | JSON.parse=12ms\n` +
           `   • Transporte Android (CapacitorHttp): transporte + ponte nativa=48ms | payload pré-parseado sem re-serializar (jsonParseMs=n/a)\n` +
-          `   • Marcos reais da Home: seletor desde 1ª montagem=150ms (separado de homeAvailableAtMs=320ms) | botão manual: intenção=350ms → disponível pós-render=358ms → 6 operações=520ms | HTTP 401/auth:0 → auth_rejected (Home indisponível)\n` +
-          `   • Isolamento em remontagem e histórico fixo: pausa cooperativa isolada entre sessões | 16 consultas extras mantêm 6 registros originais | 2 ordenações (23ms) + 1 mesclagem (3ms)`
+          `   • Marcos reais da Home: seletor desde 1ª montagem=150ms (separado de homeAvailableAtMs=320ms) | botão manual: intenção=350ms → disponível pós-render=358ms → 6 operações=520ms | HTTP 401/auth:0 → auth_rejected (preservado após recuperação)\n` +
+          `   • Preparação da Home vs navegação: filmes prontos c/ séries pendentes=1 ordenação | abertura completa=2 ordenações + 2 mesclagens | navegação posterior em TV ao vivo=0 alterações no relatório de abertura`
       );
     } finally {
       setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });

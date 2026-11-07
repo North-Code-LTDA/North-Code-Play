@@ -844,10 +844,10 @@ export const ConfigView = React.memo(function ConfigView() {
                         <div>
                           <span className="text-gray-400 block">Home Disponível</span>
                           <span className="text-white font-mono">
-                            {catalogDiagSnapshot.homeAvailableAtMs !== null
-                              ? `${catalogDiagSnapshot.homeAvailableAtMs}ms (${catalogDiagSnapshot.releaseTrigger})`
-                              : catalogDiagSnapshot.releaseTrigger === 'auth_rejected'
-                                ? 'interrompida por autenticação'
+                            {catalogDiagSnapshot.releaseTrigger === 'auth_rejected'
+                              ? 'interrompida por autenticação'
+                              : catalogDiagSnapshot.homeAvailableAtMs !== null
+                                ? `${catalogDiagSnapshot.homeAvailableAtMs}ms (${catalogDiagSnapshot.releaseTrigger})`
                                 : 'pendente'}
                           </span>
                         </div>
@@ -857,6 +857,14 @@ export const ConfigView = React.memo(function ConfigView() {
                             {catalogDiagSnapshot.displaySetupWaitMs}ms
                           </span>
                         </div>
+                        {catalogDiagSnapshot.accessRecoveredAtMs !== null && (
+                          <div>
+                            <span className="text-gray-400 block">Recuperação de Acesso</span>
+                            <span className="text-white font-mono">
+                              {catalogDiagSnapshot.accessRecoveredAtMs}ms
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
