@@ -12830,6 +12830,15 @@ async function runPerformanceAndVirtualizationTests() {
         writable: true,
       });
 
+      const replacementCandidateMap = {
+        'movie:555': { id: '555', type: 'movie' as const, updatedAt: 1719000000000, positionSec: 95 },
+      };
+      let eventFiredDuringBlockedRead = false;
+      const onBlockedReadEvent = () => {
+        eventFiredDuringBlockedRead = true;
+      };
+      windowInstance.addEventListener(HISTORY_UPDATED_EVENT, onBlockedReadEvent);
+
       assert.strictEqual(
         readHistMapP23(keyP23B),
         null,
@@ -12846,17 +12855,28 @@ async function runPerformanceAndVirtualizationTests() {
         '[12.19.4] clearItemProgress deve retornar false quando a leitura falha'
       );
       assert.strictEqual(
+        writeHistMapP23(keyP23B, replacementCandidateMap),
+        false,
+        '[12.19.4] writeHistoryMap deve retornar false quando a leitura prévia falha'
+      );
+      assert.strictEqual(
         setItemCalledDuringReadFail,
         false,
-        '[12.19.4] setItem NUNCA deve ser chamado quando a leitura prévia falha'
+        '[12.19.4] setItem NUNCA deve ser chamado quando a leitura prévia falha (inclusive em writeHistoryMap)'
+      );
+      assert.strictEqual(
+        eventFiredDuringBlockedRead,
+        false,
+        '[12.19.4] Nenhum evento de atualização deve ser disparado quando a leitura prévia falha em writeHistoryMap'
       );
       assert.strictEqual(
         consumerSnapshots[1],
         confirmedBRecords,
         '[12.19.4] Snapshot confirmado dos assinantes deve ser preservado durante falha de leitura'
       );
+      windowInstance.removeEventListener(HISTORY_UPDATED_EVENT, onBlockedReadEvent);
 
-      // Restaurar getItem e testar JSON corrompido
+      // Restaurar getItem e testar JSON corrompido (inclusive chamando writeHistoryMap diretamente)
       Object.defineProperty(windowInstance.localStorage, 'getItem', {
         value: origGetItemP23,
         configurable: true,
@@ -12870,6 +12890,22 @@ async function runPerformanceAndVirtualizationTests() {
 
       const validRawB = windowInstance.localStorage.getItem(keyP23B)!;
       windowInstance.localStorage.setItem(keyP23B, '{json_corrompido_invalido');
+
+      let setItemCalledOnCorruptJson = false;
+      let eventFiredOnCorruptJson = false;
+      const onCorruptJsonEvent = () => {
+        eventFiredOnCorruptJson = true;
+      };
+      windowInstance.addEventListener(HISTORY_UPDATED_EVENT, onCorruptJsonEvent);
+      Object.defineProperty(windowInstance.localStorage, 'setItem', {
+        value: function (k: string, v: string) {
+          if (k === keyP23B) setItemCalledOnCorruptJson = true;
+          return origSetItemP23.call(windowInstance.localStorage, k, v);
+        },
+        configurable: true,
+        writable: true,
+      });
+
       assert.strictEqual(
         readHistMapP23(keyP23B),
         null,
@@ -12886,11 +12922,58 @@ async function runPerformanceAndVirtualizationTests() {
         '[12.19.4] clearItemProgress deve bloquear gravação sobre JSON corrompido'
       );
       assert.strictEqual(
+        writeHistMapP23(keyP23B, replacementCandidateMap),
+        false,
+        '[12.19.4] writeHistoryMap deve bloquear substituição quando o JSON persistido atual está corrompido'
+      );
+      assert.strictEqual(
+        setItemCalledOnCorruptJson,
+        false,
+        '[12.19.4] writeHistoryMap NÃO deve chamar setItem quando o JSON existente está corrompido'
+      );
+      assert.strictEqual(
+        eventFiredOnCorruptJson,
+        false,
+        '[12.19.4] writeHistoryMap NÃO deve notificar assinantes quando o JSON existente está corrompido'
+      );
+      assert.strictEqual(
         consumerSnapshots[1],
         confirmedBRecords,
         '[12.19.4] Snapshot confirmado em memória deve ser preservado quando há JSON inválido'
       );
+
+      Object.defineProperty(windowInstance.localStorage, 'setItem', {
+        value: origSetItemP23,
+        configurable: true,
+        writable: true,
+      });
+      windowInstance.removeEventListener(HISTORY_UPDATED_EVENT, onCorruptJsonEvent);
       windowInstance.localStorage.setItem(keyP23B, validRawB);
+
+      // Verificar que a substituição explícita via writeHistoryMap funciona quando leitura e validação têm sucesso
+      await act(async () => {
+        const replacedOk = writeHistMapP23(keyP23B, replacementCandidateMap);
+        assert.strictEqual(
+          replacedOk,
+          true,
+          '[12.19.4] writeHistoryMap deve substituir explicitamente o mapa quando leitura e validação têm sucesso'
+        );
+      });
+      assert.strictEqual(
+        consumerSnapshots[1].length,
+        1,
+        '[12.19.4] Assinantes devem refletir o mapa substituído por writeHistoryMap'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1][0]?.id,
+        '555',
+        '[12.19.4] Registro 555 deve estar ativo após substituição explícita via writeHistoryMap'
+      );
+      await act(async () => {
+        const restoredMapB = JSON.parse(validRawB);
+        assert.strictEqual(writeHistMapP23(keyP23B, restoredMapB), true);
+      });
+      const confirmedBRecordsRestored = consumerSnapshots[1];
 
       // Testar falha de escrita (setItem lança erro): retorna false, não altera snapshot nem anuncia sucesso
       let customEventFiredOnWriteFail = false;
@@ -12931,7 +13014,7 @@ async function runPerformanceAndVirtualizationTests() {
       );
       assert.strictEqual(
         consumerSnapshots[1],
-        confirmedBRecords,
+        confirmedBRecordsRestored,
         '[12.19.4] Assinantes mantêm exatamente o mesmo snapshot confirmado após falha de escrita'
       );
 
@@ -13240,6 +13323,256 @@ async function runPerformanceAndVirtualizationTests() {
         cwReorderRoot.unmount();
       });
       document.body.removeChild(cwReorderContainer);
+
+      // -----------------------------------------------------------------------
+      // 12.19.8: Bloqueio do getter de window.localStorage (SecurityError)
+      //          1) Na importação do módulo (sem impedir a abertura do app)
+      //          2) Após o cache já ter sido preenchido (preservando o último snapshot confirmado)
+      // -----------------------------------------------------------------------
+      const confirmedSnapshotBeforeSecurityBlock = consumerSnapshots[1];
+      assert(
+        confirmedSnapshotBeforeSecurityBlock && confirmedSnapshotBeforeSecurityBlock.length > 0,
+        '[12.19.8] Snapshot confirmado de accP23B deve estar preenchido antes do bloqueio de localStorage'
+      );
+
+      const winLocalStorageDescriptor =
+        Object.getOwnPropertyDescriptor(windowInstance, 'localStorage') ||
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(windowInstance), 'localStorage');
+      const globalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+
+      try {
+        const throwSecurityError = () => {
+          const err = new Error('The operation is insecure (localStorage blocked)');
+          err.name = 'SecurityError';
+          throw err;
+        };
+
+        Object.defineProperty(windowInstance, 'localStorage', {
+          get: throwSecurityError,
+          configurable: true,
+        });
+        Object.defineProperty(globalThis, 'localStorage', {
+          get: throwSecurityError,
+          configurable: true,
+        });
+
+        // 1) Importar uma nova instância do módulo com o getter de window.localStorage lançando SecurityError
+        const blockedModuleUrl = new URL(
+          `../src/utils/playbackHistory.ts?security_block_import=${Date.now()}`,
+          import.meta.url
+        ).href;
+        const blockedLoadedMod = await import(blockedModuleUrl);
+        assert(
+          typeof blockedLoadedMod.getItemProgress === 'function' &&
+            typeof blockedLoadedMod.useAccountPlaybackHistory === 'function',
+          '[12.19.8] Módulo playbackHistory.ts deve carregar normalmente mesmo quando o getter de window.localStorage lança SecurityError'
+        );
+        assert.strictEqual(
+          blockedLoadedMod.readHistoryMap(keyP23B),
+          null,
+          '[12.19.8] Na instância importada sob bloqueio de localStorage, readHistoryMap deve retornar null'
+        );
+        assert.strictEqual(
+          blockedLoadedMod.getItemProgress(accP23B, 'movie', 201),
+          0,
+          '[12.19.8] Na instância importada sob bloqueio e sem cache prévio, getItemProgress deve retornar 0 com segurança'
+        );
+        assert.strictEqual(
+          blockedLoadedMod.recordPlaybackPosition(accP23B, { id: 201, type: 'movie', positionSec: 500 }),
+          false,
+          '[12.19.8] Na instância importada sob bloqueio, recordPlaybackPosition deve retornar false'
+        );
+        assert.strictEqual(
+          blockedLoadedMod.writeHistoryMap(keyP23B, {}),
+          false,
+          '[12.19.8] Na instância importada sob bloqueio, writeHistoryMap deve retornar false'
+        );
+
+        // 2) No módulo ativo com cache já preenchido antes do bloqueio:
+        //    - readHistoryMap retorna null
+        //    - gravações retornam false
+        //    - último snapshot confirmado é preservado em memória
+        assert.strictEqual(
+          readHistMapP23(keyP23B),
+          null,
+          '[12.19.8] Quando localStorage passa a lançar SecurityError após a abertura, readHistoryMap deve retornar null'
+        );
+        assert.strictEqual(
+          recordPosP23(accP23B, { id: 201, type: 'movie', positionSec: 999 }),
+          false,
+          '[12.19.8] Quando localStorage lança SecurityError após a abertura, recordPlaybackPosition deve retornar false'
+        );
+        assert.strictEqual(
+          clearProgressP23(accP23B, 'movie', 201),
+          false,
+          '[12.19.8] Quando localStorage lança SecurityError após a abertura, clearItemProgress deve retornar false'
+        );
+        assert.strictEqual(
+          writeHistMapP23(keyP23B, {}),
+          false,
+          '[12.19.8] Quando localStorage lança SecurityError após a abertura, writeHistoryMap deve retornar false'
+        );
+        assert.strictEqual(
+          getProgressP23(accP23B, 'movie', 201),
+          300,
+          '[12.19.8] Quando localStorage lança SecurityError após o cache estar preenchido, getItemProgress deve preservar o último valor confirmado (300s)'
+        );
+        assert.strictEqual(
+          getHistRecordsP23(accP23B),
+          confirmedSnapshotBeforeSecurityBlock,
+          '[12.19.8] getHistoryRecords deve preservar exatamente a mesma referência do último snapshot confirmado quando localStorage falha'
+        );
+        assert.strictEqual(
+          consumerSnapshots[1],
+          confirmedSnapshotBeforeSecurityBlock,
+          '[12.19.8] Assinantes de useAccountPlaybackHistory devem preservar o último snapshot confirmado quando localStorage falha'
+        );
+      } finally {
+        if (winLocalStorageDescriptor) {
+          Object.defineProperty(windowInstance, 'localStorage', winLocalStorageDescriptor);
+        }
+        if (globalLocalStorageDescriptor) {
+          Object.defineProperty(globalThis, 'localStorage', globalLocalStorageDescriptor);
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // 12.19.9: Preservação de snapshots com 9 contas assinadas simultaneamente
+      //          - 9 contas montadas juntas (excedente necessário permitido acima de 8)
+      //          - Gravação em apenas 1 conta mantém as outras 8 com a mesma referência de lista (===) e 0 re-renderizações extras
+      //          - Desmontagem reduz o cache de volta ao limite (<= 8) sem apagar o localStorage
+      // -----------------------------------------------------------------------
+      const nineAccounts = Array.from({ length: 9 }, (_, idx) => ({
+        serverUrl: 'http://p23-nine.tv:8080',
+        username: `nine_active_user_${idx + 1}`,
+      }));
+      const nineHistoryKeys = nineAccounts.map((acc) => getHistKeyP23(acc.serverUrl, acc.username));
+
+      for (let idx = 0; idx < 9; idx++) {
+        recordPosP23(nineAccounts[idx], {
+          id: 5000 + idx,
+          type: 'movie',
+          positionSec: (idx + 1) * 30,
+        });
+      }
+
+      const nineLatestRefs: Record<number, any[]> = {};
+      const nineRenderCounts: Record<number, number> = {};
+
+      function SingleSubscribedAccountChild({
+        index,
+        account,
+      }: {
+        index: number;
+        account: { serverUrl: string; username: string };
+      }) {
+        const records = useHistHookP23(account);
+        nineLatestRefs[index] = records;
+        nineRenderCounts[index] = (nineRenderCounts[index] ?? 0) + 1;
+        return React.createElement('span', { 'data-nine-idx': index }, `${account.username}:${records.length}`);
+      }
+
+      function NineSubscribedAccountsHarness({ count }: { count: number }) {
+        return React.createElement(
+          'div',
+          null,
+          nineAccounts.slice(0, count).map((acc, idx) =>
+            React.createElement(SingleSubscribedAccountChild, {
+              key: acc.username,
+              index: idx,
+              account: acc,
+            })
+          )
+        );
+      }
+
+      const nineContainer = document.createElement('div');
+      document.body.appendChild(nineContainer);
+      const nineRoot = createRoot(nineContainer);
+
+      try {
+        await act(async () => {
+          nineRoot.render(React.createElement(NineSubscribedAccountsHarness, { count: 9 }));
+        });
+
+        const statsWith9Mounted = getPlaybackHistoryPerfStats();
+        assert(
+          statsWith9Mounted.cachedAccountsCount >= 9,
+          `[12.19.9] Com 9 contas assinadas simultaneamente, o cache deve manter o excedente necessário (>= 9; obteve ${statsWith9Mounted.cachedAccountsCount})`
+        );
+
+        const initialNineSnapshotRefs: Record<number, any[]> = {};
+        const renderCountsAfterInitialMount: Record<number, number> = {};
+        for (let idx = 0; idx < 9; idx++) {
+          assert(
+            Array.isArray(nineLatestRefs[idx]) && nineLatestRefs[idx].length === 1,
+            `[12.19.9] Conta assinada ${idx + 1} deve iniciar com 1 registro`
+          );
+          assert.strictEqual(
+            nineRenderCounts[idx],
+            1,
+            `[12.19.9] Conta ${idx + 1} deve montar com exatamente 1 renderização (sem laço de renderização; obteve ${nineRenderCounts[idx]})`
+          );
+          initialNineSnapshotRefs[idx] = nineLatestRefs[idx];
+          renderCountsAfterInitialMount[idx] = nineRenderCounts[idx];
+        }
+
+        // Gravar apenas na conta 0 (nine_active_user_1) enquanto todas as 9 estão assinadas
+        await act(async () => {
+          const ok = recordPosP23(nineAccounts[0], {
+            id: 5999,
+            type: 'movie',
+            positionSec: 145,
+          });
+          assert.strictEqual(ok, true, '[12.19.9] Gravação na 1ª conta das 9 deve ter sucesso');
+        });
+
+        assert.strictEqual(
+          nineLatestRefs[0].length,
+          2,
+          '[12.19.9] Conta 1 (atualizada) deve passar a ter 2 registros no snapshot'
+        );
+        for (let idx = 1; idx < 9; idx++) {
+          assert.strictEqual(
+            nineLatestRefs[idx],
+            initialNineSnapshotRefs[idx],
+            `[12.19.9] Conta assinada ${idx + 1} (não alterada) deve preservar exatamente a mesma referência de lista (===)`
+          );
+          assert.strictEqual(
+            nineRenderCounts[idx],
+            renderCountsAfterInitialMount[idx],
+            `[12.19.9] Conta assinada ${idx + 1} não deve sofrer re-renderização ao gravar na conta 1`
+          );
+        }
+
+        // Desmontar as contas 9 e 8 (reduzindo de 9 para 7 assinantes na árvore + 1 em p23Root = 8 assinantes)
+        // e depois desmontar todas as 9 de nineRoot -> o cache deve voltar imediatamente ao limite MAX_CACHED_HISTORY_ACCOUNTS (8)
+        await act(async () => {
+          nineRoot.unmount();
+        });
+
+        const statsAfterNineUnmount = getPlaybackHistoryPerfStats();
+        assert(
+          statsAfterNineUnmount.cachedAccountsCount <= MAX_CACHED_HISTORY_ACCOUNTS,
+          `[12.19.9] Após desmontar os assinantes excedentes, o cache deve voltar ao limite de ${MAX_CACHED_HISTORY_ACCOUNTS} entradas (obteve ${statsAfterNineUnmount.cachedAccountsCount})`
+        );
+
+        // Os dados persistidos de todas as 9 contas continuam íntegros no localStorage
+        for (let idx = 0; idx < 9; idx++) {
+          assert.strictEqual(
+            getProgressP23(nineAccounts[idx], 'movie', 5000 + idx),
+            (idx + 1) * 30,
+            `[12.19.9] Dados persistidos da conta ${idx + 1} devem permanecer intactos após redução do cache`
+          );
+        }
+      } finally {
+        if (nineContainer.parentNode) {
+          document.body.removeChild(nineContainer);
+        }
+        for (const k of nineHistoryKeys) {
+          windowInstance.localStorage.removeItem(k);
+        }
+      }
 
       console.log(
         `📊 [Métricas P2.3 — Histórico de Reprodução (Snapshot Estável + useSyncExternalStore)]\n` +

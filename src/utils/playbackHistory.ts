@@ -68,15 +68,43 @@ const historySnapshotCache = new Map<string, HistorySnapshot>();
 // Subscriptions per historyKey -> Set<() => void>
 const historyListeners = new Map<string, Set<() => void>>();
 
+// Keys currently being rendered by useAccountPlaybackHistory in the active synchronous pass
+// before useSyncExternalStore's commit-phase subscribe() attaches
+const pendingHookRenderKeys = new Set<string>();
+let isPendingHookRenderClearScheduled = false;
+
 // Tracks snapshots verified in the current synchronous turn/microtask
 const microtaskVerifiedSnapshots = new Set<HistorySnapshot>();
 let isMicrotaskClearScheduled = false;
-let lastSeenStorageGetItem: unknown =
-  typeof window !== 'undefined' && window.localStorage ? window.localStorage.getItem : null;
+let lastSeenStorageGetItem: unknown = null;
+
+function safeGetStorageGetItemRef(): unknown {
+  if (typeof window === 'undefined') return null;
+  try {
+    const storage = window.localStorage;
+    return storage ? storage.getItem : null;
+  } catch {
+    return null;
+  }
+}
+
+function markHookKeyPendingForCurrentRender(historyKey: string): void {
+  if (!historyKey) return;
+  pendingHookRenderKeys.add(historyKey);
+  if (!isPendingHookRenderClearScheduled) {
+    isPendingHookRenderClearScheduled = true;
+    queueMicrotask(() => {
+      isPendingHookRenderClearScheduled = false;
+      pendingHookRenderKeys.clear();
+      pruneHistorySnapshotCache();
+    });
+  }
+}
 
 function markSnapshotVerifiedForMicrotask(snapshot: HistorySnapshot): void {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    lastSeenStorageGetItem = window.localStorage.getItem;
+  const currentGetItem = safeGetStorageGetItemRef();
+  if (currentGetItem !== null) {
+    lastSeenStorageGetItem = currentGetItem;
   }
   snapshot.verifiedInCurrentMicrotask = true;
   microtaskVerifiedSnapshots.add(snapshot);
@@ -94,12 +122,11 @@ function markSnapshotVerifiedForMicrotask(snapshot: HistorySnapshot): void {
 
 function isSnapshotVerifiedInCurrentMicrotask(snapshot: HistorySnapshot | undefined): boolean {
   if (!snapshot || !snapshot.verifiedInCurrentMicrotask) return false;
-  if (
-    typeof window !== 'undefined' &&
-    window.localStorage &&
-    window.localStorage.getItem !== lastSeenStorageGetItem
-  ) {
-    return false;
+  if (typeof window !== 'undefined') {
+    const currentGetItem = safeGetStorageGetItemRef();
+    if (currentGetItem === null || currentGetItem !== lastSeenStorageGetItem) {
+      return false;
+    }
   }
   return true;
 }
@@ -145,7 +172,32 @@ export function clearPlaybackHistoryMemoryCacheForTest(): void {
     snap.pendingSubscriberRender = false;
   });
   microtaskVerifiedSnapshots.clear();
+  pendingHookRenderKeys.clear();
   historySnapshotCache.clear();
+}
+
+function hasActiveOrPendingSubscribers(historyKey: string): boolean {
+  const subs = historyListeners.get(historyKey);
+  if (subs && subs.size > 0) return true;
+  if (pendingHookRenderKeys.has(historyKey)) return true;
+  return false;
+}
+
+function pruneHistorySnapshotCache(protectedKey?: string): void {
+  while (historySnapshotCache.size > MAX_CACHED_HISTORY_ACCOUNTS) {
+    let keyToEvict: string | undefined;
+    for (const candidateKey of historySnapshotCache.keys()) {
+      if (candidateKey === protectedKey) continue;
+      if (!hasActiveOrPendingSubscribers(candidateKey)) {
+        keyToEvict = candidateKey;
+        break;
+      }
+    }
+    if (!keyToEvict) {
+      break;
+    }
+    historySnapshotCache.delete(keyToEvict);
+  }
 }
 
 function getCachedSnapshot(historyKey: string): HistorySnapshot | undefined {
@@ -164,22 +216,7 @@ function setCachedSnapshot(historyKey: string, snapshot: HistorySnapshot): void 
   }
   historySnapshotCache.set(historyKey, snapshot);
   markSnapshotVerifiedForMicrotask(snapshot);
-
-  while (historySnapshotCache.size > MAX_CACHED_HISTORY_ACCOUNTS) {
-    let keyToEvict: string | undefined;
-    for (const candidateKey of historySnapshotCache.keys()) {
-      const subs = historyListeners.get(candidateKey);
-      if (!subs || subs.size === 0) {
-        keyToEvict = candidateKey;
-        break;
-      }
-    }
-    if (!keyToEvict) {
-      keyToEvict = historySnapshotCache.keys().next().value;
-    }
-    if (!keyToEvict || keyToEvict === historyKey) break;
-    historySnapshotCache.delete(keyToEvict);
-  }
+  pruneHistorySnapshotCache(historyKey);
 }
 
 function getHistoryListeners(historyKey: string): Set<() => void> {
@@ -375,11 +412,11 @@ function resolveSnapshotForRead(
     if (activeConfirmedNotificationKey === historyKey || isSnapshotVerifiedInCurrentMicrotask(cached)) {
       return cached;
     }
+    const currentGetItem = safeGetStorageGetItemRef();
     if (
       cached.pendingSubscriberRender &&
       (typeof window === 'undefined' ||
-        !window.localStorage ||
-        window.localStorage.getItem === lastSeenStorageGetItem)
+        (currentGetItem !== null && currentGetItem === lastSeenStorageGetItem))
     ) {
       cached.pendingSubscriberRender = false;
       markSnapshotVerifiedForMicrotask(cached);
@@ -502,47 +539,51 @@ function ensureHistoryListeners(): void {
   if (areGlobalHistoryListenersAttached || typeof window === 'undefined') return;
   areGlobalHistoryListenersAttached = true;
 
-  window.addEventListener(HISTORY_UPDATED_EVENT, (e: Event) => {
-    const detail = (e as CustomEvent).detail;
-    if (!detail || !detail.historyKey || detail.internalNotify) {
-      return;
-    }
-    const targetKey = String(detail.historyKey);
-    resolveSnapshotForRead(targetKey, false);
-    notifyHistorySubscribers(targetKey, true);
-  });
-
-  window.addEventListener('storage', (e: StorageEvent) => {
-    if (e.key === null) {
-      historySnapshotCache.clear();
-      const activeKeys = Array.from(historyListeners.keys());
-      for (const key of activeKeys) {
-        resolveSnapshotForRead(key, false);
-        notifyHistorySubscribers(key, true);
+  try {
+    window.addEventListener(HISTORY_UPDATED_EVENT, (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || !detail.historyKey || detail.internalNotify) {
+        return;
       }
-      return;
-    }
+      const targetKey = String(detail.historyKey);
+      resolveSnapshotForRead(targetKey, false);
+      notifyHistorySubscribers(targetKey, true);
+    });
 
-    if (e.key.startsWith(HISTORY_KEY_PREFIX)) {
-      const targetKey = e.key;
-      const readRes = readStorageWithStats(targetKey);
-      if (readRes.success) {
-        const raw = readRes.value;
-        if (raw === null || raw === undefined) {
-          setCachedSnapshot(targetKey, createEmptySnapshot(null));
-        } else {
-          const cached = getCachedSnapshot(targetKey);
-          if (!cached || cached.raw !== raw) {
-            const validatedMap = parseAndValidateHistoryJson(raw);
-            if (validatedMap !== null) {
-              setCachedSnapshot(targetKey, createSnapshotFromValidatedMap(raw, validatedMap));
+    window.addEventListener('storage', (e: StorageEvent) => {
+      if (e.key === null) {
+        historySnapshotCache.clear();
+        const activeKeys = Array.from(historyListeners.keys());
+        for (const key of activeKeys) {
+          resolveSnapshotForRead(key, false);
+          notifyHistorySubscribers(key, true);
+        }
+        return;
+      }
+
+      if (e.key.startsWith(HISTORY_KEY_PREFIX)) {
+        const targetKey = e.key;
+        const readRes = readStorageWithStats(targetKey);
+        if (readRes.success) {
+          const raw = readRes.value;
+          if (raw === null || raw === undefined) {
+            setCachedSnapshot(targetKey, createEmptySnapshot(null));
+          } else {
+            const cached = getCachedSnapshot(targetKey);
+            if (!cached || cached.raw !== raw) {
+              const validatedMap = parseAndValidateHistoryJson(raw);
+              if (validatedMap !== null) {
+                setCachedSnapshot(targetKey, createSnapshotFromValidatedMap(raw, validatedMap));
+              }
             }
           }
         }
+        notifyHistorySubscribers(targetKey, true);
       }
-      notifyHistorySubscribers(targetKey, true);
-    }
-  });
+    });
+  } catch {
+    // ignore listener registration errors
+  }
 }
 
 /**
@@ -606,14 +647,20 @@ export function readHistoryMap(historyKey: string): PlaybackHistoryMap | null {
 
 /**
  * Safely writes PlaybackHistoryMap to localStorage under historyKey.
- * Updates the confirmed snapshot before notifying subscribers and dispatching custom event.
- * Returns false if validation or writing fails, preserving the prior confirmed snapshot.
+ * Verifies the current persisted content before replacing the map: if reading fails
+ * or the existing JSON is corrupted, returns false without calling setItem, altering
+ * the confirmed snapshot, or notifying subscribers.
  */
 export function writeHistoryMap(historyKey: string, map: PlaybackHistoryMap): boolean {
   if (!historyKey) return false;
 
   const validatedMap = validateAndFreezeHistoryMap(map);
   if (validatedMap === null) {
+    return false;
+  }
+
+  const existingBaseMap = readHistoryBaseMapForWrite(historyKey);
+  if (existingBaseMap === null) {
     return false;
   }
 
@@ -785,6 +832,10 @@ export function useAccountPlaybackHistory(
     [account?.serverUrl, account?.username]
   );
 
+  if (historyKey) {
+    markHookKeyPendingForCurrentRender(historyKey);
+  }
+
   const subscribe = useCallback(
     (listener: () => void) => {
       if (!historyKey) {
@@ -796,6 +847,7 @@ export function useAccountPlaybackHistory(
         listeners.delete(listener);
         if (listeners.size === 0) {
           historyListeners.delete(historyKey);
+          pruneHistorySnapshotCache();
         }
       };
     },
@@ -804,6 +856,7 @@ export function useAccountPlaybackHistory(
 
   const getSnapshot = useCallback(() => {
     if (!historyKey) return EMPTY_HISTORY_RECORDS;
+    markHookKeyPendingForCurrentRender(historyKey);
     return getAccountHistorySnapshot(historyKey);
   }, [historyKey]);
 
