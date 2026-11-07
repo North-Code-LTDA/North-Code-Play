@@ -269,6 +269,15 @@ const {
 
 // Mocks padrão offline para todos os métodos de XtreamService desde o início da suíte
 const originalXtreamAuthenticate = XtreamService.authenticate.bind(XtreamService);
+const origXtreamMethods = {
+  getLiveCategories: XtreamService.getLiveCategories.bind(XtreamService),
+  getVodCategories: XtreamService.getVodCategories.bind(XtreamService),
+  getSeriesCategories: XtreamService.getSeriesCategories.bind(XtreamService),
+  getLiveStreams: XtreamService.getLiveStreams.bind(XtreamService),
+  getVodStreams: XtreamService.getVodStreams.bind(XtreamService),
+  getSeries: XtreamService.getSeries.bind(XtreamService),
+  authenticate: XtreamService.authenticate.bind(XtreamService),
+};
 
 function installDefaultXtreamOfflineMocks(): void {
   (XtreamService as any).authenticate = async (creds?: XtreamCredentials) => ({
@@ -13595,6 +13604,951 @@ async function runPerformanceAndVirtualizationTests() {
       windowInstance.localStorage.removeItem(keyP23A);
       windowInstance.localStorage.removeItem(keyP23B);
       windowInstance.localStorage.removeItem(keyP23Server2);
+    }
+  }
+
+  // =========================================================================
+  // 12.20. P3.1 — Diagnóstico do Carregamento Inicial dos Catálogos
+  // =========================================================================
+  console.log(
+    '🧪 Testando 12.20 (P3.1): Diagnóstico do carregamento inicial dos catálogos (fila, transporte Web/Android, processamento, marcos da Home, sanitização e isolamento)...'
+  );
+  {
+    const catalogDiagMod = await import('../src/utils/catalogDiagnostics');
+    const { setTransportTestConfig } = await import('../src/services/httpTransport');
+    const {
+      CATALOG_DIAGNOSTICS_ENABLED_KEY,
+      isCatalogLoadDiagnosticsEnabled,
+      setCatalogLoadDiagnosticsEnabled,
+      setCatalogDiagnosticsClockForTest,
+      resetCatalogDiagnosticsForTest,
+      getCatalogDiagnosticsSnapshot,
+      getCatalogDiagnosticsRecordedEventsCountForTest,
+      startCatalogDiagnosticsSession,
+      recordCatalogOperationEnqueued,
+      recordCatalogOperationDeduplicated,
+      recordCatalogOperationStarted,
+      recordCatalogOperationFinished,
+      recordHomeOpeningMilestone,
+    } = catalogDiagMod;
+
+    const savedGetLiveCatsP31 = (XtreamService as any).getLiveCategories;
+    const savedGetVodCatsP31 = (XtreamService as any).getVodCategories;
+    const savedGetSeriesCatsP31 = (XtreamService as any).getSeriesCategories;
+    const savedGetLiveStreamsP31 = (XtreamService as any).getLiveStreams;
+    const savedGetVodStreamsP31 = (XtreamService as any).getVodStreams;
+    const savedGetSeriesP31 = (XtreamService as any).getSeries;
+    const savedAuthenticateP31 = (XtreamService as any).authenticate;
+    const savedFetchP31 = globalThis.fetch;
+
+    const p31Container = document.createElement('div');
+    document.body.appendChild(p31Container);
+    const p31Root = createRoot(p31Container);
+
+    try {
+      resetCatalogDiagnosticsForTest(false);
+      windowInstance.localStorage.removeItem(CATALOG_DIAGNOSTICS_ENABLED_KEY);
+
+      // -----------------------------------------------------------------------
+      // 12.20.1: Desativado por padrão — zero eventos capturados e mesmas 6 requisições sem chamadas extras
+      // -----------------------------------------------------------------------
+      assert.strictEqual(
+        isCatalogLoadDiagnosticsEnabled(),
+        false,
+        '[12.20.1] Coleta de diagnóstico inicial dos catálogos deve vir desativada por padrão'
+      );
+      assert.strictEqual(
+        windowInstance.localStorage.getItem(CATALOG_DIAGNOSTICS_ENABLED_KEY),
+        null,
+        '[12.20.1] Nenhuma chave deve ser gravada no localStorage enquanto o usuário não ativar a coleta'
+      );
+
+      let disabledReqCount = 0;
+      (XtreamService as any).getLiveCategories = async () => {
+        disabledReqCount++;
+        return [{ category_id: '1', category_name: 'Canais' }];
+      };
+      (XtreamService as any).getVodCategories = async () => {
+        disabledReqCount++;
+        return [{ category_id: '10', category_name: 'Filmes' }];
+      };
+      (XtreamService as any).getSeriesCategories = async () => {
+        disabledReqCount++;
+        return [{ category_id: '20', category_name: 'Séries' }];
+      };
+      (XtreamService as any).getLiveStreams = async () => {
+        disabledReqCount++;
+        return [{ stream_id: 101, name: 'Canal 1', category_id: '1' }];
+      };
+      (XtreamService as any).getVodStreams = async () => {
+        disabledReqCount++;
+        return [{ stream_id: 201, name: 'Filme 1 (2024)', category_id: '10', rating: '8.0' }];
+      };
+      (XtreamService as any).getSeries = async () => {
+        disabledReqCount++;
+        return [{ series_id: 301, name: 'Série 1 (2024)', category_id: '20', rating: '8.5' }];
+      };
+
+      await act(async () => {
+        p31Root.render(
+          React.createElement(
+            XtreamProvider,
+            {
+              credentials: {
+                serverUrl: 'http://secret-provider.example.com:8080',
+                username: 'private_user_zero',
+                password: 'private_pass_zero',
+              },
+            },
+            React.createElement('div', null, 'Disabled Diag Test')
+          )
+        );
+        await new Promise((r) => setTimeout(r, 40));
+      });
+
+      assert.strictEqual(
+        disabledReqCount,
+        6,
+        `[12.20.1] Com diagnóstico desativado, exatamente as 6 operações iniciais devem carregar sem requisições extras (obteve ${disabledReqCount})`
+      );
+      assert.strictEqual(
+        getCatalogDiagnosticsSnapshot(),
+        null,
+        '[12.20.1] Com diagnóstico desativado, nenhum snapshot de sessão deve ser alocado em memória'
+      );
+      assert.strictEqual(
+        getCatalogDiagnosticsRecordedEventsCountForTest(),
+        0,
+        '[12.20.1] Com diagnóstico desativado, o contador de eventos capturados deve ser exatamente 0'
+      );
+
+      await act(async () => {
+        p31Root.unmount();
+      });
+
+      // -----------------------------------------------------------------------
+      // 12.20.2: Relógio monotônico controlado — separação de Transporte Web (espera da resposta vs leitura do corpo + JSON.parse) vs Transporte Android CapacitorHttp (transporte + ponte nativa com payload pré-parseado sem re-serializar)
+      // -----------------------------------------------------------------------
+      let controlledNowMs = 1000;
+      setCatalogDiagnosticsClockForTest(() => controlledNowMs);
+      setCatalogLoadDiagnosticsEnabled(true);
+
+      assert.strictEqual(
+        isCatalogLoadDiagnosticsEnabled(),
+        true,
+        '[12.20.2] Coleta deve ficar ativa após setCatalogLoadDiagnosticsEnabled(true)'
+      );
+      assert.strictEqual(
+        windowInstance.localStorage.getItem(CATALOG_DIAGNOSTICS_ENABLED_KEY),
+        'true',
+        '[12.20.2] Apenas a preferência booleana ("true") deve ser persistida no localStorage'
+      );
+
+      // Restaurar métodos reais de XtreamService para exercitar XtreamService.request + executeXtreamGetRequest reais
+      (XtreamService as any).getLiveCategories = origXtreamMethods.getLiveCategories;
+      (XtreamService as any).getVodCategories = origXtreamMethods.getVodCategories;
+      (XtreamService as any).getSeriesCategories = origXtreamMethods.getSeriesCategories;
+      (XtreamService as any).getLiveStreams = origXtreamMethods.getLiveStreams;
+      (XtreamService as any).getVodStreams = origXtreamMethods.getVodStreams;
+      (XtreamService as any).getSeries = origXtreamMethods.getSeries;
+
+      const s1Id = 101;
+      startCatalogDiagnosticsSession(s1Id, 2);
+
+      // Operação 1: Modo Web (fetch texto) -> espera pela resposta = 35ms, leitura do corpo = 20ms, JSON.parse = 12ms
+      setTransportTestConfig({ mode: 'web', capacitorHttpGet: null });
+      const rawJsonMovies = JSON.stringify([
+        ...Array.from({ length: 200 }, (_, idx) => ({
+          stream_id: idx + 1,
+          name: `Filme Segredo Alpha ${idx + 1} (${2000 + (idx % 25)})`,
+          category_id: '10',
+          rating: ((idx % 90) / 10).toFixed(1),
+        })),
+        null,
+        'invalido',
+      ]);
+
+      const origJsonParse = JSON.parse;
+      JSON.parse = ((text: string, reviver?: any) => {
+        controlledNowMs += 12; // Simula 12ms gastos em JSON.parse
+        return origJsonParse(text, reviver);
+      }) as typeof JSON.parse;
+
+      globalThis.fetch = (async () => {
+        controlledNowMs += 35; // 35ms aguardando cabeçalhos da resposta HTTP
+        return {
+          ok: true,
+          status: 200,
+          text: async () => {
+            controlledNowMs += 20; // 20ms lendo o corpo da resposta
+            return rawJsonMovies;
+          },
+        } as unknown as Response;
+      }) as typeof fetch;
+
+      const vodOpHandle = recordCatalogOperationEnqueued(s1Id, 'vod_catalog', 50);
+      assert(vodOpHandle !== null, '[12.20.2] Handle da operação vod_catalog deve ser criado');
+      controlledNowMs += 15; // 15ms aguardando na fila
+      recordCatalogOperationStarted(vodOpHandle);
+
+      const fetchedMoviesWeb = await XtreamService.getVodStreams(
+        {
+          serverUrl: 'http://private-host.example.org:8080',
+          username: 'user_secret_123',
+          password: 'pass_secret_456',
+        },
+        undefined,
+        { diagOp: vodOpHandle }
+      );
+      JSON.parse = origJsonParse;
+
+      assert.strictEqual(
+        fetchedMoviesWeb.length,
+        200,
+        '[12.20.2] Normalização deve filtrar itens inválidos mantendo os 200 filmes válidos'
+      );
+
+      // Construir índice VOD em 2 lotes cooperativos de 100 itens com pausa entre lotes medida pelo relógio monotônico
+      const vodIdxP31 = await buildVodIndexAsync(fetchedMoviesWeb, {
+        batchSize: 100,
+        diagOp: vodOpHandle,
+        onBatchProgress: (processed) => {
+          if (processed < 200) {
+            controlledNowMs += 9; // Simula pausa/yield de 9ms entre o 1º e o 2º lote cooperativo
+          }
+        },
+      });
+      assert(vodIdxP31 !== null, '[12.20.2] Índice VOD deve ser construído');
+
+      // Executar 1ª ordenação (fria) e 2ª ordenação (cache em memória)
+      controlledNowMs += 4;
+      const sortedAll1 = vodIdxP31.getSortedAll();
+      const sortedAll2 = vodIdxP31.getSortedAll();
+      assert.strictEqual(sortedAll1, sortedAll2, '[12.20.2] 2ª leitura de getSortedAll deve vir do cache');
+
+      recordCatalogOperationFinished(vodOpHandle, 'success');
+
+      // Operação 2: Modo Android APK (CapacitorHttp) com payload já entregue como array pela ponte nativa (sem JSON.parse e sem re-serializar)
+      let jsonStringifyCalledOnPreParsed = false;
+      const origJsonStringify = JSON.stringify;
+      const preParsedAndroidCategories = [
+        { category_id: '1', category_name: 'Canais Secretos Android' },
+        { category_id: '2', category_name: 'Esportes Secretos Android' },
+      ];
+      JSON.stringify = ((value: any, ...rest: any[]) => {
+        if (value === preParsedAndroidCategories) {
+          jsonStringifyCalledOnPreParsed = true;
+        }
+        return origJsonStringify(value, ...rest);
+      }) as typeof JSON.stringify;
+
+      setTransportTestConfig({
+        mode: 'capacitor',
+        capacitorHttpGet: async () => {
+          controlledNowMs += 48; // 48ms em transporte + ponte nativa CapacitorHttp
+          return {
+            status: 200,
+            data: preParsedAndroidCategories,
+            headers: {},
+            url: 'http://private-host.example.org:8080/player_api.php',
+          };
+        },
+      });
+
+      const liveCatOpHandle = recordCatalogOperationEnqueued(s1Id, 'live_categories', 80);
+      recordCatalogOperationStarted(liveCatOpHandle);
+      const fetchedCatsAndroid = await XtreamService.getLiveCategories(
+        {
+          serverUrl: 'http://private-host.example.org:8080',
+          username: 'user_secret_123',
+          password: 'pass_secret_456',
+        },
+        { diagOp: liveCatOpHandle }
+      );
+      JSON.stringify = origJsonStringify;
+      recordCatalogOperationFinished(liveCatOpHandle, 'success');
+
+      assert.strictEqual(fetchedCatsAndroid.length, 2);
+      assert.strictEqual(
+        jsonStringifyCalledOnPreParsed,
+        false,
+        '[12.20.2] Payload já recebido como objeto/array no Android NÃO deve ser re-serializado com JSON.stringify'
+      );
+
+      const snapTransport = getCatalogDiagnosticsSnapshot();
+      assert(snapTransport !== null, '[12.20.2] Snapshot deve existir');
+
+      const vodOpSnap = snapTransport.operations.vod_catalog!;
+      assert(vodOpSnap !== null, '[12.20.2] vod_catalog deve estar no snapshot');
+      assert.strictEqual(vodOpSnap.queueWaitMs, 15, '[12.20.2] Espera na fila de vod_catalog deve ser 15ms');
+      assert.strictEqual(vodOpSnap.attempts.length, 1);
+      assert.strictEqual(vodOpSnap.attempts[0].transportKind, 'web-fetch');
+      assert.strictEqual(
+        vodOpSnap.attempts[0].responseWaitMs,
+        35,
+        '[12.20.2] No navegador, espera pela resposta deve ser separada (35ms)'
+      );
+      assert.strictEqual(
+        vodOpSnap.attempts[0].bodyReadMs,
+        20,
+        '[12.20.2] No navegador, leitura do corpo deve ser separada (20ms)'
+      );
+      assert.strictEqual(
+        vodOpSnap.attempts[0].jsonParseExecuted,
+        true,
+        '[12.20.2] No navegador com texto JSON, jsonParseExecuted deve ser true'
+      );
+      assert.strictEqual(
+        vodOpSnap.attempts[0].jsonParseMs,
+        12,
+        '[12.20.2] Tempo de JSON.parse deve ser medido quando JSON.parse realmente ocorre (12ms)'
+      );
+      assert.strictEqual(vodOpSnap.rawItemsCount, 202, '[12.20.2] Contagem bruta recebida deve ser 202');
+      assert.strictEqual(vodOpSnap.validItemsCount, 200, '[12.20.2] Contagem válida após normalização deve ser 200');
+      assert(
+        vodOpSnap.indexElapsedMs !== null &&
+          vodOpSnap.indexActiveComputeMs !== null &&
+          vodOpSnap.indexElapsedMs >= vodOpSnap.indexActiveComputeMs + 9,
+        `[12.20.2] indexElapsedMs (${vodOpSnap.indexElapsedMs}ms) deve incluir a pausa entre lotes cooperativos (+9ms) além do tempo ativo (${vodOpSnap.indexActiveComputeMs}ms)`
+      );
+      assert.strictEqual(vodOpSnap.indexBatchesProcessed, 2);
+      assert.strictEqual(vodOpSnap.indexBatchYields, 1);
+      assert(
+        snapTransport.sorting.vod.newSortsCount >= 1 &&
+          snapTransport.sorting.vod.cacheHitsCount >= 1,
+        '[12.20.2] Diagnóstico de ordenação deve diferenciar novas ordenações de leituras atendidas pelo cache em memória'
+      );
+
+      const liveCatOpSnap = snapTransport.operations.live_categories!;
+      assert(liveCatOpSnap !== null, '[12.20.2] live_categories deve estar no snapshot');
+      assert.strictEqual(liveCatOpSnap.attempts.length, 1);
+      assert.strictEqual(liveCatOpSnap.attempts[0].transportKind, 'capacitor-native');
+      assert.strictEqual(
+        liveCatOpSnap.attempts[0].nativeTransportAndBridgeMs,
+        48,
+        '[12.20.2] No Android, o tempo de CapacitorHttp deve ser registrado em nativeTransportAndBridgeMs (48ms)'
+      );
+      assert.strictEqual(liveCatOpSnap.attempts[0].responseWaitMs, null);
+      assert.strictEqual(liveCatOpSnap.attempts[0].bodyReadMs, null);
+      assert.strictEqual(
+        liveCatOpSnap.attempts[0].payloadFormat,
+        'pre-parsed-object',
+        '[12.20.2] Payload já parseado na ponte nativa deve ser identificado como pre-parsed-object'
+      );
+      assert.strictEqual(
+        liveCatOpSnap.attempts[0].jsonParseExecuted,
+        false,
+        '[12.20.2] Quando o payload já chega como objeto/array, jsonParseExecuted deve ser false'
+      );
+      assert.strictEqual(
+        liveCatOpSnap.attempts[0].jsonParseMs,
+        null,
+        '[12.20.2] Quando JSON.parse não ocorre, jsonParseMs deve ser null'
+      );
+      assert.strictEqual(
+        liveCatOpSnap.attempts[0].payloadChars,
+        null,
+        '[12.20.2] Payload pré-parseado não deve medir caracteres via re-serialização'
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.20.3: Retry, deduplicação e operações paralelas sem misturar tentativas
+      // -----------------------------------------------------------------------
+      XtreamService.setRetryDelayMsForTest(25);
+      setTransportTestConfig({ mode: 'web', capacitorHttpGet: null });
+
+      let seriesCatAttemptCounter = 0;
+      globalThis.fetch = (async () => {
+        seriesCatAttemptCounter++;
+        controlledNowMs += 18;
+        if (seriesCatAttemptCounter === 1) {
+          return {
+            ok: false,
+            status: 502,
+            text: async () => 'Bad Gateway Segredo Interno Provedor XYZ',
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => {
+            controlledNowMs += 7;
+            return origJsonStringify([{ category_id: '30', category_name: 'Séries Drama' }]);
+          },
+        } as unknown as Response;
+      }) as typeof fetch;
+
+      const seriesCatOpHandle = recordCatalogOperationEnqueued(s1Id, 'series_categories', 80);
+      recordCatalogOperationDeduplicated(s1Id, 'series_categories', 95);
+      recordCatalogOperationStarted(seriesCatOpHandle);
+      const seriesCatsRes = await XtreamService.getSeriesCategories(
+        {
+          serverUrl: 'http://private-host.example.org:8080',
+          username: 'user_secret_123',
+          password: 'pass_secret_456',
+        },
+        { diagOp: seriesCatOpHandle }
+      );
+      recordCatalogOperationFinished(seriesCatOpHandle, 'success');
+      XtreamService.setRetryDelayMsForTest(1000);
+
+      assert.strictEqual(seriesCatsRes.length, 1);
+      const snapAfterRetry = getCatalogDiagnosticsSnapshot()!;
+      const seriesCatSnap = snapAfterRetry.operations.series_categories!;
+      assert.strictEqual(
+        seriesCatSnap.deduplicatedHits,
+        1,
+        '[12.20.3] Deduplicação deve ser contabilizada na operação correspondente'
+      );
+      assert.strictEqual(
+        seriesCatSnap.effectivePriority,
+        95,
+        '[12.20.3] Deduplicação com prioridade maior deve elevar effectivePriority'
+      );
+      assert.strictEqual(
+        seriesCatSnap.attempts.length,
+        2,
+        '[12.20.3] Operação com 1 falha HTTP 502 seguida de sucesso deve registrar 2 tentativas'
+      );
+      assert.strictEqual(
+        seriesCatSnap.retryCount,
+        1,
+        '[12.20.3] Operação com retry deve registrar retryCount = 1'
+      );
+      assert.strictEqual(
+        seriesCatSnap.attempts[0].outcome,
+        'error',
+        '[12.20.3] 1ª tentativa transitória deve ser registrada como error'
+      );
+      assert.strictEqual(
+        seriesCatSnap.attempts[0].httpStatus,
+        502,
+        '[12.20.3] Código HTTP 502 deve ser registrado sem expor mensagem bruta do provedor'
+      );
+      assert.strictEqual(
+        seriesCatSnap.attempts[1].outcome,
+        'success',
+        '[12.20.3] 2ª tentativa deve ser registrada como success'
+      );
+      assert.strictEqual(
+        seriesCatSnap.outcome,
+        'success',
+        '[12.20.3] Resultado final da operação após retry bem-sucedido deve ser success'
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.20.4: Operações paralelas (concorrência máx 2), troca de conta/cancelamento e proteção contra contaminação por resposta tardia
+      // -----------------------------------------------------------------------
+      setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });
+      globalThis.fetch = savedFetchP31;
+
+      let resolveStaleVodSessionA: ((items: any[]) => void) | null = null;
+
+      (XtreamService as any).getLiveCategories = async (
+        _creds: XtreamCredentials,
+        opts?: any
+      ) => {
+        await Promise.resolve();
+        controlledNowMs += 10;
+        const arr = [{ category_id: '1', category_name: 'TV' }];
+        opts?.diagOp?.recordNormalization({
+          durationMs: 1,
+          rawItemsCount: 1,
+          validItemsCount: 1,
+        });
+        return arr;
+      };
+      (XtreamService as any).getVodCategories = async (
+        _creds: XtreamCredentials,
+        opts?: any
+      ) => {
+        await Promise.resolve();
+        controlledNowMs += 12;
+        const arr = [{ category_id: '10', category_name: 'Filmes' }];
+        opts?.diagOp?.recordNormalization({
+          durationMs: 1,
+          rawItemsCount: 1,
+          validItemsCount: 1,
+        });
+        return arr;
+      };
+      (XtreamService as any).getSeriesCategories = async (
+        _creds: XtreamCredentials,
+        opts?: any
+      ) => {
+        await Promise.resolve();
+        controlledNowMs += 14;
+        const arr = [{ category_id: '20', category_name: 'Séries' }];
+        opts?.diagOp?.recordNormalization({
+          durationMs: 1,
+          rawItemsCount: 1,
+          validItemsCount: 1,
+        });
+        return arr;
+      };
+      (XtreamService as any).getLiveStreams = async (
+        _creds: XtreamCredentials,
+        _catId?: string,
+        opts?: any
+      ) => {
+        await Promise.resolve();
+        controlledNowMs += 20;
+        const arr = [{ stream_id: 1001, name: 'Canal Ao Vivo', category_id: '1' }];
+        opts?.diagOp?.recordNormalization({
+          durationMs: 1,
+          rawItemsCount: 1,
+          validItemsCount: 1,
+        });
+        return arr;
+      };
+      (XtreamService as any).getVodStreams = async (
+        creds: XtreamCredentials,
+        _catId?: string,
+        opts?: any
+      ) => {
+        if (creds.username === 'account_A_secret') {
+          const staleArr = await new Promise<any[]>((resolve) => {
+            resolveStaleVodSessionA = resolve;
+          });
+          opts?.diagOp?.recordNormalization({
+            durationMs: 5,
+            rawItemsCount: staleArr.length,
+            validItemsCount: staleArr.length,
+          });
+          return staleArr;
+        }
+        await Promise.resolve();
+        controlledNowMs += 30;
+        const arr = [
+          { stream_id: 2001, name: 'Filme Conta B 1 (2025)', category_id: '10', rating: '8.8' },
+          { stream_id: 2002, name: 'Filme Conta B 2 (2024)', category_id: '10', rating: '7.9' },
+        ];
+        opts?.diagOp?.recordNormalization({
+          durationMs: 2,
+          rawItemsCount: 2,
+          validItemsCount: 2,
+        });
+        return arr;
+      };
+      (XtreamService as any).getSeries = async (
+        _creds: XtreamCredentials,
+        _catId?: string,
+        opts?: any
+      ) => {
+        await Promise.resolve();
+        controlledNowMs += 25;
+        const arr = [{ series_id: 3001, name: 'Série Conta B (2025)', category_id: '20', rating: '9.0' }];
+        opts?.diagOp?.recordNormalization({
+          durationMs: 1,
+          rawItemsCount: 1,
+          validItemsCount: 1,
+        });
+        return arr;
+      };
+
+      const switchRoot = createRoot(p31Container);
+      await act(async () => {
+        switchRoot.render(
+          React.createElement(
+            XtreamProvider,
+            {
+              credentials: {
+                serverUrl: 'http://server-a-secret.tv:8080',
+                username: 'account_A_secret',
+                password: 'pwd_A_secret',
+              },
+            },
+            React.createElement('div', null, 'Session A')
+          )
+        );
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      const snapSessionA = getCatalogDiagnosticsSnapshot()!;
+      assert(snapSessionA !== null, '[12.20.4] Sessão A deve estar registrada');
+      const sessionAId = snapSessionA.sessionId;
+      assert.strictEqual(
+        snapSessionA.operations.vod_catalog?.outcome,
+        'running',
+        '[12.20.4] vod_catalog da Sessão A deve estar em andamento antes da troca de conta'
+      );
+
+      // Trocar para a Conta B enquanto vod_catalog da Sessão A ainda está pendente
+      controlledNowMs += 50;
+      await act(async () => {
+        switchRoot.render(
+          React.createElement(
+            XtreamProvider,
+            {
+              credentials: {
+                serverUrl: 'http://server-b-secret.tv:8080',
+                username: 'account_B_secret',
+                password: 'pwd_B_secret',
+              },
+            },
+            React.createElement('div', null, 'Session B')
+          )
+        );
+        await new Promise((r) => setTimeout(r, 50));
+      });
+
+      const snapSessionBBeforeLateA = getCatalogDiagnosticsSnapshot()!;
+      assert(
+        snapSessionBBeforeLateA.sessionId > sessionAId,
+        '[12.20.4] Troca de conta deve criar uma nova sessão em memória substituindo a anterior'
+      );
+      assert(
+        snapSessionBBeforeLateA.allSixFinishedAtMs !== null,
+        '[12.20.4] Sessão B deve concluir todas as 6 operações'
+      );
+      assert.strictEqual(
+        snapSessionBBeforeLateA.operations.vod_catalog?.validItemsCount,
+        2,
+        '[12.20.4] Sessão B deve registrar os 2 itens válidos da Conta B'
+      );
+
+      // Agora resolver a resposta tardia da Sessão A (com 99 itens falsos) e avançar o relógio
+      controlledNowMs += 500;
+      await act(async () => {
+        if (resolveStaleVodSessionA) {
+          resolveStaleVodSessionA(
+            Array.from({ length: 99 }, (_, i) => ({
+              stream_id: 9000 + i,
+              name: `Filme Tardio Sessão A ${i}`,
+              category_id: '10',
+            }))
+          );
+        }
+        await new Promise((r) => setTimeout(r, 40));
+      });
+
+      const snapSessionBAfterLateA = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapSessionBAfterLateA.sessionId,
+        snapSessionBBeforeLateA.sessionId,
+        '[12.20.4] Resposta tardia da Sessão A não deve alterar o ID da Sessão B ativa'
+      );
+      assert.strictEqual(
+        snapSessionBAfterLateA.operations.vod_catalog?.validItemsCount,
+        2,
+        '[12.20.4] Resposta tardia da Sessão A (99 itens) NÃO deve contaminar validItemsCount (2) da Sessão B'
+      );
+      assert.strictEqual(
+        snapSessionBAfterLateA.operations.vod_catalog?.totalElapsedMs,
+        snapSessionBBeforeLateA.operations.vod_catalog?.totalElapsedMs,
+        '[12.20.4] Resposta tardia da Sessão A não deve alterar os tempos da Sessão B'
+      );
+
+      // Verificar espera na fila nas 6 operações paralelas da Sessão B (concorrência máxima de 2)
+      const opsB = snapSessionBAfterLateA.operations;
+      assert.strictEqual(
+        opsB.live_categories?.queueWaitMs,
+        0,
+        '[12.20.4] 1ª operação da fila (live_categories) deve iniciar imediatamente (queueWaitMs=0)'
+      );
+      assert.strictEqual(
+        opsB.vod_categories?.queueWaitMs,
+        0,
+        '[12.20.4] 2ª operação da fila (vod_categories) deve iniciar imediatamente (queueWaitMs=0)'
+      );
+      assert(
+        (opsB.series_categories?.queueWaitMs ?? 0) > 0 &&
+          (opsB.live_catalog?.queueWaitMs ?? 0) > 0 &&
+          (opsB.vod_catalog?.queueWaitMs ?? 0) > 0 &&
+          (opsB.series_catalog?.queueWaitMs ?? 0) > 0,
+        '[12.20.4] As 4 operações seguintes devem registrar queueWaitMs > 0 respeitando a concorrência máxima de 2'
+      );
+
+      await act(async () => {
+        switchRoot.unmount();
+      });
+
+      // -----------------------------------------------------------------------
+      // 12.20.5: Marcos de abertura da Home — separação entre fim das 6 operações, espera no seletor de tela (DisplaySetupModal) e botão "Continuar enquanto carrega"
+      // -----------------------------------------------------------------------
+      // Caso A: Seletor de apresentação (DisplaySetupModal) aberto por 180ms enquanto as 6 operações terminam em 120ms
+      controlledNowMs = 5000;
+      const sMilestoneAId = 501;
+      startCatalogDiagnosticsSession(sMilestoneAId, 2);
+      recordHomeOpeningMilestone({
+        isDisplaySetupOpen: true,
+        isOverlayActive: true,
+        isAuthRejected: false,
+        allSixFinished: false,
+      });
+      for (const opId of [
+        'live_categories',
+        'vod_categories',
+        'series_categories',
+        'live_catalog',
+        'vod_catalog',
+        'series_catalog',
+      ] as const) {
+        const h = recordCatalogOperationEnqueued(sMilestoneAId, opId, 80);
+        recordCatalogOperationStarted(h);
+        controlledNowMs += 20; // 6 * 20ms = 120ms total (t=5120ms)
+        recordCatalogOperationFinished(h, 'success');
+      }
+      // Em t=5120ms as 6 operações terminaram, mas o seletor de tela continua aberto
+      recordHomeOpeningMilestone({
+        isDisplaySetupOpen: true,
+        isOverlayActive: false,
+        isAuthRejected: false,
+        allSixFinished: true,
+      });
+      // Em t=5180ms o usuário conclui o seletor de apresentação e a Home fica disponível
+      controlledNowMs = 5180;
+      recordHomeOpeningMilestone({
+        isDisplaySetupOpen: false,
+        isOverlayActive: false,
+        isAuthRejected: false,
+        allSixFinished: true,
+      });
+
+      const snapMilestoneA = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapMilestoneA.allSixFinishedAtMs,
+        120,
+        '[12.20.5] Fim das 6 operações deve ser registrado em 120ms'
+      );
+      assert.strictEqual(
+        snapMilestoneA.homeAvailableAtMs,
+        180,
+        '[12.20.5] Liberação efetiva da Home após fechar o seletor de apresentação deve ser 180ms'
+      );
+      assert.strictEqual(
+        snapMilestoneA.displaySetupWaitMs,
+        180,
+        '[12.20.5] Tempo de espera no seletor de apresentação (180ms) deve ser separado do tempo de processamento'
+      );
+      assert.strictEqual(
+        snapMilestoneA.netProcessingUntilHomeAvailableMs,
+        0,
+        '[12.20.5] Tempo líquido fora do seletor de apresentação deve ser 0ms quando o seletor permaneceu aberto durante todo o carregamento'
+      );
+      assert.strictEqual(
+        snapMilestoneA.releaseTrigger,
+        'auto_all_six',
+        '[12.20.5] Motivo da liberação após conclusão das 6 operações deve ser auto_all_six'
+      );
+
+      // Caso B: Liberação manual pelo botão "Continuar enquanto carrega" antes do término das 6 operações
+      controlledNowMs = 8000;
+      const sMilestoneBId = 502;
+      startCatalogDiagnosticsSession(sMilestoneBId, 2);
+      recordHomeOpeningMilestone({
+        isDisplaySetupOpen: false,
+        isOverlayActive: true,
+        isAuthRejected: false,
+        allSixFinished: false,
+      });
+      controlledNowMs = 8350; // Usuário clica em "Continuar enquanto carrega" aos 350ms
+      recordHomeOpeningMilestone({
+        isDisplaySetupOpen: false,
+        isOverlayActive: false,
+        isAuthRejected: false,
+        allSixFinished: false,
+        manualContinueClicked: true,
+      });
+      controlledNowMs = 8500; // As 6 operações terminam depois, aos 500ms
+      for (const opId of [
+        'live_categories',
+        'vod_categories',
+        'series_categories',
+        'live_catalog',
+        'vod_catalog',
+        'series_catalog',
+      ] as const) {
+        const h = recordCatalogOperationEnqueued(sMilestoneBId, opId, 80);
+        recordCatalogOperationStarted(h);
+        recordCatalogOperationFinished(h, 'success');
+      }
+      recordHomeOpeningMilestone({
+        isDisplaySetupOpen: false,
+        isOverlayActive: false,
+        isAuthRejected: false,
+        allSixFinished: true,
+      });
+
+      const snapMilestoneB = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapMilestoneB.homeAvailableAtMs,
+        350,
+        '[12.20.5] Com clique manual em "Continuar enquanto carrega", homeAvailableAtMs deve ser 350ms'
+      );
+      assert.strictEqual(
+        snapMilestoneB.allSixFinishedAtMs,
+        500,
+        '[12.20.5] allSixFinishedAtMs deve registrar 500ms separadamente de homeAvailableAtMs (350ms)'
+      );
+      assert.strictEqual(
+        snapMilestoneB.releaseTrigger,
+        'manual_continue_button',
+        '[12.20.5] Motivo da liberação manual deve ser manual_continue_button'
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.20.6: Exposição em Configurações (ConfigView) + Sanitização estrita (sem URL, credenciais, nomes ou conteúdo da resposta)
+      // -----------------------------------------------------------------------
+      (XtreamService as any).authenticate = async () => ({
+        user_info: {
+          status: 'Active',
+          exp_date: '1893456000',
+          active_cons: '1',
+          max_connections: '2',
+          allowed_output_formats: ['m3u8', 'ts'],
+        },
+      });
+
+      let copiedTextFromConfig = '';
+      Object.defineProperty(windowInstance.navigator, 'clipboard', {
+        value: {
+          writeText: async (txt: string) => {
+            copiedTextFromConfig = txt;
+          },
+        },
+        configurable: true,
+      });
+
+      const cfgRoot = createRoot(p31Container);
+      await act(async () => {
+        cfgRoot.render(
+          React.createElement(
+            XtreamProvider,
+            {
+              credentials: {
+                serverUrl: 'http://ultra-secret-server.iptv.local:8080',
+                username: 'super_secret_username_99',
+                password: 'super_secret_password_99',
+                playlistName: 'Lista Privada da Família Silva',
+              },
+            },
+            React.createElement(
+              NavigationProvider,
+              null,
+              React.createElement(ConfigView)
+            )
+          )
+        );
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      // Registrar marco de abertura para a sessão recém-carregada no ConfigView
+      recordHomeOpeningMilestone({
+        isDisplaySetupOpen: false,
+        isOverlayActive: false,
+        isAuthRejected: false,
+        allSixFinished: true,
+      });
+
+      const diagToggleBtn = p31Container.querySelector(
+        'button[data-nav-row="config-diagnostics-toggle"]'
+      ) as HTMLButtonElement;
+      assert(diagToggleBtn, '[12.20.6] Botão de abrir diagnóstico na ConfigView deve existir');
+
+      await act(async () => {
+        diagToggleBtn.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      const catalogDiagSection = p31Container.querySelector(
+        '[data-catalog-diagnostics-section="true"]'
+      );
+      assert(
+        catalogDiagSection !== null,
+        '[12.20.6] Seção 4 (Diagnóstico de Carregamento Inicial dos Catálogos P3.1) deve ser exibida no painel de diagnóstico'
+      );
+
+      const copyBtn = p31Container.querySelector(
+        'button[data-copy-diagnostics="true"]'
+      ) as HTMLButtonElement;
+      await act(async () => {
+        copyBtn.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      assert(
+        copiedTextFromConfig.includes(
+          '--- Diagnóstico de Abertura dos Catálogos (P3.1) ---'
+        ),
+        '[12.20.6] Texto copiado pelo botão "Copiar diagnóstico" deve conter o relatório P3.1'
+      );
+      assert(
+        copiedTextFromConfig.includes('[live_categories]') &&
+          copiedTextFromConfig.includes('[vod_catalog]') &&
+          copiedTextFromConfig.includes('[series_catalog]'),
+        '[12.20.6] Relatório copiado deve listar as 6 operações iniciais com seus identificadores locais'
+      );
+
+      // Verificação de sanitização estrita: NENHUM dado sensível pode aparecer no relatório
+      const forbiddenSubstrings = [
+        'ultra-secret-server.iptv.local',
+        'super_secret_username_99',
+        'super_secret_password_99',
+        'Lista Privada da Família Silva',
+        'server-a-secret',
+        'server-b-secret',
+        'account_A_secret',
+        'account_B_secret',
+        'Filme Conta B',
+        'Segredo Interno Provedor XYZ',
+      ];
+      for (const forbidden of forbiddenSubstrings) {
+        assert(
+          !copiedTextFromConfig.includes(forbidden),
+          `[12.20.6] Relatório de diagnóstico NÃO deve conter dado sensível ou conteúdo da resposta ("${forbidden}")`
+        );
+      }
+
+      // Testar desativação pelo botão da ConfigView
+      const toggleCollectBtn = p31Container.querySelector(
+        'button[data-catalog-diagnostics-toggle="true"]'
+      ) as HTMLButtonElement;
+      assert(toggleCollectBtn, '[12.20.6] Botão de ativar/desativar coleta deve existir na ConfigView');
+      await act(async () => {
+        toggleCollectBtn.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      assert.strictEqual(
+        isCatalogLoadDiagnosticsEnabled(),
+        false,
+        '[12.20.6] Clicar no botão de coleta quando ativa deve desativar a preferência e limpar a sessão em memória'
+      );
+      assert.strictEqual(
+        getCatalogDiagnosticsSnapshot(),
+        null,
+        '[12.20.6] Desativar a coleta deve limpar imediatamente o snapshot retido em memória'
+      );
+
+      await act(async () => {
+        cfgRoot.unmount();
+      });
+
+      console.log(
+        `📊 [Métricas P3.1 — Diagnóstico do Carregamento Inicial dos Catálogos]\n` +
+          `   • Coleta desativada por padrão: eventos capturados=0 | requisições iniciais=6 (0 extras)\n` +
+          `   • Transporte Web (fetch): espera resposta=35ms | leitura corpo=20ms | JSON.parse=12ms\n` +
+          `   • Transporte Android (CapacitorHttp): transporte + ponte nativa=48ms | payload pré-parseado sem re-serializar (jsonParseMs=n/a)\n` +
+          `   • Marcos da Home: separação validada entre fim das 6 operações (120ms), seletor de tela (180ms) e botão "Continuar enquanto carrega" (350ms vs 500ms)\n` +
+          `   • Isolamento de sessão: resposta tardia da sessão cancelada ignorada (0 contaminação na nova conta)`
+      );
+    } finally {
+      setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });
+      XtreamService.setRetryDelayMsForTest(1000);
+      setCatalogDiagnosticsClockForTest(null);
+      resetCatalogDiagnosticsForTest(false);
+      windowInstance.localStorage.removeItem(CATALOG_DIAGNOSTICS_ENABLED_KEY);
+      (XtreamService as any).getLiveCategories = savedGetLiveCatsP31;
+      (XtreamService as any).getVodCategories = savedGetVodCatsP31;
+      (XtreamService as any).getSeriesCategories = savedGetSeriesCatsP31;
+      (XtreamService as any).getLiveStreams = savedGetLiveStreamsP31;
+      (XtreamService as any).getVodStreams = savedGetVodStreamsP31;
+      (XtreamService as any).getSeries = savedGetSeriesP31;
+      (XtreamService as any).authenticate = savedAuthenticateP31;
+      globalThis.fetch = savedFetchP31;
+      if (p31Container.parentNode) {
+        document.body.removeChild(p31Container);
+      }
     }
   }
 

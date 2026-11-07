@@ -29,6 +29,7 @@ import {
   focusElementSafely,
   isElementFocusable,
 } from '../navigation';
+import { recordHomeOpeningMilestone } from '../utils/catalogDiagnostics';
 
 export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
 
@@ -179,6 +180,15 @@ function HomeContent({ credentials }: { credentials: any }) {
   }, [isOpeningDismissed]);
 
   const isOverlayActive = !isOpeningDismissed && !allSixFinished && !isAuthRejected;
+
+  useEffect(() => {
+    recordHomeOpeningMilestone({
+      isDisplaySetupOpen,
+      isOverlayActive,
+      isAuthRejected,
+      allSixFinished,
+    });
+  }, [isDisplaySetupOpen, isOverlayActive, isAuthRejected, allSixFinished]);
 
   const handleReturnToLoginForRecovery = () => {
     const reason =
@@ -757,7 +767,17 @@ function HomeContent({ credentials }: { credentials: any }) {
             <div className="mt-8">
               <button
                 type="button"
-                onClick={() => setIsOpeningDismissed(true)}
+                data-continue-while-loading="true"
+                onClick={() => {
+                  recordHomeOpeningMilestone({
+                    isDisplaySetupOpen,
+                    isOverlayActive: false,
+                    isAuthRejected,
+                    allSixFinished,
+                    manualContinueClicked: true,
+                  });
+                  setIsOpeningDismissed(true);
+                }}
                 className="px-5 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-white border border-nc-border/80 rounded-xl text-sm font-medium transition-colors shadow-lg focus:outline-none focus:ring-2 focus:ring-nc-primary"
               >
                 Continuar enquanto carrega

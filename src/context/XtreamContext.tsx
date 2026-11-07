@@ -30,6 +30,15 @@ import {
   buildVodIndexAsync,
   buildSeriesIndexAsync,
 } from "../utils/catalogIndex";
+import {
+  type CatalogDiagnosticOperationHandle,
+  startCatalogDiagnosticsSession,
+  cancelCatalogDiagnosticsSession,
+  recordCatalogOperationEnqueued,
+  recordCatalogOperationDeduplicated,
+  recordCatalogOperationStarted,
+  recordCatalogOperationFinished,
+} from "../utils/catalogDiagnostics";
 
 export type OperationStatus = "idle" | "loading" | "ready" | "error";
 
@@ -136,7 +145,11 @@ export const XtreamContext = createContext<XtreamContextData | undefined>(
 interface QueueItem {
   type: OperationType;
   priority: number;
-  run: (signal: AbortSignal) => Promise<void>;
+  diagOp: CatalogDiagnosticOperationHandle | null;
+  run: (
+    signal: AbortSignal,
+    diagOp: CatalogDiagnosticOperationHandle | null
+  ) => Promise<void>;
   resolve: () => void;
   reject: (err: any) => void;
 }
@@ -353,10 +366,15 @@ export function XtreamProvider({
       (async () => {
         try {
           if (currentSignal?.aborted || sessionRef.current !== queueSession) {
+            recordCatalogOperationFinished(nextItem.diagOp, "cancelled");
             nextItem.resolve();
             return;
           }
-          await nextItem.run(currentSignal || new AbortController().signal);
+          recordCatalogOperationStarted(nextItem.diagOp);
+          await nextItem.run(
+            currentSignal || new AbortController().signal,
+            nextItem.diagOp
+          );
           nextItem.resolve();
         } catch {
           // Internal catch ensures tasks don't leave unhandled promise rejections
@@ -382,11 +400,15 @@ export function XtreamProvider({
     (
       type: OperationType,
       priority: number,
-      task: (signal: AbortSignal) => Promise<void>
+      task: (
+        signal: AbortSignal,
+        diagOp: CatalogDiagnosticOperationHandle | null
+      ) => Promise<void>
     ): Promise<void> => {
       // If already running or pending, return existing promise (and elevate priority if needed)
       const existingPromise = inFlightPromisesRef.current.get(type);
       if (existingPromise) {
+        recordCatalogOperationDeduplicated(sessionRef.current, type, priority);
         const queued = queueRef.current.find((item) => item.type === type);
         if (queued && priority > queued.priority) {
           queued.priority = priority;
@@ -400,6 +422,12 @@ export function XtreamProvider({
       clearOperationError(type);
       pendingSetRef.current.add(type);
 
+      const diagOp = recordCatalogOperationEnqueued(
+        sessionRef.current,
+        type,
+        priority
+      );
+
       let taskResolve!: () => void;
       let taskReject!: (err: any) => void;
       const promise = new Promise<void>((resolve, reject) => {
@@ -412,6 +440,7 @@ export function XtreamProvider({
       queueRef.current.push({
         type,
         priority,
+        diagOp,
         run: task,
         resolve: taskResolve,
         reject: taskReject,
@@ -426,6 +455,11 @@ export function XtreamProvider({
 
   // Reset and cancel all work on credentials change or unmount
   useEffect(() => {
+    const previousSession = sessionRef.current;
+    if (previousSession > 0) {
+      cancelCatalogDiagnosticsSession(previousSession);
+    }
+
     // Invalidate previous session
     sessionRef.current++;
     const currentSession = sessionRef.current;
@@ -437,6 +471,7 @@ export function XtreamProvider({
     // Clear queue and pending tasks cleanly without emitting unhandled promise rejections
     queueRef.current.forEach((item) => {
       try {
+        recordCatalogOperationFinished(item.diagOp, "cancelled");
         item.resolve();
       } catch {
         // ignore
@@ -498,76 +533,138 @@ export function XtreamProvider({
 
     if (!credentials) return;
 
+    startCatalogDiagnosticsSession(currentSession, MAX_CONCURRENT);
+
     // Queue initial category fetches with controlled priority: Live TV first (priority 6), VOD (4), Series (3)
-    enqueueOperation("live_categories", 6, async (signal) => {
-      if (sessionRef.current !== currentSession) return;
+    enqueueOperation("live_categories", 6, async (signal, diagOp) => {
+      if (sessionRef.current !== currentSession || signal.aborted) {
+        recordCatalogOperationFinished(diagOp, "cancelled");
+        return;
+      }
       try {
         const cats = await XtreamService.getLiveCategories(credentials, {
           signal,
+          diagOp,
         });
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled");
+          return;
+        }
+        diagOp?.recordResultItemsFallback(Array.isArray(cats) ? cats.length : 0);
         setLiveCategories(cats);
         setLiveCategoriesStatus("ready");
+        recordCatalogOperationFinished(diagOp, "success");
       } catch (err: any) {
-        if (sessionRef.current !== currentSession) return;
+        if (
+          sessionRef.current !== currentSession ||
+          signal.aborted ||
+          err?.message === "Operação cancelada pelo usuário."
+        ) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         const msg = await registerErrorAndCheckAuth(
           err,
           currentSession,
           signal
         );
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         setLiveCategoriesError(
           msg || "Falha ao carregar categorias de TV."
         );
         setLiveCategoriesStatus("error");
+        recordCatalogOperationFinished(diagOp, "error", err);
       }
     });
 
-    enqueueOperation("vod_categories", 4, async (signal) => {
-      if (sessionRef.current !== currentSession) return;
+    enqueueOperation("vod_categories", 4, async (signal, diagOp) => {
+      if (sessionRef.current !== currentSession || signal.aborted) {
+        recordCatalogOperationFinished(diagOp, "cancelled");
+        return;
+      }
       try {
         const cats = await XtreamService.getVodCategories(credentials, {
           signal,
+          diagOp,
         });
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled");
+          return;
+        }
+        diagOp?.recordResultItemsFallback(Array.isArray(cats) ? cats.length : 0);
         setVodCategories(cats);
         setVodCategoriesStatus("ready");
+        recordCatalogOperationFinished(diagOp, "success");
       } catch (err: any) {
-        if (sessionRef.current !== currentSession) return;
+        if (
+          sessionRef.current !== currentSession ||
+          signal.aborted ||
+          err?.message === "Operação cancelada pelo usuário."
+        ) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         const msg = await registerErrorAndCheckAuth(
           err,
           currentSession,
           signal
         );
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         setVodCategoriesError(
           msg || "Falha ao carregar categorias de filmes."
         );
         setVodCategoriesStatus("error");
+        recordCatalogOperationFinished(diagOp, "error", err);
       }
     });
 
-    enqueueOperation("series_categories", 3, async (signal) => {
-      if (sessionRef.current !== currentSession) return;
+    enqueueOperation("series_categories", 3, async (signal, diagOp) => {
+      if (sessionRef.current !== currentSession || signal.aborted) {
+        recordCatalogOperationFinished(diagOp, "cancelled");
+        return;
+      }
       try {
         const cats = await XtreamService.getSeriesCategories(credentials, {
           signal,
+          diagOp,
         });
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled");
+          return;
+        }
+        diagOp?.recordResultItemsFallback(Array.isArray(cats) ? cats.length : 0);
         setSeriesCategories(cats);
         setSeriesCategoriesStatus("ready");
+        recordCatalogOperationFinished(diagOp, "success");
       } catch (err: any) {
-        if (sessionRef.current !== currentSession) return;
+        if (
+          sessionRef.current !== currentSession ||
+          signal.aborted ||
+          err?.message === "Operação cancelada pelo usuário."
+        ) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         const msg = await registerErrorAndCheckAuth(
           err,
           currentSession,
           signal
         );
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         setSeriesCategoriesError(
           msg || "Falha ao carregar categorias de séries."
         );
         setSeriesCategoriesStatus("error");
+        recordCatalogOperationFinished(diagOp, "error", err);
       }
     });
 
@@ -576,6 +673,7 @@ export function XtreamProvider({
 
     return () => {
       abortControllerRef.current?.abort();
+      cancelCatalogDiagnosticsSession(currentSession);
     };
   }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
 
@@ -583,27 +681,47 @@ export function XtreamProvider({
   const fetchLiveCategories = useCallback(async () => {
     if (!credentials) return;
     const currentSession = sessionRef.current;
-    return enqueueOperation("live_categories", 100, async (signal) => {
-      if (sessionRef.current !== currentSession) return;
+    return enqueueOperation("live_categories", 100, async (signal, diagOp) => {
+      if (sessionRef.current !== currentSession || signal.aborted) {
+        recordCatalogOperationFinished(diagOp, "cancelled");
+        return;
+      }
       try {
         const cats = await XtreamService.getLiveCategories(credentials, {
           signal,
+          diagOp,
         });
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled");
+          return;
+        }
+        diagOp?.recordResultItemsFallback(Array.isArray(cats) ? cats.length : 0);
         setLiveCategories(cats);
         setLiveCategoriesStatus("ready");
+        recordCatalogOperationFinished(diagOp, "success");
       } catch (err: any) {
-        if (sessionRef.current !== currentSession) return;
+        if (
+          sessionRef.current !== currentSession ||
+          signal.aborted ||
+          err?.message === "Operação cancelada pelo usuário."
+        ) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         const msg = await registerErrorAndCheckAuth(
           err,
           currentSession,
           signal
         );
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         setLiveCategoriesError(
           msg || "Falha ao carregar categorias de TV."
         );
         setLiveCategoriesStatus("error");
+        recordCatalogOperationFinished(diagOp, "error", err);
       }
     });
   }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
@@ -611,27 +729,47 @@ export function XtreamProvider({
   const fetchVodCategories = useCallback(async () => {
     if (!credentials) return;
     const currentSession = sessionRef.current;
-    return enqueueOperation("vod_categories", 100, async (signal) => {
-      if (sessionRef.current !== currentSession) return;
+    return enqueueOperation("vod_categories", 100, async (signal, diagOp) => {
+      if (sessionRef.current !== currentSession || signal.aborted) {
+        recordCatalogOperationFinished(diagOp, "cancelled");
+        return;
+      }
       try {
         const cats = await XtreamService.getVodCategories(credentials, {
           signal,
+          diagOp,
         });
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled");
+          return;
+        }
+        diagOp?.recordResultItemsFallback(Array.isArray(cats) ? cats.length : 0);
         setVodCategories(cats);
         setVodCategoriesStatus("ready");
+        recordCatalogOperationFinished(diagOp, "success");
       } catch (err: any) {
-        if (sessionRef.current !== currentSession) return;
+        if (
+          sessionRef.current !== currentSession ||
+          signal.aborted ||
+          err?.message === "Operação cancelada pelo usuário."
+        ) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         const msg = await registerErrorAndCheckAuth(
           err,
           currentSession,
           signal
         );
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         setVodCategoriesError(
           msg || "Falha ao carregar categorias de filmes."
         );
         setVodCategoriesStatus("error");
+        recordCatalogOperationFinished(diagOp, "error", err);
       }
     });
   }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
@@ -639,27 +777,47 @@ export function XtreamProvider({
   const fetchSeriesCategories = useCallback(async () => {
     if (!credentials) return;
     const currentSession = sessionRef.current;
-    return enqueueOperation("series_categories", 100, async (signal) => {
-      if (sessionRef.current !== currentSession) return;
+    return enqueueOperation("series_categories", 100, async (signal, diagOp) => {
+      if (sessionRef.current !== currentSession || signal.aborted) {
+        recordCatalogOperationFinished(diagOp, "cancelled");
+        return;
+      }
       try {
         const cats = await XtreamService.getSeriesCategories(credentials, {
           signal,
+          diagOp,
         });
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled");
+          return;
+        }
+        diagOp?.recordResultItemsFallback(Array.isArray(cats) ? cats.length : 0);
         setSeriesCategories(cats);
         setSeriesCategoriesStatus("ready");
+        recordCatalogOperationFinished(diagOp, "success");
       } catch (err: any) {
-        if (sessionRef.current !== currentSession) return;
+        if (
+          sessionRef.current !== currentSession ||
+          signal.aborted ||
+          err?.message === "Operação cancelada pelo usuário."
+        ) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         const msg = await registerErrorAndCheckAuth(
           err,
           currentSession,
           signal
         );
-        if (sessionRef.current !== currentSession) return;
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled", err);
+          return;
+        }
         setSeriesCategoriesError(
           msg || "Falha ao carregar categorias de séries."
         );
         setSeriesCategoriesStatus("error");
+        recordCatalogOperationFinished(diagOp, "error", err);
       }
     });
   }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
@@ -694,22 +852,35 @@ export function XtreamProvider({
       const currentSession = sessionRef.current;
       const priority = categoryId ? 100 : 5; // User category request has high priority
 
-      return enqueueOperation("live_catalog", priority, async (signal) => {
-        if (sessionRef.current !== currentSession) return;
+      return enqueueOperation("live_catalog", priority, async (signal, diagOp) => {
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled");
+          return;
+        }
         try {
           const streams = await XtreamService.getLiveStreams(credentials, undefined, {
             signal,
+            diagOp,
           });
-          if (sessionRef.current !== currentSession) return;
+          if (sessionRef.current !== currentSession || signal.aborted) {
+            recordCatalogOperationFinished(diagOp, "cancelled");
+            return;
+          }
+          diagOp?.recordResultItemsFallback(Array.isArray(streams) ? streams.length : 0);
           const liveIdx = await buildLiveIndexAsync(streams, {
             signal,
             shouldCancel: () => sessionRef.current !== currentSession || signal.aborted,
+            diagOp,
           });
-          if (!liveIdx || sessionRef.current !== currentSession || signal.aborted) return;
+          if (!liveIdx || sessionRef.current !== currentSession || signal.aborted) {
+            recordCatalogOperationFinished(diagOp, "cancelled");
+            return;
+          }
           allLiveStreamsRef.current = streams;
           setAllLiveStreams(streams);
           liveCatalogStatusRef.current = "ready";
           setLiveCatalogStatus("ready");
+          recordCatalogOperationFinished(diagOp, "success");
 
           // Always respect most recent category selection
           const targetCat = latestLiveCategoryRef.current;
@@ -719,16 +890,27 @@ export function XtreamProvider({
             setLiveStreams(streams);
           }
         } catch (err: any) {
-          if (sessionRef.current !== currentSession) return;
+          if (
+            sessionRef.current !== currentSession ||
+            signal.aborted ||
+            err?.message === "Operação cancelada pelo usuário."
+          ) {
+            recordCatalogOperationFinished(diagOp, "cancelled", err);
+            return;
+          }
           const msg = await registerErrorAndCheckAuth(
             err,
             currentSession,
             signal
           );
-          if (sessionRef.current !== currentSession) return;
+          if (sessionRef.current !== currentSession || signal.aborted) {
+            recordCatalogOperationFinished(diagOp, "cancelled", err);
+            return;
+          }
           setLiveError(msg || "Falha ao carregar canais ao vivo.");
           liveCatalogStatusRef.current = "error";
           setLiveCatalogStatus("error");
+          recordCatalogOperationFinished(diagOp, "error", err);
         }
       });
     },
@@ -756,22 +938,35 @@ export function XtreamProvider({
       const currentSession = sessionRef.current;
       const priority = categoryId ? 100 : 2; // User category request has high priority
 
-      return enqueueOperation("vod_catalog", priority, async (signal) => {
-        if (sessionRef.current !== currentSession) return;
+      return enqueueOperation("vod_catalog", priority, async (signal, diagOp) => {
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled");
+          return;
+        }
         try {
           const streams = await XtreamService.getVodStreams(credentials, undefined, {
             signal,
+            diagOp,
           });
-          if (sessionRef.current !== currentSession) return;
+          if (sessionRef.current !== currentSession || signal.aborted) {
+            recordCatalogOperationFinished(diagOp, "cancelled");
+            return;
+          }
+          diagOp?.recordResultItemsFallback(Array.isArray(streams) ? streams.length : 0);
           const vodIdx = await buildVodIndexAsync(streams, {
             signal,
             shouldCancel: () => sessionRef.current !== currentSession || signal.aborted,
+            diagOp,
           });
-          if (!vodIdx || sessionRef.current !== currentSession || signal.aborted) return;
+          if (!vodIdx || sessionRef.current !== currentSession || signal.aborted) {
+            recordCatalogOperationFinished(diagOp, "cancelled");
+            return;
+          }
           allVodStreamsRef.current = streams;
           setAllVodStreams(streams);
           vodCatalogStatusRef.current = "ready";
           setVodCatalogStatus("ready");
+          recordCatalogOperationFinished(diagOp, "success");
 
           // Always respect most recent category selection
           const targetCat = latestVodCategoryRef.current;
@@ -781,16 +976,27 @@ export function XtreamProvider({
             setVodStreams(streams);
           }
         } catch (err: any) {
-          if (sessionRef.current !== currentSession) return;
+          if (
+            sessionRef.current !== currentSession ||
+            signal.aborted ||
+            err?.message === "Operação cancelada pelo usuário."
+          ) {
+            recordCatalogOperationFinished(diagOp, "cancelled", err);
+            return;
+          }
           const msg = await registerErrorAndCheckAuth(
             err,
             currentSession,
             signal
           );
-          if (sessionRef.current !== currentSession) return;
+          if (sessionRef.current !== currentSession || signal.aborted) {
+            recordCatalogOperationFinished(diagOp, "cancelled", err);
+            return;
+          }
           setVodError(msg || "Falha ao carregar filmes.");
           vodCatalogStatusRef.current = "error";
           setVodCatalogStatus("error");
+          recordCatalogOperationFinished(diagOp, "error", err);
         }
       });
     },
@@ -818,22 +1024,35 @@ export function XtreamProvider({
       const currentSession = sessionRef.current;
       const priority = categoryId ? 100 : 1; // User category request has high priority
 
-      return enqueueOperation("series_catalog", priority, async (signal) => {
-        if (sessionRef.current !== currentSession) return;
+      return enqueueOperation("series_catalog", priority, async (signal, diagOp) => {
+        if (sessionRef.current !== currentSession || signal.aborted) {
+          recordCatalogOperationFinished(diagOp, "cancelled");
+          return;
+        }
         try {
           const streams = await XtreamService.getSeries(credentials, undefined, {
             signal,
+            diagOp,
           });
-          if (sessionRef.current !== currentSession) return;
+          if (sessionRef.current !== currentSession || signal.aborted) {
+            recordCatalogOperationFinished(diagOp, "cancelled");
+            return;
+          }
+          diagOp?.recordResultItemsFallback(Array.isArray(streams) ? streams.length : 0);
           const seriesIdx = await buildSeriesIndexAsync(streams, {
             signal,
             shouldCancel: () => sessionRef.current !== currentSession || signal.aborted,
+            diagOp,
           });
-          if (!seriesIdx || sessionRef.current !== currentSession || signal.aborted) return;
+          if (!seriesIdx || sessionRef.current !== currentSession || signal.aborted) {
+            recordCatalogOperationFinished(diagOp, "cancelled");
+            return;
+          }
           allSeriesStreamsRef.current = streams;
           setAllSeriesStreams(streams);
           seriesCatalogStatusRef.current = "ready";
           setSeriesCatalogStatus("ready");
+          recordCatalogOperationFinished(diagOp, "success");
 
           // Always respect most recent category selection
           const targetCat = latestSeriesCategoryRef.current;
@@ -843,16 +1062,27 @@ export function XtreamProvider({
             setSeriesStreams(streams);
           }
         } catch (err: any) {
-          if (sessionRef.current !== currentSession) return;
+          if (
+            sessionRef.current !== currentSession ||
+            signal.aborted ||
+            err?.message === "Operação cancelada pelo usuário."
+          ) {
+            recordCatalogOperationFinished(diagOp, "cancelled", err);
+            return;
+          }
           const msg = await registerErrorAndCheckAuth(
             err,
             currentSession,
             signal
           );
-          if (sessionRef.current !== currentSession) return;
+          if (sessionRef.current !== currentSession || signal.aborted) {
+            recordCatalogOperationFinished(diagOp, "cancelled", err);
+            return;
+          }
           setSeriesError(msg || "Falha ao carregar séries.");
           seriesCatalogStatusRef.current = "error";
           setSeriesCatalogStatus("error");
+          recordCatalogOperationFinished(diagOp, "error", err);
         }
       });
     },

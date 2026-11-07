@@ -32,6 +32,13 @@ import {
   getNavMode,
   focusElementSafely,
 } from '../navigation';
+import {
+  isCatalogLoadDiagnosticsEnabled,
+  setCatalogLoadDiagnosticsEnabled,
+  useCatalogLoadDiagnostics,
+  getCatalogDiagnosticsSnapshot,
+  formatCatalogDiagnosticsReport,
+} from '../utils/catalogDiagnostics';
 
 export const ConfigView = React.memo(function ConfigView() {
   const { credentials } = useXtreamCredentials();
@@ -39,6 +46,12 @@ export const ConfigView = React.memo(function ConfigView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showScreenDiagnostics, setShowScreenDiagnostics] = useState(false);
+  const [catalogDiagEnabled, setCatalogDiagEnabled] = useState(() =>
+    isCatalogLoadDiagnosticsEnabled()
+  );
+  const catalogDiagSnapshot = useCatalogLoadDiagnostics(
+    showScreenDiagnostics && catalogDiagEnabled
+  );
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [modalInitialStep, setModalInitialStep] = useState<'device' | 'tv-calibrate'>('device');
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'fallback'>('idle');
@@ -220,8 +233,14 @@ export const ConfigView = React.memo(function ConfigView() {
     return nativeBackBridge.label;
   };
 
+  const handleToggleCatalogDiagnostics = () => {
+    const next = !catalogDiagEnabled;
+    setCatalogLoadDiagnosticsEnabled(next);
+    setCatalogDiagEnabled(isCatalogLoadDiagnosticsEnabled());
+  };
+
   const buildSanitizedDiagnosticsText = useCallback(
-    (snap: DisplayEnvironmentDiagnostics): string => {
+    (snap: DisplayEnvironmentDiagnostics, catSnap = getCatalogDiagnosticsSnapshot()): string => {
       const { requested, measured, viewport, environment } = snap;
       const lines = [
         `=== North Code Play — Diagnóstico de Apresentação e Ambiente ===`,
@@ -287,6 +306,8 @@ export const ConfigView = React.memo(function ConfigView() {
         `Integração Nativa de Voltar: ${formatBackBridgeStatus()}`,
         `Plataforma: ${environment.platform}`,
         `User-Agent / WebView: ${environment.userAgent}`,
+        ``,
+        formatCatalogDiagnosticsReport(catSnap),
       ];
       return lines.join('\n');
     },
@@ -299,7 +320,7 @@ export const ConfigView = React.memo(function ConfigView() {
       compensatedProbeRef.current
     );
     setDiagnostics(latest);
-    const reportText = buildSanitizedDiagnosticsText(latest);
+    const reportText = buildSanitizedDiagnosticsText(latest, getCatalogDiagnosticsSnapshot());
 
     if (copyResetTimerRef.current !== null) {
       clearTimeout(copyResetTimerRef.current);
@@ -340,7 +361,7 @@ export const ConfigView = React.memo(function ConfigView() {
     }, 3500);
   };
 
-  const diagnosticsReportText = buildSanitizedDiagnosticsText(diagnostics);
+  const diagnosticsReportText = buildSanitizedDiagnosticsText(diagnostics, catalogDiagSnapshot);
 
   return (
     <>
@@ -539,18 +560,39 @@ export const ConfigView = React.memo(function ConfigView() {
               <h3 className="text-lg font-medium text-white flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5 text-nc-primary" /> Arquitetura & Diagnóstico
               </h3>
-              <button
-                type="button"
-                data-nav-row="config-diagnostics-toggle"
-                data-nav-item="true"
-                data-scroll-block="true"
-                onClick={() => setShowScreenDiagnostics((prev) => !prev)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nc-bg-input border border-nc-border/60 text-xs font-medium text-gray-200 hover:text-white hover:border-white/40 transition-colors"
-              >
-                <Monitor className="w-3.5 h-3.5 text-nc-primary" />
-                <span>{showScreenDiagnostics ? 'Ocultar diagnóstico da tela' : 'Ver diagnóstico da tela'}</span>
-                {showScreenDiagnostics ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  data-catalog-diagnostics-toggle="true"
+                  data-catalog-diagnostics-enabled={catalogDiagEnabled ? 'true' : 'false'}
+                  data-nav-item="true"
+                  onClick={handleToggleCatalogDiagnostics}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                    catalogDiagEnabled
+                      ? 'bg-nc-primary/15 border-nc-primary/60 text-nc-primary hover:bg-nc-primary/25'
+                      : 'bg-nc-bg-input border-nc-border/60 text-gray-300 hover:text-white hover:border-white/40'
+                  }`}
+                >
+                  <span>
+                    {catalogDiagEnabled
+                      ? 'Coleta de abertura: Ativa'
+                      : 'Ativar coleta de abertura'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  data-nav-row="config-diagnostics-toggle"
+                  data-nav-item="true"
+                  data-scroll-block="true"
+                  onClick={() => setShowScreenDiagnostics((prev) => !prev)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nc-bg-input border border-nc-border/60 text-xs font-medium text-gray-200 hover:text-white hover:border-white/40 transition-colors"
+                >
+                  <Monitor className="w-3.5 h-3.5 text-nc-primary" />
+                  <span>{showScreenDiagnostics ? 'Ocultar diagnóstico da tela' : 'Ver diagnóstico da tela'}</span>
+                  {showScreenDiagnostics ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
+              </div>
             </div>
 
             {showScreenDiagnostics && (
@@ -765,6 +807,56 @@ export const ConfigView = React.memo(function ConfigView() {
                         {diagnostics.environment.userAgent}
                       </span>
                     </div>
+                  </div>
+                </div>
+
+                {/* Group 4: Initial Catalog Load Diagnostics (P3.1) */}
+                <div className="space-y-2" data-catalog-diagnostics-section="true">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-nc-primary">
+                    4. Diagnóstico de Carregamento Inicial dos Catálogos (P3.1)
+                  </div>
+                  <div className="bg-black/30 p-3 rounded-lg border border-nc-border/30 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-gray-400">
+                        Preferência de Coleta (persistida apenas como flag local):
+                      </span>
+                      <span
+                        className="font-mono text-white"
+                        data-diag-catalog-status="true"
+                      >
+                        {catalogDiagEnabled
+                          ? catalogDiagSnapshot
+                            ? `Ativa — Sessão #${catalogDiagSnapshot.sessionId} (${catalogDiagSnapshot.releaseTrigger})`
+                            : 'Ativa — Aguardando próxima abertura da sessão'
+                          : 'Desativada por padrão (ative antes de fechar e reabrir o app)'}
+                      </span>
+                    </div>
+                    {catalogDiagSnapshot && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 border-t border-nc-border/20">
+                        <div>
+                          <span className="text-gray-400 block">Conclusão das 6 Operações</span>
+                          <span className="text-white font-mono">
+                            {catalogDiagSnapshot.allSixFinishedAtMs !== null
+                              ? `${catalogDiagSnapshot.allSixFinishedAtMs}ms`
+                              : 'pendente'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-gray-400 block">Home Disponível</span>
+                          <span className="text-white font-mono">
+                            {catalogDiagSnapshot.homeAvailableAtMs !== null
+                              ? `${catalogDiagSnapshot.homeAvailableAtMs}ms (${catalogDiagSnapshot.releaseTrigger})`
+                              : 'pendente'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-gray-400 block">Espera no Seletor de Tela</span>
+                          <span className="text-white font-mono">
+                            {catalogDiagSnapshot.displaySetupWaitMs}ms
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
