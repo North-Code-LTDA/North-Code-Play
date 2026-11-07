@@ -988,7 +988,10 @@ export function recordCatalogSortDiagnostic(
   if ((domain === 'vod' || domain === 'series') && itemsCount < 2) {
     return;
   }
-  if ((domain === 'hero' || domain === 'liveGroups') && itemsCount <= 0) {
+  if (domain === 'liveGroups' && itemsCount <= 0) {
+    return;
+  }
+  if (domain === 'hero' && itemsCount < 0) {
     return;
   }
 

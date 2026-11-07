@@ -15811,13 +15811,201 @@ async function runPerformanceAndVirtualizationTests() {
         realHomeSortNavRoot.unmount();
       });
 
+      // -----------------------------------------------------------------------
+      // 12.20.12: Medição do HeroBanner com código real (getHeroBannerItems + HeroBanner) e relógio controlado:
+      // 1. Catálogos de entrada vazios -> nenhuma mesclagem registrada;
+      // 2. Catálogo com itens, mas sem capas válidas -> 1ª chamada registra 1 mesclagem e seu tempo com 0 itens no resultado;
+      // 3. 2ª chamada com as mesmas listas -> registra 1 acerto de cache mesmo com resultado vazio, sem incrementar mesclagens;
+      // 4. Seleção e exibição do HeroBanner preservadas e encerramento respeitado quando a Home fica disponível.
+      // -----------------------------------------------------------------------
+      const { HeroBanner: RealHeroBannerP31 } = await import('../src/components/HeroBanner');
+      controlledNowMs = 40000;
+      startCatalogDiagnosticsSession(undefined, 2);
+
+      // Cenário 1: Catálogos de entrada vazios -> nenhuma mesclagem é registrada
+      const emptyHeroItems = getHeroBannerItems([], []);
+      assert.strictEqual(
+        emptyHeroItems.length,
+        0,
+        '[12.20.12] Catálogos de entrada vazios devem produzir resultado vazio no HeroBanner'
+      );
+      const snapAfterEmptyHeroInput = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAfterEmptyHeroInput.sorting.heroMergesCount,
+        0,
+        '[12.20.12] Catálogos de entrada vazios NÃO devem registrar mesclagem no HeroBanner'
+      );
+      assert.strictEqual(
+        snapAfterEmptyHeroInput.sorting.heroMergeCacheHitsCount,
+        0,
+        '[12.20.12] Catálogos de entrada vazios NÃO devem registrar acerto de cache no HeroBanner'
+      );
+      assert.strictEqual(
+        snapAfterEmptyHeroInput.sorting.totalHeroMergeMs,
+        0,
+        '[12.20.12] Tempo de mesclagem deve permanecer 0ms para catálogos de entrada vazios'
+      );
+
+      // Cenário 2: Catálogo com itens, mas sem capas válidas -> 1ª chamada registra 1 mesclagem e seu tempo com 0 itens no resultado
+      const vodWithoutCovers = [
+        { stream_id: 801, name: 'Filme Sem Capa 1 (2025)', category_id: '10', rating: '9.0', stream_icon: '' },
+        { stream_id: 802, name: 'Filme Sem Capa 2 (2024)', category_id: '10', rating: '8.5' },
+      ];
+      const seriesWithoutCovers = [
+        { series_id: 901, name: 'Série Sem Capa 1 (2025)', category_id: '20', rating: '9.2', cover: '' },
+      ];
+
+      let heroNoCoverClockStep = 0;
+      setCatalogDiagnosticsClockForTest(() => {
+        heroNoCoverClockStep++;
+        // Leituras do relógio na 1ª chamada:
+        // 1: início sort VOD (2 itens) -> 40010
+        // 2: fim sort VOD -> 40016 (6ms)
+        // (Séries tem apenas 1 item, portanto não executa/registra sort)
+        // 3: início heroMerge -> 40016
+        // 4: fim heroMerge -> 40020 (4ms)
+        if (heroNoCoverClockStep === 1) return 40010;
+        if (heroNoCoverClockStep === 2) return 40016;
+        if (heroNoCoverClockStep === 3) return 40016;
+        if (heroNoCoverClockStep === 4) return 40020;
+        return 40020;
+      });
+
+      const firstNoCoverHeroResult = getHeroBannerItems(vodWithoutCovers, seriesWithoutCovers);
+      setCatalogDiagnosticsClockForTest(() => controlledNowMs);
+
+      assert.strictEqual(
+        firstNoCoverHeroResult.length,
+        0,
+        '[12.20.12] Catálogo com itens sem capas válidas deve retornar 0 itens no resultado do HeroBanner'
+      );
+      const snapAfterFirstNoCoverHero = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAfterFirstNoCoverHero.sorting.heroMergesCount,
+        1,
+        '[12.20.12] 1ª chamada com itens sem capas válidas DEVE registrar 1 mesclagem (heroMergesCount = 1)'
+      );
+      assert.strictEqual(
+        snapAfterFirstNoCoverHero.sorting.totalHeroMergeMs,
+        4,
+        '[12.20.12] 1ª chamada com itens sem capas válidas DEVE registrar o tempo da mesclagem (4ms)'
+      );
+      assert.strictEqual(
+        snapAfterFirstNoCoverHero.sorting.hero.lastSortedItemsCount,
+        0,
+        '[12.20.12] O resultado da mesclagem sem capas válidas deve registrar 0 itens de saída (lastSortedItemsCount = 0)'
+      );
+      assert.strictEqual(
+        snapAfterFirstNoCoverHero.sorting.heroMergeCacheHitsCount,
+        0,
+        '[12.20.12] Na 1ª chamada ainda não há acerto de cache de mesclagem'
+      );
+      assert.strictEqual(
+        snapAfterFirstNoCoverHero.sorting.totalNewSortsCount,
+        1,
+        '[12.20.12] Apenas a lista de Filmes (2 itens) deve contar 1 ordenação (Séries tem 1 item)'
+      );
+
+      // Cenário 3: 2ª chamada com as mesmas listas -> registra 1 acerto de cache mesmo com resultado vazio, sem incrementar mesclagens
+      const secondNoCoverHeroResult = getHeroBannerItems(vodWithoutCovers, seriesWithoutCovers);
+      assert.strictEqual(
+        secondNoCoverHeroResult,
+        firstNoCoverHeroResult,
+        '[12.20.12] 2ª chamada com as mesmas listas deve retornar a mesma referência do cache'
+      );
+      assert.strictEqual(
+        secondNoCoverHeroResult.length,
+        0,
+        '[12.20.12] Resultado em cache permanece com 0 itens'
+      );
+      const snapAfterSecondNoCoverHero = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAfterSecondNoCoverHero.sorting.heroMergesCount,
+        1,
+        '[12.20.12] 2ª chamada com as mesmas listas NÃO deve incrementar heroMergesCount (permanece 1)'
+      );
+      assert.strictEqual(
+        snapAfterSecondNoCoverHero.sorting.heroMergeCacheHitsCount,
+        1,
+        '[12.20.12] 2ª chamada com as mesmas listas DEVE registrar 1 acerto de cache (heroMergeCacheHitsCount = 1), mesmo com resultado vazio'
+      );
+      assert.strictEqual(
+        snapAfterSecondNoCoverHero.sorting.hero.cacheHitsCount,
+        1,
+        '[12.20.12] hero.cacheHitsCount deve ser 1'
+      );
+      assert.strictEqual(
+        snapAfterSecondNoCoverHero.sorting.hero.lastSortedItemsCount,
+        0,
+        '[12.20.12] hero.lastSortedItemsCount permanece 0 após leitura do cache vazio'
+      );
+
+      // Validar que o componente HeroBanner real preserva a seleção e a exibição (vazio quando 0 itens, e renderizando destaque quando há capa válida)
+      const heroBannerTestRoot = createRoot(p31Container);
+      await act(async () => {
+        heroBannerTestRoot.render(
+          React.createElement(
+            XtreamProvider,
+            { credentials: null },
+            React.createElement(RealHeroBannerP31, {
+              items: secondNoCoverHeroResult,
+              onPlay: () => {},
+              onInfo: () => {},
+            })
+          )
+        );
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        p31Container.querySelectorAll('button').length,
+        0,
+        '[12.20.12] HeroBanner real com 0 itens no resultado não deve renderizar botões de destaque'
+      );
+
+      const vodWithValidCover = [
+        {
+          stream_id: 810,
+          name: 'Destaque Com Capa (2025)',
+          category_id: '10',
+          rating: '9.5',
+          stream_icon: 'http://img.test/hero810.jpg',
+        },
+      ];
+      const validHeroItems = getHeroBannerItems(vodWithValidCover, []);
+      assert.strictEqual(
+        validHeroItems.length,
+        1,
+        '[12.20.12] Catálogo com capa válida deve selecionar o item no resultado do HeroBanner'
+      );
+      await act(async () => {
+        heroBannerTestRoot.render(
+          React.createElement(
+            XtreamProvider,
+            { credentials: null },
+            React.createElement(RealHeroBannerP31, {
+              items: validHeroItems,
+              onPlay: () => {},
+              onInfo: () => {},
+            })
+          )
+        );
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert(
+        p31Container.textContent?.includes('Destaque Com Capa'),
+        '[12.20.12] HeroBanner real deve exibir corretamente o item selecionado com capa válida'
+      );
+      await act(async () => {
+        heroBannerTestRoot.unmount();
+      });
+
       console.log(
         `📊 [Métricas P3.1 — Diagnóstico do Carregamento Inicial dos Catálogos (Auditado)]\n` +
           `   • Coleta desativada por padrão: eventos capturados=0 | requisições iniciais=6 (0 extras)\n` +
           `   • Transporte Web (fetch): espera resposta=35ms | leitura corpo=20ms | JSON.parse=12ms\n` +
           `   • Transporte Android (CapacitorHttp): transporte + ponte nativa=48ms | payload pré-parseado sem re-serializar (jsonParseMs=n/a)\n` +
           `   • Marcos reais da Home: seletor desde 1ª montagem=150ms (separado de homeAvailableAtMs=320ms) | botão manual: intenção=350ms → disponível pós-render=358ms → 6 operações=520ms | HTTP 401/auth:0 → auth_rejected (preservado após recuperação)\n` +
-          `   • Preparação da Home vs navegação: filmes prontos c/ séries pendentes=1 ordenação | abertura completa=2 ordenações + 2 mesclagens | navegação posterior em TV ao vivo=0 alterações no relatório de abertura`
+          `   • Preparação da Home vs navegação: filmes prontos c/ séries pendentes=1 ordenação | abertura completa=2 ordenações + 2 mesclagens | HeroBanner sem capas=1 mesclagem (0 itens) + 1 hit cache | navegação posterior em TV ao vivo=0 alterações`
       );
     } finally {
       setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });
