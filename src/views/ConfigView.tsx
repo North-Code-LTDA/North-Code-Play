@@ -846,7 +846,9 @@ export const ConfigView = React.memo(function ConfigView() {
                           <span className="text-white font-mono">
                             {catalogDiagSnapshot.homeAvailableAtMs !== null
                               ? `${catalogDiagSnapshot.homeAvailableAtMs}ms (${catalogDiagSnapshot.releaseTrigger})`
-                              : 'pendente'}
+                              : catalogDiagSnapshot.releaseTrigger === 'auth_rejected'
+                                ? 'interrompida por autenticação'
+                                : 'pendente'}
                           </span>
                         </div>
                         <div>

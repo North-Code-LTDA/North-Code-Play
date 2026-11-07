@@ -368,39 +368,12 @@ async function buildRankedCatalogIndexCooperatively<T extends Record<string, any
     return cached;
   }
 
-  const existingInFlight = inFlightMap.get(safeItems);
-  if (existingInFlight && !options?.onBatchProgress) {
-    const waitStart = diagOp?.isActive() ? nowMonotonicMs() : 0;
+  const canShareInFlight =
+    !options?.onBatchProgress && !options?.signal && !options?.shouldCancel && !options?.diagOp;
+  const existingInFlight = canShareInFlight ? inFlightMap.get(safeItems) : undefined;
+  if (existingInFlight) {
     const res = await existingInFlight;
-    if (isCancelled()) {
-      indexPerfStats.abortedBuilds++;
-      if (diagOp?.isActive()) {
-        diagOp.recordIndexBuild({
-          mode: 'async-cooperative',
-          fromCache: false,
-          elapsedMs: nowMonotonicMs() - waitStart,
-          activeComputeMs: 0,
-          batchesProcessed: 0,
-          batchYields: 0,
-          indexedItemsCount: 0,
-          cancelled: true,
-        });
-      }
-      return null;
-    }
     if (res) {
-      if (diagOp?.isActive()) {
-        diagOp.recordIndexBuild({
-          mode: 'memory-cache',
-          fromCache: true,
-          elapsedMs: nowMonotonicMs() - waitStart,
-          activeComputeMs: 0,
-          batchesProcessed: 0,
-          batchYields: 0,
-          indexedItemsCount: safeItems.length,
-          cancelled: false,
-        });
-      }
       return res;
     }
   }
@@ -531,11 +504,13 @@ async function buildRankedCatalogIndexCooperatively<T extends Record<string, any
     return index;
   })();
 
-  inFlightMap.set(safeItems, taskPromise);
+  if (canShareInFlight) {
+    inFlightMap.set(safeItems, taskPromise);
+  }
   try {
     return await taskPromise;
   } finally {
-    if (inFlightMap.get(safeItems) === taskPromise) {
+    if (canShareInFlight && inFlightMap.get(safeItems) === taskPromise) {
       inFlightMap.delete(safeItems);
     }
   }
@@ -611,39 +586,12 @@ export async function buildLiveIndexAsync<T = any>(
     return cached;
   }
 
-  const existingInFlight = inFlightLiveBuilds.get(safeItems);
-  if (existingInFlight && !options?.onBatchProgress) {
-    const waitStart = diagOp?.isActive() ? nowMonotonicMs() : 0;
+  const canShareInFlight =
+    !options?.onBatchProgress && !options?.signal && !options?.shouldCancel && !options?.diagOp;
+  const existingInFlight = canShareInFlight ? inFlightLiveBuilds.get(safeItems) : undefined;
+  if (existingInFlight) {
     const res = await existingInFlight;
-    if (isCancelled()) {
-      indexPerfStats.abortedBuilds++;
-      if (diagOp?.isActive()) {
-        diagOp.recordIndexBuild({
-          mode: 'async-cooperative',
-          fromCache: false,
-          elapsedMs: nowMonotonicMs() - waitStart,
-          activeComputeMs: 0,
-          batchesProcessed: 0,
-          batchYields: 0,
-          indexedItemsCount: 0,
-          cancelled: true,
-        });
-      }
-      return null;
-    }
     if (res) {
-      if (diagOp?.isActive()) {
-        diagOp.recordIndexBuild({
-          mode: 'memory-cache',
-          fromCache: true,
-          elapsedMs: nowMonotonicMs() - waitStart,
-          activeComputeMs: 0,
-          batchesProcessed: 0,
-          batchYields: 0,
-          indexedItemsCount: safeItems.length,
-          cancelled: false,
-        });
-      }
       return res;
     }
   }
@@ -769,11 +717,13 @@ export async function buildLiveIndexAsync<T = any>(
     return index;
   })();
 
-  inFlightLiveBuilds.set(safeItems, taskPromise);
+  if (canShareInFlight) {
+    inFlightLiveBuilds.set(safeItems, taskPromise);
+  }
   try {
     return await taskPromise;
   } finally {
-    if (inFlightLiveBuilds.get(safeItems) === taskPromise) {
+    if (canShareInFlight && inFlightLiveBuilds.get(safeItems) === taskPromise) {
       inFlightLiveBuilds.delete(safeItems);
     }
   }
@@ -893,10 +843,11 @@ export function getHeroBannerItems(allVodStreams: any[], allSeriesStreams: any[]
     heroPairCache.set(safeVod, innerMap);
   }
 
-  const heroStartMs = trackDiag ? nowMonotonicMs() : 0;
   indexPerfStats.heroComputations++;
   const vodSorted = getOrCreateVodIndex(safeVod).getSortedAll();
   const seriesSorted = getOrCreateSeriesIndex(safeSeries).getSortedAll();
+
+  const heroStartMs = trackDiag ? nowMonotonicMs() : 0;
 
   const seenNames = new Set<string>();
   const result: any[] = [];

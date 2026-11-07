@@ -3,7 +3,6 @@ import type { HttpOptions, HttpResponse } from '@capacitor/core';
 import {
   type CatalogDiagnosticAttemptHandle,
   nowMonotonicMs,
-  classifyDiagnosticErrorCategory,
 } from '../utils/catalogDiagnostics';
 
 export interface TransportRequestOptions {
@@ -195,9 +194,6 @@ export async function executeXtreamGetRequest<T = any>({
   diagAttempt,
 }: TransportRequestOptions): Promise<T> {
   if (signal?.aborted) {
-    if (diagAttempt?.isActive()) {
-      diagAttempt.finishAttempt('cancelled', 'cancelled', null);
-    }
     throw new Error('Operação cancelada pelo usuário.');
   }
 
@@ -242,32 +238,20 @@ async function executeBrowserFetchGet<T = any>({
       });
     } catch {
       if (signal?.aborted) {
-        if (diagAttempt?.isActive()) {
-          diagAttempt.finishAttempt('cancelled', 'cancelled', null);
-        }
         throw new Error('Operação cancelada pelo usuário.');
       }
       if (didTimeout) {
         const tErr = createTimeoutError();
         if (diagAttempt?.isActive()) {
           diagAttempt.recordWebResponseWait(nowMonotonicMs() - responseWaitStartMs);
-          diagAttempt.finishAttempt('error', 'timeout', null);
         }
         throw tErr;
       }
       const nErr = createNetworkError();
       if (diagAttempt?.isActive()) {
         diagAttempt.recordWebResponseWait(nowMonotonicMs() - responseWaitStartMs);
-        diagAttempt.finishAttempt('error', 'network', null);
       }
       throw nErr;
-    }
-
-    if (signal?.aborted) {
-      if (diagAttempt?.isActive()) {
-        diagAttempt.finishAttempt('cancelled', 'cancelled', response.status);
-      }
-      throw new Error('Operação cancelada pelo usuário.');
     }
 
     if (diagAttempt?.isActive()) {
@@ -277,16 +261,12 @@ async function executeBrowserFetchGet<T = any>({
       );
     }
 
+    if (signal?.aborted) {
+      throw new Error('Operação cancelada pelo usuário.');
+    }
+
     if (!response.ok) {
-      const httpErr = createHttpError(response.status, response.statusText);
-      if (diagAttempt?.isActive()) {
-        diagAttempt.finishAttempt(
-          'error',
-          classifyDiagnosticErrorCategory(httpErr),
-          response.status
-        );
-      }
-      throw httpErr;
+      throw createHttpError(response.status, response.statusText);
     }
 
     let textData: string;
@@ -295,16 +275,12 @@ async function executeBrowserFetchGet<T = any>({
       textData = await response.text();
     } catch {
       if (signal?.aborted) {
-        if (diagAttempt?.isActive()) {
-          diagAttempt.finishAttempt('cancelled', 'cancelled', response.status);
-        }
         throw new Error('Operação cancelada pelo usuário.');
       }
       if (didTimeout) {
         const tErr = createTimeoutError();
         if (diagAttempt?.isActive()) {
           diagAttempt.recordWebBodyRead(nowMonotonicMs() - bodyReadStartMs, 0);
-          diagAttempt.finishAttempt('error', 'timeout', response.status);
         }
         throw tErr;
       }
@@ -312,17 +288,14 @@ async function executeBrowserFetchGet<T = any>({
         'Falha ao ler os dados da resposta do provedor.'
       );
       readError.isTransient = true;
+      readError.status = response.status;
       if (diagAttempt?.isActive()) {
         diagAttempt.recordWebBodyRead(nowMonotonicMs() - bodyReadStartMs, 0);
-        diagAttempt.finishAttempt('error', 'network', response.status);
       }
       throw readError;
     }
 
     if (signal?.aborted) {
-      if (diagAttempt?.isActive()) {
-        diagAttempt.finishAttempt('cancelled', 'cancelled', response.status);
-      }
       throw new Error('Operação cancelada pelo usuário.');
     }
 
@@ -333,22 +306,7 @@ async function executeBrowserFetchGet<T = any>({
       );
     }
 
-    try {
-      const normalized = normalizeTransportPayload<T>(textData, diagAttempt);
-      if (diagAttempt?.isActive()) {
-        diagAttempt.finishAttempt('success', null, response.status);
-      }
-      return normalized;
-    } catch (parseErr) {
-      if (diagAttempt?.isActive()) {
-        diagAttempt.finishAttempt(
-          'error',
-          classifyDiagnosticErrorCategory(parseErr),
-          response.status
-        );
-      }
-      throw parseErr;
-    }
+    return normalizeTransportPayload<T>(textData, diagAttempt);
   } finally {
     clearTimeout(timeoutId);
     if (signal) {
@@ -379,7 +337,6 @@ async function executeCapacitorHttpGet<T = any>({
         settled = true;
         if (diagAttempt?.isActive()) {
           diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
-          diagAttempt.finishAttempt('cancelled', 'cancelled', null);
         }
         reject(new Error('Operação cancelada pelo usuário.'));
       };
@@ -387,9 +344,6 @@ async function executeCapacitorHttpGet<T = any>({
       if (signal) {
         if (signal.aborted) {
           settled = true;
-          if (diagAttempt?.isActive()) {
-            diagAttempt.finishAttempt('cancelled', 'cancelled', null);
-          }
           reject(new Error('Operação cancelada pelo usuário.'));
           return;
         }
@@ -402,7 +356,6 @@ async function executeCapacitorHttpGet<T = any>({
         const tErr = createTimeoutError();
         if (diagAttempt?.isActive()) {
           diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
-          diagAttempt.finishAttempt('error', 'timeout', null);
         }
         reject(tErr);
       }, timeoutMs);
@@ -430,7 +383,6 @@ async function executeCapacitorHttpGet<T = any>({
           if (signal?.aborted) {
             if (diagAttempt?.isActive()) {
               diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
-              diagAttempt.finishAttempt('cancelled', 'cancelled', null);
             }
             reject(new Error('Operação cancelada pelo usuário.'));
             return;
@@ -440,7 +392,6 @@ async function executeCapacitorHttpGet<T = any>({
             const tErr = createTimeoutError();
             if (diagAttempt?.isActive()) {
               diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
-              diagAttempt.finishAttempt('error', 'timeout', null);
             }
             reject(tErr);
             return;
@@ -448,19 +399,10 @@ async function executeCapacitorHttpGet<T = any>({
           const nErr = createNetworkError();
           if (diagAttempt?.isActive()) {
             diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
-            diagAttempt.finishAttempt('error', 'network', null);
           }
           reject(nErr);
         });
     });
-
-    if (signal?.aborted) {
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
-        diagAttempt.finishAttempt('cancelled', 'cancelled', null);
-      }
-      throw new Error('Operação cancelada pelo usuário.');
-    }
 
     const status = typeof response?.status === 'number' ? response.status : 0;
     if (diagAttempt?.isActive()) {
@@ -470,34 +412,15 @@ async function executeCapacitorHttpGet<T = any>({
       );
     }
 
-    if (status < 200 || status >= 300) {
-      const httpErr = createHttpError(status || 500, status ? `Status ${status}` : 'Erro');
-      if (diagAttempt?.isActive()) {
-        diagAttempt.finishAttempt(
-          'error',
-          classifyDiagnosticErrorCategory(httpErr),
-          status || 500
-        );
-      }
-      throw httpErr;
+    if (signal?.aborted) {
+      throw new Error('Operação cancelada pelo usuário.');
     }
 
-    try {
-      const normalized = normalizeTransportPayload<T>(response.data, diagAttempt);
-      if (diagAttempt?.isActive()) {
-        diagAttempt.finishAttempt('success', null, status);
-      }
-      return normalized;
-    } catch (parseErr) {
-      if (diagAttempt?.isActive()) {
-        diagAttempt.finishAttempt(
-          'error',
-          classifyDiagnosticErrorCategory(parseErr),
-          status
-        );
-      }
-      throw parseErr;
+    if (status < 200 || status >= 300) {
+      throw createHttpError(status || 500, status ? `Status ${status}` : 'Erro');
     }
+
+    return normalizeTransportPayload<T>(response.data, diagAttempt);
   } finally {
     if (timeoutId !== null) {
       clearTimeout(timeoutId);

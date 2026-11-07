@@ -248,35 +248,38 @@ export class XtreamService {
         });
         inspectPayloadForAuthError(payload);
         if (diagAttempt?.isActive()) {
-          diagAttempt.finishAttempt("success", null, 200);
+          diagAttempt.finishAttempt("success", null);
         }
         return payload;
       } catch (err: any) {
+        const isAbort =
+          callerSignal?.aborted || err?.message === "Operação cancelada pelo usuário.";
+
+        // Classify HTTP 401 / 403 as explicit authentication rejection before finalizing attempt
+        const effectiveErr =
+          !isAbort && (err?.status === 401 || err?.status === 403) && !err?.isAuthError
+            ? createXtreamAuthError(
+                `Acesso recusado pelo servidor do provedor (HTTP ${err.status}). Verifique seu usuário e senha.`,
+                "http_unauthorized",
+                err.status
+              )
+            : err;
+
         if (diagAttempt?.isActive()) {
-          const isAbort =
-            callerSignal?.aborted || err?.message === "Operação cancelada pelo usuário.";
           diagAttempt.finishAttempt(
             isAbort ? "cancelled" : "error",
-            isAbort ? "cancelled" : classifyDiagnosticErrorCategory(err),
-            typeof err?.status === "number" ? err.status : null
+            isAbort ? "cancelled" : classifyDiagnosticErrorCategory(effectiveErr),
+            typeof effectiveErr?.status === "number" ? effectiveErr.status : null
           );
         }
 
         // Do not retry caller aborts
-        if (callerSignal?.aborted || err?.message === "Operação cancelada pelo usuário.") {
+        if (isAbort) {
           throw new Error("Operação cancelada pelo usuário.");
         }
-        // Classify HTTP 401 / 403 as explicit authentication rejection
-        if (err?.status === 401 || err?.status === 403) {
-          throw createXtreamAuthError(
-            `Acesso recusado pelo servidor do provedor (HTTP ${err.status}). Verifique seu usuário e senha.`,
-            "http_unauthorized",
-            err.status
-          );
-        }
         // Do not retry auth errors or HTTP 4xx
-        if (err?.isAuthError || err?.isClientError) {
-          throw err;
+        if (effectiveErr?.isAuthError || effectiveErr?.isClientError) {
+          throw effectiveErr;
         }
         // Do not retry fatal format errors (malformed JSON)
         if (err?.isFatalFormat) {

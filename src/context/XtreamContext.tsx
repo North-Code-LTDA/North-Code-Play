@@ -163,6 +163,7 @@ export function XtreamProvider({
 }) {
   // Session tracking to invalidate work when credentials change
   const sessionRef = useRef<number>(0);
+  const diagSessionIdRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Data states
@@ -247,6 +248,9 @@ export function XtreamProvider({
             sessionRef.current === currentSession &&
             isAuthenticationRejectedError(authCheckErr)
           ) {
+            if (err && typeof err === "object") {
+              err.isAuthError = true;
+            }
             const authMsg =
               authCheckErr?.message ||
               "Usuário ou senha inválidos ou conta desativada.";
@@ -408,7 +412,11 @@ export function XtreamProvider({
       // If already running or pending, return existing promise (and elevate priority if needed)
       const existingPromise = inFlightPromisesRef.current.get(type);
       if (existingPromise) {
-        recordCatalogOperationDeduplicated(sessionRef.current, type, priority);
+        recordCatalogOperationDeduplicated(
+          diagSessionIdRef.current,
+          type,
+          priority
+        );
         const queued = queueRef.current.find((item) => item.type === type);
         if (queued && priority > queued.priority) {
           queued.priority = priority;
@@ -423,7 +431,7 @@ export function XtreamProvider({
       pendingSetRef.current.add(type);
 
       const diagOp = recordCatalogOperationEnqueued(
-        sessionRef.current,
+        diagSessionIdRef.current,
         type,
         priority
       );
@@ -455,9 +463,9 @@ export function XtreamProvider({
 
   // Reset and cancel all work on credentials change or unmount
   useEffect(() => {
-    const previousSession = sessionRef.current;
-    if (previousSession > 0) {
-      cancelCatalogDiagnosticsSession(previousSession);
+    const previousDiagSession = diagSessionIdRef.current;
+    if (previousDiagSession > 0) {
+      cancelCatalogDiagnosticsSession(previousDiagSession);
     }
 
     // Invalidate previous session
@@ -533,7 +541,11 @@ export function XtreamProvider({
 
     if (!credentials) return;
 
-    startCatalogDiagnosticsSession(currentSession, MAX_CONCURRENT);
+    const currentDiagSession = startCatalogDiagnosticsSession(
+      currentSession,
+      MAX_CONCURRENT
+    );
+    diagSessionIdRef.current = currentDiagSession;
 
     // Queue initial category fetches with controlled priority: Live TV first (priority 6), VOD (4), Series (3)
     enqueueOperation("live_categories", 6, async (signal, diagOp) => {
@@ -673,7 +685,7 @@ export function XtreamProvider({
 
     return () => {
       abortControllerRef.current?.abort();
-      cancelCatalogDiagnosticsSession(currentSession);
+      cancelCatalogDiagnosticsSession(currentDiagSession);
     };
   }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
 

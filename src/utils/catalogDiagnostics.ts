@@ -123,8 +123,15 @@ export interface CatalogSortingDiagnostics {
   hero: CatalogDomainSortDiagnostics;
   liveGroups: CatalogDomainSortDiagnostics;
   totalNewSortsCount: number;
-  totalCacheHitsCount: number;
+  totalSortCacheHitsCount: number;
   totalSortMs: number;
+  heroMergesCount: number;
+  heroMergeCacheHitsCount: number;
+  totalHeroMergeMs: number;
+  liveGroupingsCount: number;
+  liveGroupCacheHitsCount: number;
+  totalLiveGroupingMs: number;
+  totalCacheHitsCount: number;
 }
 
 export interface CatalogSessionDiagnosticsReport {
@@ -133,6 +140,7 @@ export interface CatalogSessionDiagnosticsReport {
   maxConcurrency: number;
   startedAtMonotonicMs: number;
   allSixFinishedAtMs: number | null;
+  manualContinueClickedAtMs: number | null;
   overlayDismissedAtMs: number | null;
   homeAvailableAtMs: number | null;
   releaseTrigger: CatalogReleaseTrigger;
@@ -140,9 +148,9 @@ export interface CatalogSessionDiagnosticsReport {
   displaySetupOpenedAtMs: number | null;
   displaySetupClosedAtMs: number | null;
   displaySetupWaitMs: number;
-  netProcessingUntilHomeAvailableMs: number | null;
   operations: Record<CatalogOperationType, CatalogOperationDiagnostics | null>;
   operationHistory: CatalogOperationDiagnostics[];
+  subsequentOperationsCount: number;
   sorting: CatalogSortingDiagnostics;
 }
 
@@ -201,6 +209,20 @@ const ALL_OPERATION_TYPES: CatalogOperationType[] = [
   'series_catalog',
 ];
 
+export const MAX_STARTUP_DIAGNOSTIC_OPERATIONS = 6;
+
+interface PendingPreSessionHomeState {
+  wasDisplaySetupShown: boolean;
+  isDisplaySetupOpen: boolean;
+  openedAtMonotonicMs: number | null;
+  closedAtMonotonicMs: number | null;
+  manualContinueClickedAtMonotonicMs: number | null;
+  isOverlayActive: boolean;
+  isAuthRejected: boolean;
+  allSixFinished: boolean;
+  recordedAtMonotonicMs: number;
+}
+
 function readInitialEnabledPreference(): boolean {
   const res = safeReadStorage(CATALOG_DIAGNOSTICS_ENABLED_KEY);
   return res.success && res.value === 'true';
@@ -209,9 +231,14 @@ function readInitialEnabledPreference(): boolean {
 let isCatalogDiagnosticsEnabled: boolean = readInitialEnabledPreference();
 let customClockForTest: (() => number) | null = null;
 let recordedEventsCountForTest = 0;
+let nextDiagnosticsSessionSeq = 0;
 
 let activeSessionReport: CatalogSessionDiagnosticsReport | null = null;
+let activeSessionEnded = false;
 let publishedSnapshot: CatalogSessionDiagnosticsReport | null = null;
+let pendingPreSessionHomeState: PendingPreSessionHomeState | null = null;
+let latestHomeDisplaySetupOpen = false;
+let latestHomeDisplaySetupOpenedAtMono: number | null = null;
 const diagnosticsListeners = new Set<() => void>();
 
 export function nowMonotonicMs(): number {
@@ -234,10 +261,15 @@ export function getCatalogDiagnosticsRecordedEventsCountForTest(): number {
 
 export function resetCatalogDiagnosticsForTest(enabled: boolean = false): void {
   recordedEventsCountForTest = 0;
+  nextDiagnosticsSessionSeq = 0;
   isCatalogDiagnosticsEnabled = enabled;
   safeSetStorage(CATALOG_DIAGNOSTICS_ENABLED_KEY, enabled ? 'true' : 'false');
   activeSessionReport = null;
+  activeSessionEnded = false;
   publishedSnapshot = null;
+  pendingPreSessionHomeState = null;
+  latestHomeDisplaySetupOpen = false;
+  latestHomeDisplaySetupOpenedAtMono = null;
   notifyDiagnosticsListeners();
 }
 
@@ -266,6 +298,10 @@ export function syncCatalogLoadDiagnosticsPreferenceFromStorage(): boolean {
     isCatalogDiagnosticsEnabled = next;
     if (!next) {
       activeSessionReport = null;
+      activeSessionEnded = false;
+      pendingPreSessionHomeState = null;
+      latestHomeDisplaySetupOpen = false;
+      latestHomeDisplaySetupOpenedAtMono = null;
     }
     notifyDiagnosticsListeners();
   }
@@ -277,6 +313,10 @@ export function setCatalogLoadDiagnosticsEnabled(enabled: boolean): boolean {
   isCatalogDiagnosticsEnabled = Boolean(enabled);
   if (!enabled) {
     activeSessionReport = null;
+    activeSessionEnded = false;
+    pendingPreSessionHomeState = null;
+    latestHomeDisplaySetupOpen = false;
+    latestHomeDisplaySetupOpenedAtMono = null;
   }
   notifyDiagnosticsListeners();
   return saved;
@@ -298,8 +338,15 @@ function createEmptySortingDiagnostics(): CatalogSortingDiagnostics {
     hero: createEmptyDomainSortStats(),
     liveGroups: createEmptyDomainSortStats(),
     totalNewSortsCount: 0,
-    totalCacheHitsCount: 0,
+    totalSortCacheHitsCount: 0,
     totalSortMs: 0,
+    heroMergesCount: 0,
+    heroMergeCacheHitsCount: 0,
+    totalHeroMergeMs: 0,
+    liveGroupingsCount: 0,
+    liveGroupCacheHitsCount: 0,
+    totalLiveGroupingMs: 0,
+    totalCacheHitsCount: 0,
   };
 }
 
@@ -344,8 +391,15 @@ function cloneSessionReport(
       hero: { ...report.sorting.hero },
       liveGroups: { ...report.sorting.liveGroups },
       totalNewSortsCount: report.sorting.totalNewSortsCount,
-      totalCacheHitsCount: report.sorting.totalCacheHitsCount,
+      totalSortCacheHitsCount: report.sorting.totalSortCacheHitsCount,
       totalSortMs: report.sorting.totalSortMs,
+      heroMergesCount: report.sorting.heroMergesCount,
+      heroMergeCacheHitsCount: report.sorting.heroMergeCacheHitsCount,
+      totalHeroMergeMs: report.sorting.totalHeroMergeMs,
+      liveGroupingsCount: report.sorting.liveGroupingsCount,
+      liveGroupCacheHitsCount: report.sorting.liveGroupCacheHitsCount,
+      totalLiveGroupingMs: report.sorting.totalLiveGroupingMs,
+      totalCacheHitsCount: report.sorting.totalCacheHitsCount,
     },
   };
 }
@@ -394,7 +448,7 @@ export function classifyDiagnosticErrorCategory(err: unknown): CatalogErrorCateg
   if (anyErr.isAuthError === true || anyErr.status === 401 || anyErr.status === 403) {
     return 'auth_rejected';
   }
-  if (/usuário ou senha (inválidos|incorretos)|conta (de usuário )?(desativada|expirada|banida)|credenciais inválidas|acesso (negado|expirado)/i.test(msg)) {
+  if (/usuário ou senha (inválidos|incorretos)|conta (de usuário )?(desativada|expirada|banida)|credenciais inválidas|acesso (negado|expirado|recusado)/i.test(msg)) {
     return 'auth_rejected';
   }
   if (anyErr.isFatalFormat === true || /formato inválido|esperava-se uma lista|não é um JSON válido/i.test(msg)) {
@@ -418,25 +472,50 @@ export function getCurrentCatalogTransportKind(): CatalogTransportKind {
 }
 
 /**
- * Starts a new in-memory diagnostics session for `sessionId`.
+ * Starts a new in-memory diagnostics session with a process-wide unique sessionId.
  * Replaces any previous session report in memory so only the most recent session is retained.
- * Does nothing when catalog diagnostics are disabled.
+ * Adopts any initial mount milestone recorded by HomeContent right before XtreamProvider's effect.
+ * Returns the unique sessionId assigned to this session.
  */
 export function startCatalogDiagnosticsSession(
-  sessionId: number,
+  requestedSessionId?: number,
   maxConcurrency: number = 2
-): void {
-  if (!isCatalogDiagnosticsEnabled) return;
+): number {
+  const candidateId =
+    typeof requestedSessionId === 'number' && Number.isFinite(requestedSessionId) && requestedSessionId > 0
+      ? Math.floor(requestedSessionId)
+      : 0;
+  nextDiagnosticsSessionSeq = Math.max(nextDiagnosticsSessionSeq + 1, candidateId);
+  const sessionId = nextDiagnosticsSessionSeq;
+
+  if (!isCatalogDiagnosticsEnabled) {
+    pendingPreSessionHomeState = null;
+    activeSessionEnded = false;
+    return sessionId;
+  }
 
   recordedEventsCountForTest++;
-  const startMonotonic = nowMonotonicMs();
+  const nowMono = nowMonotonicMs();
+  const preMount = pendingPreSessionHomeState;
+  pendingPreSessionHomeState = null;
+  activeSessionEnded = false;
 
-  activeSessionReport = {
+  const startMonotonic =
+    preMount && preMount.recordedAtMonotonicMs <= nowMono
+      ? preMount.recordedAtMonotonicMs
+      : latestHomeDisplaySetupOpen &&
+          latestHomeDisplaySetupOpenedAtMono !== null &&
+          latestHomeDisplaySetupOpenedAtMono <= nowMono
+        ? latestHomeDisplaySetupOpenedAtMono
+        : nowMono;
+
+  const report: CatalogSessionDiagnosticsReport = {
     sessionId,
     transportMode: getCurrentCatalogTransportKind(),
     maxConcurrency,
     startedAtMonotonicMs: startMonotonic,
     allSixFinishedAtMs: null,
+    manualContinueClickedAtMs: null,
     overlayDismissedAtMs: null,
     homeAvailableAtMs: null,
     releaseTrigger: 'pending',
@@ -444,7 +523,6 @@ export function startCatalogDiagnosticsSession(
     displaySetupOpenedAtMs: null,
     displaySetupClosedAtMs: null,
     displaySetupWaitMs: 0,
-    netProcessingUntilHomeAvailableMs: null,
     operations: {
       live_categories: null,
       vod_categories: null,
@@ -454,10 +532,46 @@ export function startCatalogDiagnosticsSession(
       series_catalog: null,
     },
     operationHistory: [],
+    subsequentOperationsCount: 0,
     sorting: createEmptySortingDiagnostics(),
   };
 
+  if (preMount) {
+    if (preMount.wasDisplaySetupShown) {
+      report.wasDisplaySetupShown = true;
+      report.displaySetupOpenedAtMs =
+        preMount.openedAtMonotonicMs !== null
+          ? roundMs(Math.max(0, preMount.openedAtMonotonicMs - startMonotonic))
+          : 0;
+      if (!preMount.isDisplaySetupOpen && preMount.closedAtMonotonicMs !== null) {
+        report.displaySetupClosedAtMs = roundMs(
+          Math.max(0, preMount.closedAtMonotonicMs - startMonotonic)
+        );
+        report.displaySetupWaitMs = roundMs(
+          Math.max(0, report.displaySetupClosedAtMs - report.displaySetupOpenedAtMs)
+        );
+      }
+    }
+    if (preMount.manualContinueClickedAtMonotonicMs !== null) {
+      report.manualContinueClickedAtMs = roundMs(
+        Math.max(0, preMount.manualContinueClickedAtMonotonicMs - startMonotonic)
+      );
+    }
+    if (preMount.isAuthRejected) {
+      report.releaseTrigger = 'auth_rejected';
+      report.homeAvailableAtMs = null;
+    }
+  } else if (latestHomeDisplaySetupOpen) {
+    report.wasDisplaySetupShown = true;
+    report.displaySetupOpenedAtMs =
+      latestHomeDisplaySetupOpenedAtMono !== null
+        ? roundMs(Math.max(0, latestHomeDisplaySetupOpenedAtMono - startMonotonic))
+        : 0;
+  }
+
+  activeSessionReport = report;
   notifyDiagnosticsListeners();
+  return sessionId;
 }
 
 /**
@@ -469,6 +583,9 @@ export function cancelCatalogDiagnosticsSession(sessionId: number): void {
   if (!activeSessionReport || activeSessionReport.sessionId !== sessionId) return;
 
   recordedEventsCountForTest++;
+  activeSessionEnded = true;
+  latestHomeDisplaySetupOpen = false;
+  latestHomeDisplaySetupOpenedAtMono = null;
   const nowRel = relativeToSessionMs(activeSessionReport, nowMonotonicMs());
   let changed = false;
 
@@ -500,7 +617,7 @@ export function cancelCatalogDiagnosticsSession(sessionId: number): void {
 
 /**
  * Records deduplication hit (and optional priority elevation) when an already queued/running
- * operation is requested again in the same session.
+ * initial operation is requested again in the same session.
  */
 export function recordCatalogOperationDeduplicated(
   sessionId: number,
@@ -511,7 +628,7 @@ export function recordCatalogOperationDeduplicated(
   if (!activeSessionReport || activeSessionReport.sessionId !== sessionId) return;
 
   const op = activeSessionReport.operations[type];
-  if (!op) return;
+  if (!op || (op.outcome !== 'queued' && op.outcome !== 'running')) return;
 
   recordedEventsCountForTest++;
   op.deduplicatedHits++;
@@ -523,6 +640,9 @@ export function recordCatalogOperationDeduplicated(
 
 /**
  * Records that an operation has entered the concurrency queue for `sessionId`.
+ * Preserves the first execution (and its automatic retry) of each of the 6 initial operations
+ * in a fixed-size structure without allowing subsequent manual queries to overwrite them or
+ * grow the startup history unboundedly.
  */
 export function recordCatalogOperationEnqueued(
   sessionId: number,
@@ -532,11 +652,21 @@ export function recordCatalogOperationEnqueued(
   if (!isCatalogDiagnosticsEnabled) return null;
   if (!activeSessionReport || activeSessionReport.sessionId !== sessionId) return null;
 
-  recordedEventsCountForTest++;
   const report = activeSessionReport;
+  const existingInitialOp = report.operations[type];
+
+  // If the initial operation for this type was already recorded in this session,
+  // preserve the original record intact and keep operationHistory bounded to the 6 initial operations.
+  if (existingInitialOp !== null) {
+    recordedEventsCountForTest++;
+    report.subsequentOperationsCount++;
+    notifyDiagnosticsListeners();
+    return null;
+  }
+
+  recordedEventsCountForTest++;
   const enqueuedAtMs = relativeToSessionMs(report, nowMonotonicMs());
-  const prevRunsCount = report.operationHistory.filter((item) => item.type === type).length;
-  const runNumber = prevRunsCount + 1;
+  const runNumber = 1;
   const operationId = `s${sessionId}:${type}#${runNumber}`;
   const { domain, kind } = parseDomainAndKind(type);
 
@@ -575,7 +705,9 @@ export function recordCatalogOperationEnqueued(
   };
 
   report.operations[type] = opRecord;
-  report.operationHistory.push(opRecord);
+  if (report.operationHistory.length < MAX_STARTUP_DIAGNOSTIC_OPERATIONS) {
+    report.operationHistory.push(opRecord);
+  }
   notifyDiagnosticsListeners();
 
   const isOpStillActive = (): boolean => {
@@ -583,6 +715,7 @@ export function recordCatalogOperationEnqueued(
       isCatalogDiagnosticsEnabled &&
       activeSessionReport !== null &&
       activeSessionReport.sessionId === sessionId &&
+      activeSessionReport.operations[type] === opRecord &&
       opRecord.outcome !== 'cancelled'
     );
   };
@@ -735,10 +868,8 @@ export function recordCatalogOperationStarted(
   if (!handle || !isCatalogDiagnosticsEnabled) return;
   if (!activeSessionReport || activeSessionReport.sessionId !== handle.sessionId) return;
 
-  const op = activeSessionReport.operationHistory.find(
-    (item) => item.operationId === handle.operationId
-  );
-  if (!op || op.outcome !== 'queued') return;
+  const op = activeSessionReport.operations[handle.type];
+  if (!op || op.operationId !== handle.operationId || op.outcome !== 'queued') return;
 
   recordedEventsCountForTest++;
   const startedAtMs = relativeToSessionMs(activeSessionReport, nowMonotonicMs());
@@ -750,7 +881,7 @@ export function recordCatalogOperationStarted(
 
 /**
  * Records the completion of an operation ('success' | 'error' | 'cancelled').
- * Automatically checks if all 6 operations of the session have finished.
+ * Automatically checks if all 6 initial operations of the session have finished.
  */
 export function recordCatalogOperationFinished(
   handle: CatalogDiagnosticOperationHandle | null | undefined,
@@ -761,10 +892,14 @@ export function recordCatalogOperationFinished(
   if (!activeSessionReport || activeSessionReport.sessionId !== handle.sessionId) return;
 
   const report = activeSessionReport;
-  const op = report.operationHistory.find(
-    (item) => item.operationId === handle.operationId
-  );
-  if (!op || (op.outcome !== 'running' && op.outcome !== 'queued')) return;
+  const op = report.operations[handle.type];
+  if (
+    !op ||
+    op.operationId !== handle.operationId ||
+    (op.outcome !== 'running' && op.outcome !== 'queued')
+  ) {
+    return;
+  }
 
   recordedEventsCountForTest++;
   const completedAtMs = relativeToSessionMs(report, nowMonotonicMs());
@@ -794,6 +929,11 @@ export function recordCatalogOperationFinished(
     }
   }
 
+  if (op.errorCategory === 'auth_rejected' && report.homeAvailableAtMs === null) {
+    report.releaseTrigger = 'auth_rejected';
+    report.overlayDismissedAtMs = completedAtMs;
+  }
+
   const allSixDone = ALL_OPERATION_TYPES.every((t) => {
     const currentOp = report.operations[t];
     return (
@@ -804,7 +944,13 @@ export function recordCatalogOperationFinished(
 
   if (allSixDone && report.allSixFinishedAtMs === null) {
     report.allSixFinishedAtMs = completedAtMs;
-    if (report.releaseTrigger === 'pending') {
+    const anyAuthRejected = ALL_OPERATION_TYPES.some(
+      (t) => report.operations[t]?.errorCategory === 'auth_rejected'
+    );
+    if (anyAuthRejected && report.homeAvailableAtMs === null) {
+      report.releaseTrigger = 'auth_rejected';
+      report.overlayDismissedAtMs = completedAtMs;
+    } else if (report.releaseTrigger === 'pending' && report.manualContinueClickedAtMs === null) {
       report.releaseTrigger = 'auto_all_six';
       report.overlayDismissedAtMs = completedAtMs;
     }
@@ -814,7 +960,7 @@ export function recordCatalogOperationFinished(
 }
 
 /**
- * Records sorting execution vs cache hit in `catalogIndex.ts`.
+ * Records sorting execution, HeroBanner merge, live channel grouping, and cache hits separately.
  */
 export function recordCatalogSortDiagnostic(
   domain: CatalogSortDomain,
@@ -825,31 +971,80 @@ export function recordCatalogSortDiagnostic(
   if (!isCatalogDiagnosticsEnabled || !activeSessionReport) return;
 
   recordedEventsCountForTest++;
-  const bucket = activeSessionReport.sorting[domain];
+  const sorting = activeSessionReport.sorting;
+  const bucket = sorting[domain];
   bucket.lastSortedItemsCount = itemsCount;
 
   if (fromCache) {
     bucket.cacheHitsCount++;
-    activeSessionReport.sorting.totalCacheHitsCount++;
+    sorting.totalCacheHitsCount++;
+    if (domain === 'vod' || domain === 'series') {
+      sorting.totalSortCacheHitsCount++;
+    } else if (domain === 'hero') {
+      sorting.heroMergeCacheHitsCount++;
+    } else if (domain === 'liveGroups') {
+      sorting.liveGroupCacheHitsCount++;
+    }
   } else {
     const rounded = roundMs(durationMs);
     bucket.newSortsCount++;
     bucket.totalSortMs = roundMs(bucket.totalSortMs + rounded);
-    activeSessionReport.sorting.totalNewSortsCount++;
-    activeSessionReport.sorting.totalSortMs = roundMs(
-      activeSessionReport.sorting.totalSortMs + rounded
-    );
+    if (domain === 'vod' || domain === 'series') {
+      sorting.totalNewSortsCount++;
+      sorting.totalSortMs = roundMs(sorting.totalSortMs + rounded);
+    } else if (domain === 'hero') {
+      sorting.heroMergesCount++;
+      sorting.totalHeroMergeMs = roundMs(sorting.totalHeroMergeMs + rounded);
+    } else if (domain === 'liveGroups') {
+      sorting.liveGroupingsCount++;
+      sorting.totalLiveGroupingMs = roundMs(sorting.totalLiveGroupingMs + rounded);
+    }
   }
 
   notifyDiagnosticsListeners();
 }
 
 /**
+ * Records the user's click intention on "Continuar enquanto carrega" before the interface
+ * updates and becomes interactive.
+ */
+export function recordHomeManualContinueIntent(): void {
+  if (!isCatalogDiagnosticsEnabled) return;
+
+  const nowMono = nowMonotonicMs();
+  if (!activeSessionReport || activeSessionEnded) {
+    if (!pendingPreSessionHomeState) {
+      pendingPreSessionHomeState = {
+        wasDisplaySetupShown: latestHomeDisplaySetupOpen,
+        isDisplaySetupOpen: latestHomeDisplaySetupOpen,
+        openedAtMonotonicMs: latestHomeDisplaySetupOpenedAtMono,
+        closedAtMonotonicMs: null,
+        manualContinueClickedAtMonotonicMs: nowMono,
+        isOverlayActive: true,
+        isAuthRejected: false,
+        allSixFinished: false,
+        recordedAtMonotonicMs: nowMono,
+      };
+    } else if (pendingPreSessionHomeState.manualContinueClickedAtMonotonicMs === null) {
+      pendingPreSessionHomeState.manualContinueClickedAtMonotonicMs = nowMono;
+    }
+    return;
+  }
+
+  const report = activeSessionReport;
+  if (report.manualContinueClickedAtMs === null) {
+    recordedEventsCountForTest++;
+    report.manualContinueClickedAtMs = relativeToSessionMs(report, nowMono);
+    notifyDiagnosticsListeners();
+  }
+}
+
+/**
  * Records opening milestones from HomeContent (`Home.tsx`), separating:
- * - when all 6 operations finish (`allSixFinishedAtMs`)
- * - whether release was automatic (`'auto_all_six'`), manual (`'manual_continue_button'`), or auth rejected (`'auth_rejected'`)
- * - any time spent waiting on the DisplaySetupModal (`displaySetupWaitMs`)
- * - the exact moment the Home interface becomes available (`homeAvailableAtMs`)
+ * - display setup selector from the very first mount (even before XtreamProvider's effect starts the session)
+ * - click intention on "Continuar enquanto carrega" (`manualContinueClickedAtMs`) vs actual post-render Home availability (`homeAvailableAtMs`)
+ * - completion of the 6 initial operations (`allSixFinishedAtMs`), including when it happens after manual release
+ * - authentication rejection blocking the screen (`releaseTrigger: 'auth_rejected'`, `homeAvailableAtMs: null`)
  */
 export function recordHomeOpeningMilestone(params: {
   isDisplaySetupOpen: boolean;
@@ -858,10 +1053,61 @@ export function recordHomeOpeningMilestone(params: {
   allSixFinished: boolean;
   manualContinueClicked?: boolean;
 }): void {
-  if (!isCatalogDiagnosticsEnabled || !activeSessionReport) return;
+  if (!isCatalogDiagnosticsEnabled) return;
+
+  const nowMono = nowMonotonicMs();
+
+  if (params.isDisplaySetupOpen) {
+    if (!latestHomeDisplaySetupOpen) {
+      latestHomeDisplaySetupOpen = true;
+      latestHomeDisplaySetupOpenedAtMono = nowMono;
+    }
+  } else {
+    latestHomeDisplaySetupOpen = false;
+    latestHomeDisplaySetupOpenedAtMono = null;
+  }
+
+  if (!activeSessionReport || activeSessionEnded) {
+    if (!pendingPreSessionHomeState) {
+      pendingPreSessionHomeState = {
+        wasDisplaySetupShown: params.isDisplaySetupOpen,
+        isDisplaySetupOpen: params.isDisplaySetupOpen,
+        openedAtMonotonicMs: params.isDisplaySetupOpen ? nowMono : null,
+        closedAtMonotonicMs: null,
+        manualContinueClickedAtMonotonicMs: params.manualContinueClicked ? nowMono : null,
+        isOverlayActive: params.isOverlayActive,
+        isAuthRejected: params.isAuthRejected,
+        allSixFinished: params.allSixFinished,
+        recordedAtMonotonicMs: nowMono,
+      };
+    } else {
+      if (params.isDisplaySetupOpen && !pendingPreSessionHomeState.wasDisplaySetupShown) {
+        pendingPreSessionHomeState.wasDisplaySetupShown = true;
+        pendingPreSessionHomeState.openedAtMonotonicMs = nowMono;
+      } else if (
+        !params.isDisplaySetupOpen &&
+        pendingPreSessionHomeState.wasDisplaySetupShown &&
+        pendingPreSessionHomeState.closedAtMonotonicMs === null
+      ) {
+        pendingPreSessionHomeState.closedAtMonotonicMs = nowMono;
+      }
+      pendingPreSessionHomeState.isDisplaySetupOpen = params.isDisplaySetupOpen;
+      pendingPreSessionHomeState.isOverlayActive = params.isOverlayActive;
+      pendingPreSessionHomeState.isAuthRejected = params.isAuthRejected;
+      pendingPreSessionHomeState.allSixFinished = params.allSixFinished;
+      if (
+        params.manualContinueClicked &&
+        pendingPreSessionHomeState.manualContinueClickedAtMonotonicMs === null
+      ) {
+        pendingPreSessionHomeState.manualContinueClickedAtMonotonicMs = nowMono;
+      }
+    }
+    recordedEventsCountForTest++;
+    return;
+  }
 
   const report = activeSessionReport;
-  const nowRel = relativeToSessionMs(report, nowMonotonicMs());
+  const nowRel = relativeToSessionMs(report, nowMono);
   let changed = false;
 
   if (params.isDisplaySetupOpen) {
@@ -877,28 +1123,28 @@ export function recordHomeOpeningMilestone(params: {
     changed = true;
   }
 
-  if (params.manualContinueClicked && report.releaseTrigger === 'pending') {
-    report.releaseTrigger = 'manual_continue_button';
-    report.overlayDismissedAtMs = nowRel;
+  if (params.manualContinueClicked && report.manualContinueClickedAtMs === null) {
+    report.manualContinueClickedAtMs = nowRel;
     changed = true;
   }
 
-  if (params.isAuthRejected && report.releaseTrigger === 'pending') {
-    report.releaseTrigger = 'auth_rejected';
-    report.overlayDismissedAtMs = nowRel;
+  if (params.allSixFinished && report.allSixFinishedAtMs === null) {
+    report.allSixFinishedAtMs = nowRel;
     changed = true;
   }
 
-  if (params.allSixFinished) {
-    if (report.allSixFinishedAtMs === null) {
-      report.allSixFinishedAtMs = nowRel;
-      changed = true;
-    }
-    if (report.releaseTrigger === 'pending') {
-      report.releaseTrigger = 'auto_all_six';
+  if (params.isAuthRejected) {
+    if (report.homeAvailableAtMs === null && report.releaseTrigger !== 'auth_rejected') {
+      report.releaseTrigger = 'auth_rejected';
       report.overlayDismissedAtMs = nowRel;
+      report.homeAvailableAtMs = null;
       changed = true;
     }
+    if (changed) {
+      recordedEventsCountForTest++;
+      notifyDiagnosticsListeners();
+    }
+    return;
   }
 
   const isHomeInteractiveNow =
@@ -909,18 +1155,15 @@ export function recordHomeOpeningMilestone(params: {
     if (report.overlayDismissedAtMs === null) {
       report.overlayDismissedAtMs = nowRel;
     }
-    if (report.releaseTrigger === 'pending') {
+    if (report.manualContinueClickedAtMs !== null && !params.allSixFinished) {
+      report.releaseTrigger = 'manual_continue_button';
+    } else if (report.manualContinueClickedAtMs !== null && report.releaseTrigger === 'pending') {
+      report.releaseTrigger = 'manual_continue_button';
+    } else if (report.releaseTrigger === 'pending') {
       report.releaseTrigger = params.allSixFinished
         ? 'auto_all_six'
         : 'manual_continue_button';
     }
-    const waitMs =
-      report.wasDisplaySetupShown && report.displaySetupClosedAtMs !== null
-        ? report.displaySetupWaitMs
-        : 0;
-    report.netProcessingUntilHomeAvailableMs = roundMs(
-      Math.max(0, report.homeAvailableAtMs - waitMs)
-    );
     changed = true;
   }
 
@@ -966,7 +1209,7 @@ function formatReleaseTriggerLabel(trigger: CatalogReleaseTrigger): string {
     case 'manual_continue_button':
       return 'Manual (botão "Continuar enquanto carrega")';
     case 'auth_rejected':
-      return 'Interrompida (rejeição de autenticação)';
+      return 'Abertura interrompida por autenticação';
     default:
       return 'Pendente (em carregamento)';
   }
@@ -1049,10 +1292,14 @@ export function formatCatalogDiagnosticsReport(
   lines.push(
     `• Liberação da interface Home: ${formatMs(report.homeAvailableAtMs)} | Modo: ${formatReleaseTriggerLabel(
       report.releaseTrigger
-    )}`
+    )}${
+      report.manualContinueClickedAtMs !== null
+        ? ` (intenção de clique em ${formatMs(report.manualContinueClickedAtMs)})`
+        : ''
+    }`
   );
   lines.push(
-    `• Espera no seletor de apresentação: ${
+    `• Duração do seletor de apresentação (separada): ${
       report.wasDisplaySetupShown
         ? `${formatMs(report.displaySetupWaitMs)} (aberto em ${formatMs(
             report.displaySetupOpenedAtMs
@@ -1060,13 +1307,10 @@ export function formatCatalogDiagnosticsReport(
         : '0.0 ms (já configurado)'
     }`
   );
-  lines.push(
-    `• Janela de processamento até liberar a Home (excluindo seletor): ${formatMs(
-      report.netProcessingUntilHomeAvailableMs
-    )}`
-  );
 
-  lines.push(`[Operações da Sessão #${report.sessionId} (operações paralelas podem se sobrepor)]`);
+  lines.push(
+    `[Operações Iniciais da Sessão #${report.sessionId} (6 fixas; consultas posteriores=${report.subsequentOperationsCount})]`
+  );
 
   for (const opType of ALL_OPERATION_TYPES) {
     const op = report.operations[opType];
@@ -1146,31 +1390,34 @@ export function formatCatalogDiagnosticsReport(
   }
 
   const s = report.sorting;
-  lines.push(`[Ordenações e Agrupamentos em Memória]`);
+  lines.push(`[Ordenações, Mesclagens e Agrupamentos em Memória]`);
   lines.push(
-    `• Total: ${s.totalNewSortsCount} ordenações novas (${formatMs(
+    `• Ordenações efetivas (Filmes + Séries): ${s.totalNewSortsCount} ordenações (${formatMs(
       s.totalSortMs
-    )}) vs ${s.totalCacheHitsCount} leituras do cache em memória`
+    )}) | cache de ordenação=${s.totalSortCacheHitsCount}`
   );
   lines.push(
-    `  - Filmes (VOD): novas=${s.vod.newSortsCount} (${formatMs(
+    `• Mesclagens do HeroBanner: ${s.heroMergesCount} mesclagens (${formatMs(
+      s.totalHeroMergeMs
+    )}, itens=${s.hero.lastSortedItemsCount}) | cache de mesclagem=${s.heroMergeCacheHitsCount}`
+  );
+  lines.push(
+    `• Agrupamentos de Canais Ao Vivo: ${s.liveGroupingsCount} agrupamentos (${formatMs(
+      s.totalLiveGroupingMs
+    )}, itens=${s.liveGroups.lastSortedItemsCount}) | cache de agrupamento=${s.liveGroupCacheHitsCount}`
+  );
+  lines.push(
+    `• Leituras em cache totais: ${s.totalCacheHitsCount} (ordenações=${s.totalSortCacheHitsCount}, mesclagem=${s.heroMergeCacheHitsCount}, agrupamentos=${s.liveGroupCacheHitsCount})`
+  );
+  lines.push(
+    `  - Filmes (VOD): ordenações=${s.vod.newSortsCount} (${formatMs(
       s.vod.totalSortMs
     )}, itens=${s.vod.lastSortedItemsCount}) | cache=${s.vod.cacheHitsCount}`
   );
   lines.push(
-    `  - Séries: novas=${s.series.newSortsCount} (${formatMs(
+    `  - Séries: ordenações=${s.series.newSortsCount} (${formatMs(
       s.series.totalSortMs
     )}, itens=${s.series.lastSortedItemsCount}) | cache=${s.series.cacheHitsCount}`
-  );
-  lines.push(
-    `  - Destaque (HeroBanner): novas=${s.hero.newSortsCount} (${formatMs(
-      s.hero.totalSortMs
-    )}, itens=${s.hero.lastSortedItemsCount}) | cache=${s.hero.cacheHitsCount}`
-  );
-  lines.push(
-    `  - Agrupamento Canais Ao Vivo: novas=${s.liveGroups.newSortsCount} (${formatMs(
-      s.liveGroups.totalSortMs
-    )}, itens=${s.liveGroups.lastSortedItemsCount}) | cache=${s.liveGroups.cacheHitsCount}`
   );
 
   return lines.join('\n');

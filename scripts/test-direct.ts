@@ -10996,7 +10996,12 @@ async function runPerformanceAndVirtualizationTests() {
           React.createElement(NavigationProvider, null, React.createElement(AppRoutes, null))
         )
       );
-      await new Promise((r) => setTimeout(r, 90));
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+        if (routeTestContainer.querySelector('[data-home-shell="true"]') !== null) {
+          break;
+        }
+      }
     });
 
     assert.strictEqual(
@@ -14264,132 +14269,338 @@ async function runPerformanceAndVirtualizationTests() {
       });
 
       // -----------------------------------------------------------------------
-      // 12.20.5: Marcos de abertura da Home — separação entre fim das 6 operações, espera no seletor de tela (DisplaySetupModal) e botão "Continuar enquanto carrega"
+      // 12.20.5: Marcos de abertura na Home REAL — seletor de apresentação aberto por 150ms desde a 1ª montagem (antes do efeito do provedor) com catálogo ainda pendente, e duração reportada separadamente sem subtração
       // -----------------------------------------------------------------------
-      // Caso A: Seletor de apresentação (DisplaySetupModal) aberto por 180ms enquanto as 6 operações terminam em 120ms
+      windowInstance.localStorage.removeItem(STORAGE_KEY_DISPLAY_PREFS);
+      windowInstance.localStorage.setItem(
+        CREDENTIALS_KEY,
+        JSON.stringify({
+          serverUrl: 'http://server-milestone-secret.tv:8080',
+          username: 'user_milestone_secret',
+          password: 'pass_milestone_secret',
+          playlistName: 'Lista Secreta Milestone',
+        })
+      );
+
+      let resolvePendingSeriesCatalog150: ((items: any[]) => void) | null = null;
+      (XtreamService as any).getLiveCategories = async (_c: any, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ category_id: '1', category_name: 'TV' }];
+      };
+      (XtreamService as any).getVodCategories = async (_c: any, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ category_id: '10', category_name: 'Filmes' }];
+      };
+      (XtreamService as any).getSeriesCategories = async (_c: any, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ category_id: '20', category_name: 'Séries' }];
+      };
+      (XtreamService as any).getLiveStreams = async (_c: any, _cat?: string, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ stream_id: 101, name: 'Canal 1', category_id: '1' }];
+      };
+      (XtreamService as any).getVodStreams = async (_c: any, _cat?: string, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ stream_id: 201, name: 'Filme 1 (2024)', category_id: '10', rating: '8.2' }];
+      };
+      (XtreamService as any).getSeries = (_c: any, _cat?: string, opts?: any) => {
+        return new Promise<any[]>((resolve) => {
+          resolvePendingSeriesCatalog150 = (items) => {
+            opts?.diagOp?.recordNormalization({
+              durationMs: 2,
+              rawItemsCount: items.length,
+              validItemsCount: items.length,
+            });
+            resolve(items);
+          };
+        });
+      };
+
       controlledNowMs = 5000;
-      const sMilestoneAId = 501;
-      startCatalogDiagnosticsSession(sMilestoneAId, 2);
-      recordHomeOpeningMilestone({
-        isDisplaySetupOpen: true,
-        isOverlayActive: true,
-        isAuthRejected: false,
-        allSixFinished: false,
-      });
-      for (const opId of [
-        'live_categories',
-        'vod_categories',
-        'series_categories',
-        'live_catalog',
-        'vod_catalog',
-        'series_catalog',
-      ] as const) {
-        const h = recordCatalogOperationEnqueued(sMilestoneAId, opId, 80);
-        recordCatalogOperationStarted(h);
-        controlledNowMs += 20; // 6 * 20ms = 120ms total (t=5120ms)
-        recordCatalogOperationFinished(h, 'success');
-      }
-      // Em t=5120ms as 6 operações terminaram, mas o seletor de tela continua aberto
-      recordHomeOpeningMilestone({
-        isDisplaySetupOpen: true,
-        isOverlayActive: false,
-        isAuthRejected: false,
-        allSixFinished: true,
-      });
-      // Em t=5180ms o usuário conclui o seletor de apresentação e a Home fica disponível
-      controlledNowMs = 5180;
-      recordHomeOpeningMilestone({
-        isDisplaySetupOpen: false,
-        isOverlayActive: false,
-        isAuthRejected: false,
-        allSixFinished: true,
+      const homeMilestoneRootA = createRoot(p31Container);
+      await act(async () => {
+        homeMilestoneRootA.render(
+          React.createElement(
+            MemoryRouter,
+            { initialEntries: ['/home'] },
+            React.createElement(Home, null)
+          )
+        );
+        await new Promise((r) => setTimeout(r, 30));
       });
 
-      const snapMilestoneA = getCatalogDiagnosticsSnapshot()!;
-      assert.strictEqual(
-        snapMilestoneA.allSixFinishedAtMs,
-        120,
-        '[12.20.5] Fim das 6 operações deve ser registrado em 120ms'
+      const snapWhileDisplayOpen = getCatalogDiagnosticsSnapshot()!;
+      assert(
+        snapWhileDisplayOpen !== null,
+        '[12.20.5] Sessão da Home real deve estar registrada'
       );
       assert.strictEqual(
-        snapMilestoneA.homeAvailableAtMs,
-        180,
-        '[12.20.5] Liberação efetiva da Home após fechar o seletor de apresentação deve ser 180ms'
+        snapWhileDisplayOpen.wasDisplaySetupShown,
+        true,
+        '[12.20.5] Seletor de apresentação (DisplaySetupModal) deve ser registrado desde a 1ª montagem, mesmo quando o efeito de HomeContent roda antes do efeito de XtreamProvider'
       );
       assert.strictEqual(
-        snapMilestoneA.displaySetupWaitMs,
-        180,
-        '[12.20.5] Tempo de espera no seletor de apresentação (180ms) deve ser separado do tempo de processamento'
-      );
-      assert.strictEqual(
-        snapMilestoneA.netProcessingUntilHomeAvailableMs,
+        snapWhileDisplayOpen.displaySetupOpenedAtMs,
         0,
-        '[12.20.5] Tempo líquido fora do seletor de apresentação deve ser 0ms quando o seletor permaneceu aberto durante todo o carregamento'
+        '[12.20.5] Abertura do seletor na 1ª montagem deve constar em 0ms'
       );
       assert.strictEqual(
-        snapMilestoneA.releaseTrigger,
+        snapWhileDisplayOpen.allSixFinishedAtMs,
+        null,
+        '[12.20.5] Enquanto series_catalog está pendente, allSixFinishedAtMs deve permanecer null'
+      );
+      assert.strictEqual(
+        snapWhileDisplayOpen.homeAvailableAtMs,
+        null,
+        '[12.20.5] Enquanto seletor e overlay estão ativos, homeAvailableAtMs deve ser null'
+      );
+
+      // Fechar o seletor de apresentação após 150ms (t = 5150ms) enquanto o catálogo ainda está pendente
+      controlledNowMs = 5150;
+      const modalDialog150 = p31Container.querySelector('[role="dialog"][aria-modal="true"]');
+      assert(modalDialog150 !== null, '[12.20.5] DisplaySetupModal real deve estar montado no DOM');
+      const otherDevBtn150 = modalDialog150!.querySelector(
+        'button[data-device-choice="default"]'
+      ) as HTMLButtonElement | null;
+      assert(otherDevBtn150 !== null, '[12.20.5] Botão Outros dispositivos deve existir');
+      await act(async () => {
+        otherDevBtn150!.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      const confirmBtn150 = modalDialog150!.querySelector(
+        'button[data-confirm-default="true"]'
+      ) as HTMLButtonElement | null;
+      assert(confirmBtn150 !== null, '[12.20.5] Botão Confirmar e continuar deve existir');
+      await act(async () => {
+        confirmBtn150!.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      const snapAfterDisplayClosed = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAfterDisplayClosed.displaySetupClosedAtMs,
+        150,
+        '[12.20.5] Fechamento do seletor de apresentação deve ser registrado em 150ms'
+      );
+      assert.strictEqual(
+        snapAfterDisplayClosed.displaySetupWaitMs,
+        150,
+        '[12.20.5] Duração do seletor de apresentação deve ser exatamente 150ms'
+      );
+      assert.strictEqual(
+        snapAfterDisplayClosed.allSixFinishedAtMs,
+        null,
+        '[12.20.5] Catálogo (series_catalog) ainda continua pendente após fechar o seletor aos 150ms'
+      );
+      assert.strictEqual(
+        snapAfterDisplayClosed.homeAvailableAtMs,
+        null,
+        '[12.20.5] Como o carregamento inicial ainda bloqueia a Home via overlay, homeAvailableAtMs deve continuar null aos 150ms'
+      );
+
+      // Concluir a 6ª operação aos 320ms (t = 5320ms)
+      controlledNowMs = 5320;
+      await act(async () => {
+        resolvePendingSeriesCatalog150!([
+          { series_id: 301, name: 'Série Final (2025)', category_id: '20', rating: '9.1' },
+        ]);
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      const snapAfterAllSix = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAfterAllSix.allSixFinishedAtMs,
+        320,
+        '[12.20.5] Conclusão das 6 operações deve ser registrada em 320ms'
+      );
+      assert.strictEqual(
+        snapAfterAllSix.homeAvailableAtMs,
+        320,
+        '[12.20.5] homeAvailableAtMs deve ser 320ms (sem subtrair os 150ms do seletor que correu em paralelo com o carregamento)'
+      );
+      assert.strictEqual(
+        snapAfterAllSix.displaySetupWaitMs,
+        150,
+        '[12.20.5] displaySetupWaitMs (150ms) deve continuar reportado separadamente'
+      );
+      assert.strictEqual(
+        snapAfterAllSix.releaseTrigger,
         'auto_all_six',
-        '[12.20.5] Motivo da liberação após conclusão das 6 operações deve ser auto_all_six'
+        '[12.20.5] Liberação automática após as 6 operações deve registrar auto_all_six'
       );
 
-      // Caso B: Liberação manual pelo botão "Continuar enquanto carrega" antes do término das 6 operações
+      await act(async () => {
+        homeMilestoneRootA.unmount();
+      });
+
+      // -----------------------------------------------------------------------
+      // 12.20.5B: Liberação manual por "Continuar enquanto carrega" na Home REAL — intenção no clique vs disponibilidade após atualização do DOM, e conclusão posterior das 6 operações
+      // -----------------------------------------------------------------------
+      let resolveSlowSeriesManual: ((items: any[]) => void) | null = null;
+      (XtreamService as any).getSeries = (_c: any, _cat?: string, opts?: any) => {
+        return new Promise<any[]>((resolve) => {
+          resolveSlowSeriesManual = (items) => {
+            opts?.diagOp?.recordNormalization({
+              durationMs: 2,
+              rawItemsCount: items.length,
+              validItemsCount: items.length,
+            });
+            resolve(items);
+          };
+        });
+      };
+
+      const origSetTimeoutP31 = globalThis.setTimeout;
+      globalThis.setTimeout = ((fn: any, ms?: number, ...args: any[]) => {
+        if (ms === 10000) {
+          return origSetTimeoutP31(fn, 10, ...args);
+        }
+        return origSetTimeoutP31(fn, ms, ...args);
+      }) as typeof setTimeout;
+
       controlledNowMs = 8000;
-      const sMilestoneBId = 502;
-      startCatalogDiagnosticsSession(sMilestoneBId, 2);
-      recordHomeOpeningMilestone({
-        isDisplaySetupOpen: false,
-        isOverlayActive: true,
-        isAuthRejected: false,
-        allSixFinished: false,
+      const homeManualRoot = createRoot(p31Container);
+      await act(async () => {
+        homeManualRoot.render(
+          React.createElement(
+            MemoryRouter,
+            { initialEntries: ['/home'] },
+            React.createElement(Home, null)
+          )
+        );
+        await new Promise((r) => origSetTimeoutP31(r, 35));
       });
-      controlledNowMs = 8350; // Usuário clica em "Continuar enquanto carrega" aos 350ms
-      recordHomeOpeningMilestone({
-        isDisplaySetupOpen: false,
-        isOverlayActive: false,
-        isAuthRejected: false,
-        allSixFinished: false,
-        manualContinueClicked: true,
-      });
-      controlledNowMs = 8500; // As 6 operações terminam depois, aos 500ms
-      for (const opId of [
-        'live_categories',
-        'vod_categories',
-        'series_categories',
-        'live_catalog',
-        'vod_catalog',
-        'series_catalog',
-      ] as const) {
-        const h = recordCatalogOperationEnqueued(sMilestoneBId, opId, 80);
-        recordCatalogOperationStarted(h);
-        recordCatalogOperationFinished(h, 'success');
-      }
-      recordHomeOpeningMilestone({
-        isDisplaySetupOpen: false,
-        isOverlayActive: false,
-        isAuthRejected: false,
-        allSixFinished: true,
+      globalThis.setTimeout = origSetTimeoutP31;
+
+      const continueWhileLoadingBtn = p31Container.querySelector(
+        'button[data-continue-while-loading="true"]'
+      ) as HTMLButtonElement | null;
+      assert(
+        continueWhileLoadingBtn !== null,
+        '[12.20.5B] Botão "Continuar enquanto carrega" deve aparecer na Home real enquanto a 6ª operação está pendente'
+      );
+      const homeShellEl = p31Container.querySelector('[data-home-shell="true"]') as HTMLElement;
+      assert(
+        homeShellEl.hasAttribute('inert'),
+        '[12.20.5B] Antes de clicar em "Continuar enquanto carrega", a Home deve estar bloqueada (inert)'
+      );
+
+      // Verificar que o clique registra a intenção imediatamente (aos 350ms, enquanto a Home ainda está inert),
+      // e só marca homeAvailableAtMs (aos 358ms) após o commit do React remover o overlay e liberar a Home (inert=false)
+      let inertWhenIntentClockRead: boolean | null = null;
+      let snapRightOnClickIntent: ReturnType<typeof getCatalogDiagnosticsSnapshot> = null;
+      setCatalogDiagnosticsClockForTest(() => {
+        if (homeShellEl.hasAttribute('inert')) {
+          inertWhenIntentClockRead = true;
+          return 8350;
+        }
+        if (snapRightOnClickIntent === null) {
+          snapRightOnClickIntent = getCatalogDiagnosticsSnapshot();
+        }
+        return 8358;
       });
 
-      const snapMilestoneB = getCatalogDiagnosticsSnapshot()!;
+      controlledNowMs = 8358;
+      await act(async () => {
+        continueWhileLoadingBtn!.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      setCatalogDiagnosticsClockForTest(() => controlledNowMs);
+
       assert.strictEqual(
-        snapMilestoneB.homeAvailableAtMs,
+        inertWhenIntentClockRead,
+        true,
+        '[12.20.5B] No instante em que recordHomeManualContinueIntent lê o relógio (350ms), a Home ainda estava inert'
+      );
+      assert(
+        snapRightOnClickIntent !== null,
+        '[12.20.5B] Snapshot logo antes de o efeito pós-commit marcar homeAvailableAtMs deve existir'
+      );
+      assert.strictEqual(
+        snapRightOnClickIntent!.manualContinueClickedAtMs,
         350,
-        '[12.20.5] Com clique manual em "Continuar enquanto carrega", homeAvailableAtMs deve ser 350ms'
+        '[12.20.5B] No instante do clique, manualContinueClickedAtMs deve ser registrado como intenção (350ms)'
       );
       assert.strictEqual(
-        snapMilestoneB.allSixFinishedAtMs,
-        500,
-        '[12.20.5] allSixFinishedAtMs deve registrar 500ms separadamente de homeAvailableAtMs (350ms)'
+        snapRightOnClickIntent!.homeAvailableAtMs,
+        null,
+        '[12.20.5B] Antes de o efeito pós-render confirmar a liberação do DOM, homeAvailableAtMs ainda DEVE ser null'
+      );
+
+      const snapAfterManualRender = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        homeShellEl.hasAttribute('inert'),
+        false,
+        '[12.20.5B] Após o re-render do clique, a Home deve aceitar interação (sem atributo inert)'
       );
       assert.strictEqual(
-        snapMilestoneB.releaseTrigger,
+        snapAfterManualRender.manualContinueClickedAtMs,
+        350,
+        '[12.20.5B] Intenção do clique permanece em 350ms'
+      );
+      assert.strictEqual(
+        snapAfterManualRender.homeAvailableAtMs,
+        358,
+        '[12.20.5B] homeAvailableAtMs deve ser marcado somente depois que a interface atualizou e passou a aceitar interação (358ms)'
+      );
+      assert.strictEqual(
+        snapAfterManualRender.releaseTrigger,
         'manual_continue_button',
-        '[12.20.5] Motivo da liberação manual deve ser manual_continue_button'
+        '[12.20.5B] Motivo da liberação deve ser manual_continue_button'
       );
+      assert.strictEqual(
+        snapAfterManualRender.allSixFinishedAtMs,
+        null,
+        '[12.20.5B] Como a 6ª operação ainda não terminou, allSixFinishedAtMs deve continuar null'
+      );
+
+      // Concluir a 6ª operação (series_catalog) aos 520ms (t = 8520ms), depois da liberação manual
+      controlledNowMs = 8520;
+      await act(async () => {
+        resolveSlowSeriesManual!([
+          { series_id: 302, name: 'Série Tardia Manual (2025)', category_id: '20', rating: '8.7' },
+        ]);
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      const snapAfterLateSix = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAfterLateSix.homeAvailableAtMs,
+        358,
+        '[12.20.5B] homeAvailableAtMs (358ms) deve ser preservado após a conclusão posterior das 6 operações'
+      );
+      assert.strictEqual(
+        snapAfterLateSix.allSixFinishedAtMs,
+        520,
+        '[12.20.5B] Conclusão das 6 operações (520ms) deve ser registrada como marco separado mesmo após a liberação manual'
+      );
+      assert.strictEqual(
+        snapAfterLateSix.releaseTrigger,
+        'manual_continue_button',
+        '[12.20.5B] releaseTrigger deve continuar sendo manual_continue_button'
+      );
+      assert.strictEqual(
+        snapAfterLateSix.operations.series_catalog?.outcome,
+        'success',
+        '[12.20.5B] Operação inicial que estava pendente no momento da liberação manual deve continuar sendo medida até concluir com sucesso'
+      );
+      assert.strictEqual(
+        snapAfterLateSix.operations.series_catalog?.completedAtMs,
+        520,
+        '[12.20.5B] Tempo de conclusão de series_catalog deve ser medido até o fim (520ms)'
+      );
+
+      await act(async () => {
+        homeManualRoot.unmount();
+      });
 
       // -----------------------------------------------------------------------
       // 12.20.6: Exposição em Configurações (ConfigView) + Sanitização estrita (sem URL, credenciais, nomes ou conteúdo da resposta)
       // -----------------------------------------------------------------------
+      (XtreamService as any).getSeries = async (_c: any, _cat?: string, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ series_id: 301, name: 'Série 1 (2025)', category_id: '20', rating: '9.0' }];
+      };
       (XtreamService as any).authenticate = async () => ({
         user_info: {
           status: 'Active',
@@ -14524,13 +14735,600 @@ async function runPerformanceAndVirtualizationTests() {
         cfgRoot.unmount();
       });
 
+      // Reativar coleta para as regressões seguintes da auditoria
+      setCatalogLoadDiagnosticsEnabled(true);
+
+      // -----------------------------------------------------------------------
+      // 12.20.7: Rejeição de autenticação na última consulta (HTTP 401 e HTTP 200 com auth: 0) bloqueando a Home com recuperação de acesso
+      // -----------------------------------------------------------------------
+      (XtreamService as any).getLiveCategories = origXtreamMethods.getLiveCategories;
+      (XtreamService as any).getVodCategories = origXtreamMethods.getVodCategories;
+      (XtreamService as any).getSeriesCategories = origXtreamMethods.getSeriesCategories;
+      (XtreamService as any).getLiveStreams = origXtreamMethods.getLiveStreams;
+      (XtreamService as any).getVodStreams = origXtreamMethods.getVodStreams;
+      (XtreamService as any).getSeries = origXtreamMethods.getSeries;
+      setTransportTestConfig({ mode: 'web', capacitorHttpGet: null });
+
+      // Subcaso A: Última consulta (get_series) retorna HTTP 401 e modal de recuperação de acesso bloqueia a tela
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const urlStr = String(input);
+        controlledNowMs += 15;
+        if (urlStr.includes('action=get_series&') || urlStr.endsWith('action=get_series')) {
+          return {
+            ok: false,
+            status: 401,
+            statusText: 'Unauthorized',
+            text: async () => 'Unauthorized',
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => {
+            controlledNowMs += 5;
+            if (urlStr.includes('_categories')) {
+              return JSON.stringify([{ category_id: '1', category_name: 'Geral' }]);
+            }
+            return JSON.stringify([{ stream_id: 1, name: 'Item Valido', category_id: '1' }]);
+          },
+        } as unknown as Response;
+      }) as typeof fetch;
+
+      controlledNowMs = 12000;
+      const auth401Root = createRoot(p31Container);
+      await act(async () => {
+        auth401Root.render(
+          React.createElement(
+            MemoryRouter,
+            { initialEntries: ['/home'] },
+            React.createElement(Home, null)
+          )
+        );
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      const authRecoveryModal401 = p31Container.querySelector('[data-auth-recovery="true"]');
+      assert(
+        authRecoveryModal401 !== null,
+        '[12.20.7]Quando a última consulta retorna HTTP 401, o modal de recuperação de acesso deve bloquear a tela'
+      );
+      const snapAuth401 = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAuth401.releaseTrigger,
+        'auth_rejected',
+        '[12.20.7]Quando a última consulta retorna HTTP 401 e bloqueia a tela, releaseTrigger DEVE ser auth_rejected (e não auto_all_six)'
+      );
+      assert.strictEqual(
+        snapAuth401.homeAvailableAtMs,
+        null,
+        '[12.20.7]Com a tela bloqueada pela recuperação de acesso, homeAvailableAtMs DEVE permanecer null'
+      );
+      assert(
+        snapAuth401.allSixFinishedAtMs !== null,
+        '[12.20.7]A conclusão das 6 operações deve ter seu timestamp registrado separadamente'
+      );
+      assert.strictEqual(
+        snapAuth401.operations.series_catalog?.outcome,
+        'error',
+        '[12.20.7]series_catalog deve registrar outcome error'
+      );
+      assert.strictEqual(
+        snapAuth401.operations.series_catalog?.errorCategory,
+        'auth_rejected',
+        '[12.20.7]series_catalog deve registrar errorCategory auth_rejected'
+      );
+      assert.strictEqual(
+        snapAuth401.operations.series_catalog?.attempts[0]?.httpStatus,
+        401,
+        '[12.20.7]Tentativa de series_catalog deve registrar httpStatus 401'
+      );
+      assert.strictEqual(
+        snapAuth401.operations.series_catalog?.attempts[0]?.errorCategory,
+        'auth_rejected',
+        '[12.20.7]Tentativa de series_catalog com HTTP 401 deve registrar errorCategory auth_rejected'
+      );
+      const reportAuth401Text = catalogDiagMod.formatCatalogDiagnosticsReport(snapAuth401);
+      assert(
+        reportAuth401Text.includes('Liberação da interface Home: indisponível | Modo: Abertura interrompida por autenticação'),
+        '[12.20.7]Relatório formatado deve indicar abertura interrompida por autenticação e Home indisponível'
+      );
+
+      await act(async () => {
+        auth401Root.unmount();
+      });
+
+      // Subcaso B: Resposta HTTP 200 com payload { user_info: { auth: 0 } } na última consulta — tentativa finalizada uma única vez após validação de autenticação
+      windowInstance.localStorage.setItem(
+        CREDENTIALS_KEY,
+        JSON.stringify({
+          serverUrl: 'http://server-auth0-secret.tv:8080',
+          username: 'user_auth0_secret',
+          password: 'pass_auth0_secret',
+          playlistName: 'Lista Auth 0',
+        })
+      );
+
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const urlStr = String(input);
+        controlledNowMs += 10;
+        if (urlStr.includes('action=get_series&') || urlStr.endsWith('action=get_series')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => {
+              controlledNowMs += 4;
+              return JSON.stringify({
+                user_info: {
+                  auth: 0,
+                  status: 'Disabled',
+                  message: 'Segredo Provedor Auth Zero',
+                },
+              });
+            },
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => {
+            controlledNowMs += 4;
+            if (urlStr.includes('_categories')) {
+              return JSON.stringify([{ category_id: '1', category_name: 'Geral' }]);
+            }
+            return JSON.stringify([{ stream_id: 1, name: 'Item Valido', category_id: '1' }]);
+          },
+        } as unknown as Response;
+      }) as typeof fetch;
+
+      controlledNowMs = 15000;
+      const auth200ZeroRoot = createRoot(p31Container);
+      await act(async () => {
+        auth200ZeroRoot.render(
+          React.createElement(
+            MemoryRouter,
+            { initialEntries: ['/home'] },
+            React.createElement(Home, null)
+          )
+        );
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      const snapAuth200Zero = getCatalogDiagnosticsSnapshot()!;
+      const seriesAttAuth0 = snapAuth200Zero.operations.series_catalog?.attempts[0];
+      assert(seriesAttAuth0 !== undefined, '[12.20.7B] Tentativa de series_catalog deve existir');
+      assert.strictEqual(
+        snapAuth200Zero.operations.series_catalog?.attempts.length,
+        1,
+        '[12.20.7B] HTTP 200 com auth: 0 não deve sofrer retry e deve ter exatamente 1 tentativa'
+      );
+      assert.strictEqual(
+        seriesAttAuth0!.httpStatus,
+        200,
+        '[12.20.7B] Tentativa com HTTP 200 e auth: 0 DEVE preservar httpStatus = 200'
+      );
+      assert.strictEqual(
+        seriesAttAuth0!.outcome,
+        'error',
+        '[12.20.7B] Tentativa com HTTP 200 e auth: 0 DEVE ser finalizada apenas depois da validação de autenticação com outcome = error (e não success)'
+      );
+      assert.strictEqual(
+        seriesAttAuth0!.errorCategory,
+        'auth_rejected',
+        '[12.20.7B] Tentativa com HTTP 200 e auth: 0 DEVE registrar errorCategory = auth_rejected'
+      );
+      assert.strictEqual(
+        snapAuth200Zero.releaseTrigger,
+        'auth_rejected',
+        '[12.20.7B] Sessão com HTTP 200 e auth: 0 deve registrar releaseTrigger = auth_rejected'
+      );
+      assert.strictEqual(
+        snapAuth200Zero.homeAvailableAtMs,
+        null,
+        '[12.20.7B] Sessão bloqueada por auth: 0 deve manter homeAvailableAtMs = null'
+      );
+
+      await act(async () => {
+        auth200ZeroRoot.unmount();
+      });
+
+      // -----------------------------------------------------------------------
+      // 12.20.8: Desmontagem e remontagem do XtreamProvider durante pausa da indexação cooperativa
+      // -----------------------------------------------------------------------
+      setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });
+      globalThis.fetch = savedFetchP31;
+
+      const sharedMovies1500 = Array.from({ length: 1500 }, (_, idx) => ({
+        stream_id: 70000 + idx,
+        name: `Filme Cooperativo ${idx + 1} (2024)`,
+        category_id: '10',
+        rating: '8.1',
+      }));
+
+      let resolveSessionBVodFetch: ((items: any[]) => void) | null = null;
+      let sessionAVodCallCount = 0;
+
+      (XtreamService as any).getLiveCategories = async (_c: any, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ category_id: '1', category_name: 'TV' }];
+      };
+      (XtreamService as any).getVodCategories = async (_c: any, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ category_id: '10', category_name: 'Filmes' }];
+      };
+      (XtreamService as any).getSeriesCategories = async (_c: any, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ category_id: '20', category_name: 'Séries' }];
+      };
+      (XtreamService as any).getLiveStreams = async (_c: any, _cat?: string, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ stream_id: 1, name: 'Canal 1', category_id: '1' }];
+      };
+      (XtreamService as any).getVodStreams = async (creds: XtreamCredentials, _cat?: string, opts?: any) => {
+        if (creds.username === 'remount_user_A') {
+          sessionAVodCallCount++;
+          // Retorna cópia fresca de 1500 itens (2 lotes de 1000 + 500 -> 1 pausa setTimeout(0) no meio da indexação)
+          const copyA = sharedMovies1500.slice();
+          opts?.diagOp?.recordNormalization({
+            durationMs: 3,
+            rawItemsCount: copyA.length,
+            validItemsCount: copyA.length,
+          });
+          return copyA;
+        }
+        return new Promise<any[]>((resolve) => {
+          resolveSessionBVodFetch = (items) => {
+            opts?.diagOp?.recordNormalization({
+              durationMs: 3,
+              rawItemsCount: items.length,
+              validItemsCount: items.length,
+            });
+            resolve(items);
+          };
+        });
+      };
+      (XtreamService as any).getSeries = async (_c: any, _cat?: string, opts?: any) => {
+        opts?.diagOp?.recordNormalization({ durationMs: 1, rawItemsCount: 1, validItemsCount: 1 });
+        return [{ series_id: 1, name: 'Série 1 (2024)', category_id: '20', rating: '8.5' }];
+      };
+
+      // Interceptar o setTimeout(0) da pausa cooperativa de buildVodIndexAsync da Sessão A
+      let resumeSessionACooperativeYield: (() => void) | null = null;
+      const realSetTimeoutCoop = globalThis.setTimeout;
+      let interceptNextZeroTimeout = true;
+      globalThis.setTimeout = ((fn: any, ms?: number, ...args: any[]) => {
+        if (interceptNextZeroTimeout && (ms === 0 || ms === undefined) && sessionAVodCallCount === 1) {
+          interceptNextZeroTimeout = false;
+          resumeSessionACooperativeYield = () => fn(...args);
+          return 0 as unknown as ReturnType<typeof setTimeout>;
+        }
+        return realSetTimeoutCoop(fn, ms, ...args);
+      }) as typeof setTimeout;
+
+      controlledNowMs = 18000;
+      const remountRootA = createRoot(p31Container);
+      await act(async () => {
+        remountRootA.render(
+          React.createElement(
+            XtreamProvider,
+            {
+              credentials: {
+                serverUrl: 'http://remount-a.tv:8080',
+                username: 'remount_user_A',
+                password: '123',
+              },
+            },
+            React.createElement('div', null, 'Provider Instance A')
+          )
+        );
+        await new Promise((r) => realSetTimeoutCoop(r, 25));
+      });
+      globalThis.setTimeout = realSetTimeoutCoop;
+
+      assert(
+        resumeSessionACooperativeYield !== null,
+        '[12.20.8] A indexação cooperativa de 1500 filmes da Sessão A deve estar pausada entre o 1º e o 2º lote'
+      );
+      const snapRemountA = getCatalogDiagnosticsSnapshot()!;
+      const remountSessionAId = snapRemountA.sessionId;
+      assert.strictEqual(
+        snapRemountA.operations.vod_catalog?.outcome,
+        'running',
+        '[12.20.8] vod_catalog da Sessão A deve estar running durante a pausa cooperativa'
+      );
+
+      // Desmontar completamente o provedor da Sessão A durante a pausa da indexação cooperativa
+      controlledNowMs = 18040;
+      await act(async () => {
+        remountRootA.unmount();
+      });
+
+      // Montar uma NOVA instância de XtreamProvider (Sessão B, cujo sessionRef local reinicia em 1!) e iniciar o carregamento de filmes
+      controlledNowMs = 18050;
+      const remountRootB = createRoot(p31Container);
+      await act(async () => {
+        remountRootB.render(
+          React.createElement(
+            XtreamProvider,
+            {
+              credentials: {
+                serverUrl: 'http://remount-b.tv:8080',
+                username: 'remount_user_B',
+                password: '456',
+              },
+            },
+            React.createElement('div', null, 'Provider Instance B')
+          )
+        );
+        await new Promise((r) => realSetTimeoutCoop(r, 25));
+      });
+
+      const snapRemountBWhileRunning = getCatalogDiagnosticsSnapshot()!;
+      assert(
+        snapRemountBWhileRunning.sessionId > remountSessionAId,
+        `[12.20.8] Mesmo remontando XtreamProvider do zero, a Sessão B deve receber um sessionId único (${snapRemountBWhileRunning.sessionId} > ${remountSessionAId})`
+      );
+      assert.strictEqual(
+        snapRemountBWhileRunning.operations.vod_catalog?.outcome,
+        'running',
+        '[12.20.8] vod_catalog da Sessão B deve estar em andamento'
+      );
+
+      // Agora a tarefa de indexação cooperativa da Sessão A retoma da pausa e cancela enquanto vod_catalog da Sessão B está em andamento!
+      controlledNowMs = 18065;
+      await act(async () => {
+        resumeSessionACooperativeYield!();
+        await new Promise((r) => realSetTimeoutCoop(r, 15));
+      });
+
+      const snapRemountBAfterAResumed = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapRemountBAfterAResumed.operations.vod_catalog?.outcome,
+        'running',
+        '[12.20.8] Quando a tarefa pausada da Sessão A retoma e cancela, vod_catalog da Sessão B DEVE continuar em andamento (running)'
+      );
+      assert.strictEqual(
+        snapRemountBAfterAResumed.operations.vod_catalog?.indexCancelled,
+        false,
+        '[12.20.8] O cancelamento da indexação da Sessão A jamais deve marcar indexCancelled na Sessão B'
+      );
+
+      // Concluir o carregamento e indexação de filmes da Sessão B
+      controlledNowMs = 18110;
+      await act(async () => {
+        resolveSessionBVodFetch!(sharedMovies1500.slice());
+        await new Promise((r) => realSetTimeoutCoop(r, 40));
+      });
+
+      const snapRemountBCompleted = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapRemountBCompleted.operations.vod_catalog?.outcome,
+        'success',
+        '[12.20.8] vod_catalog da Sessão B deve concluir normalmente como success'
+      );
+      assert.strictEqual(
+        snapRemountBCompleted.operations.vod_catalog?.indexedItemsCount,
+        1500,
+        '[12.20.8] vod_catalog da Sessão B deve registrar todos os 1500 itens indexados'
+      );
+      assert.strictEqual(
+        snapRemountBCompleted.operations.vod_catalog?.indexBatchesProcessed,
+        2,
+        '[12.20.8] vod_catalog da Sessão B deve registrar seus 2 lotes processados'
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.20.9: 16 consultas manuais posteriores de categorias preservando intactas as 6 operações originais e limitando o histórico
+      // -----------------------------------------------------------------------
+      let capturedLiveCtxFor16: any = null;
+      let capturedVodCtxFor16: any = null;
+      let capturedSeriesCtxFor16: any = null;
+      function ActionCaptureConsumer() {
+        capturedLiveCtxFor16 = useXtreamLive();
+        capturedVodCtxFor16 = useXtreamVod();
+        capturedSeriesCtxFor16 = useXtreamSeries();
+        return null;
+      }
+
+      await act(async () => {
+        remountRootB.render(
+          React.createElement(
+            XtreamProvider,
+            {
+              credentials: {
+                serverUrl: 'http://remount-b.tv:8080',
+                username: 'remount_user_B',
+                password: '456',
+              },
+            },
+            React.createElement(ActionCaptureConsumer, null)
+          )
+        );
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      const snapBefore16Queries = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapBefore16Queries.operationHistory.length,
+        6,
+        '[12.20.9] Histórico inicial deve conter exatamente as 6 operações de abertura'
+      );
+      const originalSixIds = {
+        live_categories: snapBefore16Queries.operations.live_categories?.operationId,
+        vod_categories: snapBefore16Queries.operations.vod_categories?.operationId,
+        series_categories: snapBefore16Queries.operations.series_categories?.operationId,
+        live_catalog: snapBefore16Queries.operations.live_catalog?.operationId,
+        vod_catalog: snapBefore16Queries.operations.vod_catalog?.operationId,
+        series_catalog: snapBefore16Queries.operations.series_catalog?.operationId,
+      };
+      const originalLiveCatCompletedAt =
+        snapBefore16Queries.operations.live_categories?.completedAtMs;
+
+      // Executar 16 consultas posteriores de categorias
+      await act(async () => {
+        for (let q = 0; q < 16; q++) {
+          controlledNowMs += 5;
+          if (q % 3 === 0) {
+            await capturedLiveCtxFor16.fetchLiveCategories();
+          } else if (q % 3 === 1) {
+            await capturedVodCtxFor16.fetchVodCategories();
+          } else {
+            await capturedSeriesCtxFor16.fetchSeriesCategories();
+          }
+        }
+      });
+
+      const snapAfter16Queries = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapAfter16Queries.operationHistory.length,
+        6,
+        '[12.20.9] Após 16 consultas manuais posteriores de categorias, operationHistory DEVE permanecer limitado às 6 operações originais'
+      );
+      assert.strictEqual(
+        snapAfter16Queries.subsequentOperationsCount,
+        16,
+        '[12.20.9] As 16 consultas manuais posteriores devem ser contabilizadas em subsequentOperationsCount (16)'
+      );
+      assert.deepStrictEqual(
+        {
+          live_categories: snapAfter16Queries.operations.live_categories?.operationId,
+          vod_categories: snapAfter16Queries.operations.vod_categories?.operationId,
+          series_categories: snapAfter16Queries.operations.series_categories?.operationId,
+          live_catalog: snapAfter16Queries.operations.live_catalog?.operationId,
+          vod_catalog: snapAfter16Queries.operations.vod_catalog?.operationId,
+          series_catalog: snapAfter16Queries.operations.series_catalog?.operationId,
+        },
+        originalSixIds,
+        '[12.20.9] Os 6 registros originais das operações iniciais NÃO devem ser sobrescritos pelas 16 consultas posteriores'
+      );
+      assert.strictEqual(
+        snapAfter16Queries.operations.live_categories?.runNumber,
+        1,
+        '[12.20.9] runNumber de live_categories deve continuar sendo 1'
+      );
+      assert.strictEqual(
+        snapAfter16Queries.operations.live_categories?.completedAtMs,
+        originalLiveCatCompletedAt,
+        '[12.20.9] Os tempos das operações iniciais devem permanecer intactos após as 16 consultas posteriores'
+      );
+
+      await act(async () => {
+        remountRootB.unmount();
+      });
+
+      // -----------------------------------------------------------------------
+      // 12.20.10: Duas ordenações seguidas de uma mesclagem do HeroBanner reportadas como "2 ordenações e 1 mesclagem" sem somar duas vezes o tempo das ordenações
+      // -----------------------------------------------------------------------
+      controlledNowMs = 30000;
+      startCatalogDiagnosticsSession(undefined, 2);
+
+      const vodSortTestItems = [
+        {
+          stream_id: 1,
+          name: 'Filme Alpha (2024)',
+          category_id: '10',
+          rating: '8.0',
+          stream_icon: 'http://img.test/v1.jpg',
+        },
+        {
+          stream_id: 2,
+          name: 'Filme Beta (2025)',
+          category_id: '10',
+          rating: '9.2',
+          stream_icon: 'http://img.test/v2.jpg',
+        },
+      ];
+      const seriesSortTestItems = [
+        {
+          series_id: 10,
+          name: 'Série Gamma (2023)',
+          category_id: '20',
+          rating: '7.5',
+          cover: 'http://img.test/s1.jpg',
+        },
+        {
+          series_id: 11,
+          name: 'Série Delta (2025)',
+          category_id: '20',
+          rating: '9.4',
+          cover: 'http://img.test/s2.jpg',
+        },
+      ];
+
+      // Avançar o relógio controlado de forma determinística durante a 1ª ordenação (VOD = 14ms), 2ª ordenação (Séries = 9ms) e mesclagem do HeroBanner (3ms)
+      let clockReadsInSortAndMerge = 0;
+      setCatalogDiagnosticsClockForTest(() => {
+        clockReadsInSortAndMerge++;
+        // Leituras do relógio em getHeroBannerItems:
+        // 1: início sort VOD (t=30000) -> 2: fim sort VOD (t=30014 -> 14ms)
+        // 3: início sort Series (t=30014) -> 4: fim sort Series (t=30023 -> 9ms)
+        // 5: início heroMerge após obter vodSorted e seriesSorted (t=30023) -> 6: fim heroMerge (t=30026 -> 3ms)
+        if (clockReadsInSortAndMerge === 1) return 30000;
+        if (clockReadsInSortAndMerge === 2) return 30014;
+        if (clockReadsInSortAndMerge === 3) return 30014;
+        if (clockReadsInSortAndMerge === 4) return 30023;
+        if (clockReadsInSortAndMerge === 5) return 30023;
+        if (clockReadsInSortAndMerge === 6) return 30026;
+        return 30026;
+      });
+
+      const heroMergedResult = getHeroBannerItems(vodSortTestItems, seriesSortTestItems);
+      setCatalogDiagnosticsClockForTest(() => controlledNowMs);
+
+      assert.strictEqual(heroMergedResult.length, 4, '[12.20.10] HeroBanner deve mesclar os 4 itens');
+      const snapSortAndMerge = getCatalogDiagnosticsSnapshot()!;
+      assert.strictEqual(
+        snapSortAndMerge.sorting.totalNewSortsCount,
+        2,
+        '[12.20.10] Duas ordenações (VOD + Séries) seguidas de uma mesclagem devem registrar exatamente 2 ordenações em totalNewSortsCount (e não 3)'
+      );
+      assert.strictEqual(
+        snapSortAndMerge.sorting.heroMergesCount,
+        1,
+        '[12.20.10] A mesclagem do HeroBanner deve ser contabilizada separadamente como 1 mesclagem em heroMergesCount'
+      );
+      assert.strictEqual(
+        snapSortAndMerge.sorting.vod.totalSortMs,
+        14,
+        '[12.20.10] Tempo da ordenação de Filmes deve ser 14ms'
+      );
+      assert.strictEqual(
+        snapSortAndMerge.sorting.series.totalSortMs,
+        9,
+        '[12.20.10] Tempo da ordenação de Séries deve ser 9ms'
+      );
+      assert.strictEqual(
+        snapSortAndMerge.sorting.totalSortMs,
+        23,
+        '[12.20.10] Tempo total das ordenações efetivas deve ser 23ms (14ms + 9ms), sem somar duas vezes na mesclagem'
+      );
+      assert.strictEqual(
+        snapSortAndMerge.sorting.totalHeroMergeMs,
+        3,
+        '[12.20.10] Tempo da mesclagem do HeroBanner deve medir apenas os 3ms posteriores a vodSorted e seriesSorted (sem incluir os 23ms das duas ordenações)'
+      );
+
+      const formattedSortAndMergeReport =
+        catalogDiagMod.formatCatalogDiagnosticsReport(snapSortAndMerge);
+      assert(
+        formattedSortAndMergeReport.includes(
+          '• Ordenações efetivas (Filmes + Séries): 2 ordenações (23.0 ms)'
+        ),
+        '[12.20.10] Relatório formatado deve exibir "2 ordenações (23.0 ms)"'
+      );
+      assert(
+        formattedSortAndMergeReport.includes(
+          '• Mesclagens do HeroBanner: 1 mesclagens (3.0 ms, itens=4)'
+        ),
+        '[12.20.10] Relatório formatado deve exibir "1 mesclagens (3.0 ms, itens=4)"'
+      );
+
       console.log(
-        `📊 [Métricas P3.1 — Diagnóstico do Carregamento Inicial dos Catálogos]\n` +
+        `📊 [Métricas P3.1 — Diagnóstico do Carregamento Inicial dos Catálogos (Auditado)]\n` +
           `   • Coleta desativada por padrão: eventos capturados=0 | requisições iniciais=6 (0 extras)\n` +
           `   • Transporte Web (fetch): espera resposta=35ms | leitura corpo=20ms | JSON.parse=12ms\n` +
           `   • Transporte Android (CapacitorHttp): transporte + ponte nativa=48ms | payload pré-parseado sem re-serializar (jsonParseMs=n/a)\n` +
-          `   • Marcos da Home: separação validada entre fim das 6 operações (120ms), seletor de tela (180ms) e botão "Continuar enquanto carrega" (350ms vs 500ms)\n` +
-          `   • Isolamento de sessão: resposta tardia da sessão cancelada ignorada (0 contaminação na nova conta)`
+          `   • Marcos reais da Home: seletor desde 1ª montagem=150ms (separado de homeAvailableAtMs=320ms) | botão manual: intenção=350ms → disponível pós-render=358ms → 6 operações=520ms | HTTP 401/auth:0 → auth_rejected (Home indisponível)\n` +
+          `   • Isolamento em remontagem e histórico fixo: pausa cooperativa isolada entre sessões | 16 consultas extras mantêm 6 registros originais | 2 ordenações (23ms) + 1 mesclagem (3ms)`
       );
     } finally {
       setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });

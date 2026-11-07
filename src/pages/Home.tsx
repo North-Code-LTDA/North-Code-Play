@@ -29,7 +29,10 @@ import {
   focusElementSafely,
   isElementFocusable,
 } from '../navigation';
-import { recordHomeOpeningMilestone } from '../utils/catalogDiagnostics';
+import {
+  recordHomeOpeningMilestone,
+  recordHomeManualContinueIntent,
+} from '../utils/catalogDiagnostics';
 
 export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
 
@@ -769,13 +772,7 @@ function HomeContent({ credentials }: { credentials: any }) {
                 type="button"
                 data-continue-while-loading="true"
                 onClick={() => {
-                  recordHomeOpeningMilestone({
-                    isDisplaySetupOpen,
-                    isOverlayActive: false,
-                    isAuthRejected,
-                    allSixFinished,
-                    manualContinueClicked: true,
-                  });
+                  recordHomeManualContinueIntent();
                   setIsOpeningDismissed(true);
                 }}
                 className="px-5 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-white border border-nc-border/80 rounded-xl text-sm font-medium transition-colors shadow-lg focus:outline-none focus:ring-2 focus:ring-nc-primary"
