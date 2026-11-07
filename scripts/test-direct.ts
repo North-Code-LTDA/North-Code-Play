@@ -12456,6 +12456,815 @@ async function runPerformanceAndVirtualizationTests() {
     }
   }
 
+  // =========================================================================
+  // 12.19. P2.3 — Otimização das leituras e atualizações do histórico
+  // =========================================================================
+  console.log('🧪 Testando 12.19 (P2.3): Otimização das leituras e atualizações do histórico...');
+  {
+    const {
+      getHistoryKey: getHistKeyP23,
+      getRecordKey: getRecKeyP23,
+      readHistoryMap: readHistMapP23,
+      writeHistoryMap: writeHistMapP23,
+      recordPlaybackPosition: recordPosP23,
+      getItemProgress: getProgressP23,
+      clearItemProgress: clearProgressP23,
+      getHistoryRecords: getHistRecordsP23,
+      useAccountPlaybackHistory: useHistHookP23,
+      getPlaybackHistoryPerfStats,
+      resetPlaybackHistoryPerfStats,
+      clearPlaybackHistoryMemoryCacheForTest,
+      MAX_CACHED_HISTORY_ACCOUNTS,
+      HISTORY_UPDATED_EVENT,
+    } = await import('../src/utils/playbackHistory');
+    const { usePlaybackSession } = await import('../src/components/player/usePlaybackSession');
+    const { HorizontalRow } = await import('../src/components/HorizontalRow');
+    const { pushFocusMemory, popFocusMemory } = await import('../src/navigation');
+    const { XtreamCredentialsContext } = await import('../src/context/XtreamContext');
+
+    const accP23A = { serverUrl: 'http://p23-server-a.tv:8080', username: 'user_p23_a' };
+    const accP23B = { serverUrl: 'http://p23-server-a.tv:8080', username: 'user_p23_b' };
+    const accP23Server2 = { serverUrl: 'http://p23-server-b.tv:8080', username: 'user_p23_a' };
+
+    const keyP23A = getHistKeyP23(accP23A.serverUrl, accP23A.username);
+    const keyP23B = getHistKeyP23(accP23B.serverUrl, accP23B.username);
+    const keyP23Server2 = getHistKeyP23(accP23Server2.serverUrl, accP23Server2.username);
+
+    assert.notStrictEqual(keyP23A, keyP23B, '[12.19.3] Usuários distintos no mesmo servidor devem ter chaves distintas');
+    assert.notStrictEqual(keyP23A, keyP23Server2, '[12.19.3] Mesmo usuário em servidores distintos deve ter chaves distintas');
+
+    windowInstance.localStorage.removeItem(keyP23A);
+    windowInstance.localStorage.removeItem(keyP23B);
+    windowInstance.localStorage.removeItem(keyP23Server2);
+    clearPlaybackHistoryMemoryCacheForTest();
+    resetPlaybackHistoryPerfStats();
+
+    // -----------------------------------------------------------------------
+    // 12.19.1: Muitas consultas de progresso (60 episódios) sobre a mesma versão
+    //          do histórico (200 registros persistidos)
+    // -----------------------------------------------------------------------
+    const initialMap200: Record<string, any> = {};
+    for (let i = 1; i <= 140; i++) {
+      initialMap200[`movie:${1000 + i}`] = {
+        id: String(1000 + i),
+        type: 'movie',
+        updatedAt: 1700000000000 + i * 1000,
+        positionSec: 120 + i,
+      };
+    }
+    for (let ep = 1; ep <= 60; ep++) {
+      initialMap200[`episode:${5000 + ep}`] = {
+        id: String(5000 + ep),
+        type: 'episode',
+        updatedAt: 1700100000000 + ep * 1000,
+        positionSec: ep * 15,
+        parentSeriesId: '900',
+      };
+    }
+    windowInstance.localStorage.setItem(keyP23A, JSON.stringify(initialMap200));
+    clearPlaybackHistoryMemoryCacheForTest();
+    resetPlaybackHistoryPerfStats();
+
+    for (let ep = 1; ep <= 60; ep++) {
+      const pos = getProgressP23(accP23A, 'episode', 5000 + ep);
+      assert.strictEqual(
+        pos,
+        ep * 15,
+        `[12.19.1] Progresso do episódio ${5000 + ep} deve ser ${ep * 15}s`
+      );
+    }
+
+    const statsAfter60EpisodeReads = getPlaybackHistoryPerfStats();
+    assert.strictEqual(
+      statsAfter60EpisodeReads.storageReads,
+      1,
+      `[12.19.1] 60 consultas getItemProgress na mesma passada devem realizar 1 leitura de storage (antes=60; obteve ${statsAfter60EpisodeReads.storageReads})`
+    );
+    assert.strictEqual(
+      statsAfter60EpisodeReads.jsonParses,
+      1,
+      `[12.19.1] 60 consultas getItemProgress sobre a mesma versão devem realizar exatamente 1 JSON.parse (obteve ${statsAfter60EpisodeReads.jsonParses})`
+    );
+    assert.strictEqual(
+      statsAfter60EpisodeReads.recordValidations,
+      200,
+      `[12.19.1] 60 consultas getItemProgress devem validar os 200 registros apenas 1 vez (200 vs 12.000 antes; obteve ${statsAfter60EpisodeReads.recordValidations})`
+    );
+    assert.strictEqual(
+      statsAfter60EpisodeReads.sortCalls,
+      0,
+      `[12.19.1] Consultas getItemProgress NÃO devem ordenar o histórico (obteve ${statsAfter60EpisodeReads.sortCalls})`
+    );
+
+    // Consultas adicionais sobre a mesma versão: 0 novas interpretações e 0 validações
+    resetPlaybackHistoryPerfStats();
+    for (let ep = 1; ep <= 60; ep++) {
+      const pos = getProgressP23(accP23A, 'episode', 5000 + ep);
+      assert.strictEqual(pos, ep * 15);
+    }
+    const statsWarm60EpisodeReads = getPlaybackHistoryPerfStats();
+    assert.strictEqual(
+      statsWarm60EpisodeReads.storageReads,
+      1,
+      `[12.19.1] 60 consultas getItemProgress quentes devem realizar 1 verificação de storage (antes=60; obteve ${statsWarm60EpisodeReads.storageReads})`
+    );
+    assert.strictEqual(
+      statsWarm60EpisodeReads.jsonParses,
+      0,
+      '[12.19.1] Leituras repetidas com snapshot já em cache devem ter 0 JSON.parse'
+    );
+    assert.strictEqual(
+      statsWarm60EpisodeReads.recordValidations,
+      0,
+      '[12.19.1] Leituras repetidas com snapshot já em cache devem ter 0 validações de registros'
+    );
+    assert.strictEqual(
+      statsWarm60EpisodeReads.sortCalls,
+      0,
+      '[12.19.1] Leituras repetidas de progresso devem ter 0 ordenações'
+    );
+
+    // -----------------------------------------------------------------------
+    // 12.19.2: Vários consumidores montados (4 consumidores de useAccountPlaybackHistory)
+    //          reutilizam snapshot e ordenação, e atualizam antes da notificação
+    // -----------------------------------------------------------------------
+    clearPlaybackHistoryMemoryCacheForTest();
+    resetPlaybackHistoryPerfStats();
+
+    const consumerSnapshots: Record<number, any[]> = {};
+    let progressObservedInsideCustomEvent = -1;
+
+    function MultiConsumerProbe({ account }: { account: { serverUrl: string; username: string } }) {
+      const c1 = useHistHookP23(account);
+      const c2 = useHistHookP23(account);
+      const c3 = useHistHookP23(account);
+      const c4 = useHistHookP23(account);
+      consumerSnapshots[1] = c1;
+      consumerSnapshots[2] = c2;
+      consumerSnapshots[3] = c3;
+      consumerSnapshots[4] = c4;
+      return React.createElement(
+        'div',
+        { 'data-p23-top-id': c1[0]?.id ?? 'none', 'data-p23-count': c1.length },
+        c1[0]?.id ?? 'none'
+      );
+    }
+
+    const p23Container = document.createElement('div');
+    document.body.appendChild(p23Container);
+    const p23Root = createRoot(p23Container);
+
+    const onCustomHistoryUpdated = (e: any) => {
+      const detail = e?.detail;
+      if (detail?.historyKey === keyP23A) {
+        progressObservedInsideCustomEvent = getProgressP23(accP23A, 'movie', 1001);
+      }
+    };
+    windowInstance.addEventListener(HISTORY_UPDATED_EVENT, onCustomHistoryUpdated);
+
+    try {
+      await act(async () => {
+        p23Root.render(React.createElement(MultiConsumerProbe, { account: accP23A }));
+      });
+
+      const statsMount4Consumers = getPlaybackHistoryPerfStats();
+      assert.strictEqual(
+        statsMount4Consumers.storageReads,
+        1,
+        `[12.19.2] Montagem de 4 consumidores deve realizar apenas 1 leitura de storage (antes=4; obteve ${statsMount4Consumers.storageReads})`
+      );
+      assert.strictEqual(
+        statsMount4Consumers.jsonParses,
+        1,
+        `[12.19.2] Montagem de 4 consumidores deve realizar apenas 1 interpretação JSON (antes=4; obteve ${statsMount4Consumers.jsonParses})`
+      );
+      assert.strictEqual(
+        statsMount4Consumers.sortCalls,
+        1,
+        `[12.19.2] Montagem de 4 consumidores deve realizar apenas 1 ordenação compartilhada (antes=4; obteve ${statsMount4Consumers.sortCalls})`
+      );
+      assert.strictEqual(
+        consumerSnapshots[1],
+        consumerSnapshots[2],
+        '[12.19.2] Consumidores 1 e 2 devem compartilhar exatamente a mesma referência de snapshot'
+      );
+      assert.strictEqual(
+        consumerSnapshots[2],
+        consumerSnapshots[3],
+        '[12.19.2] Consumidores 2 e 3 devem compartilhar exatamente a mesma referência de snapshot'
+      );
+      assert.strictEqual(
+        consumerSnapshots[3],
+        consumerSnapshots[4],
+        '[12.19.2] Consumidores 3 e 4 devem compartilhar exatamente a mesma referência de snapshot'
+      );
+
+      // Gravação válida atualiza snapshot antes de notificar os 4 consumidores
+      resetPlaybackHistoryPerfStats();
+      await act(async () => {
+        const ok = recordPosP23(accP23A, {
+          id: 1001,
+          type: 'movie',
+          positionSec: 777,
+        });
+        assert.strictEqual(ok, true, '[12.19.2] recordPlaybackPosition válido deve retornar true');
+      });
+
+      const statsAfterWrite4Consumers = getPlaybackHistoryPerfStats();
+      assert.strictEqual(
+        progressObservedInsideCustomEvent,
+        777,
+        '[12.19.2] Snapshot já deve estar atualizado quando os ouvintes são notificados'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1][0]?.id,
+        '1001',
+        '[12.19.2] Filme 1001 atualizado deve passar para o topo da lista ordenada nos consumidores'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1][0]?.positionSec,
+        777,
+        '[12.19.2] Posição 777s deve estar refletida no snapshot dos consumidores'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1],
+        consumerSnapshots[4],
+        '[12.19.2] Após gravação, todos os 4 consumidores continuam compartilhando a mesma referência de snapshot'
+      );
+      assert.strictEqual(
+        statsAfterWrite4Consumers.storageReads,
+        1,
+        `[12.19.2] Atualização com 4 consumidores deve fazer apenas 1 leitura de storage na escrita e 0 nos consumidores (antes=5; obteve ${statsAfterWrite4Consumers.storageReads})`
+      );
+      assert.strictEqual(
+        statsAfterWrite4Consumers.jsonParses,
+        0,
+        `[12.19.2] Atualização sobre snapshot já validado deve fazer 0 JSON.parse (antes=5; obteve ${statsAfterWrite4Consumers.jsonParses})`
+      );
+      assert.strictEqual(
+        statsAfterWrite4Consumers.sortCalls,
+        1,
+        `[12.19.2] Atualização com 4 consumidores deve ordenar a lista apenas 1 vez (antes=4; obteve ${statsAfterWrite4Consumers.sortCalls})`
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.19.3: Troca de conta sem exibir registros da conta anterior +
+      //          IDs iguais entre tipos (live/movie/episode) + limite de memória LRU
+      // -----------------------------------------------------------------------
+      recordPosP23(accP23B, { id: 777, type: 'live', positionSec: 15 });
+      recordPosP23(accP23B, { id: 777, type: 'movie', positionSec: 240 });
+      recordPosP23(accP23B, { id: 777, type: 'episode', positionSec: 360, parentSeriesId: 888 });
+      recordPosP23(accP23Server2, { id: 777, type: 'movie', positionSec: 999 });
+
+      assert.strictEqual(getProgressP23(accP23B, 'live', 777), 15, '[12.19.3] Progresso live:777 isolado');
+      assert.strictEqual(getProgressP23(accP23B, 'movie', 777), 240, '[12.19.3] Progresso movie:777 isolado');
+      assert.strictEqual(getProgressP23(accP23B, 'episode', 777), 360, '[12.19.3] Progresso episode:777 isolado');
+      assert.strictEqual(getProgressP23(accP23Server2, 'movie', 777), 999, '[12.19.3] Progresso isolado por servidor');
+      assert.strictEqual(getProgressP23(accP23A, 'movie', 777), 0, '[12.19.3] Conta A não possui movie:777');
+
+      const renderedSnapshotsOnSwitch: Array<{ username: string; recordCount: number; hasAccountARecords: boolean }> = [];
+      function SwitchAccountProbe({ account }: { account: { serverUrl: string; username: string } }) {
+        const records = useHistHookP23(account);
+        const hasAccountARecords = records.some((r) => Number(r.id) >= 1001 && Number(r.id) <= 1140);
+        renderedSnapshotsOnSwitch.push({
+          username: account.username,
+          recordCount: records.length,
+          hasAccountARecords,
+        });
+        return React.createElement('div', null, `${account.username}:${records.length}`);
+      }
+
+      await act(async () => {
+        p23Root.render(React.createElement(SwitchAccountProbe, { account: accP23A }));
+      });
+      renderedSnapshotsOnSwitch.length = 0;
+
+      // Trocar para a conta B: nenhum render da conta B pode ver registros da conta A
+      await act(async () => {
+        p23Root.render(React.createElement(SwitchAccountProbe, { account: accP23B }));
+      });
+
+      assert(renderedSnapshotsOnSwitch.length >= 1, '[12.19.3] Deve ter renderizado a conta B');
+      for (const entry of renderedSnapshotsOnSwitch) {
+        assert.strictEqual(
+          entry.username,
+          'user_p23_b',
+          '[12.19.3] Render após troca deve pertencer a user_p23_b'
+        );
+        assert.strictEqual(
+          entry.hasAccountARecords,
+          false,
+          '[12.19.3] Troca de conta NUNCA deve exibir temporariamente registros da conta anterior (A)'
+        );
+        assert.strictEqual(
+          entry.recordCount,
+          3,
+          '[12.19.3] Troca de conta deve selecionar imediatamente os 3 registros da conta B'
+        );
+      }
+
+      // Política de memória limitada: acessar 12 contas mantém no máximo MAX_CACHED_HISTORY_ACCOUNTS (8) em memória sem apagar o localStorage
+      const tempKeys: string[] = [];
+      for (let idx = 1; idx <= 12; idx++) {
+        const tempAcc = { serverUrl: 'http://p23-lru.tv:8080', username: `lru_user_${idx}` };
+        const tKey = getHistKeyP23(tempAcc.serverUrl, tempAcc.username);
+        tempKeys.push(tKey);
+        recordPosP23(tempAcc, { id: idx, type: 'movie', positionSec: idx * 20 });
+      }
+      const lruStats = getPlaybackHistoryPerfStats();
+      assert(
+        lruStats.cachedAccountsCount <= MAX_CACHED_HISTORY_ACCOUNTS,
+        `[12.19.3] Cache em memória deve limitar a quantidade de contas a ${MAX_CACHED_HISTORY_ACCOUNTS} (obteve ${lruStats.cachedAccountsCount})`
+      );
+      // A conta 1 evictada da memória ainda tem seu histórico salvo no localStorage e é relida normalmente
+      assert.strictEqual(
+        getProgressP23({ serverUrl: 'http://p23-lru.tv:8080', username: 'lru_user_1' }, 'movie', 1),
+        20,
+        '[12.19.3] Evicção de memória LRU NÃO deve excluir o histórico salvo no localStorage'
+      );
+      for (const tKey of tempKeys) {
+        windowInstance.localStorage.removeItem(tKey);
+      }
+
+      // -----------------------------------------------------------------------
+      // 12.19.4: Falhas de leitura/escrita, JSON inválido, imutabilidade e alterações externas
+      // -----------------------------------------------------------------------
+      await act(async () => {
+        p23Root.render(React.createElement(MultiConsumerProbe, { account: accP23B }));
+      });
+      const confirmedBRecords = consumerSnapshots[1];
+      assert.strictEqual(confirmedBRecords.length, 3, '[12.19.4] Conta B possui 3 registros confirmados');
+      assert(Object.isFrozen(confirmedBRecords), '[12.19.4] Lista do snapshot deve ser congelada (imutável)');
+      assert(Object.isFrozen(confirmedBRecords[0]), '[12.19.4] Registros do snapshot devem ser congelados (imutáveis)');
+
+      // Mutação do retorno de readHistoryMap não pode afetar o snapshot
+      const clonedMapB = readHistMapP23(keyP23B)!;
+      clonedMapB['movie:777'] = { id: '777', type: 'movie', updatedAt: 9999999999999, positionSec: 99999 };
+      assert.strictEqual(
+        getProgressP23(accP23B, 'movie', 777),
+        240,
+        '[12.19.4] Mutar o objeto retornado por readHistoryMap NÃO deve alterar o snapshot confirmado'
+      );
+
+      // Falha de leitura em localStorage.getItem impede gravação e preserva snapshot confirmado
+      const origGetItemP23 = windowInstance.localStorage.getItem;
+      const origSetItemP23 = windowInstance.localStorage.setItem;
+      let setItemCalledDuringReadFail = false;
+
+      Object.defineProperty(windowInstance.localStorage, 'getItem', {
+        value: function (k: string) {
+          if (k === keyP23B) {
+            throw new Error('Falha simulada de leitura em localStorage.getItem (P2.3)');
+          }
+          return origGetItemP23.call(windowInstance.localStorage, k);
+        },
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(windowInstance.localStorage, 'setItem', {
+        value: function (k: string, v: string) {
+          if (k === keyP23B) setItemCalledDuringReadFail = true;
+          return origSetItemP23.call(windowInstance.localStorage, k, v);
+        },
+        configurable: true,
+        writable: true,
+      });
+
+      assert.strictEqual(
+        readHistMapP23(keyP23B),
+        null,
+        '[12.19.4] readHistoryMap deve retornar null quando localStorage.getItem falha'
+      );
+      assert.strictEqual(
+        recordPosP23(accP23B, { id: 888, type: 'movie', positionSec: 100 }),
+        false,
+        '[12.19.4] recordPlaybackPosition deve retornar false quando a leitura falha'
+      );
+      assert.strictEqual(
+        clearProgressP23(accP23B, 'movie', 777),
+        false,
+        '[12.19.4] clearItemProgress deve retornar false quando a leitura falha'
+      );
+      assert.strictEqual(
+        setItemCalledDuringReadFail,
+        false,
+        '[12.19.4] setItem NUNCA deve ser chamado quando a leitura prévia falha'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1],
+        confirmedBRecords,
+        '[12.19.4] Snapshot confirmado dos assinantes deve ser preservado durante falha de leitura'
+      );
+
+      // Restaurar getItem e testar JSON corrompido
+      Object.defineProperty(windowInstance.localStorage, 'getItem', {
+        value: origGetItemP23,
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(windowInstance.localStorage, 'setItem', {
+        value: origSetItemP23,
+        configurable: true,
+        writable: true,
+      });
+
+      const validRawB = windowInstance.localStorage.getItem(keyP23B)!;
+      windowInstance.localStorage.setItem(keyP23B, '{json_corrompido_invalido');
+      assert.strictEqual(
+        readHistMapP23(keyP23B),
+        null,
+        '[12.19.4] readHistoryMap deve retornar null para JSON corrompido'
+      );
+      assert.strictEqual(
+        recordPosP23(accP23B, { id: 889, type: 'movie', positionSec: 50 }),
+        false,
+        '[12.19.4] recordPlaybackPosition deve bloquear gravação sobre JSON corrompido'
+      );
+      assert.strictEqual(
+        clearProgressP23(accP23B, 'movie', 777),
+        false,
+        '[12.19.4] clearItemProgress deve bloquear gravação sobre JSON corrompido'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1],
+        confirmedBRecords,
+        '[12.19.4] Snapshot confirmado em memória deve ser preservado quando há JSON inválido'
+      );
+      windowInstance.localStorage.setItem(keyP23B, validRawB);
+
+      // Testar falha de escrita (setItem lança erro): retorna false, não altera snapshot nem anuncia sucesso
+      let customEventFiredOnWriteFail = false;
+      const onWriteFailEvent = () => {
+        customEventFiredOnWriteFail = true;
+      };
+      windowInstance.addEventListener(HISTORY_UPDATED_EVENT, onWriteFailEvent);
+      Object.defineProperty(windowInstance.localStorage, 'setItem', {
+        value: function (k: string, v: string) {
+          if (k === keyP23B) {
+            throw new Error('QuotaExceededError simulado em setItem (P2.3)');
+          }
+          return origSetItemP23.call(windowInstance.localStorage, k, v);
+        },
+        configurable: true,
+        writable: true,
+      });
+
+      assert.strictEqual(
+        recordPosP23(accP23B, { id: 777, type: 'movie', positionSec: 555 }),
+        false,
+        '[12.19.4] recordPlaybackPosition deve retornar false quando setItem falha'
+      );
+      assert.strictEqual(
+        writeHistMapP23(keyP23B, {}),
+        false,
+        '[12.19.4] writeHistoryMap deve retornar false quando setItem falha'
+      );
+      assert.strictEqual(
+        customEventFiredOnWriteFail,
+        false,
+        '[12.19.4] Falha ao salvar NÃO deve anunciar sucesso via evento'
+      );
+      assert.strictEqual(
+        getProgressP23(accP23B, 'movie', 777),
+        240,
+        '[12.19.4] Falha ao salvar NÃO deve alterar o snapshot confirmado (continua 240s)'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1],
+        confirmedBRecords,
+        '[12.19.4] Assinantes mantêm exatamente o mesmo snapshot confirmado após falha de escrita'
+      );
+
+      Object.defineProperty(windowInstance.localStorage, 'setItem', {
+        value: origSetItemP23,
+        configurable: true,
+        writable: true,
+      });
+      windowInstance.removeEventListener(HISTORY_UPDATED_EVENT, onWriteFailEvent);
+
+      // Evitar sobrescrever alterações externas usando uma cópia antiga em memória
+      const parsedExternalB = JSON.parse(windowInstance.localStorage.getItem(keyP23B)!);
+      parsedExternalB['movie:808'] = {
+        id: '808',
+        type: 'movie',
+        updatedAt: Date.now() + 1000,
+        positionSec: 310,
+      };
+      windowInstance.localStorage.setItem(keyP23B, JSON.stringify(parsedExternalB));
+
+      await act(async () => {
+        const ok = recordPosP23(accP23B, { id: 809, type: 'movie', positionSec: 410 });
+        assert.strictEqual(ok, true);
+      });
+      assert.strictEqual(
+        getProgressP23(accP23B, 'movie', 808),
+        310,
+        '[12.19.4] Gravação deve incorporar alterações externas do localStorage sem sobrescrevê-las com cópia antiga em memória'
+      );
+      assert.strictEqual(
+        getProgressP23(accP23B, 'movie', 809),
+        410,
+        '[12.19.4] Novo item 809 também deve estar salvo junto com a alteração externa 808'
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.19.5: Atualização, remoção de chave e storage com key === null em outra aba
+      // -----------------------------------------------------------------------
+      const multiTabMap = {
+        'movie:901': { id: '901', type: 'movie', updatedAt: Date.now() + 5000, positionSec: 640 },
+      };
+      windowInstance.localStorage.setItem(keyP23B, JSON.stringify(multiTabMap));
+      resetPlaybackHistoryPerfStats();
+
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).StorageEvent('storage', {
+            key: keyP23B,
+            newValue: JSON.stringify(multiTabMap),
+          })
+        );
+      });
+
+      const statsCrossTabUpdate = getPlaybackHistoryPerfStats();
+      assert.strictEqual(
+        consumerSnapshots[1].length,
+        1,
+        '[12.19.5] StorageEvent de outra aba deve atualizar os consumidores para o novo mapa (1 item)'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1][0]?.id,
+        '901',
+        '[12.19.5] Consumidores devem refletir o item 901 vindo de outra aba'
+      );
+      assert.strictEqual(
+        statsCrossTabUpdate.storageReads,
+        1,
+        '[12.19.5] StorageEvent com 4 consumidores deve realizar apenas 1 leitura de storage compartilhada'
+      );
+      assert.strictEqual(
+        statsCrossTabUpdate.jsonParses,
+        1,
+        '[12.19.5] StorageEvent com 4 consumidores deve realizar apenas 1 interpretação JSON'
+      );
+      assert.strictEqual(
+        statsCrossTabUpdate.sortCalls,
+        1,
+        '[12.19.5] StorageEvent com 4 consumidores deve realizar apenas 1 ordenação'
+      );
+
+      // Remoção da chave em outra aba
+      windowInstance.localStorage.removeItem(keyP23B);
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).StorageEvent('storage', {
+            key: keyP23B,
+            newValue: null,
+          })
+        );
+      });
+      assert.strictEqual(
+        consumerSnapshots[1].length,
+        0,
+        '[12.19.5] Remoção da chave em outra aba deve atualizar o snapshot para lista vazia []'
+      );
+
+      // Repopular e testar storage com key === null (localStorage.clear() em outra aba)
+      await act(async () => {
+        recordPosP23(accP23B, { id: 902, type: 'movie', positionSec: 180 });
+      });
+      assert.strictEqual(consumerSnapshots[1].length, 1);
+
+      windowInstance.localStorage.removeItem(keyP23B);
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).StorageEvent('storage', {
+            key: null,
+          })
+        );
+      });
+      assert.strictEqual(
+        consumerSnapshots[1].length,
+        0,
+        '[12.19.5] StorageEvent com key === null deve limpar o cache e atualizar os consumidores para []'
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.19.6: Pausa, saída, retomada, vínculo episódio-série e "Assistir do Início"
+      // -----------------------------------------------------------------------
+      function SessionPersistenceProbe({ url, streamId }: { url: string; streamId: number }) {
+        const vRef = React.useRef<HTMLVideoElement | null>(null);
+        usePlaybackSession({
+          videoRef: vRef,
+          streamUrl: url,
+          contentType: 'episode',
+          streamId,
+          credentials: accP23B,
+          isControlsVisible: false,
+          isDiagnosticsOpen: false,
+        });
+        return React.createElement('video', { ref: vRef });
+      }
+
+      // Associar episódio 3001 à série 400 antes da sessão (como SeriesDetails faz)
+      await act(async () => {
+        recordPosP23(accP23B, {
+          id: 3001,
+          type: 'episode',
+          parentSeriesId: 400,
+          positionSec: 10,
+        });
+      });
+
+      const sessionContainer = document.createElement('div');
+      document.body.appendChild(sessionContainer);
+      const sessionRoot = createRoot(sessionContainer);
+
+      await act(async () => {
+        sessionRoot.render(
+          React.createElement(SessionPersistenceProbe, {
+            url: 'http://p23-server-a.tv:8080/series/user_p23_b/pw/3001.mp4',
+            streamId: 3001,
+          })
+        );
+      });
+
+      const sessionVideo = sessionContainer.querySelector('video') as HTMLVideoElement;
+      assert(sessionVideo, '[12.19.6] Elemento <video> deve estar montado');
+
+      // Gravação periódica em timeupdate (cur = 65s)
+      await act(async () => {
+        sessionVideo.currentTime = 65;
+        sessionVideo.dispatchEvent(new windowInstance.Event('timeupdate') as unknown as Event);
+      });
+      assert.strictEqual(
+        getProgressP23(accP23B, 'episode', 3001),
+        65,
+        '[12.19.6] timeupdate deve gravar progresso periódico (65s)'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1][0]?.positionSec,
+        65,
+        '[12.19.6] Consumidor da interface deve refletir imediatamente o progresso periódico (65s)'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1][0]?.parentSeriesId,
+        '400',
+        '[12.19.6] Atualização periódica do episódio deve preservar o vínculo com parentSeriesId=400'
+      );
+
+      // Gravação na pausa (cur = 68s, mesmo com delta < 5s)
+      await act(async () => {
+        sessionVideo.currentTime = 68;
+        sessionVideo.dispatchEvent(new windowInstance.Event('pause') as unknown as Event);
+      });
+      assert.strictEqual(
+        getProgressP23(accP23B, 'episode', 3001),
+        68,
+        '[12.19.6] Evento pause deve persistir imediatamente a posição atual (68s)'
+      );
+
+      // Gravação na saída (unmount com cur = 142s)
+      await act(async () => {
+        sessionVideo.currentTime = 142;
+        sessionRoot.unmount();
+      });
+      document.body.removeChild(sessionContainer);
+
+      assert.strictEqual(
+        getProgressP23(accP23B, 'episode', 3001),
+        142,
+        '[12.19.6] Saída do player (unmount) deve persistir a posição final para retomada (142s)'
+      );
+      assert.strictEqual(
+        consumerSnapshots[1][0]?.positionSec,
+        142,
+        '[12.19.6] Interface deve refletir 142s após saída do player'
+      );
+
+      // "Assistir do Início" (clearItemProgress) zera positionSec mantendo parentSeriesId
+      await act(async () => {
+        const cleared = clearProgressP23(accP23B, 'episode', 3001);
+        assert.strictEqual(cleared, true, '[12.19.6] clearItemProgress deve retornar true');
+      });
+      assert.strictEqual(
+        getProgressP23(accP23B, 'episode', 3001),
+        0,
+        '[12.19.6] Assistir do Início deve zerar o progresso (0s)'
+      );
+      const epRecordAfterClear = getHistRecordsP23(accP23B, 'episode').find((r) => r.id === '3001');
+      assert.strictEqual(
+        epRecordAfterClear?.parentSeriesId,
+        '400',
+        '[12.19.6] Assistir do Início deve preservar parentSeriesId=400 no registro do episódio'
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.19.7: Reordenação de "Continuar Assistindo" preserva restauração de foco pela rowKey estável
+      // -----------------------------------------------------------------------
+      await act(async () => {
+        recordPosP23(accP23B, { id: 201, type: 'movie', positionSec: 90 });
+        await new Promise((r) => setTimeout(r, 5));
+        recordPosP23(accP23B, { id: 202, type: 'movie', positionSec: 120 });
+        await new Promise((r) => setTimeout(r, 5));
+        recordPosP23(accP23B, { id: 203, type: 'movie', positionSec: 150 });
+      });
+
+      function ContinueWatchingReorderProbe() {
+        const records = useHistHookP23(accP23B);
+        const items = records
+          .filter((r) => r.type === 'movie' && (r.positionSec ?? 0) > 30)
+          .map((r) => ({
+            stream_id: Number(r.id),
+            name: `Filme CW ${r.id}`,
+            stream_icon: '',
+            rowKey: `movie_${r.id}`,
+          }));
+        return React.createElement(HorizontalRow, {
+          title: 'Continuar Assistindo',
+          items,
+          type: 'vod',
+          rowIndex: 0,
+          onItemClick: () => {},
+          enableHorizontalVirtualization: true,
+        });
+      }
+
+      const cwReorderContainer = document.createElement('div');
+      document.body.appendChild(cwReorderContainer);
+      const cwReorderRoot = createRoot(cwReorderContainer);
+
+      await act(async () => {
+        cwReorderRoot.render(
+          React.createElement(
+            XtreamCredentialsContext.Provider,
+            { value: { credentials: { ...accP23B, password: 'pw' } } },
+            React.createElement(ContinueWatchingReorderProbe, null)
+          )
+        );
+      });
+
+      const card201Before = cwReorderContainer.querySelector('[data-row-item-key="movie_201"]') as HTMLElement;
+      assert(card201Before, '[12.19.7] Cartão movie_201 deve estar montado na fileira Continuar Assistindo');
+      assert.strictEqual(
+        card201Before.getAttribute('data-row-card-index'),
+        '2',
+        '[12.19.7] Cartão movie_201 deve iniciar no índice 2 (ordem: 203, 202, 201)'
+      );
+
+      await act(async () => {
+        card201Before.focus();
+        pushFocusMemory(card201Before);
+        await new Promise((r) => setTimeout(r, 5));
+        // Atualizar progresso de movie_201 -> move movie_201 do índice 2 para o índice 0
+        recordPosP23(accP23B, { id: 201, type: 'movie', positionSec: 300 });
+      });
+
+      const card201AfterReorder = cwReorderContainer.querySelector('[data-row-item-key="movie_201"]') as HTMLElement;
+      assert.strictEqual(
+        card201AfterReorder?.getAttribute('data-row-card-index'),
+        '0',
+        '[12.19.7] Após atualização de progresso, movie_201 deve ser reordenado para o índice 0'
+      );
+
+      await act(async () => {
+        const restored = popFocusMemory();
+        assert.strictEqual(restored, true, '[12.19.7] popFocusMemory deve restaurar o foco pela rowKey estável');
+      });
+      assertSameElement(
+        document.activeElement,
+        card201AfterReorder,
+        '[12.19.7] O foco deve ser restaurado no cartão movie_201 reordenado'
+      );
+
+      await act(async () => {
+        cwReorderRoot.unmount();
+      });
+      document.body.removeChild(cwReorderContainer);
+
+      console.log(
+        `📊 [Métricas P2.3 — Histórico de Reprodução (Snapshot Estável + useSyncExternalStore)]\n` +
+          `   • 60 consultas getItemProgress (temporada de 60 episódios, histórico de 200 itens):\n` +
+          `     - 1ª passada (fria): leituras=${statsAfter60EpisodeReads.storageReads} (antes=60) | interpretações JSON=${statsAfter60EpisodeReads.jsonParses} (antes=60) | validações de registro=${statsAfter60EpisodeReads.recordValidations} (antes=12000) | ordenações=${statsAfter60EpisodeReads.sortCalls}\n` +
+          `     - 2ª passada (quente): leituras=${statsWarm60EpisodeReads.storageReads} (antes=60) | interpretações JSON=${statsWarm60EpisodeReads.jsonParses} (antes=60) | validações de registro=${statsWarm60EpisodeReads.recordValidations} (antes=12000) | ordenações=${statsWarm60EpisodeReads.sortCalls}\n` +
+          `   • 4 consumidores useAccountPlaybackHistory montados (HomeView, LiveTvView, MoviesView, SeriesView):\n` +
+          `     - Montagem inicial: leituras=${statsMount4Consumers.storageReads} (antes=4) | interpretações JSON=${statsMount4Consumers.jsonParses} (antes=4) | ordenações=${statsMount4Consumers.sortCalls} (antes=4)\n` +
+          `     - Atualização após gravação válida: leituras=${statsAfterWrite4Consumers.storageReads} (antes=5) | interpretações JSON=${statsAfterWrite4Consumers.jsonParses} (antes=5) | ordenações=${statsAfterWrite4Consumers.sortCalls} (antes=4)\n` +
+          `     - Atualização via StorageEvent (outra aba): leituras=${statsCrossTabUpdate.storageReads} (antes=4) | interpretações JSON=${statsCrossTabUpdate.jsonParses} (antes=4) | ordenações=${statsCrossTabUpdate.sortCalls} (antes=4)`
+      );
+    } finally {
+      windowInstance.removeEventListener(HISTORY_UPDATED_EVENT, onCustomHistoryUpdated);
+      await act(async () => {
+        p23Root.unmount();
+      });
+      if (p23Container.parentNode) {
+        document.body.removeChild(p23Container);
+      }
+      windowInstance.localStorage.removeItem(keyP23A);
+      windowInstance.localStorage.removeItem(keyP23B);
+      windowInstance.localStorage.removeItem(keyP23Server2);
+    }
+  }
+
   console.log(
     `📊 [Benchmark 39k Registros — Métricas Separadas]\n` +
       `   • Passada Fria (Indexação + Ranking Inicial): ${coldCatalogPassMs.toFixed(2)}ms (sorts=${coldRankingStats.sortCalls})\n` +
@@ -12469,7 +13278,7 @@ async function runPerformanceAndVirtualizationTests() {
       `   • Home c/ 500 em Continuar Assistindo (11 fileiras): cartões montados=254 (antes: 740; fileira CW=14 no início/meio/fim vs 500) | assinaturas observer=265 (antes: 751) | img[src]=9 (antes: 741)\n` +
       `   • Sonda 500 Cartões × 10 Scrolls: c/ IntersectionObserver -> 0 leituras manuais | Fallback agrupado -> 1 leitura container + 14 cartões montados (antes: 500 cartões)`
   );
-  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), isolamento do contexto compartilhado (12.18 / P2.2), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), isolamento do contexto compartilhado (12.18 / P2.2), otimização do histórico (12.19 / P2.3), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {
