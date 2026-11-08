@@ -124,10 +124,14 @@ export function isAndroidTempFileCatalogTransportAvailable(): boolean {
 export function normalizeTransportPayload<T = any>(
   rawPayload: unknown,
   diagAttempt?: CatalogDiagnosticAttemptHandle | null,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  deadlineAt?: number
 ): T {
   if (signal?.aborted) {
     throw new Error('Operação cancelada pelo usuário.');
+  }
+  if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && nowMonotonicMs() >= deadlineAt) {
+    throw createTimeoutError();
   }
 
   const trackDiag = Boolean(diagAttempt && diagAttempt.isActive());
@@ -159,6 +163,12 @@ export function normalizeTransportPayload<T = any>(
   if (typeof rawPayload === 'string') {
     const trimmed = rawPayload.trim();
     if (!trimmed) {
+      if (signal?.aborted) {
+        throw new Error('Operação cancelada pelo usuário.');
+      }
+      if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && nowMonotonicMs() >= deadlineAt) {
+        throw createTimeoutError();
+      }
       if (trackDiag) {
         diagAttempt!.recordPayloadNormalization({
           payloadFormat: 'empty',
@@ -171,6 +181,9 @@ export function normalizeTransportPayload<T = any>(
     }
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
+    }
+    if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && nowMonotonicMs() >= deadlineAt) {
+      throw createTimeoutError();
     }
     const parseStartMs = trackDiag ? nowMonotonicMs() : 0;
     try {
@@ -279,6 +292,7 @@ export async function executeXtreamGetRequest<T = any>({
   }
 
   if (isFullCatalogRequest && isAndroidTempFileCatalogTransportAvailable()) {
+    const deadlineAt = nowMonotonicMs() + timeoutMs;
     androidAdapterLoadCountForTest++;
     const { executeAndroidTempFileCatalogDownload } = await import(
       './androidCatalogFileAdapter'
@@ -286,16 +300,23 @@ export async function executeXtreamGetRequest<T = any>({
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
     }
+    if (nowMonotonicMs() >= deadlineAt) {
+      throw createTimeoutError();
+    }
     const rawText = await executeAndroidTempFileCatalogDownload({
       url,
       timeoutMs,
+      deadlineAt,
       signal,
       diagAttempt,
     });
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
     }
-    return normalizeTransportPayload<T>(rawText, diagAttempt, signal);
+    if (nowMonotonicMs() >= deadlineAt) {
+      throw createTimeoutError();
+    }
+    return normalizeTransportPayload<T>(rawText, diagAttempt, signal, deadlineAt);
   }
 
   if (isUsingCapacitorNativeTransport()) {

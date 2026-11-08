@@ -18150,6 +18150,298 @@ if (args[0] === 'add' && args[1] === 'android') {
               lateNativeFileId && cleanupRequestedFileIdsP33.includes(lateNativeFileId),
               '[12.22.4] Resposta nativa tardia após timeout/cancelamento deve solicitar cleanupTransferFile'
             );
+
+            // Caso 5: Regressão determinística com relógio monotônico controlado (diagnóstico desligado):
+            // - Com limite de 45 ms, o corpo fica disponível após 100 ms ANTES de o callback do setTimeout executar:
+            //   a tentativa retorna timeout, NÃO chama JSON.parse e ainda solicita a limpeza do arquivo.
+            // - Se AbortSignal já estiver abortado quando o relógio vence, preserva a classificação de cancelamento.
+            // - Dentro do prazo (ex.: 30 ms < 45 ms), o corpo é interpretado uma única vez e a consulta conclui
+            //   mesmo se a limpeza ficar pendente.
+            let controlledDeadlineClockMs = 50000;
+            catalogDiagMod.setCatalogDiagnosticsClockForTest(() => controlledDeadlineClockMs);
+            catalogDiagMod.resetCatalogDiagnosticsForTest(false); // Diagnóstico desligado
+
+            try {
+              // 5A.1: Transferência nativa (30 ms) + leitura local (70 ms) = 100 ms (> 45 ms) via microtasks,
+              // antes de o callback do setTimeout(45) disparar
+              let expiredBeforeTimerParseCount = 0;
+              let expiredBeforeTimerFileId = '';
+              JSON.parse = ((text: string, ...rest: any[]) => {
+                if (
+                  typeof text === 'string' &&
+                  text.includes('Filme Apos Prazo Antes Do Timer')
+                ) {
+                  expiredBeforeTimerParseCount++;
+                }
+                return origParseCancelCheck(text, ...rest);
+              }) as typeof JSON.parse;
+
+              simulatedProviderHandlerP33 = async (_opts, helpers) => {
+                controlledDeadlineClockMs += 30; // 30 ms na etapa nativa (ainda < 45 ms)
+                const written = helpers.writeTempAndFinalize(
+                  JSON.stringify([
+                    {
+                      stream_id: 9505,
+                      name: 'Filme Apos Prazo Antes Do Timer',
+                      category_id: '1',
+                    },
+                  ])
+                );
+                expiredBeforeTimerFileId = written.fileId;
+                return {
+                  status: 200,
+                  fileId: written.fileId,
+                  filePath: written.filePath,
+                  cacheDir: written.cacheDir,
+                };
+              };
+
+              localFetchInterceptionHookP33 = async () => {
+                controlledDeadlineClockMs += 70; // Total = 100 ms (> limite de 45 ms), sem disparar macrotask do timer
+              };
+
+              let caughtExpiredBeforeTimerErr: any = null;
+              try {
+                await httpTransportModP33.executeXtreamGetRequest({
+                  url: 'http://p33-secret-provider.iptv.local:8080/player_api.php?action=get_vod_streams',
+                  timeoutMs: 45,
+                  isFullCatalogRequest: true,
+                });
+              } catch (err) {
+                caughtExpiredBeforeTimerErr = err;
+              } finally {
+                localFetchInterceptionHookP33 = null;
+                JSON.parse = origParseCancelCheck;
+              }
+
+              assert(
+                caughtExpiredBeforeTimerErr &&
+                  caughtExpiredBeforeTimerErr.isTransient === true &&
+                  /Tempo limite esgotado/i.test(String(caughtExpiredBeforeTimerErr.message)),
+                '[12.22.4] Corpo disponível em 100 ms para limite de 45 ms (antes do callback do setTimeout) deve rejeitar com erro de timeout'
+              );
+              assert.strictEqual(
+                expiredBeforeTimerParseCount,
+                0,
+                '[12.22.4] Quando o prazo monotônico (45 ms) já venceu em 100 ms antes do callback do timer, JSON.parse NÃO deve ser chamado'
+              );
+              assert(
+                expiredBeforeTimerFileId !== '' &&
+                  cleanupRequestedFileIdsP33.includes(expiredBeforeTimerFileId),
+                '[12.22.4] Mesmo quando o prazo vence pelo relógio monotônico antes do timer, cleanupTransferFile deve ser solicitado'
+              );
+
+              // 5A.2: Resposta nativa já chega após o prazo (100 ms > 45 ms) antes do callback do timer:
+              // nem inicia o fetch local, não chama JSON.parse e solicita limpeza do arquivo
+              let expiredAtNativeFileId = '';
+              let expiredAtNativeParseCount = 0;
+              const localFetchCountBefore5A2 = localWebViewFileFetchCount;
+              JSON.parse = ((text: string, ...rest: any[]) => {
+                if (typeof text === 'string' && text.includes('Filme Nativo Apos Prazo')) {
+                  expiredAtNativeParseCount++;
+                }
+                return origParseCancelCheck(text, ...rest);
+              }) as typeof JSON.parse;
+
+              simulatedProviderHandlerP33 = async (_opts, helpers) => {
+                controlledDeadlineClockMs += 100; // 100 ms > 45 ms já no retorno nativo, antes do callback do timer
+                const written = helpers.writeTempAndFinalize(
+                  JSON.stringify([
+                    { stream_id: 9506, name: 'Filme Nativo Apos Prazo', category_id: '1' },
+                  ])
+                );
+                expiredAtNativeFileId = written.fileId;
+                return {
+                  status: 200,
+                  fileId: written.fileId,
+                  filePath: written.filePath,
+                  cacheDir: written.cacheDir,
+                };
+              };
+
+              let caughtExpiredAtNativeErr: any = null;
+              try {
+                await httpTransportModP33.executeXtreamGetRequest({
+                  url: 'http://p33-secret-provider.iptv.local:8080/player_api.php?action=get_vod_streams',
+                  timeoutMs: 45,
+                  isFullCatalogRequest: true,
+                });
+              } catch (err) {
+                caughtExpiredAtNativeErr = err;
+              } finally {
+                JSON.parse = origParseCancelCheck;
+              }
+
+              assert(
+                caughtExpiredAtNativeErr &&
+                  /Tempo limite esgotado/i.test(String(caughtExpiredAtNativeErr.message)),
+                '[12.22.4] Resposta nativa recebida após o prazo monotônico (antes do timer) deve retornar timeout'
+              );
+              assert.strictEqual(
+                localWebViewFileFetchCount,
+                localFetchCountBefore5A2,
+                '[12.22.4] Se o prazo já venceu ao receber a resposta nativa, não deve iniciar fetch local'
+              );
+              assert.strictEqual(
+                expiredAtNativeParseCount,
+                0,
+                '[12.22.4] JSON.parse não deve ser chamado quando o prazo vence na etapa nativa'
+              );
+              assert(
+                expiredAtNativeFileId !== '' &&
+                  cleanupRequestedFileIdsP33.includes(expiredAtNativeFileId),
+                '[12.22.4] Limpeza do arquivo deve ser solicitada quando o prazo vence após a resposta nativa'
+              );
+
+              // 5A.3: Quando AbortSignal já está abortado E o relógio monotônico também passou do prazo,
+              // preserva a classificação de cancelamento
+              const abortWithExpiredClockCtrl = new AbortController();
+              let abortAndExpiredParseCount = 0;
+              JSON.parse = ((text: string, ...rest: any[]) => {
+                if (typeof text === 'string' && text.includes('Filme Cancelado Com Relogio Vencido')) {
+                  abortAndExpiredParseCount++;
+                }
+                return origParseCancelCheck(text, ...rest);
+              }) as typeof JSON.parse;
+
+              simulatedProviderHandlerP33 = async (_opts, helpers) => {
+                const written = helpers.writeTempAndFinalize(
+                  JSON.stringify([
+                    {
+                      stream_id: 9507,
+                      name: 'Filme Cancelado Com Relogio Vencido',
+                      category_id: '1',
+                    },
+                  ])
+                );
+                return {
+                  status: 200,
+                  fileId: written.fileId,
+                  filePath: written.filePath,
+                  cacheDir: written.cacheDir,
+                };
+              };
+
+              const origFetchForAbortAndExpired = globalThis.fetch;
+              globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+                const res = await origFetchForAbortAndExpired(input, init);
+                const origText = res.text.bind(res);
+                return {
+                  ok: res.ok,
+                  status: res.status,
+                  redirected: false,
+                  type: 'basic',
+                  text: async () => {
+                    const body = await origText();
+                    controlledDeadlineClockMs += 100; // Relógio vence (> 45 ms)
+                    abortWithExpiredClockCtrl.abort(); // E o sinal também está abortado
+                    return body;
+                  },
+                } as unknown as Response;
+              }) as typeof fetch;
+
+              let caughtAbortWithExpiredClock: any = null;
+              try {
+                await httpTransportModP33.executeXtreamGetRequest({
+                  url: 'http://p33-secret-provider.iptv.local:8080/player_api.php?action=get_vod_streams',
+                  timeoutMs: 45,
+                  signal: abortWithExpiredClockCtrl.signal,
+                  isFullCatalogRequest: true,
+                });
+              } catch (err) {
+                caughtAbortWithExpiredClock = err;
+              } finally {
+                globalThis.fetch = origFetchForAbortAndExpired;
+                JSON.parse = origParseCancelCheck;
+              }
+
+              assert(
+                caughtAbortWithExpiredClock &&
+                  /Operação cancelada pelo usuário/i.test(
+                    String(caughtAbortWithExpiredClock.message)
+                  ),
+                '[12.22.4] Quando AbortSignal já está abortado mesmo após o prazo vencer, deve preservar a classificação de cancelamento'
+              );
+              assert.strictEqual(abortAndExpiredParseCount, 0);
+
+              // 5B: Dentro do prazo (18 ms nativo + 12 ms leitura local = 30 ms < 45 ms),
+              // o corpo é interpretado uma única vez e a consulta conclui mesmo com a limpeza pendente
+              let withinDeadlineParseCount = 0;
+              let withinDeadlineFileId = '';
+              JSON.parse = ((text: string, ...rest: any[]) => {
+                if (
+                  typeof text === 'string' &&
+                  text.includes('Filme Dentro Do Prazo Com Limpeza Pendente')
+                ) {
+                  withinDeadlineParseCount++;
+                }
+                return origParseCancelCheck(text, ...rest);
+              }) as typeof JSON.parse;
+
+              simulatedProviderHandlerP33 = async (_opts, helpers) => {
+                controlledDeadlineClockMs += 18; // 18 ms na etapa nativa
+                const written = helpers.writeTempAndFinalize(
+                  JSON.stringify([
+                    {
+                      stream_id: 9508,
+                      name: 'Filme Dentro Do Prazo Com Limpeza Pendente',
+                      category_id: '1',
+                    },
+                  ])
+                );
+                withinDeadlineFileId = written.fileId;
+                return {
+                  status: 200,
+                  fileId: written.fileId,
+                  filePath: written.filePath,
+                  cacheDir: written.cacheDir,
+                };
+              };
+
+              localFetchInterceptionHookP33 = async () => {
+                controlledDeadlineClockMs += 12; // Total = 30 ms (< limite de 45 ms)
+              };
+
+              let withinDeadlineResult: any[] = [];
+              try {
+                withinDeadlineResult = await Promise.race([
+                  httpTransportModP33.executeXtreamGetRequest<any[]>({
+                    url: 'http://p33-secret-provider.iptv.local:8080/player_api.php?action=get_vod_streams',
+                    timeoutMs: 45,
+                    isFullCatalogRequest: true,
+                  }),
+                  new Promise<never>((_r, rej) =>
+                    setTimeout(
+                      () =>
+                        rej(
+                          new Error(
+                            'Consulta dentro do prazo ficou presa aguardando cleanupTransferFile'
+                          )
+                        ),
+                      150
+                    )
+                  ),
+                ]);
+              } finally {
+                localFetchInterceptionHookP33 = null;
+                JSON.parse = origParseCancelCheck;
+              }
+
+              assert.strictEqual(
+                withinDeadlineParseCount,
+                1,
+                '[12.22.4] Dentro do prazo (30 ms < 45 ms), o corpo deve ser interpretado exatamente 1 vez'
+              );
+              assert.strictEqual(withinDeadlineResult.length, 1);
+              assert.strictEqual(withinDeadlineResult[0].stream_id, 9508);
+              assert(
+                withinDeadlineFileId !== '' &&
+                  cleanupRequestedFileIdsP33.includes(withinDeadlineFileId),
+                '[12.22.4] Dentro do prazo, a limpeza continua sendo solicitada sem reter a conclusão da consulta'
+              );
+            } finally {
+              catalogDiagMod.setCatalogDiagnosticsClockForTest(null);
+            }
           } finally {
             customCleanupHookP33 = null;
             for (const release of hangingCleanupReleases) {

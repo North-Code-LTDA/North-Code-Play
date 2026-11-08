@@ -361,16 +361,37 @@ function requestNativeFileCleanup(
 export async function executeAndroidTempFileCatalogDownload({
   url,
   timeoutMs,
+  deadlineAt,
   signal,
   diagAttempt,
 }: {
   url: string;
   timeoutMs: number;
+  deadlineAt?: number;
   signal?: AbortSignal;
   diagAttempt?: CatalogDiagnosticAttemptHandle | null;
 }): Promise<string> {
   if (signal?.aborted) {
     throw new Error('Operação cancelada pelo usuário.');
+  }
+
+  const attemptStartMs = nowMonotonicMs();
+  const effectiveDeadlineAt =
+    typeof deadlineAt === 'number' && Number.isFinite(deadlineAt)
+      ? deadlineAt
+      : attemptStartMs + timeoutMs;
+
+  let didTimeout = false;
+  const isDeadlineExpired = (): boolean => {
+    if (didTimeout || nowMonotonicMs() >= effectiveDeadlineAt) {
+      didTimeout = true;
+      return true;
+    }
+    return false;
+  };
+
+  if (isDeadlineExpired()) {
+    throw createTimeoutError();
   }
 
   const plugin = getNativeCatalogPlugin();
@@ -383,13 +404,12 @@ export async function executeAndroidTempFileCatalogDownload({
   }
 
   const trackDiag = Boolean(diagAttempt && diagAttempt.isActive());
-  const nativeCallStartMs = trackDiag ? nowMonotonicMs() : 0;
+  const nativeCallStartMs = trackDiag ? attemptStartMs : 0;
 
   let queryFinished = false;
   let nativeTransferSettled = false;
   let localReadInProgress = false;
   let localReadStartMs = 0;
-  let didTimeout = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let onCallerAbort: (() => void) | null = null;
   let localFetchAbortController: AbortController | null = null;
@@ -420,6 +440,7 @@ export async function executeAndroidTempFileCatalogDownload({
       signal.addEventListener('abort', onCallerAbort, { once: true });
     }
 
+    const remainingTimeoutMs = Math.max(0, effectiveDeadlineAt - nowMonotonicMs());
     timeoutId = setTimeout(() => {
       if (queryFinished) return;
       didTimeout = true;
@@ -428,11 +449,14 @@ export async function executeAndroidTempFileCatalogDownload({
         requestNativeTransferCancellation(plugin, transferId);
       }
       rejectInterruptPromise?.(createTimeoutError());
-    }, timeoutMs);
+    }, remainingTimeoutMs);
 
     const downloadResult = await new Promise<DownloadCatalogToTempFileResult>(
       (resolve, reject) => {
-        const settleNativeReject = (err: Error, errNativeDiag?: CapacitorNativeAttemptDiagnosticsInput | null) => {
+        const settleNativeReject = (
+          err: Error,
+          errNativeDiag?: CapacitorNativeAttemptDiagnosticsInput | null
+        ) => {
           if (nativeTransferSettled) return;
           nativeTransferSettled = true;
           if (diagAttempt?.isActive()) {
@@ -465,17 +489,10 @@ export async function executeAndroidTempFileCatalogDownload({
         plugin
           .downloadCatalogToTempFile(requestOptions)
           .then((res) => {
-            if (nativeTransferSettled || queryFinished || signal?.aborted || didTimeout) {
-              // Resposta tardia após cancelamento ou timeout: solicitar exclusão imediata sem bloquear
+            if (nativeTransferSettled || queryFinished) {
+              // Resposta tardia após a promessa nativa já ter encerrado: solicitar exclusão imediata sem bloquear
               if (res && typeof res.fileId === 'string') {
                 requestNativeFileCleanup(plugin, res.fileId);
-              }
-              if (!nativeTransferSettled) {
-                if (signal?.aborted) {
-                  settleNativeReject(new Error('Operação cancelada pelo usuário.'));
-                } else if (didTimeout) {
-                  settleNativeReject(createTimeoutError());
-                }
               }
               return;
             }
@@ -491,7 +508,7 @@ export async function executeAndroidTempFileCatalogDownload({
             }
             const msg = String(err?.message || err?.code || err || '').toLowerCase();
             if (
-              didTimeout ||
+              isDeadlineExpired() ||
               msg.includes('timeout') ||
               msg.includes('timed out') ||
               msg.includes('sockettimeout')
@@ -530,7 +547,7 @@ export async function executeAndroidTempFileCatalogDownload({
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
     }
-    if (didTimeout) {
+    if (isDeadlineExpired()) {
       throw createTimeoutError();
     }
 
@@ -575,7 +592,7 @@ export async function executeAndroidTempFileCatalogDownload({
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
     }
-    if (didTimeout) {
+    if (isDeadlineExpired()) {
       throw createTimeoutError();
     }
 
@@ -598,7 +615,7 @@ export async function executeAndroidTempFileCatalogDownload({
       if (signal?.aborted) {
         throw new Error('Operação cancelada pelo usuário.');
       }
-      if (didTimeout) {
+      if (isDeadlineExpired()) {
         if (diagAttempt?.isActive()) {
           diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
         }
@@ -614,7 +631,7 @@ export async function executeAndroidTempFileCatalogDownload({
       localReadInProgress = false;
       throw new Error('Operação cancelada pelo usuário.');
     }
-    if (didTimeout) {
+    if (isDeadlineExpired()) {
       localReadInProgress = false;
       if (diagAttempt?.isActive()) {
         diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
@@ -643,7 +660,7 @@ export async function executeAndroidTempFileCatalogDownload({
       if (signal?.aborted) {
         throw new Error('Operação cancelada pelo usuário.');
       }
-      if (didTimeout) {
+      if (isDeadlineExpired()) {
         if (diagAttempt?.isActive()) {
           diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
         }
@@ -660,7 +677,7 @@ export async function executeAndroidTempFileCatalogDownload({
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
     }
-    if (didTimeout) {
+    if (isDeadlineExpired()) {
       if (diagAttempt?.isActive()) {
         diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
       }
