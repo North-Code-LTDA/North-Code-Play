@@ -20,31 +20,38 @@ export interface TransportRequestOptions {
   timeoutMs: number;
   signal?: AbortSignal;
   diagAttempt?: CatalogDiagnosticAttemptHandle | null;
+  isFullCatalogRequest?: boolean;
 }
 
 export interface TransportError extends Error {
   isTransient?: boolean;
   isClientError?: boolean;
   isFatalFormat?: boolean;
+  isLocalFileReadError?: boolean;
   status?: number;
 }
 
 export type TransportMode = 'auto' | 'web' | 'capacitor';
 
 const MAX_NATIVE_CONNECT_TIMEOUT_MS = 15000;
+const CATALOG_FILE_TRANSFER_PLUGIN_NAME = 'CatalogFileTransfer';
 
 let transportModeOverride: TransportMode = 'auto';
 let capacitorHttpGetOverride:
   | ((options: DiagnosticHttpOptions) => Promise<DiagnosticHttpResponse>)
   | null = null;
+let androidCatalogPluginAvailableOverride: boolean | null = null;
+let androidAdapterLoadCountForTest = 0;
 
 /**
- * Permite selecionar explicitamente o modo de transporte ('web' ou 'capacitor')
- * e injetar um mock de `CapacitorHttp.get` durante os testes automatizados offline.
+ * Permite selecionar explicitamente o modo de transporte ('web' ou 'capacitor'),
+ * injetar um mock de `CapacitorHttp.get` e simular a disponibilidade do plugin
+ * `CatalogFileTransfer` durante os testes automatizados offline.
  */
 export function setTransportTestConfig(config: {
   mode?: TransportMode;
   capacitorHttpGet?: ((options: DiagnosticHttpOptions) => Promise<DiagnosticHttpResponse>) | null;
+  androidCatalogPluginAvailable?: boolean | null;
 }): void {
   if (config.mode !== undefined) {
     transportModeOverride = config.mode;
@@ -52,6 +59,17 @@ export function setTransportTestConfig(config: {
   if (config.capacitorHttpGet !== undefined) {
     capacitorHttpGetOverride = config.capacitorHttpGet;
   }
+  if (config.androidCatalogPluginAvailable !== undefined) {
+    androidCatalogPluginAvailableOverride = config.androidCatalogPluginAvailable;
+  }
+}
+
+export function getAndroidCatalogAdapterLoadCountForTest(): number {
+  return androidAdapterLoadCountForTest;
+}
+
+export function resetAndroidCatalogAdapterLoadCountForTest(): void {
+  androidAdapterLoadCountForTest = 0;
 }
 
 export function isUsingCapacitorNativeTransport(): boolean {
@@ -68,6 +86,32 @@ export function isUsingCapacitorNativeTransport(): boolean {
     // Fallback para fetch do navegador
   }
   return false;
+}
+
+/**
+ * Verifica se o ambiente de execução atual é o APK Android com o plugin nativo
+ * `CatalogFileTransfer` disponível antes de iniciar a consulta.
+ * Independente de diagnóstico ativado, modo "TV", tamanho de tela ou user-agent.
+ */
+export function isAndroidTempFileCatalogTransportAvailable(): boolean {
+  if (transportModeOverride === 'web') return false;
+  if (androidCatalogPluginAvailableOverride !== null) {
+    return isUsingCapacitorNativeTransport() && androidCatalogPluginAvailableOverride;
+  }
+  try {
+    const isNative =
+      typeof Capacitor?.isNativePlatform === 'function' &&
+      Capacitor.isNativePlatform() === true;
+    const isAndroid =
+      typeof Capacitor?.getPlatform === 'function' &&
+      Capacitor.getPlatform() === 'android';
+    const isPluginAvailable =
+      typeof Capacitor?.isPluginAvailable === 'function' &&
+      Capacitor.isPluginAvailable(CATALOG_FILE_TRANSFER_PLUGIN_NAME) === true;
+    return Boolean(isNative && isAndroid && isPluginAvailable);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -208,19 +252,36 @@ function extractNativeDiagnosticsFromSource(
  *    quando `signal` é abortado ou quando o prazo `timeoutMs` expira.
  *
  * 2. No aplicativo Android Capacitor ('capacitor'):
- *    Utiliza chamadas explícitas de `CapacitorHttp.get` (sem patch global de `fetch`/`XMLHttpRequest`,
- *    preservando o player HTML5/HLS.js).
- *    Configura `connectTimeout` (até 15s) e `readTimeout` (`timeoutMs`) na camada nativa Java,
- *    além do temporizador total da operação em JS.
+ *    - Para consultas de catálogo completo (`isFullCatalogRequest: true`) quando `Capacitor.isNativePlatform()`
+ *      é verdadeiro, `Capacitor.getPlatform()` é `'android'` e o plugin `CatalogFileTransfer` está disponível:
+ *      carrega o adaptador sob demanda, grava o corpo em arquivo temporário no cache interno privado e
+ *      lê na WebView via `Capacitor.convertFileSrc` + `fetch`, fazendo `JSON.parse` uma única vez no JS.
+ *    - Para autenticação, categorias, catálogos filtrados por categoria, EPG, detalhes (ou se o plugin
+ *      não estiver disponível antes do início da consulta): utiliza `CapacitorHttp.get`.
  */
 export async function executeXtreamGetRequest<T = any>({
   url,
   timeoutMs,
   signal,
   diagAttempt,
+  isFullCatalogRequest = false,
 }: TransportRequestOptions): Promise<T> {
   if (signal?.aborted) {
     throw new Error('Operação cancelada pelo usuário.');
+  }
+
+  if (isFullCatalogRequest && isAndroidTempFileCatalogTransportAvailable()) {
+    androidAdapterLoadCountForTest++;
+    const { executeAndroidTempFileCatalogDownload } = await import(
+      './androidCatalogFileAdapter'
+    );
+    const rawText = await executeAndroidTempFileCatalogDownload({
+      url,
+      timeoutMs,
+      signal,
+      diagAttempt,
+    });
+    return normalizeTransportPayload<T>(rawText, diagAttempt);
   }
 
   if (isUsingCapacitorNativeTransport()) {

@@ -32,12 +32,13 @@ export type CatalogErrorCategory =
   | 'http_5xx'
   | 'invalid_format'
   | 'auth_rejected'
+  | 'local_file_read'
   | 'cancelled'
   | 'unknown';
 
 export type CatalogPayloadFormat = 'text-json' | 'pre-parsed-object' | 'empty';
 
-export type CatalogTransportKind = 'web-fetch' | 'capacitor-native';
+export type CatalogTransportKind = 'web-fetch' | 'capacitor-native' | 'android-temp-file';
 
 export type CatalogReleaseTrigger =
   | 'pending'
@@ -65,16 +66,19 @@ export interface CatalogAttemptDiagnostics {
   // Web (fetch) separated metrics
   responseWaitMs: number | null;
   bodyReadMs: number | null;
-  // Android (CapacitorHttp) combined transport + native bridge metric
+  // Android (CapacitorHttp / plugin) combined transport + native bridge metric
   nativeTransportAndBridgeMs: number | null;
-  // Android (CapacitorHttp) per-stage native metrics (P3.2)
+  // Android per-stage native metrics (P3.2 / P3.3)
   nativeStatusAndHeadersMs: number | null;
   nativeBodyReadMs: number | null;
+  nativeFileWriteMs: number | null;
+  localFileReadMs: number | null;
   nativeJsonParseExecuted: boolean | null;
   nativeJsonParseMs: number | null;
   nativeTotalMs: number | null;
   outsideNativeMeasuredMs: number | null;
   contentLengthHeaderBytes: number | null;
+  bytesWritten: number | null;
   // Payload & JSON.parse metrics
   payloadFormat: CatalogPayloadFormat | null;
   jsonParseExecuted: boolean;
@@ -85,10 +89,12 @@ export interface CatalogAttemptDiagnostics {
 export interface CapacitorNativeAttemptDiagnosticsInput {
   statusAndHeadersMs?: number | null;
   bodyReadMs?: number | null;
+  fileWriteMs?: number | null;
   nativeJsonParseExecuted?: boolean | null;
   nativeJsonParseMs?: number | null;
   nativeTotalMs?: number | null;
   contentLengthHeaderBytes?: number | null;
+  bytesWritten?: number | null;
   payloadChars?: number | null;
 }
 
@@ -178,6 +184,7 @@ export interface CatalogDiagnosticAttemptHandle {
   readonly operationId: string;
   readonly attemptNumber: number;
   isActive(): boolean;
+  setTransportKind(kind: CatalogTransportKind): void;
   recordWebResponseWait(durationMs: number, httpStatus?: number): void;
   recordWebBodyRead(durationMs: number, charLength: number): void;
   recordCapacitorTransportAndBridge(
@@ -185,6 +192,12 @@ export interface CatalogDiagnosticAttemptHandle {
     httpStatus?: number,
     nativeDiag?: CapacitorNativeAttemptDiagnosticsInput | null
   ): void;
+  recordAndroidTempFileTransfer(
+    durationMs: number,
+    httpStatus?: number,
+    nativeDiag?: CapacitorNativeAttemptDiagnosticsInput | null
+  ): void;
+  recordAndroidLocalFileRead(durationMs: number, charLength?: number | null): void;
   recordPayloadNormalization(params: {
     payloadFormat: CatalogPayloadFormat;
     jsonParseExecuted: boolean;
@@ -495,6 +508,9 @@ export function classifyDiagnosticErrorCategory(err: unknown): CatalogErrorCateg
   if (anyErr.isFatalFormat === true || /formato inválido|esperava-se uma lista|não é um JSON válido/i.test(msg)) {
     return 'invalid_format';
   }
+  if (anyErr.isLocalFileReadError === true || /arquivo temporário local/i.test(msg)) {
+    return 'local_file_read';
+  }
   if (/tempo limite|timeout|timed out/i.test(msg)) {
     return 'timeout';
   }
@@ -797,11 +813,14 @@ export function recordCatalogOperationEnqueued(
         nativeTransportAndBridgeMs: null,
         nativeStatusAndHeadersMs: null,
         nativeBodyReadMs: null,
+        nativeFileWriteMs: null,
+        localFileReadMs: null,
         nativeJsonParseExecuted: null,
         nativeJsonParseMs: null,
         nativeTotalMs: null,
         outsideNativeMeasuredMs: null,
         contentLengthHeaderBytes: null,
+        bytesWritten: null,
         payloadFormat: null,
         jsonParseExecuted: false,
         jsonParseMs: null,
@@ -820,6 +839,15 @@ export function recordCatalogOperationEnqueued(
         operationId,
         attemptNumber,
         isActive: isAttemptActive,
+        setTransportKind(kind: CatalogTransportKind) {
+          if (!isAttemptActive()) return;
+          attemptRecord.transportKind = kind;
+          if (activeSessionReport && activeSessionReport.sessionId === sessionId) {
+            if (kind === 'android-temp-file') {
+              activeSessionReport.transportMode = 'android-temp-file';
+            }
+          }
+        },
         recordWebResponseWait(durationMs: number, httpStatus?: number) {
           if (!isAttemptActive()) return;
           recordedEventsCountForTest++;
@@ -841,6 +869,7 @@ export function recordCatalogOperationEnqueued(
         ) {
           if (!isAttemptActive()) return;
           recordedEventsCountForTest++;
+          attemptRecord.transportKind = 'capacitor-native';
           attemptRecord.nativeTransportAndBridgeMs = roundMs(durationMs);
           if (httpStatus !== undefined) {
             attemptRecord.httpStatus = httpStatus;
@@ -881,6 +910,66 @@ export function recordCatalogOperationEnqueued(
             );
           } else {
             attemptRecord.outsideNativeMeasuredMs = null;
+          }
+        },
+        recordAndroidTempFileTransfer(
+          durationMs: number,
+          httpStatus?: number,
+          nativeDiag?: CapacitorNativeAttemptDiagnosticsInput | null
+        ) {
+          if (!isAttemptActive()) return;
+          recordedEventsCountForTest++;
+          attemptRecord.transportKind = 'android-temp-file';
+          if (activeSessionReport && activeSessionReport.sessionId === sessionId) {
+            activeSessionReport.transportMode = 'android-temp-file';
+          }
+          attemptRecord.nativeTransportAndBridgeMs = roundMs(durationMs);
+          attemptRecord.nativeJsonParseExecuted = false;
+          attemptRecord.nativeJsonParseMs = null;
+          if (httpStatus !== undefined) {
+            attemptRecord.httpStatus = httpStatus;
+          }
+          if (nativeDiag && typeof nativeDiag === 'object') {
+            attemptRecord.nativeStatusAndHeadersMs = normalizeOptionalNonNegativeMs(
+              nativeDiag.statusAndHeadersMs
+            );
+            attemptRecord.nativeFileWriteMs = normalizeOptionalNonNegativeMs(
+              nativeDiag.fileWriteMs
+            );
+            if (typeof nativeDiag.nativeJsonParseExecuted === 'boolean') {
+              attemptRecord.nativeJsonParseExecuted = nativeDiag.nativeJsonParseExecuted;
+              attemptRecord.nativeJsonParseMs = nativeDiag.nativeJsonParseExecuted
+                ? normalizeOptionalNonNegativeMs(nativeDiag.nativeJsonParseMs)
+                : null;
+            }
+            attemptRecord.nativeTotalMs = normalizeOptionalNonNegativeMs(
+              nativeDiag.nativeTotalMs
+            );
+            attemptRecord.contentLengthHeaderBytes = normalizeOptionalNonNegativeInt(
+              nativeDiag.contentLengthHeaderBytes
+            );
+            attemptRecord.bytesWritten = normalizeOptionalNonNegativeInt(
+              nativeDiag.bytesWritten
+            );
+          }
+          if (
+            attemptRecord.nativeTransportAndBridgeMs !== null &&
+            attemptRecord.nativeTotalMs !== null
+          ) {
+            attemptRecord.outsideNativeMeasuredMs = roundMs(
+              Math.max(0, attemptRecord.nativeTransportAndBridgeMs - attemptRecord.nativeTotalMs)
+            );
+          } else {
+            attemptRecord.outsideNativeMeasuredMs = null;
+          }
+        },
+        recordAndroidLocalFileRead(durationMs: number, charLength?: number | null) {
+          if (!isAttemptActive()) return;
+          recordedEventsCountForTest++;
+          attemptRecord.transportKind = 'android-temp-file';
+          attemptRecord.localFileReadMs = roundMs(durationMs);
+          if (typeof charLength === 'number' && Number.isFinite(charLength) && charLength >= 0) {
+            attemptRecord.payloadChars = Math.floor(charLength);
           }
         },
         recordPayloadNormalization(params) {
@@ -1396,6 +1485,13 @@ function formatPayloadChars(chars: number | null | undefined): string {
   return `${Math.floor(chars)} caracteres`;
 }
 
+function formatBytesWritten(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes < 0) {
+    return 'indisponível';
+  }
+  return `${Math.floor(bytes)} bytes`;
+}
+
 /**
  * Generates a sanitized, human-readable and machine-verifiable diagnostics report
  * for the most recent session in memory.
@@ -1423,9 +1519,11 @@ export function formatCatalogDiagnosticsReport(
   }
 
   const transportLabel =
-    report.transportMode === 'capacitor-native'
-      ? 'Android CapacitorHttp (transporte + ponte nativa)'
-      : 'Navegador Web (fetch)';
+    report.transportMode === 'android-temp-file'
+      ? 'Android (arquivo temporário P3.3 + CapacitorHttp)'
+      : report.transportMode === 'capacitor-native'
+        ? 'Android CapacitorHttp (transporte + ponte nativa)'
+        : 'Navegador Web (fetch)';
 
   lines.push(
     `Sessão local: #${report.sessionId} | Transporte: ${transportLabel} | Concorrência máx.: ${report.maxConcurrency}`
@@ -1496,13 +1594,17 @@ export function formatCatalogDiagnosticsReport(
 
     for (const att of op.attempts) {
       const transportDetail =
-        att.transportKind === 'capacitor-native'
-          ? `transporte + ponte nativa (CapacitorHttp)=${formatMs(
+        att.transportKind === 'android-temp-file'
+          ? `transporte=android-temp-file | chamada plugin=${formatMs(
               att.nativeTransportAndBridgeMs
-            )}`
-          : `espera resposta=${formatMs(att.responseWaitMs)} | leitura corpo=${formatMs(
-              att.bodyReadMs
-            )}`;
+            )} | leitura local=${formatMs(att.localFileReadMs)}`
+          : att.transportKind === 'capacitor-native'
+            ? `transporte + ponte nativa (CapacitorHttp)=${formatMs(
+                att.nativeTransportAndBridgeMs
+              )}`
+            : `espera resposta=${formatMs(att.responseWaitMs)} | leitura corpo=${formatMs(
+                att.bodyReadMs
+              )}`;
 
       const parseDetail = att.jsonParseExecuted
         ? `JSON.parse=${formatMs(att.jsonParseMs)} (executado em JS, formato=${formatPayloadFormatLabel(
@@ -1534,6 +1636,26 @@ export function formatCatalogDiagnosticsReport(
             att.outsideNativeMeasuredMs
           )} | Content-Length=${formatContentLengthHeader(
             att.contentLengthHeaderBytes
+          )} | texto lido=${formatPayloadChars(att.payloadChars)}`
+        );
+      } else if (att.transportKind === 'android-temp-file') {
+        lines.push(
+          `    • Etapas Android (P3.3 - arquivo temporário): status + cabeçalhos=${formatMs(
+            att.nativeStatusAndHeadersMs
+          )} | gravação do corpo=${formatMs(
+            att.nativeFileWriteMs
+          )} | leitura local=${formatMs(
+            att.localFileReadMs
+          )} | interpretação na WebView=${
+            att.jsonParseExecuted ? formatMs(att.jsonParseMs) : 'não executado'
+          } | JSON no Android=não executado | total no trecho nativo=${formatMs(
+            att.nativeTotalMs
+          )} | tempo fora do trecho nativo medido=${formatMs(
+            att.outsideNativeMeasuredMs
+          )} | Content-Length=${formatContentLengthHeader(
+            att.contentLengthHeaderBytes
+          )} | bytes gravados=${formatBytesWritten(
+            att.bytesWritten
           )} | texto lido=${formatPayloadChars(att.payloadChars)}`
         );
       }

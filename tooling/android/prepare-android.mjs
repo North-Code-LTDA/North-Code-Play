@@ -399,6 +399,17 @@ export function verifyAndroidCustomizations(rootDir, expectedVersionName, expect
     path.join(androidDir, 'app', 'build.gradle'),
     path.join(androidDir, 'app', 'src', 'main', 'AndroidManifest.xml'),
     path.join(androidDir, 'app', 'src', 'main', 'java', 'com', 'northcode', 'play', 'MainActivity.java'),
+    path.join(
+      androidDir,
+      'app',
+      'src',
+      'main',
+      'java',
+      'com',
+      'northcode',
+      'play',
+      'CatalogFileTransferPlugin.java'
+    ),
     path.join(androidDir, 'app', 'src', 'main', 'res', 'xml', 'network_security_config.xml'),
     path.join(androidDir, 'app', 'src', 'main', 'res', 'drawable', 'tv_banner.xml'),
     path.join(androidDir, 'app', 'src', 'main', 'res', 'drawable', 'ic_launcher_foreground_inset.xml'),
@@ -438,13 +449,46 @@ export function verifyAndroidCustomizations(rootDir, expectedVersionName, expect
     path.join(androidDir, 'app', 'src', 'main', 'java', 'com', 'northcode', 'play', 'MainActivity.java'),
     'utf8'
   );
+  const registerPluginIdx = mainActivityContent.indexOf(
+    'registerPlugin(CatalogFileTransferPlugin.class);'
+  );
+  const superOnCreateIdx = mainActivityContent.indexOf('super.onCreate(savedInstanceState);');
   if (
     !mainActivityContent.includes('UI_MODE_TYPE_TELEVISION') ||
     !mainActivityContent.includes('setMinimumFontSize(1)') ||
-    !mainActivityContent.includes('setTextZoom(100)')
+    !mainActivityContent.includes('setTextZoom(100)') ||
+    registerPluginIdx === -1 ||
+    superOnCreateIdx === -1 ||
+    registerPluginIdx > superOnCreateIdx
   ) {
     throw new Error(
-      'Validação pós-preparação falhou: MainActivity.java não contém a configuração de WebView para Android TV.'
+      'Validação pós-preparação falhou: MainActivity.java não contém a configuração de WebView para Android TV ou o registro de CatalogFileTransferPlugin antes de super.onCreate.'
+    );
+  }
+
+  const catalogPluginContent = fs.readFileSync(
+    path.join(
+      androidDir,
+      'app',
+      'src',
+      'main',
+      'java',
+      'com',
+      'northcode',
+      'play',
+      'CatalogFileTransferPlugin.java'
+    ),
+    'utf8'
+  );
+  if (
+    !catalogPluginContent.includes('@CapacitorPlugin(name = "CatalogFileTransfer")') ||
+    !catalogPluginContent.includes('downloadCatalogToTempFile') ||
+    !catalogPluginContent.includes('cancelTransfer') ||
+    !catalogPluginContent.includes('cleanupTransferFile') ||
+    !catalogPluginContent.includes('nc_catalog_transfers')
+  ) {
+    throw new Error(
+      'Validação pós-preparação falhou: CatalogFileTransferPlugin.java não contém todos os métodos nativos P3.3.'
     );
   }
 

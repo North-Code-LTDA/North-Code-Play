@@ -189,8 +189,31 @@ export class XtreamService {
   }
 
   /**
+   * Identifica explicitamente as consultas de catálogo completo:
+   * `get_live_streams`, `get_vod_streams` e `get_series` sem filtro de `category_id`.
+   */
+  static isFullCatalogQuery(
+    action?: string,
+    params?: Record<string, string | number>
+  ): boolean {
+    if (
+      action !== "get_live_streams" &&
+      action !== "get_vod_streams" &&
+      action !== "get_series"
+    ) {
+      return false;
+    }
+    const categoryId = params?.category_id;
+    return (
+      categoryId === undefined ||
+      categoryId === null ||
+      String(categoryId).trim() === ""
+    );
+  }
+
+  /**
    * Performs direct HTTP/HTTPS GET requests to the Xtream provider via the transport adapter
-   * (fetch on Web, explicit CapacitorHttp on Android).
+   * (fetch on Web, explicit CapacitorHttp or temp-file catalog plugin on Android).
    * Applies at most ONE automatic retry for transient network errors or timeouts.
    * Does NOT retry HTTP 4xx, auth rejections, invalid JSON, or intentional caller cancellation.
    */
@@ -230,6 +253,7 @@ export class XtreamService {
 
     const callerSignal = options?.signal;
     const diagOp = options?.diagOp;
+    const isFullCatalogRequest = XtreamService.isFullCatalogQuery(action, params);
     const maxAttempts = 2;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -245,6 +269,7 @@ export class XtreamService {
           timeoutMs,
           signal: callerSignal,
           diagAttempt,
+          isFullCatalogRequest,
         });
         inspectPayloadForAuthError(payload);
         if (diagAttempt?.isActive()) {

@@ -255,7 +255,7 @@ const {
   useXtreamVod,
   useXtreamSeries,
 } = await import('../src/context/XtreamContext');
-const { XtreamService } = await import('../src/services/xtreamService');
+const { XtreamService, normalizeCatalogArray } = await import('../src/services/xtreamService');
 const { Home } = await import('../src/pages/Home');
 const {
   STORAGE_KEY_DISPLAY_PREFS,
@@ -276,6 +276,9 @@ const origXtreamMethods = {
   getLiveStreams: XtreamService.getLiveStreams.bind(XtreamService),
   getVodStreams: XtreamService.getVodStreams.bind(XtreamService),
   getSeries: XtreamService.getSeries.bind(XtreamService),
+  getVodInfo: XtreamService.getVodInfo.bind(XtreamService),
+  getSeriesInfo: XtreamService.getSeriesInfo.bind(XtreamService),
+  getShortEpg: XtreamService.getShortEpg.bind(XtreamService),
   authenticate: XtreamService.authenticate.bind(XtreamService),
 };
 
@@ -16717,8 +16720,1402 @@ if (args[0] === 'add' && args[1] === 'android') {
           `   • Marcos reais da Home: seletor desde 1ª montagem=150ms (separado de homeAvailableAtMs=320ms) | botão manual: intenção=350ms → disponível pós-render=358ms → 6 operações=520ms | HTTP 401/auth:0 → auth_rejected (preservado após recuperação)\n` +
           `   • Preparação da Home vs navegação: filmes prontos c/ séries pendentes=1 ordenação | abertura completa=2 ordenações + 2 mesclagens | HeroBanner sem capas=1 mesclagem (0 itens) + 1 hit cache | navegação posterior em TV ao vivo=0 alterações`
       );
+
+      // =====================================================================
+      // 12.22. P3.3 — Transferência dos catálogos grandes no APK Android
+      // =====================================================================
+      console.log(
+        '🧪 Testando 12.22 (P3.3): Transferência dos catálogos grandes no APK Android via arquivo temporário...'
+      );
+      {
+        const fsNodeP33 = await import('node:fs');
+        const pathNodeP33 = await import('node:path');
+        const osNodeP33 = await import('node:os');
+        const { Capacitor: CapacitorCoreP33 } = await import('@capacitor/core');
+        const httpTransportModP33 = await import('../src/services/httpTransport');
+        const androidAdapterModP33 = await import(
+          '../src/services/androidCatalogFileAdapter'
+        );
+        const prepareAndroidModP33 = await import(
+          '../tooling/android/prepare-android.mjs'
+        );
+
+        const origIsNativePlatform = CapacitorCoreP33.isNativePlatform;
+        const origGetPlatform = CapacitorCoreP33.getPlatform;
+        const origIsPluginAvailable = CapacitorCoreP33.isPluginAvailable;
+        const origConvertFileSrc = CapacitorCoreP33.convertFileSrc;
+        const savedGetVodInfoP33 = (XtreamService as any).getVodInfo;
+        const savedGetSeriesInfoP33 = (XtreamService as any).getSeriesInfo;
+        const savedGetShortEpgP33 = (XtreamService as any).getShortEpg;
+
+        const tmpCacheRootP33 = fsNodeP33.mkdtempSync(
+          pathNodeP33.join(osNodeP33.tmpdir(), 'nc-p33-cache-')
+        );
+        const dedicatedTransferDirP33 = pathNodeP33.join(
+          tmpCacheRootP33,
+          androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR
+        );
+        fsNodeP33.mkdirSync(dedicatedTransferDirP33, { recursive: true });
+
+        try {
+          // Restaurar métodos reais de XtreamService para testar o fluxo real
+          (XtreamService as any).getLiveCategories = origXtreamMethods.getLiveCategories;
+          (XtreamService as any).getVodCategories = origXtreamMethods.getVodCategories;
+          (XtreamService as any).getSeriesCategories = origXtreamMethods.getSeriesCategories;
+          (XtreamService as any).getLiveStreams = origXtreamMethods.getLiveStreams;
+          (XtreamService as any).getVodStreams = origXtreamMethods.getVodStreams;
+          (XtreamService as any).getSeries = origXtreamMethods.getSeries;
+          (XtreamService as any).getVodInfo = origXtreamMethods.getVodInfo;
+          (XtreamService as any).getSeriesInfo = origXtreamMethods.getSeriesInfo;
+          (XtreamService as any).getShortEpg = origXtreamMethods.getShortEpg;
+          (XtreamService as any).authenticate = origXtreamMethods.authenticate;
+
+          // -----------------------------------------------------------------
+          // 12.22.1: Identificação explícita das consultas de catálogo completo
+          // -----------------------------------------------------------------
+          assert.strictEqual(
+            XtreamService.isFullCatalogQuery('get_live_streams', {}),
+            true,
+            '[12.22.1] get_live_streams sem category_id deve ser catálogo completo'
+          );
+          assert.strictEqual(
+            XtreamService.isFullCatalogQuery('get_vod_streams', {}),
+            true,
+            '[12.22.1] get_vod_streams sem category_id deve ser catálogo completo'
+          );
+          assert.strictEqual(
+            XtreamService.isFullCatalogQuery('get_series', {}),
+            true,
+            '[12.22.1] get_series sem category_id deve ser catálogo completo'
+          );
+          assert.strictEqual(
+            XtreamService.isFullCatalogQuery('get_vod_streams', { category_id: '15' }),
+            false,
+            '[12.22.1] get_vod_streams filtrado por categoria NÃO deve ser catálogo completo'
+          );
+          assert.strictEqual(
+            XtreamService.isFullCatalogQuery('get_live_streams', { category_id: '10' }),
+            false,
+            '[12.22.1] get_live_streams filtrado por categoria NÃO deve ser catálogo completo'
+          );
+          assert.strictEqual(
+            XtreamService.isFullCatalogQuery('get_series', { category_id: '25' }),
+            false,
+            '[12.22.1] get_series filtrado por categoria NÃO deve ser catálogo completo'
+          );
+          for (const nonFullAction of [
+            undefined,
+            'get_live_categories',
+            'get_vod_categories',
+            'get_series_categories',
+            'get_vod_info',
+            'get_series_info',
+            'get_short_epg',
+          ]) {
+            assert.strictEqual(
+              XtreamService.isFullCatalogQuery(nonFullAction, {}),
+              false,
+              `[12.22.1] Action "${String(nonFullAction)}" NÃO deve usar o transporte de catálogo completo`
+            );
+          }
+
+          // -----------------------------------------------------------------
+          // 12.22.2: Seleção de transporte por ambiente (Navegador comum,
+          // Navegador em modo TV, Android APK em ambos os modos de apresentação,
+          // e fallback quando o plugin nativo está ausente antes da consulta)
+          // -----------------------------------------------------------------
+          const credsP33: XtreamCredentials = {
+            serverUrl: 'http://p33-secret-provider.iptv.local:8080',
+            username: 'p33_secret_user',
+            password: 'p33_secret_password',
+          };
+
+          let webFetchProviderCount = 0;
+          let capacitorHttpGetCount = 0;
+          let tempFilePluginDownloadCount = 0;
+          let localWebViewFileFetchCount = 0;
+
+          httpTransportModP33.resetAndroidCatalogAdapterLoadCountForTest();
+          httpTransportModP33.setTransportTestConfig({
+            mode: 'auto',
+            capacitorHttpGet: null,
+            androidCatalogPluginAvailable: null,
+          });
+
+          // (A) Navegador comum (modo padrão) e Navegador em modo TV:
+          // Sempre usa fetch do navegador, nunca carrega nem chama o plugin Android
+          (CapacitorCoreP33 as any).isNativePlatform = () => false;
+          (CapacitorCoreP33 as any).getPlatform = () => 'web';
+          (CapacitorCoreP33 as any).isPluginAvailable = () => false;
+
+          globalThis.fetch = (async (input: RequestInfo | URL) => {
+            const urlStr = String(input);
+            if (urlStr.includes('player_api.php')) {
+              webFetchProviderCount++;
+              return {
+                ok: true,
+                status: 200,
+                text: async () =>
+                  JSON.stringify([{ stream_id: 101, name: 'Filme Web Normal', category_id: '1' }]),
+              } as unknown as Response;
+            }
+            throw new Error(`URL inesperada no navegador: ${urlStr}`);
+          }) as typeof fetch;
+
+          confirmDisplayPreferences('default');
+          catalogDiagMod.resetCatalogDiagnosticsForTest(false); // Diagnóstico desativado
+          const webNormalVod = await XtreamService.getVodStreams(credsP33);
+          assert.strictEqual(webNormalVod.length, 1);
+          assert.strictEqual(
+            webFetchProviderCount,
+            1,
+            '[12.22.2] Navegador comum deve usar fetch (1 GET)'
+          );
+          assert.strictEqual(
+            httpTransportModP33.getAndroidCatalogAdapterLoadCountForTest(),
+            0,
+            '[12.22.2] Navegador comum NÃO deve carregar o adaptador Android sob demanda'
+          );
+
+          confirmDisplayPreferences('tv', 85);
+          const webTvVod = await XtreamService.getVodStreams(credsP33);
+          assert.strictEqual(webTvVod.length, 1);
+          assert.strictEqual(
+            webFetchProviderCount,
+            2,
+            '[12.22.2] Navegador em modo TV deve continuar usando fetch do navegador'
+          );
+          assert.strictEqual(
+            httpTransportModP33.getAndroidCatalogAdapterLoadCountForTest(),
+            0,
+            '[12.22.2] Navegador em modo TV NÃO deve carregar o adaptador Android'
+          );
+
+          // (B) Android APK quando o plugin nativo está AUSENTE (detectado antes de iniciar a consulta):
+          // Cai para CapacitorHttp.get() com exatamente 1 GET ao provedor
+          (CapacitorCoreP33 as any).isNativePlatform = () => true;
+          (CapacitorCoreP33 as any).getPlatform = () => 'android';
+          (CapacitorCoreP33 as any).isPluginAvailable = () => false;
+
+          httpTransportModP33.setTransportTestConfig({
+            mode: 'auto',
+            androidCatalogPluginAvailable: null,
+            capacitorHttpGet: async () => {
+              capacitorHttpGetCount++;
+              return {
+                status: 200,
+                data: [{ stream_id: 202, name: 'Filme Fallback CapacitorHttp', category_id: '1' }],
+                headers: {},
+                url: 'http://p33-secret-provider.iptv.local:8080/player_api.php',
+              };
+            },
+          });
+
+          const fallbackVod = await XtreamService.getVodStreams(credsP33);
+          assert.strictEqual(fallbackVod.length, 1);
+          assert.strictEqual(
+            capacitorHttpGetCount,
+            1,
+            '[12.22.2] Sem o plugin CatalogFileTransfer disponível antes da consulta, deve usar CapacitorHttp.get com apenas 1 GET'
+          );
+          assert.strictEqual(
+            httpTransportModP33.getAndroidCatalogAdapterLoadCountForTest(),
+            0,
+            '[12.22.2] Sem o plugin disponível, não deve invocar o caminho de arquivo temporário'
+          );
+
+          // (C) Android APK com plugin nativo disponível:
+          // Testar com diagnóstico DESATIVADO e ATIVADO, e nos modos 'default' e 'tv',
+          // verificando também que autenticação, categorias, catálogos filtrados por categoria,
+          // EPG e detalhes continuam usando CapacitorHttp.get
+          (CapacitorCoreP33 as any).isNativePlatform = () => true;
+          (CapacitorCoreP33 as any).getPlatform = () => 'android';
+          (CapacitorCoreP33 as any).isPluginAvailable = (name: string) =>
+            name === 'CatalogFileTransfer';
+
+          let p33FileSeq = 0;
+          const activeFilesSetP33 = new Set<string>();
+          const cancelledTransfersP33 = new Set<string>();
+          const lastBridgeResponsesP33: any[] = [];
+
+          // Simulador fiel do plugin Java CatalogFileTransferPlugin gravando arquivos reais em disco
+          let simulatedProviderHandlerP33: (
+            opts: any,
+            fileHelpers: {
+              writeTempAndFinalize: (content: string) => { fileId: string; filePath: string; bytesWritten: number };
+              isCancelled: () => boolean;
+            }
+          ) => Promise<any>;
+
+          const cleanupStaleFilesSimP33 = () => {
+            const entries = fsNodeP33.readdirSync(dedicatedTransferDirP33);
+            for (const entryName of entries) {
+              if (!activeFilesSetP33.has(entryName)) {
+                fsNodeP33.rmSync(pathNodeP33.join(dedicatedTransferDirP33, entryName), {
+                  force: true,
+                });
+              }
+            }
+          };
+
+          const nativePluginSimP33 = {
+            async downloadCatalogToTempFile(opts: any) {
+              tempFilePluginDownloadCount++;
+              const seq = ++p33FileSeq;
+              const safeToken =
+                String(opts.transferId || `t${seq}`).replace(/[^a-zA-Z0-9_-]/g, '') +
+                `_${seq}`;
+              const tempFileName = `nc_catalog_${safeToken}.json.tmp`;
+              const finalFileName = `nc_catalog_${safeToken}.json`;
+              const tempFilePath = pathNodeP33.join(dedicatedTransferDirP33, tempFileName);
+              const finalFilePath = pathNodeP33.join(dedicatedTransferDirP33, finalFileName);
+
+              cleanupStaleFilesSimP33();
+              activeFilesSetP33.add(tempFileName);
+              activeFilesSetP33.add(finalFileName);
+
+              let keepFinal = false;
+              try {
+                const res = await simulatedProviderHandlerP33(opts, {
+                  isCancelled: () => cancelledTransfersP33.has(opts.transferId),
+                  writeTempAndFinalize: (content: string) => {
+                    // Grava em fluxo no arquivo .tmp e renomeia para .json sem fazer JSON.parse em Java
+                    const buf = Buffer.from(content, 'utf8');
+                    fsNodeP33.writeFileSync(tempFilePath, buf);
+                    if (cancelledTransfersP33.has(opts.transferId)) {
+                      throw new Error('TRANSFER_CANCELLED');
+                    }
+                    fsNodeP33.renameSync(tempFilePath, finalFilePath);
+                    keepFinal = true;
+                    return {
+                      fileId: finalFileName,
+                      filePath: finalFilePath,
+                      bytesWritten: buf.byteLength,
+                    };
+                  },
+                });
+                lastBridgeResponsesP33.push(res);
+                return res;
+              } finally {
+                activeFilesSetP33.delete(tempFileName);
+                fsNodeP33.rmSync(tempFilePath, { force: true });
+                if (!keepFinal || cancelledTransfersP33.has(opts.transferId)) {
+                  activeFilesSetP33.delete(finalFileName);
+                  fsNodeP33.rmSync(finalFilePath, { force: true });
+                }
+              }
+            },
+            async cancelTransfer({ transferId }: { transferId: string }) {
+              cancelledTransfersP33.add(transferId);
+              return { cancelled: true };
+            },
+            async cleanupTransferFile({ fileId }: { fileId: string }) {
+              if (!/^nc_catalog_[a-zA-Z0-9_-]+\.json(?:\.tmp)?$/.test(fileId)) {
+                throw new Error(
+                  'Identificador de arquivo temporário inválido ou fora do diretório permitido.'
+                );
+              }
+              const target = pathNodeP33.resolve(dedicatedTransferDirP33, fileId);
+              if (
+                pathNodeP33.dirname(target) !== pathNodeP33.resolve(dedicatedTransferDirP33)
+              ) {
+                throw new Error('Caminho fora da pasta dedicada.');
+              }
+              activeFilesSetP33.delete(fileId);
+              activeFilesSetP33.delete(`${fileId}.tmp`);
+              const existed = fsNodeP33.existsSync(target);
+              if (existed) {
+                fsNodeP33.rmSync(target, { force: true });
+              }
+              return { deleted: existed };
+            },
+          };
+
+          androidAdapterModP33.setAndroidCatalogFileAdapterTestOverride({
+            plugin: nativePluginSimP33,
+            convertFileSrc: (filePath: string) =>
+              `http://localhost/_capacitor_file_${filePath}`,
+          });
+
+          // Fetch na WebView: atende as leituras de arquivo local convertidas via _capacitor_file_
+          let localFetchInterceptionHookP33: ((localPath: string) => Promise<void>) | null =
+            null;
+          let forceLocalFileReadErrorP33 = false;
+
+          globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const urlStr = String(input);
+            const prefix = 'http://localhost/_capacitor_file_';
+            if (urlStr.startsWith(prefix)) {
+              localWebViewFileFetchCount++;
+              const localDiskPath = urlStr.slice(prefix.length);
+              if (localFetchInterceptionHookP33) {
+                await localFetchInterceptionHookP33(localDiskPath);
+              }
+              if (init?.signal?.aborted) {
+                throw new Error('Aborted');
+              }
+              if (forceLocalFileReadErrorP33 || !fsNodeP33.existsSync(localDiskPath)) {
+                return {
+                  ok: false,
+                  status: 404,
+                  text: async () => '',
+                } as unknown as Response;
+              }
+              return {
+                ok: true,
+                status: 200,
+                text: async () => {
+                  if (init?.signal?.aborted) {
+                    throw new Error('Aborted');
+                  }
+                  return fsNodeP33.readFileSync(localDiskPath, 'utf8');
+                },
+              } as unknown as Response;
+            }
+            webFetchProviderCount++;
+            throw new Error(`Fetch web externo não deveria ser chamado no Android: ${urlStr}`);
+          }) as typeof fetch;
+
+          // Construir catálogos sintéticos grandes com caracteres UTF-8 e entradas inválidas misturadas
+          const largeSyntheticVodRaw: any[] = [];
+          for (let i = 1; i <= 1500; i++) {
+            largeSyntheticVodRaw.push({
+              num: i,
+              name: `Filme Sintético P3.3 #${i} — Ação & Ficção Científica 4K 🎬`,
+              stream_type: 'movie',
+              stream_id: 50000 + i,
+              stream_icon: `http://img.local/vod_${i}.jpg`,
+              rating: '8.7',
+              rating_5based: 4.35,
+              added: String(1710000000 + i),
+              category_id: String((i % 12) + 1),
+              container_extension: 'mp4',
+            });
+          }
+          largeSyntheticVodRaw.push(null, 'invalid_primitive', [1, 2, 3]);
+          const largeSyntheticVodJsonText = JSON.stringify(largeSyntheticVodRaw);
+          const largeSyntheticVodBytes = Buffer.byteLength(largeSyntheticVodJsonText, 'utf8');
+
+          const largeSyntheticLiveRaw: any[] = [];
+          for (let i = 1; i <= 800; i++) {
+            largeSyntheticLiveRaw.push({
+              num: i,
+              name: `Canal Ao Vivo P3.3 #${i} — Transmissão São Paulo FHD`,
+              stream_type: 'live',
+              stream_id: 10000 + i,
+              stream_icon: `http://img.local/live_${i}.png`,
+              epg_channel_id: `epg_${i}`,
+              added: String(1710000000 + i),
+              category_id: String((i % 8) + 1),
+            });
+          }
+          const largeSyntheticLiveJsonText = JSON.stringify(largeSyntheticLiveRaw);
+
+          const largeSyntheticSeriesRaw: any[] = [];
+          for (let i = 1; i <= 1200; i++) {
+            largeSyntheticSeriesRaw.push({
+              num: i,
+              name: `Série Sintética P3.3 #${i} — Mistério na Neblina`,
+              series_id: 80000 + i,
+              cover: `http://img.local/series_${i}.jpg`,
+              plot: 'Descrição com acentuação UTF-8: coração, ação, episódio.',
+              rating: '9.1',
+              rating_5based: 4.55,
+              last_modified: String(1710000000 + i),
+              category_id: String((i % 10) + 1),
+            });
+          }
+          const largeSyntheticSeriesJsonText = JSON.stringify(largeSyntheticSeriesRaw);
+
+          simulatedProviderHandlerP33 = async (opts, helpers) => {
+            const urlObj = new URL(opts.url);
+            const action = urlObj.searchParams.get('action');
+            let bodyText = '[]';
+            if (action === 'get_vod_streams') {
+              bodyText = largeSyntheticVodJsonText;
+            } else if (action === 'get_live_streams') {
+              bodyText = largeSyntheticLiveJsonText;
+            } else if (action === 'get_series') {
+              bodyText = largeSyntheticSeriesJsonText;
+            }
+            const written = helpers.writeTempAndFinalize(bodyText);
+            return {
+              status: 200,
+              fileId: written.fileId,
+              filePath: written.filePath,
+              ...(opts.collectDiagnostics
+                ? {
+                    nativeDiagnostics: {
+                      statusAndHeadersMs: 380.4,
+                      fileWriteMs: 620.6,
+                      nativeJsonParseExecuted: false,
+                      nativeJsonParseMs: null,
+                      nativeTotalMs: 1005.0,
+                      contentLengthHeaderBytes: written.bytesWritten,
+                      bytesWritten: written.bytesWritten,
+                    },
+                  }
+                : {}),
+            };
+          };
+
+          capacitorHttpGetCount = 0;
+          tempFilePluginDownloadCount = 0;
+          localWebViewFileFetchCount = 0;
+          lastBridgeResponsesP33.length = 0;
+
+          httpTransportModP33.setTransportTestConfig({
+            mode: 'auto',
+            androidCatalogPluginAvailable: null,
+            capacitorHttpGet: async (opts) => {
+              capacitorHttpGetCount++;
+              const u = new URL(opts.url);
+              const actName = u.searchParams.get('action');
+              if (!actName) {
+                return {
+                  status: 200,
+                  data: {
+                    user_info: { username: 'p33_secret_user', status: 'Active', auth: 1 },
+                    server_info: { url: 'p33-secret-provider.iptv.local', port: '8080' },
+                  },
+                  headers: {},
+                  url: opts.url,
+                };
+              }
+              if (actName.endsWith('_categories')) {
+                return {
+                  status: 200,
+                  data: [{ category_id: '1', category_name: 'Categoria Geral' }],
+                  headers: {},
+                  url: opts.url,
+                };
+              }
+              if (u.searchParams.get('category_id')) {
+                return {
+                  status: 200,
+                  data: [{ stream_id: 999, series_id: 999, name: 'Filtrado por Categoria', category_id: '1' }],
+                  headers: {},
+                  url: opts.url,
+                };
+              }
+              return {
+                status: 200,
+                data: { info: { name: 'Detalhe/EPG' }, epg_listings: [] },
+                headers: {},
+                url: opts.url,
+              };
+            },
+          });
+
+          // Monitorar chamadas de JSON.parse durante as 3 consultas de catálogo completo
+          let catalogJsonParseCalls = 0;
+          const origJsonParseP33 = JSON.parse;
+          JSON.parse = ((text: string, ...rest: any[]) => {
+            if (
+              typeof text === 'string' &&
+              (text.includes('Filme Sintético P3.3 #1') ||
+                text.includes('Canal Ao Vivo P3.3 #1') ||
+                text.includes('Série Sintética P3.3 #1'))
+            ) {
+              catalogJsonParseCalls++;
+            }
+            return origJsonParseP33(text, ...rest);
+          }) as typeof JSON.parse;
+
+          let apkDefaultVod: any[] = [];
+          let apkTvLive: any[] = [];
+          let apkTvSeries: any[] = [];
+          try {
+            // Com diagnóstico DESATIVADO e modo 'default'
+            catalogDiagMod.resetCatalogDiagnosticsForTest(false);
+            confirmDisplayPreferences('default');
+            apkDefaultVod = await XtreamService.getVodStreams(credsP33);
+
+            // Com diagnóstico DESATIVADO e modo 'tv'
+            confirmDisplayPreferences('tv', 85);
+            apkTvLive = await XtreamService.getLiveStreams(credsP33);
+            apkTvSeries = await XtreamService.getSeries(credsP33);
+          } finally {
+            JSON.parse = origJsonParseP33;
+          }
+
+          assert.strictEqual(
+            tempFilePluginDownloadCount,
+            3,
+            '[12.22.2] As 3 consultas de catálogo completo (Live, VOD, Series) no Android devem usar o plugin de arquivo temporário (1 GET por tentativa), mesmo com diagnóstico desativado e em ambos os modos default/tv'
+          );
+          assert.strictEqual(
+            localWebViewFileFetchCount,
+            3,
+            '[12.22.2] Cada catálogo completo deve ser lido localmente na WebView via convertFileSrc + fetch'
+          );
+          assert.strictEqual(
+            catalogJsonParseCalls,
+            3,
+            '[12.22.2] Cada corpo JSON válido de catálogo completo deve passar por um único JSON.parse (na WebView)'
+          );
+          assert.strictEqual(
+            capacitorHttpGetCount,
+            0,
+            '[12.22.2] Consultas de catálogo completo no APK com plugin disponível NÃO devem chamar CapacitorHttp.get'
+          );
+
+          // Verificar ausência absoluta do corpo do catálogo no retorno da ponte nativa
+          for (const bridgeRes of lastBridgeResponsesP33) {
+            assert.strictEqual(
+              'data' in bridgeRes,
+              false,
+              '[12.22.2] O retorno da ponte nativa NÃO deve conter o campo "data" com o corpo do catálogo'
+            );
+            const serializedBridgeRes = JSON.stringify(bridgeRes);
+            assert(
+              !serializedBridgeRes.includes('Filme Sintético P3.3') &&
+                !serializedBridgeRes.includes('Canal Ao Vivo P3.3') &&
+                !serializedBridgeRes.includes('Série Sintética P3.3'),
+              '[12.22.2] Nenhum item ou texto do catálogo deve atravessar a ponte nativa do Capacitor'
+            );
+          }
+
+          // Verificar equivalência exata dos dados normalizados (incluindo UTF-8 e descarte de itens inválidos)
+          const expectedNormalizedVod = normalizeCatalogArray(
+            origJsonParseP33(largeSyntheticVodJsonText),
+            'Erro'
+          );
+          assert.strictEqual(apkDefaultVod.length, 1500);
+          assert.deepStrictEqual(
+            apkDefaultVod,
+            expectedNormalizedVod,
+            '[12.22.2] Os dados normalizados vindos do arquivo temporário devem ser idênticos aos do transporte padrão (preservando UTF-8)'
+          );
+          assert.strictEqual(apkTvLive.length, 800);
+          assert.strictEqual(apkTvSeries.length, 1200);
+
+          // Verificar limpeza imediata dos arquivos temporários após o consumo
+          assert.strictEqual(
+            fsNodeP33.readdirSync(dedicatedTransferDirP33).length,
+            0,
+            '[12.22.2] Todos os arquivos temporários devem ser apagados imediatamente após o consumo na WebView'
+          );
+
+          // Verificar que autenticação, categorias, catálogos filtrados por categoria, EPG e detalhes
+          // continuam usando CapacitorHttp.get normalmente
+          await XtreamService.authenticate(credsP33);
+          await XtreamService.getLiveCategories(credsP33);
+          await XtreamService.getVodCategories(credsP33);
+          await XtreamService.getSeriesCategories(credsP33);
+          await XtreamService.getLiveStreams(credsP33, '1');
+          await XtreamService.getVodStreams(credsP33, '1');
+          await XtreamService.getSeries(credsP33, '1');
+          await XtreamService.getVodInfo(credsP33, 50001);
+          await XtreamService.getSeriesInfo(credsP33, 80001);
+          await XtreamService.getShortEpg(credsP33, 10001);
+
+          assert.strictEqual(
+            capacitorHttpGetCount,
+            10,
+            '[12.22.2] Autenticação, categorias, catálogos filtrados por categoria, detalhes e EPG devem preservar CapacitorHttp.get (10 chamadas)'
+          );
+          assert.strictEqual(
+            tempFilePluginDownloadCount,
+            3,
+            '[12.22.2] Nenhuma chamada filtrada, de categorias, autenticação, detalhe ou EPG deve acionar o plugin de arquivo temporário'
+          );
+
+          // -----------------------------------------------------------------
+          // 12.22.3: Lista vazia, JSON inválido, HTTP 401/403/5xx (sem corpo),
+          // e diferenciação entre erro de leitura do arquivo local vs erro HTTP
+          // -----------------------------------------------------------------
+          XtreamService.setRetryDelayMsForTest(10);
+
+          // (a) Lista vazia ("[]" e "")
+          for (const emptyBody of ['[]', '   ']) {
+            simulatedProviderHandlerP33 = async (_opts, helpers) => {
+              const written = helpers.writeTempAndFinalize(emptyBody);
+              return {
+                status: 200,
+                fileId: written.fileId,
+                filePath: written.filePath,
+              };
+            };
+            const emptyRes = await XtreamService.getVodStreams(credsP33);
+            assert.deepStrictEqual(
+              emptyRes,
+              [],
+              `[12.22.3] Corpo vazio (${JSON.stringify(emptyBody)}) deve retornar []`
+            );
+            assert.strictEqual(
+              fsNodeP33.readdirSync(dedicatedTransferDirP33).length,
+              0,
+              '[12.22.3] Arquivo temporário de lista vazia deve ser removido após leitura'
+            );
+          }
+
+          // (b) JSON inválido: falha fatal de formato, sem retry (1 GET apenas) e arquivo removido
+          let invalidJsonPluginCalls = 0;
+          simulatedProviderHandlerP33 = async (_opts, helpers) => {
+            invalidJsonPluginCalls++;
+            const written = helpers.writeTempAndFinalize('[{"stream_id": 1, "name": "Incompleto"');
+            return {
+              status: 200,
+              fileId: written.fileId,
+              filePath: written.filePath,
+            };
+          };
+          let caughtInvalidJson: any = null;
+          try {
+            await XtreamService.getVodStreams(credsP33);
+          } catch (err) {
+            caughtInvalidJson = err;
+          }
+          assert(
+            caughtInvalidJson && caughtInvalidJson.isFatalFormat === true,
+            '[12.22.3] JSON inválido lido do arquivo temporário deve lançar erro com isFatalFormat = true'
+          );
+          assert.strictEqual(
+            invalidJsonPluginCalls,
+            1,
+            '[12.22.3] JSON inválido NÃO deve sofrer retry (1 único GET)'
+          );
+          assert.strictEqual(
+            fsNodeP33.readdirSync(dedicatedTransferDirP33).length,
+            0,
+            '[12.22.3] Arquivo temporário com JSON inválido deve ser removido no bloco finally'
+          );
+
+          // (c) HTTP 401 e HTTP 403 sem corpo de resposta: preserva código HTTP, rejeita credenciais sem retry
+          for (const authStatus of [401, 403]) {
+            let authCalls = 0;
+            simulatedProviderHandlerP33 = async () => {
+              authCalls++;
+              return {
+                status: authStatus,
+                fileId: null,
+                filePath: null,
+              };
+            };
+            let caughtAuthErr: any = null;
+            try {
+              await XtreamService.getVodStreams(credsP33);
+            } catch (err) {
+              caughtAuthErr = err;
+            }
+            assert(
+              caughtAuthErr &&
+                caughtAuthErr.isAuthError === true &&
+                caughtAuthErr.status === authStatus,
+              `[12.22.3] Resposta HTTP ${authStatus} sem corpo deve preservar status=${authStatus} e classificar como isAuthError=true`
+            );
+            assert.strictEqual(
+              authCalls,
+              1,
+              `[12.22.3] HTTP ${authStatus} NÃO deve realizar retry (1 GET apenas)`
+            );
+          }
+
+          // (d) HTTP 503 sem corpo na 1ª tentativa seguido de sucesso na 2ª tentativa (retry único)
+          let http503Attempts = 0;
+          const capCallsBefore503 = capacitorHttpGetCount;
+          simulatedProviderHandlerP33 = async (_opts, helpers) => {
+            http503Attempts++;
+            if (http503Attempts === 1) {
+              return {
+                status: 503,
+                fileId: null,
+                filePath: null,
+              };
+            }
+            const written = helpers.writeTempAndFinalize(
+              JSON.stringify([{ stream_id: 777, name: 'Recuperado após 503', category_id: '1' }])
+            );
+            return {
+              status: 200,
+              fileId: written.fileId,
+              filePath: written.filePath,
+            };
+          };
+          const recovered503 = await XtreamService.getVodStreams(credsP33);
+          assert.strictEqual(
+            http503Attempts,
+            2,
+            '[12.22.3] HTTP 503 transitório deve realizar exatamente 1 retry automático (2 tentativas, 1 GET por tentativa)'
+          );
+          assert.strictEqual(
+            capacitorHttpGetCount,
+            capCallsBefore503,
+            '[12.22.3] Falha após iniciar a consulta no plugin NÃO deve cair para CapacitorHttp.get'
+          );
+          assert.strictEqual(recovered503.length, 1);
+          assert.strictEqual(recovered503[0].stream_id, 777);
+
+          // (e) Diferenciação entre falha de leitura do arquivo local vs erro HTTP do provedor
+          forceLocalFileReadErrorP33 = true;
+          let localReadFailAttempts = 0;
+          simulatedProviderHandlerP33 = async (_opts, helpers) => {
+            localReadFailAttempts++;
+            const written = helpers.writeTempAndFinalize(
+              JSON.stringify([{ stream_id: 888, name: 'Teste Falha Local' }])
+            );
+            return {
+              status: 200,
+              fileId: written.fileId,
+              filePath: written.filePath,
+            };
+          };
+          let caughtLocalReadErr: any = null;
+          try {
+            await XtreamService.getVodStreams(credsP33);
+          } catch (err) {
+            caughtLocalReadErr = err;
+          } finally {
+            forceLocalFileReadErrorP33 = false;
+          }
+          assert(
+            caughtLocalReadErr &&
+              caughtLocalReadErr.isLocalFileReadError === true &&
+              caughtLocalReadErr.status === undefined,
+            '[12.22.3] Falha ao ler o arquivo local deve ter isLocalFileReadError=true e não deve ser confundida com erro HTTP do provedor'
+          );
+          assert.strictEqual(
+            catalogDiagMod.classifyDiagnosticErrorCategory(caughtLocalReadErr),
+            'local_file_read',
+            '[12.22.3] Diagnóstico deve classificar falha de leitura local como local_file_read'
+          );
+          assert.strictEqual(
+            localReadFailAttempts,
+            2,
+            '[12.22.3] Falha transitória de leitura local deve respeitar a política de 1 retry sem cair para CapacitorHttp.get'
+          );
+          assert.strictEqual(
+            fsNodeP33.readdirSync(dedicatedTransferDirP33).length,
+            0,
+            '[12.22.3] Mesmo quando a leitura local falha, o arquivo temporário deve ser removido no bloco finally'
+          );
+
+          // -----------------------------------------------------------------
+          // 12.22.4: Cancelamento durante a transferência, cancelamento durante
+          // a leitura local, troca de conta, limpeza de arquivos órfãos vs ativos
+          // e rejeição de caminhos arbitrários
+          // -----------------------------------------------------------------
+          // (a) Cancelamento durante a transferência nativa em andamento
+          let transferStartedResolve: (() => void) | null = null;
+          const transferStartedPromise = new Promise<void>((r) => {
+            transferStartedResolve = r;
+          });
+          let observedCancelDuringTransfer = false;
+
+          simulatedProviderHandlerP33 = async (opts, helpers) => {
+            transferStartedResolve?.();
+            await new Promise((r) => setTimeout(r, 40));
+            if (helpers.isCancelled() || cancelledTransfersP33.has(opts.transferId)) {
+              observedCancelDuringTransfer = true;
+              throw new Error('Operação cancelada pelo usuário.');
+            }
+            const written = helpers.writeTempAndFinalize('[]');
+            return { status: 200, fileId: written.fileId, filePath: written.filePath };
+          };
+
+          const abortTransferCtrl = new AbortController();
+          const inFlightTransferPromise = XtreamService.getVodStreams(credsP33, undefined, {
+            signal: abortTransferCtrl.signal,
+          });
+          await transferStartedPromise;
+          abortTransferCtrl.abort();
+
+          let cancelTransferCaught: any = null;
+          try {
+            await inFlightTransferPromise;
+          } catch (err) {
+            cancelTransferCaught = err;
+          }
+          await new Promise((r) => setTimeout(r, 60));
+          assert(
+            cancelTransferCaught &&
+              /Operação cancelada pelo usuário/i.test(String(cancelTransferCaught.message)),
+            '[12.22.4] Cancelamento durante transferência deve rejeitar com mensagem de operação cancelada'
+          );
+          assert.strictEqual(
+            observedCancelDuringTransfer,
+            true,
+            '[12.22.4] Cancelamento deve propagar cancelTransfer para o plugin nativo'
+          );
+          assert.strictEqual(
+            fsNodeP33.readdirSync(dedicatedTransferDirP33).length,
+            0,
+            '[12.22.4] Nenhum arquivo temporário deve restar após cancelamento durante a transferência'
+          );
+
+          // (b) Cancelamento durante a leitura local na WebView (após o arquivo já ter sido gravado)
+          const abortLocalReadCtrl = new AbortController();
+          let fileExistedWhenLocalReadStarted = false;
+          simulatedProviderHandlerP33 = async (_opts, helpers) => {
+            const written = helpers.writeTempAndFinalize(
+              JSON.stringify([{ stream_id: 901, name: 'Cancelado na Leitura Local' }])
+            );
+            return { status: 200, fileId: written.fileId, filePath: written.filePath };
+          };
+          localFetchInterceptionHookP33 = async (localDiskPath) => {
+            fileExistedWhenLocalReadStarted = fsNodeP33.existsSync(localDiskPath);
+            abortLocalReadCtrl.abort();
+          };
+
+          let cancelLocalReadCaught: any = null;
+          try {
+            await XtreamService.getVodStreams(credsP33, undefined, {
+              signal: abortLocalReadCtrl.signal,
+            });
+          } catch (err) {
+            cancelLocalReadCaught = err;
+          } finally {
+            localFetchInterceptionHookP33 = null;
+          }
+          assert.strictEqual(
+            fileExistedWhenLocalReadStarted,
+            true,
+            '[12.22.4] Arquivo temporário existia ao iniciar a leitura local'
+          );
+          assert(
+            cancelLocalReadCaught &&
+              /Operação cancelada pelo usuário/i.test(String(cancelLocalReadCaught.message)),
+            '[12.22.4] Cancelamento durante a leitura local deve abortar a operação'
+          );
+          assert.strictEqual(
+            fsNodeP33.readdirSync(dedicatedTransferDirP33).length,
+            0,
+            '[12.22.4] Arquivo temporário deve ser removido mesmo quando o cancelamento ocorre durante a leitura local'
+          );
+
+          // (c) Limpeza de arquivos residuais de execuções interrompidas sem apagar transferências ativas
+          const staleLeftoverFile = pathNodeP33.join(
+            dedicatedTransferDirP33,
+            'nc_catalog_leftover_crashed_999.json'
+          );
+          const staleLeftoverTmp = pathNodeP33.join(
+            dedicatedTransferDirP33,
+            'nc_catalog_leftover_crashed_999.json.tmp'
+          );
+          fsNodeP33.writeFileSync(staleLeftoverFile, '[{"stale":true}]', 'utf8');
+          fsNodeP33.writeFileSync(staleLeftoverTmp, '[{"partial":true', 'utf8');
+
+          let activeProtectedFileSeenDuringRun = false;
+          let staleFilesRemovedDuringRun = false;
+          const activeProtectedName = 'nc_catalog_active_in_flight_777.json.tmp';
+          const activeProtectedPath = pathNodeP33.join(
+            dedicatedTransferDirP33,
+            activeProtectedName
+          );
+          fsNodeP33.writeFileSync(activeProtectedPath, '[{"active":true', 'utf8');
+          activeFilesSetP33.add(activeProtectedName);
+
+          simulatedProviderHandlerP33 = async (_opts, helpers) => {
+            activeProtectedFileSeenDuringRun = fsNodeP33.existsSync(activeProtectedPath);
+            staleFilesRemovedDuringRun =
+              !fsNodeP33.existsSync(staleLeftoverFile) &&
+              !fsNodeP33.existsSync(staleLeftoverTmp);
+            const written = helpers.writeTempAndFinalize(
+              JSON.stringify([{ stream_id: 333, name: 'Transferência Concorrente' }])
+            );
+            return { status: 200, fileId: written.fileId, filePath: written.filePath };
+          };
+
+          const concurrentCleanRes = await XtreamService.getVodStreams(credsP33);
+          assert.strictEqual(concurrentCleanRes.length, 1);
+          assert.strictEqual(
+            staleFilesRemovedDuringRun,
+            true,
+            '[12.22.4] Arquivos residuais de execuções interrompidas devem ser removidos automaticamente'
+          );
+          assert.strictEqual(
+            activeProtectedFileSeenDuringRun,
+            true,
+            '[12.22.4] Limpeza de resíduos NÃO deve apagar arquivos pertencentes a uma transferência ativa'
+          );
+          activeFilesSetP33.delete(activeProtectedName);
+          fsNodeP33.rmSync(activeProtectedPath, { force: true });
+
+          // (d) Rejeição de caminhos arbitrários para leitura ou exclusão
+          assert.strictEqual(
+            androidAdapterModP33.isValidCatalogTransferFileReference(
+              '../secret.json',
+              '/data/user/0/com.northcode.play/cache/nc_catalog_transfers/../secret.json'
+            ),
+            false,
+            '[12.22.4] Caminho com traversal (..) deve ser rejeitado'
+          );
+          assert.strictEqual(
+            androidAdapterModP33.isValidCatalogTransferFileReference(
+              'nc_catalog_1.json',
+              '/sdcard/Download/nc_catalog_1.json'
+            ),
+            false,
+            '[12.22.4] Caminho fora da pasta dedicada nc_catalog_transfers deve ser rejeitado'
+          );
+          assert.strictEqual(
+            androidAdapterModP33.isValidCatalogTransferFileReference(
+              'arbitrary_file.txt',
+              `${dedicatedTransferDirP33}/arbitrary_file.txt`
+            ),
+            false,
+            '[12.22.4] Nome de arquivo fora do padrão nc_catalog_*.json deve ser rejeitado'
+          );
+          let rejectedArbitraryCleanup = false;
+          try {
+            await nativePluginSimP33.cleanupTransferFile({ fileId: '../outside.json' });
+          } catch {
+            rejectedArbitraryCleanup = true;
+          }
+          assert.strictEqual(
+            rejectedArbitraryCleanup,
+            true,
+            '[12.22.4] cleanupTransferFile deve rejeitar caminhos arbitrários'
+          );
+
+          // (e) Troca de conta durante transferência de catálogo grande via arquivo temporário:
+          // descarta resultado tardio da conta anterior e limpa o arquivo temporário
+          const credsAcc1P33: XtreamCredentials = {
+            serverUrl: 'http://acc1-p33.iptv.local:8080',
+            username: 'acc1_user',
+            password: 'acc1_pass',
+          };
+          const credsAcc2P33: XtreamCredentials = {
+            serverUrl: 'http://acc2-p33.iptv.local:8080',
+            username: 'acc2_user',
+            password: 'acc2_pass',
+          };
+
+          simulatedProviderHandlerP33 = async (opts, helpers) => {
+            if (String(opts.url).includes('acc1_user')) {
+              await new Promise((r) => setTimeout(r, 60));
+              if (helpers.isCancelled()) {
+                throw new Error('TRANSFER_CANCELLED');
+              }
+              const written = helpers.writeTempAndFinalize(
+                JSON.stringify([
+                  { stream_id: 1111, name: 'Filme Vazado Conta 1', category_id: '1' },
+                ])
+              );
+              return { status: 200, fileId: written.fileId, filePath: written.filePath };
+            }
+            const written = helpers.writeTempAndFinalize(
+              JSON.stringify([
+                { stream_id: 2222, name: 'Filme Exclusivo Conta 2', category_id: '1' },
+              ])
+            );
+            return { status: 200, fileId: written.fileId, filePath: written.filePath };
+          };
+
+          let observedVodStreamsInCtxP33: any[] = [];
+          function AccountSwitchProbeP33() {
+            const ctx = useXtreamContext();
+            observedVodStreamsInCtxP33 = ctx.vodStreams;
+            return React.createElement('div', {
+              'data-vod-count': ctx.vodStreams.length,
+            });
+          }
+
+          const switchContainerP33 = document.createElement('div');
+          document.body.appendChild(switchContainerP33);
+          const switchRootP33 = createRoot(switchContainerP33);
+          try {
+            await act(async () => {
+              switchRootP33.render(
+                React.createElement(
+                  XtreamProvider,
+                  { credentials: credsAcc1P33 },
+                  React.createElement(AccountSwitchProbeP33, null)
+                )
+              );
+              await new Promise((r) => setTimeout(r, 15));
+            });
+
+            // Trocar imediatamente para a Conta 2 enquanto a Conta 1 ainda está transferindo
+            await act(async () => {
+              switchRootP33.render(
+                React.createElement(
+                  XtreamProvider,
+                  { credentials: credsAcc2P33 },
+                  React.createElement(AccountSwitchProbeP33, null)
+                )
+              );
+              await new Promise((r) => setTimeout(r, 110));
+            });
+
+            assert.strictEqual(
+              observedVodStreamsInCtxP33.length,
+              1,
+              '[12.22.4] Conta 2 deve concluir carregamento do seu catálogo'
+            );
+            assert.strictEqual(
+              observedVodStreamsInCtxP33[0]?.name,
+              'Filme Exclusivo Conta 2',
+              '[12.22.4] Dados da Conta 2 devem prevalecer sem contaminação da Conta 1'
+            );
+            assert.strictEqual(
+              fsNodeP33.readdirSync(dedicatedTransferDirP33).length,
+              0,
+              '[12.22.4] Todos os arquivos temporários das duas contas devem ter sido removidos'
+            );
+          } finally {
+            await act(async () => {
+              switchRootP33.unmount();
+            });
+            if (switchContainerP33.parentNode) {
+              document.body.removeChild(switchContainerP33);
+            }
+          }
+
+          // -----------------------------------------------------------------
+          // 12.22.5: Diagnóstico P3.3 por etapa no novo caminho (separando
+          // status+cabeçalhos, gravação do corpo, leitura local, interpretação
+          // na WebView, total no trecho nativo e tempo fora do trecho nativo
+          // medido SEM atribuir a leitura local à ponte, e JSON no Android=não executado)
+          // -----------------------------------------------------------------
+          let diagClockP33 = 10000;
+          catalogDiagMod.setCatalogDiagnosticsClockForTest(() => diagClockP33);
+          catalogDiagMod.resetCatalogDiagnosticsForTest(true);
+
+          const sP33 = catalogDiagMod.startCatalogDiagnosticsSession(undefined, 2);
+
+          // Operação 1: live_categories via CapacitorHttp (P3.2 preservado)
+          httpTransportModP33.setTransportTestConfig({
+            mode: 'auto',
+            androidCatalogPluginAvailable: null,
+            capacitorHttpGet: async () => {
+              diagClockP33 += 45;
+              return {
+                status: 200,
+                data: [{ category_id: '1', category_name: 'Canais P3.3' }],
+                headers: {},
+                url: 'http://p33-secret-provider.iptv.local:8080/player_api.php',
+                nativeDiagnostics: {
+                  statusAndHeadersMs: 18.0,
+                  bodyReadMs: 12.0,
+                  nativeJsonParseExecuted: true,
+                  nativeJsonParseMs: 5.0,
+                  nativeTotalMs: 36.0,
+                  contentLengthHeaderBytes: 512,
+                  payloadChars: 512,
+                },
+              };
+            },
+          });
+
+          const liveCatOpP33 = catalogDiagMod.recordCatalogOperationEnqueued(
+            sP33,
+            'live_categories',
+            90
+          );
+          catalogDiagMod.recordCatalogOperationStarted(liveCatOpP33);
+          await XtreamService.getLiveCategories(credsP33, { diagOp: liveCatOpP33 });
+          catalogDiagMod.recordCatalogOperationFinished(liveCatOpP33, 'success');
+
+          // Operação 2: vod_catalog via android-temp-file (P3.3)
+          // Tempos simulados com relógio monotônico controlado:
+          // - Chamada ao plugin (downloadCatalogToTempFile): 1030.0 ms no relógio JS
+          //   - status + cabeçalhos: 380.4 ms
+          //   - gravação do corpo em arquivo temporário: 620.6 ms
+          //   - total no trecho nativo: 1005.0 ms
+          //   -> tempo fora do trecho nativo medido (ponte do metadado): 1030.0 - 1005.0 = 25.0 ms
+          // - Leitura local na WebView (fetch _capacitor_file_ + response.text()): 180.0 ms
+          // - Interpretação na WebView (JSON.parse único): 140.0 ms
+          simulatedProviderHandlerP33 = async (_opts, helpers) => {
+            diagClockP33 += 1030; // Tempo total da chamada ao plugin vista pelo JS (1030 ms)
+            const written = helpers.writeTempAndFinalize(largeSyntheticVodJsonText);
+            return {
+              status: 200,
+              fileId: written.fileId,
+              filePath: written.filePath,
+              nativeDiagnostics: {
+                statusAndHeadersMs: 380.4,
+                fileWriteMs: 620.6,
+                nativeJsonParseExecuted: false,
+                nativeJsonParseMs: null,
+                nativeTotalMs: 1005.0,
+                contentLengthHeaderBytes: largeSyntheticVodBytes,
+                bytesWritten: largeSyntheticVodBytes,
+              },
+            };
+          };
+
+          localFetchInterceptionHookP33 = async () => {
+            diagClockP33 += 180; // 180 ms de leitura local do arquivo na WebView
+          };
+
+          const origParseForDiagP33 = JSON.parse;
+          JSON.parse = ((text: string, ...rest: any[]) => {
+            if (typeof text === 'string' && text.includes('Filme Sintético P3.3 #1')) {
+              diagClockP33 += 140; // 140 ms de JSON.parse único na WebView
+            }
+            return origParseForDiagP33(text, ...rest);
+          }) as typeof JSON.parse;
+
+          const vodCatOpP33 = catalogDiagMod.recordCatalogOperationEnqueued(
+            sP33,
+            'vod_catalog',
+            80
+          );
+          diagClockP33 += 12; // 12 ms na fila
+          catalogDiagMod.recordCatalogOperationStarted(vodCatOpP33);
+          try {
+            await XtreamService.getVodStreams(credsP33, undefined, { diagOp: vodCatOpP33 });
+          } finally {
+            JSON.parse = origParseForDiagP33;
+            localFetchInterceptionHookP33 = null;
+          }
+          catalogDiagMod.recordCatalogOperationFinished(vodCatOpP33, 'success');
+
+          const snapP33 = catalogDiagMod.getCatalogDiagnosticsSnapshot()!;
+          assert(snapP33 !== null, '[12.22.5] Snapshot P3.3 deve existir');
+
+          // Verificar tentativa de live_categories (CapacitorHttp P3.2)
+          const liveCatAttP33 = snapP33.operations.live_categories!.attempts[0];
+          assert.strictEqual(
+            liveCatAttP33.transportKind,
+            'capacitor-native',
+            '[12.22.5] Categorias devem registrar transportKind = capacitor-native'
+          );
+
+          // Verificar tentativa de vod_catalog (android-temp-file P3.3)
+          const vodAttP33 = snapP33.operations.vod_catalog!.attempts[0];
+          assert.strictEqual(
+            vodAttP33.transportKind,
+            'android-temp-file',
+            '[12.22.5] Catálogo completo no Android deve registrar transportKind = android-temp-file'
+          );
+          assert.strictEqual(vodAttP33.nativeStatusAndHeadersMs, 380.4);
+          assert.strictEqual(vodAttP33.nativeFileWriteMs, 620.6);
+          assert.strictEqual(vodAttP33.nativeTotalMs, 1005);
+          assert.strictEqual(
+            vodAttP33.nativeTransportAndBridgeMs,
+            1030,
+            '[12.22.5] nativeTransportAndBridgeMs deve medir apenas a chamada ao plugin (1030ms), sem incluir a leitura local'
+          );
+          assert.strictEqual(
+            vodAttP33.outsideNativeMeasuredMs,
+            25,
+            '[12.22.5] tempo fora do trecho nativo medido deve ser 25ms (1030 - 1005), SEM atribuir os 180ms da leitura local à ponte'
+          );
+          assert.strictEqual(
+            vodAttP33.localFileReadMs,
+            180,
+            '[12.22.5] leitura local na WebView deve ser medida separadamente (180ms)'
+          );
+          assert.strictEqual(
+            vodAttP33.nativeJsonParseExecuted,
+            false,
+            '[12.22.5] nativeJsonParseExecuted deve ser false no novo caminho'
+          );
+          assert.strictEqual(vodAttP33.nativeJsonParseMs, null);
+          assert.strictEqual(
+            vodAttP33.jsonParseExecuted,
+            true,
+            '[12.22.5] jsonParseExecuted na WebView deve ser true'
+          );
+          assert.strictEqual(
+            vodAttP33.jsonParseMs,
+            140,
+            '[12.22.5] jsonParseMs na WebView deve ser 140ms'
+          );
+          assert.strictEqual(vodAttP33.bytesWritten, largeSyntheticVodBytes);
+          assert.strictEqual(vodAttP33.payloadChars, largeSyntheticVodJsonText.length);
+
+          const reportP33Text = catalogDiagMod.formatCatalogDiagnosticsReport(snapP33);
+          assert(
+            reportP33Text.includes(
+              `• Etapas Android (P3.3 - arquivo temporário): status + cabeçalhos=380.4 ms | gravação do corpo=620.6 ms | leitura local=180.0 ms | interpretação na WebView=140.0 ms | JSON no Android=não executado | total no trecho nativo=1005.0 ms | tempo fora do trecho nativo medido=25.0 ms | Content-Length=${largeSyntheticVodBytes} (valor do cabeçalho) | bytes gravados=${largeSyntheticVodBytes} bytes | texto lido=${largeSyntheticVodJsonText.length} caracteres`
+            ),
+            `[12.22.5] Relatório formatado P3.3 deve exibir todas as etapas separadas e "JSON no Android=não executado". Obtido:\n${reportP33Text}`
+          );
+          assert(
+            !reportP33Text.includes('p33-secret-provider') &&
+              !reportP33Text.includes('p33_secret_user') &&
+              !reportP33Text.includes('p33_secret_password') &&
+              !reportP33Text.includes('Filme Sintético P3.3'),
+            '[12.22.5] Relatório P3.3 não deve expor credenciais, URLs ou conteúdo da resposta'
+          );
+
+          // -----------------------------------------------------------------
+          // 12.22.6: Preparo Android limpo e repetido validando incorporação de
+          // CatalogFileTransferPlugin.java e registro em MainActivity.java antes de super.onCreate
+          // -----------------------------------------------------------------
+          const tmpPrepDirP33 = fsNodeP33.mkdtempSync(
+            pathNodeP33.join(osNodeP33.tmpdir(), 'nc-android-prep-p33-')
+          );
+          try {
+            fsNodeP33.copyFileSync(
+              pathNodeP33.join(process.cwd(), 'package.json'),
+              pathNodeP33.join(tmpPrepDirP33, 'package.json')
+            );
+            fsNodeP33.mkdirSync(pathNodeP33.join(tmpPrepDirP33, 'dist'), { recursive: true });
+            fsNodeP33.writeFileSync(
+              pathNodeP33.join(tmpPrepDirP33, 'dist', 'index.html'),
+              '<!doctype html><html><body>North Code Play</body></html>',
+              'utf8'
+            );
+            fsNodeP33.mkdirSync(pathNodeP33.join(tmpPrepDirP33, 'src', 'assets'), {
+              recursive: true,
+            });
+            fsNodeP33.copyFileSync(
+              pathNodeP33.join(process.cwd(), 'src', 'assets', 'logo.png'),
+              pathNodeP33.join(tmpPrepDirP33, 'src', 'assets', 'logo.png')
+            );
+            fsNodeP33.cpSync(
+              pathNodeP33.join(process.cwd(), 'tooling', 'android'),
+              pathNodeP33.join(tmpPrepDirP33, 'tooling', 'android'),
+              { recursive: true }
+            );
+
+            const tmpJavaHandlerP33 = pathNodeP33.join(
+              tmpPrepDirP33,
+              prepareAndroidModP33.CAPACITOR_HTTP_HANDLER_REL_PATH
+            );
+            fsNodeP33.mkdirSync(pathNodeP33.dirname(tmpJavaHandlerP33), { recursive: true });
+            fsNodeP33.copyFileSync(
+              pathNodeP33.join(
+                process.cwd(),
+                'node_modules',
+                '@capacitor',
+                'android',
+                'package.json'
+              ),
+              pathNodeP33.join(
+                tmpPrepDirP33,
+                'node_modules',
+                '@capacitor',
+                'android',
+                'package.json'
+              )
+            );
+            fsNodeP33.copyFileSync(
+              pathNodeP33.join(
+                process.cwd(),
+                prepareAndroidModP33.CAPACITOR_HTTP_HANDLER_REL_PATH
+              ),
+              tmpJavaHandlerP33
+            );
+
+            const tmpCapCliP33 = pathNodeP33.join(
+              tmpPrepDirP33,
+              'node_modules',
+              '@capacitor',
+              'cli',
+              'bin',
+              'capacitor'
+            );
+            fsNodeP33.mkdirSync(pathNodeP33.dirname(tmpCapCliP33), { recursive: true });
+            fsNodeP33.writeFileSync(
+              tmpCapCliP33,
+              `#!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
+const args = process.argv.slice(2);
+const root = process.cwd();
+const androidAppDir = path.join(root, 'android', 'app');
+if (args[0] === 'add' && args[1] === 'android') {
+  fs.mkdirSync(path.join(androidAppDir, 'src', 'main', 'assets', 'public'), { recursive: true });
+  fs.writeFileSync(
+    path.join(androidAppDir, 'build.gradle'),
+    'android {\\n  namespace "com.example.app"\\n  defaultConfig {\\n    applicationId "com.example.app"\\n    versionCode 1\\n    versionName "1.0"\\n  }\\n}\\n',
+    'utf8'
+  );
+} else if (args[0] === 'sync' && args[1] === 'android') {
+  const assetsDir = path.join(androidAppDir, 'src', 'main', 'assets');
+  fs.mkdirSync(path.join(assetsDir, 'public'), { recursive: true });
+  fs.copyFileSync(path.join(root, 'dist', 'index.html'), path.join(assetsDir, 'public', 'index.html'));
+  fs.writeFileSync(path.join(assetsDir, 'capacitor.config.json'), '{"appId":"com.northcode.play"}', 'utf8');
+  fs.writeFileSync(path.join(assetsDir, 'capacitor.plugins.json'), '[]', 'utf8');
+}
+`,
+              'utf8'
+            );
+
+            const prepCleanP33 = prepareAndroidModP33.prepareAndroidProject({
+              rootDir: tmpPrepDirP33,
+              skipWebBuild: true,
+            });
+            assert.strictEqual(prepCleanP33.reusedExistingAndroid, false);
+
+            const generatedPluginPath = pathNodeP33.join(
+              tmpPrepDirP33,
+              'android',
+              'app',
+              'src',
+              'main',
+              'java',
+              'com',
+              'northcode',
+              'play',
+              'CatalogFileTransferPlugin.java'
+            );
+            const generatedMainActivityPath = pathNodeP33.join(
+              tmpPrepDirP33,
+              'android',
+              'app',
+              'src',
+              'main',
+              'java',
+              'com',
+              'northcode',
+              'play',
+              'MainActivity.java'
+            );
+            assert(
+              fsNodeP33.existsSync(generatedPluginPath),
+              '[12.22.6] CatalogFileTransferPlugin.java deve existir em android/ após preparo limpo'
+            );
+            const mainActText = fsNodeP33.readFileSync(generatedMainActivityPath, 'utf8');
+            assert(
+              mainActText.indexOf('registerPlugin(CatalogFileTransferPlugin.class);') !== -1 &&
+                mainActText.indexOf('registerPlugin(CatalogFileTransferPlugin.class);') <
+                  mainActText.indexOf('super.onCreate(savedInstanceState);'),
+              '[12.22.6] MainActivity.java deve registrar CatalogFileTransferPlugin antes de super.onCreate(savedInstanceState)'
+            );
+
+            const prepRepeatP33 = prepareAndroidModP33.prepareAndroidProject({
+              rootDir: tmpPrepDirP33,
+              skipWebBuild: true,
+            });
+            assert.strictEqual(
+              prepRepeatP33.reusedExistingAndroid,
+              true,
+              '[12.22.6] Preparo repetido deve reutilizar android/ preservando plugin e patch P3.2'
+            );
+          } finally {
+            fsNodeP33.rmSync(tmpPrepDirP33, { recursive: true, force: true });
+          }
+
+          console.log(
+            `📊 [Métricas P3.3 — Transferência dos Catálogos Grandes via Arquivo Temporário no APK (Sintético)]\n` +
+              `   • Seleção por ambiente: Web normal/TV -> fetch | Android APK (default/tv, c/ ou s/ diagnóstico) -> CatalogFileTransfer p/ 3 catálogos completos e CapacitorHttp p/ demais chamadas\n` +
+              `   • Catálogo VOD sintético (1.500 itens, ${largeSyntheticVodBytes} bytes): GETs por tentativa=1 | JSON no Android=não executado | JSON.parse na WebView=1 | corpo na ponte nativa=ausente\n` +
+              `   • Etapas P3.3 (sintético): status+cabeçalhos=380.4ms | gravação do corpo=620.6ms | total nativo=1005.0ms | fora do trecho nativo=25.0ms | leitura local=180.0ms | interpretação WebView=140.0ms`
+          );
+        } finally {
+          (XtreamService as any).getVodInfo = savedGetVodInfoP33;
+          (XtreamService as any).getSeriesInfo = savedGetSeriesInfoP33;
+          (XtreamService as any).getShortEpg = savedGetShortEpgP33;
+          (CapacitorCoreP33 as any).isNativePlatform = origIsNativePlatform;
+          (CapacitorCoreP33 as any).getPlatform = origGetPlatform;
+          (CapacitorCoreP33 as any).isPluginAvailable = origIsPluginAvailable;
+          (CapacitorCoreP33 as any).convertFileSrc = origConvertFileSrc;
+          androidAdapterModP33.setAndroidCatalogFileAdapterTestOverride({
+            plugin: null,
+            convertFileSrc: null,
+          });
+          httpTransportModP33.setTransportTestConfig({
+            mode: 'auto',
+            capacitorHttpGet: null,
+            androidCatalogPluginAvailable: null,
+          });
+          httpTransportModP33.resetAndroidCatalogAdapterLoadCountForTest();
+          fsNodeP33.rmSync(tmpCacheRootP33, { recursive: true, force: true });
+        }
+      }
     } finally {
-      setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null });
+      setTransportTestConfig({
+        mode: 'auto',
+        capacitorHttpGet: null,
+        androidCatalogPluginAvailable: null,
+      });
       XtreamService.setRetryDelayMsForTest(1000);
       setCatalogDiagnosticsClockForTest(null);
       resetCatalogDiagnosticsForTest(false);
@@ -16750,7 +18147,7 @@ if (args[0] === 'add' && args[1] === 'android') {
       `   • Home c/ 500 em Continuar Assistindo (11 fileiras): cartões montados=254 (antes: 740; fileira CW=14 no início/meio/fim vs 500) | assinaturas observer=265 (antes: 751) | img[src]=9 (antes: 741)\n` +
       `   • Sonda 500 Cartões × 10 Scrolls: c/ IntersectionObserver -> 0 leituras manuais | Fallback agrupado -> 1 leitura container + 14 cartões montados (antes: 500 cartões)`
   );
-  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), isolamento do contexto compartilhado (12.18 / P2.2), otimização do histórico (12.19 / P2.3), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), isolamento do contexto compartilhado (12.18 / P2.2), otimização do histórico (12.19 / P2.3), diagnóstico P3.1/P3.2 e transferência de catálogos grandes via arquivo temporário P3.3 (12.20 / 12.21 / 12.22), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {
