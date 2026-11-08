@@ -18505,6 +18505,8 @@ if (args[0] === 'add' && args[1] === 'android') {
                   React.createElement(AccountSwitchProbeP33, null)
                 )
               );
+            });
+            await act(async () => {
               await new Promise((r) => setTimeout(r, 15));
             });
 
@@ -18517,7 +18519,9 @@ if (args[0] === 'add' && args[1] === 'android') {
                   React.createElement(AccountSwitchProbeP33, null)
                 )
               );
-              await new Promise((r) => setTimeout(r, 110));
+            });
+            await act(async () => {
+              await new Promise((r) => setTimeout(r, 120));
             });
 
             assert.strictEqual(
@@ -18891,6 +18895,816 @@ if (args[0] === 'add' && args[1] === 'android') {
           fsNodeP33.rmSync(tmpCacheRootP33, { recursive: true, force: true });
         }
       }
+
+      // -------------------------------------------------------------------------
+      // 12.23. Grade de Programação (EPG) e Navegação por Setas da TV ao Vivo
+      // -------------------------------------------------------------------------
+      {
+        const { computeLiveTvLayoutMetrics } = await import('../src/views/LiveTvView');
+        const {
+          NavigationProvider: LiveNavProvider,
+          getFocusableElements: getLiveFocusableElements,
+          isElementFocusable: isLiveElementFocusable,
+          setNavMode: setLiveNavMode,
+        } = await import('../src/navigation');
+
+        // 1. Verificar métricas de layout em 961 × 541 px (85%, 90%, 100%, default e tv), Desktop e Mobile
+        const scalesToVerify = [0.85, 0.9, 1.0];
+        const layoutSummaryLines: string[] = [];
+        for (const mode of ['default', 'tv'] as const) {
+          for (const scale of scalesToVerify) {
+            const metrics = computeLiveTvLayoutMetrics({
+              viewportWidth: 961,
+              viewportHeight: 541,
+              uiScale: scale,
+              displayMode: mode,
+              isGrouped: true,
+              hasNowPlaying: true,
+              epgCount: 6,
+            });
+            assert.strictEqual(
+              metrics.topSectionDirection,
+              'row',
+              `[12.23.1] Em 961x541 (${mode} @ ${Math.round(scale * 100)}%), topo da LiveTvView deve ficar lado a lado (row)`
+            );
+            assert(
+              Math.abs(metrics.previewAspectRatio - 16 / 9) < 0.03,
+              `[12.23.1] Proporção 16:9 do preview deve ser preservada em 961x541 (${mode} @ ${Math.round(scale * 100)}%): obtido ${metrics.previewAspectRatio}`
+            );
+            assert(
+              metrics.epgHeaderHeight >= 28 && metrics.epgScrollViewportHeight >= 220,
+              `[12.23.1] Grade de programação deve ter cabeçalho e área útil generosa em 961x541 (${mode} @ ${Math.round(scale * 100)}%): scrollViewport=${metrics.epgScrollViewportHeight}px`
+            );
+            assert(
+              metrics.visibleEpgCardsCount >= 2.5,
+              `[12.23.1] Em 961x541 (${mode} @ ${Math.round(scale * 100)}%), pelo menos 1 entrada inteira (obtido ${metrics.visibleEpgCardsCount} entradas) deve ficar legível abaixo do cabeçalho`
+            );
+            assert(
+              metrics.epgMaxScrollTop > 0,
+              `[12.23.1] Com 6 programas em 961x541 (${mode} @ ${Math.round(scale * 100)}%), a lista deve ter espaço de rolagem (maxScrollTop=${metrics.epgMaxScrollTop}px) para alcançar o último item`
+            );
+            if (scale === 0.9) {
+              layoutSummaryLines.push(
+                `961x541 ${mode}@90%: topo=${metrics.topSectionHeight}px (preview=${metrics.previewWidth}x${metrics.previewHeight}px), EPG=${metrics.epgSectionHeight}px (scroll=${metrics.epgScrollViewportHeight}px, visíveis=${metrics.visibleEpgCardsCount})`
+              );
+            }
+          }
+        }
+
+        const desktopMetrics = computeLiveTvLayoutMetrics({
+          viewportWidth: 1280,
+          viewportHeight: 720,
+          uiScale: 1,
+          displayMode: 'default',
+          isGrouped: true,
+          hasNowPlaying: true,
+          epgCount: 6,
+        });
+        assert.strictEqual(desktopMetrics.topSectionDirection, 'row');
+        assert(desktopMetrics.epgScrollViewportHeight >= 360);
+
+        const mobileMetrics = computeLiveTvLayoutMetrics({
+          viewportWidth: 375,
+          viewportHeight: 667,
+          uiScale: 1,
+          displayMode: 'default',
+          isGrouped: false,
+          hasNowPlaying: true,
+          epgCount: 6,
+        });
+        assert.strictEqual(mobileMetrics.isMobile, true);
+        assert.strictEqual(mobileMetrics.topSectionDirection, 'column');
+        assert(Math.abs(mobileMetrics.previewAspectRatio - 16 / 9) < 0.03);
+
+        // 2. Teste integrado com LiveTvView real + navegação espacial real (default e tv)
+        const encodeB64 = (txt: string) =>
+          Buffer.from(encodeURIComponent(txt).replace(/%([0-9A-F]{2})/g, (_, p1) => String.fromCharCode(parseInt(p1, 16))), 'binary').toString('base64');
+
+        const sixPrograms = [
+          {
+            id: 'epg_1',
+            start: '2026-11-08 18:00:00',
+            end: '2026-11-08 19:00:00',
+            title: encodeB64('Jornal da Noite — Edição 1'),
+            description: encodeB64('Resumo das principais notícias do dia.'),
+          },
+          {
+            id: 'epg_2',
+            start: '2026-11-08 19:00:00',
+            end: '2026-11-08 20:00:00',
+            title: encodeB64('Debate Esportivo — Edição 2'),
+            description: encodeB64('Análise da rodada e entrevistas ao vivo.'),
+          },
+          {
+            id: 'epg_3',
+            start: '2026-11-08 20:00:00',
+            end: '2026-11-08 21:00:00',
+            title: encodeB64('Documentário Ciência — Edição 3'),
+            description: encodeB64('Exploração espacial e novas descobertas.'),
+          },
+          {
+            id: 'epg_4',
+            start: '2026-11-08 21:00:00',
+            end: '2026-11-08 22:00:00',
+            title: encodeB64('Sessão Cinema — Edição 4'),
+            description: encodeB64('Suspense inédito na grade principal.'),
+          },
+          {
+            id: 'epg_5',
+            start: '2026-11-08 22:00:00',
+            end: '2026-11-08 23:00:00',
+            title: encodeB64('Mesa Redonda — Edição 5'),
+            description: encodeB64('Bastidores e gols da semana.'),
+          },
+          {
+            id: 'epg_6',
+            start: '2026-11-08 23:00:00',
+            end: '2026-11-09 00:00:00',
+            title: encodeB64('Plantão da Madrugada — Edição 6'),
+            description: encodeB64('Últimas atualizações internacionais.'),
+          },
+        ];
+
+        const savedGetShortEpgLiveTest = XtreamService.getShortEpg;
+        let epgCallsByStreamId: Record<string, number> = {};
+        let resolvePendingCh3Epg: ((val: any) => void) | null = null;
+
+        (XtreamService as any).getShortEpg = async (
+          _creds: XtreamCredentials,
+          streamId: string | number,
+          limit?: number
+        ) => {
+          const key = String(streamId);
+          epgCallsByStreamId[key] = (epgCallsByStreamId[key] || 0) + 1;
+          assert.strictEqual(limit, 10, '[12.23] getShortEpg deve preservar o limite 10');
+          if (key === '501') {
+            return { epg_listings: sixPrograms };
+          }
+          if (key === '502') {
+            return { epg_listings: [] };
+          }
+          if (key === '503') {
+            return new Promise((resolve) => {
+              resolvePendingCh3Epg = resolve;
+            });
+          }
+          if (key === '504') {
+            throw new Error('Falha simulada de rede no EPG');
+          }
+          return { epg_listings: [] };
+        };
+
+        const dispatchArrowKey = async (key: 'ArrowRight' | 'ArrowLeft' | 'ArrowDown' | 'ArrowUp' | 'Enter' | 'Escape') => {
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key,
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+        };
+
+        const liveEpgContainer = document.createElement('div');
+        document.body.appendChild(liveEpgContainer);
+        const liveEpgRoot = createRoot(liveEpgContainer);
+
+        const prevDocDisplayMode = document.documentElement.getAttribute('data-display-mode');
+        const prevDocScale = document.documentElement.style.getPropertyValue('--nc-ui-scale');
+        const prevInnerW = windowInstance.innerWidth;
+        const prevInnerH = windowInstance.innerHeight;
+
+        try {
+          for (const testDisplayMode of ['default', 'tv'] as const) {
+            epgCallsByStreamId = {};
+            if (testDisplayMode === 'tv') {
+              document.documentElement.setAttribute('data-display-mode', 'tv');
+              document.documentElement.style.setProperty('--nc-ui-scale', '0.9');
+            } else {
+              document.documentElement.setAttribute('data-display-mode', 'default');
+              document.documentElement.style.removeProperty('--nc-ui-scale');
+            }
+            (windowInstance as any).innerWidth = 961;
+            (windowInstance as any).innerHeight = 541;
+
+            const liveTestCreds: XtreamCredentials = {
+              serverUrl: 'http://epg-audit.local:8080',
+              username: 'epg_user',
+              password: 'epg_password',
+            };
+
+            const liveTestStreams = [
+              {
+                stream_id: 501,
+                name: 'Canal Notícias HD',
+                category_id: 'cat_epg_1',
+                stream_icon: '',
+              },
+              {
+                stream_id: 502,
+                name: 'Canal Esportes HD',
+                category_id: 'cat_epg_1',
+                stream_icon: '',
+              },
+              {
+                stream_id: 503,
+                name: 'Canal Documentários HD',
+                category_id: 'cat_epg_1',
+                stream_icon: '',
+              },
+              {
+                stream_id: 504,
+                name: 'Canal Filmes HD',
+                category_id: 'cat_epg_1',
+                stream_icon: '',
+              },
+            ];
+
+            const liveMockCtx: any = {
+              credentials: liveTestCreds,
+              accountInfo: {
+                user_info: { allowed_output_formats: ['m3u8', 'ts'] },
+              },
+              isAuthenticated: true,
+              isAuthChecking: false,
+              isAuthRejected: false,
+              authError: null,
+              hasInitialMenuData: true,
+              isInitialSetupComplete: true,
+              liveCategories: [{ category_id: 'cat_epg_1', category_name: 'Canais Principais' }],
+              vodCategories: [],
+              seriesCategories: [],
+              liveStreams: liveTestStreams,
+              allLiveStreams: liveTestStreams,
+              vodStreams: [],
+              allVodStreams: [],
+              series: [],
+              allSeries: [],
+              loadingLive: false,
+              loadingVod: false,
+              loadingSeries: false,
+              liveError: null,
+              vodError: null,
+              seriesError: null,
+              liveCategoriesError: null,
+              vodCategoriesError: null,
+              seriesCategoriesError: null,
+              liveCategoriesStatus: 'ready',
+              vodCategoriesStatus: 'ready',
+              seriesCategoriesStatus: 'ready',
+              liveCatalogStatus: 'ready',
+              vodCatalogStatus: 'ready',
+              seriesCatalogStatus: 'ready',
+              fetchLiveCategories: async () => {},
+              fetchVodCategories: async () => {},
+              fetchSeriesCategories: async () => {},
+              fetchLiveStreams: async () => {},
+              fetchVodStreams: async () => {},
+              fetchSeries: async () => {},
+              retryInitialSetup: async () => {},
+            };
+
+            await act(async () => {
+              liveEpgRoot.render(
+                React.createElement(
+                  LiveNavProvider,
+                  null,
+                  React.createElement(
+                    XtreamMockProvider,
+                    { value: liveMockCtx },
+                    React.createElement(LiveTvView, { key: testDisplayMode, onPlay: () => {} })
+                  )
+                )
+              );
+            });
+
+            // Entrar na categoria "Canais Principais"
+            const catBtn = liveEpgContainer.querySelector<HTMLButtonElement>(
+              'button[data-live-category-id="cat_epg_1"]'
+            );
+            assert(catBtn, `[12.23][${testDisplayMode}] Botão de categoria deve existir`);
+            await act(async () => {
+              setLiveNavMode('remote');
+              catBtn.focus();
+              catBtn.click();
+            });
+
+            const chBtns = Array.from(
+              liveEpgContainer.querySelectorAll<HTMLButtonElement>('button[data-live-channel-btn="true"]')
+            );
+            assert.strictEqual(
+              chBtns.length,
+              4,
+              `[12.23][${testDisplayMode}] Deve renderizar os 4 canais da categoria`
+            );
+            const ch1Btn = chBtns[0];
+            const ch2Btn = chBtns[1];
+            const ch3Btn = chBtns[2];
+            const ch4Btn = chBtns[3];
+
+            const favBtns = Array.from(
+              liveEpgContainer.querySelectorAll<HTMLButtonElement>('button[data-live-channel-fav="true"]')
+            );
+            assert.strictEqual(favBtns.length, 4, `[12.23][${testDisplayMode}] Deve renderizar os 4 botões de favorito`);
+            const fav1Btn = favBtns[0];
+            const fav2Btn = favBtns[1];
+
+            // Abrir Canal 1 no preview
+            await act(async () => {
+              ch1Btn.focus();
+              ch1Btn.click();
+              await new Promise((r) => setTimeout(r, 25));
+            });
+
+            const previewVideoEl = liveEpgContainer.querySelector('video') as HTMLVideoElement | null;
+            assert(previewVideoEl, `[12.23][${testDisplayMode}] <video> do preview deve estar montado`);
+            await act(async () => {
+              await previewVideoEl.play();
+            });
+
+            // Verificar que os 6 programas foram carregados e renderizados como elementos focáveis não-botão
+            const epgItems = Array.from(
+              liveEpgContainer.querySelectorAll<HTMLElement>('[data-epg-item="true"]')
+            );
+            assert.strictEqual(
+              epgItems.length,
+              6,
+              `[12.23][${testDisplayMode}] Todos os 6 programas do EPG devem estar renderizados`
+            );
+            for (let i = 0; i < epgItems.length; i++) {
+              assert.notStrictEqual(
+                epgItems[i].tagName,
+                'BUTTON',
+                `[12.23][${testDisplayMode}] Item EPG #${i} não deve ser um <button>`
+              );
+              assert.strictEqual(
+                epgItems[i].getAttribute('role'),
+                'article',
+                `[12.23][${testDisplayMode}] Item EPG #${i} deve usar role="article" (sem semântica de botão de ação)`
+              );
+              assert.strictEqual(
+                epgItems[i].tabIndex,
+                0,
+                `[12.23][${testDisplayMode}] Item EPG #${i} deve ter tabIndex=0`
+              );
+              assert.strictEqual(
+                isLiveElementFocusable(epgItems[i]),
+                true,
+                `[12.23][${testDisplayMode}] Item EPG #${i} deve ser focável pelo navegador espacial`
+              );
+            }
+
+            // Verificar ausência de rolagem aninhada no painel direito em md+ e preservação de toque no mobile
+            const rightPaneEl = liveEpgContainer.querySelector<HTMLElement>('[data-nav-zone="content"]');
+            const contentStackEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-content-stack="true"]');
+            const topSectionEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-top-section="true"]');
+            const epgSectionEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-section="true"]');
+            const epgHeaderEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-header="true"]');
+            const epgScrollEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-scroll="true"]');
+
+            assert(
+              rightPaneEl && contentStackEl && topSectionEl && epgSectionEl && epgHeaderEl && epgScrollEl,
+              `[12.23][${testDisplayMode}] Estrutura da grade de programação deve estar presente`
+            );
+            assert(
+              rightPaneEl.className.includes('md:overflow-hidden') &&
+                rightPaneEl.className.includes('overflow-y-auto') &&
+                rightPaneEl.className.includes('touch-pan-y'),
+              `[12.23][${testDisplayMode}] Painel direito deve evitar rolagem aninhada em md+ e preservar rolagem por toque no celular`
+            );
+            assert(
+              contentStackEl.className.includes('md:overflow-hidden') &&
+                epgSectionEl.className.includes('md:overflow-hidden') &&
+                epgScrollEl.className.includes('md:overflow-y-auto') &&
+                epgScrollEl.getAttribute('data-scroll-container') === 'true',
+              `[12.23][${testDisplayMode}] Apenas o container da lista EPG deve rolar verticalmente em md+`
+            );
+            assert(
+              topSectionEl.className.includes('md:flex-row'),
+              `[12.23][${testDisplayMode}] Topo do canal deve usar md:flex-row para não empilhar preview acima do resumo em 961x541`
+            );
+
+            // Configurar geometria realista de 961 × 541 no container de scroll do EPG para testar rolagem até o 6º item
+            const layout90 = computeLiveTvLayoutMetrics({
+              viewportWidth: 961,
+              viewportHeight: 541,
+              uiScale: 0.9,
+              displayMode: testDisplayMode,
+              isGrouped: false,
+              hasNowPlaying: true,
+              epgCount: 6,
+            });
+            Object.defineProperty(epgScrollEl, 'clientHeight', {
+              value: layout90.epgScrollViewportHeight,
+              configurable: true,
+            });
+            Object.defineProperty(epgScrollEl, 'scrollHeight', {
+              value: layout90.epgTotalContentHeight,
+              configurable: true,
+            });
+            epgScrollEl.getBoundingClientRect = () =>
+              ({
+                top: layout90.topSectionHeight + layout90.epgHeaderHeight,
+                bottom: layout90.topSectionHeight + layout90.epgHeaderHeight + layout90.epgScrollViewportHeight,
+                left: 380,
+                right: 961,
+                width: layout90.rightPaneWidth,
+                height: layout90.epgScrollViewportHeight,
+                x: 380,
+                y: layout90.topSectionHeight + layout90.epgHeaderHeight,
+                toJSON: () => ({}),
+              }) as DOMRect;
+
+            epgItems.forEach((item, idx) => {
+              const itemTopOffset = idx * (layout90.epgCardHeight + 10);
+              Object.defineProperty(item, 'offsetTop', { value: itemTopOffset, configurable: true });
+              Object.defineProperty(item, 'offsetHeight', {
+                value: layout90.epgCardHeight,
+                configurable: true,
+              });
+              item.getBoundingClientRect = () => {
+                const baseTop =
+                  layout90.topSectionHeight +
+                  layout90.epgHeaderHeight +
+                  itemTopOffset -
+                  epgScrollEl.scrollTop;
+                return {
+                  top: baseTop,
+                  bottom: baseTop + layout90.epgCardHeight,
+                  left: 410,
+                  right: 945,
+                  width: 535,
+                  height: layout90.epgCardHeight,
+                  x: 410,
+                  y: baseTop,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
+            });
+
+            // Verificar que controles do player embutido NÃO são candidatos de foco por setas, mas continuam aceitando clique
+            const focusableInPreview = getLiveFocusableElements();
+            const previewPlayPauseBtn = liveEpgContainer.querySelector<HTMLButtonElement>(
+              '[data-player-control="play-pause"]'
+            );
+            const previewFullscreenBtn = liveEpgContainer.querySelector<HTMLButtonElement>(
+              '[data-player-control="fullscreen"]'
+            );
+            assert(
+              previewPlayPauseBtn && previewFullscreenBtn,
+              `[12.23][${testDisplayMode}] Controles de clique/toque do preview continuam presentes no DOM`
+            );
+            assert(
+              !focusableInPreview.includes(previewPlayPauseBtn) &&
+                !focusableInPreview.includes(previewFullscreenBtn),
+              `[12.23][${testDisplayMode}] Controles do player no preview embutido NÃO devem receber foco por setas`
+            );
+
+            // Clique direto no botão Play/Pause do preview continua funcionando
+            await act(async () => {
+              previewPlayPauseBtn.click();
+            });
+            assert.strictEqual(
+              previewVideoEl.paused,
+              true,
+              `[12.23][${testDisplayMode}] Clique/toque no controle do preview deve continuar pausando o vídeo`
+            );
+            await act(async () => {
+              previewPlayPauseBtn.click();
+            });
+            assert.strictEqual(
+              previewVideoEl.paused,
+              false,
+              `[12.23][${testDisplayMode}] Segundo clique/toque no controle do preview retoma a reprodução`
+            );
+
+            // Posicionar foco de volta no botão do Canal 1 e registrar contadores antes de navegar por setas
+            await act(async () => {
+              ch1Btn.focus();
+            });
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] Foco inicial no botão do Canal 1`
+            );
+
+            const loadCountBeforeNav = videoLoadCallCount;
+            const epgCallsBeforeNav = epgCallsByStreamId['501'] || 0;
+            assert.strictEqual(
+              epgCallsBeforeNav,
+              1,
+              `[12.23][${testDisplayMode}] Seleção do Canal 1 deve disparar exatamente 1 consulta de EPG`
+            );
+
+            // 1º ArrowRight: Canal 1 -> Favorito do Canal 1
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              fav1Btn,
+              `[12.23][${testDisplayMode}] 1º ArrowRight deve mover o foco do canal para a estrela de favorito`
+            );
+
+            // 2º ArrowRight: Favorito do Canal 1 -> 1º item da grade de programação (sem parar nos controles do preview!)
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              epgItems[0],
+              `[12.23][${testDisplayMode}] 2º ArrowRight deve entrar direto no 1º programa da grade (sem parar no player)`
+            );
+
+            // ArrowDown percorrendo todos os 6 programas até o último (índice 5)
+            for (let targetIdx = 1; targetIdx < epgItems.length; targetIdx++) {
+              await dispatchArrowKey('ArrowDown');
+              assertSameElement(
+                document.activeElement,
+                epgItems[targetIdx],
+                `[12.23][${testDisplayMode}] ArrowDown deve focar o programa #${targetIdx + 1} (índice ${targetIdx})`
+              );
+              const containerRect = epgScrollEl.getBoundingClientRect();
+              const itemRect = epgItems[targetIdx].getBoundingClientRect();
+              assert(
+                itemRect.bottom <= containerRect.bottom && itemRect.top >= containerRect.top,
+                `[12.23][${testDisplayMode}] Programa #${targetIdx + 1} focado deve estar visível dentro da área de rolagem do EPG`
+              );
+            }
+            assert(
+              epgScrollEl.scrollTop > 0,
+              `[12.23][${testDisplayMode}] Rolagem do EPG deve avançar para exibir o 6º programa (scrollTop=${epgScrollEl.scrollTop})`
+            );
+
+            // ArrowUp voltando na grade e mantendo visibilidade
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              epgItems[4],
+              `[12.23][${testDisplayMode}] ArrowUp deve subir para o programa #5 (índice 4)`
+            );
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              epgItems[5],
+              `[12.23][${testDisplayMode}] ArrowDown retorna ao último programa #6 (índice 5)`
+            );
+
+            // ArrowLeft a partir da grade devolve o foco para o canal de origem (Canal 1)
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft na programação deve devolver o foco para o canal de origem (Canal 1)`
+            );
+
+            // Testar saída a partir de outra linha de canal (Canal 2) enquanto o Canal 1 permanece aberto no preview
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              ch2Btn,
+              `[12.23][${testDisplayMode}] ArrowDown na lista de canais foca o Canal 2`
+            );
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              fav2Btn,
+              `[12.23][${testDisplayMode}] ArrowRight no Canal 2 foca o favorito do Canal 2`
+            );
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              epgItems[0],
+              `[12.23][${testDisplayMode}] ArrowRight no favorito do Canal 2 entra na programação`
+            );
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch2Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft devolve o foco exatamente para a linha de canal de origem (Canal 2)`
+            );
+
+            // Confirmar que mover o foco NUNCA reiniciou a reprodução nem disparou nova consulta de EPG
+            assert.strictEqual(
+              videoLoadCallCount,
+              loadCountBeforeNav,
+              `[12.23][${testDisplayMode}] Mover o foco entre canais, favoritos e EPG NÃO deve reiniciar a reprodução`
+            );
+            assert.strictEqual(
+              epgCallsByStreamId['501'],
+              1,
+              `[12.23][${testDisplayMode}] Mover o foco NÃO deve disparar nova consulta de EPG`
+            );
+            assertSameElement(
+              liveEpgContainer.querySelector('video'),
+              previewVideoEl,
+              `[12.23][${testDisplayMode}] Mesma instância de <video> preservada após navegar pela grade`
+            );
+
+            // 3. Fluxo de Tela Cheia (2º OK no canal já selecionado) + controles em tela cheia + sequência Voltar preservando o mesmo <video>
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(document.activeElement, ch1Btn, `[12.23][${testDisplayMode}] Foco de volta no Canal 1`);
+
+            await act(async () => {
+              ch1Btn.click();
+              await new Promise((r) => setTimeout(r, 20));
+            });
+
+            const fsScopeEl = liveEpgContainer.querySelector<HTMLElement>(
+              '[data-player-container="true"][data-focus-scope="modal"]'
+            );
+            assert(
+              fsScopeEl,
+              `[12.23][${testDisplayMode}] Segundo OK no canal já selecionado deve abrir tela cheia`
+            );
+            assertSameElement(
+              liveEpgContainer.querySelector('video'),
+              previewVideoEl,
+              `[12.23][${testDisplayMode}] Entrar em tela cheia deve preservar a mesma instância de <video>`
+            );
+
+            // Em tela cheia, os controles do player DEVEM ser focáveis por setas
+            const focusableInFullscreen = getLiveFocusableElements();
+            assert(
+              focusableInFullscreen.includes(previewPlayPauseBtn) &&
+                focusableInFullscreen.includes(previewFullscreenBtn),
+              `[12.23][${testDisplayMode}] Em tela cheia, os controles do player devem voltar a receber foco por setas`
+            );
+
+            // 1º Voltar (Escape): sai da tela cheia para o preview, preservando o mesmo <video> e restaurando foco ao Canal 1
+            await dispatchArrowKey('Escape');
+            await act(async () => {
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            assert.strictEqual(
+              liveEpgContainer.querySelector('[data-player-container="true"][data-focus-scope="modal"]'),
+              null,
+              `[12.23][${testDisplayMode}] 1º Voltar deve sair da tela cheia de volta ao preview`
+            );
+            assertSameElement(
+              liveEpgContainer.querySelector('video'),
+              previewVideoEl,
+              `[12.23][${testDisplayMode}] Sair da tela cheia deve preservar a mesma instância de <video>`
+            );
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] Sair da tela cheia deve restaurar o foco ao Canal 1`
+            );
+
+            // 4. Testar erro de reprodução no preview e acesso a "Tentar Novamente" por setas
+            await act(async () => {
+              previewVideoEl.dispatchEvent(new windowInstance.Event('error') as unknown as Event);
+              await new Promise((r) => setTimeout(r, 25));
+            });
+            const retryErrorBtn = liveEpgContainer.querySelector<HTMLButtonElement>(
+              '[data-player-error-primary="true"]'
+            );
+            assert(
+              retryErrorBtn && isLiveElementFocusable(retryErrorBtn),
+              `[12.23][${testDisplayMode}] Em caso de falha na reprodução, o botão Tentar Novamente deve estar visível e focável`
+            );
+
+            // Navegar Canal 1 -> Favorito -> Programação -> ArrowUp até "Tentar Novamente"
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              epgItems[0],
+              `[12.23][${testDisplayMode}] ArrowRight entra na programação mesmo com erro no player`
+            );
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              retryErrorBtn,
+              `[12.23][${testDisplayMode}] ArrowUp a partir do topo da programação alcança o botão Tentar Novamente do preview`
+            );
+
+            const loadBeforeRetry = videoLoadCallCount;
+            await act(async () => {
+              retryErrorBtn.click();
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            assert(
+              videoLoadCallCount > loadBeforeRetry,
+              `[12.23][${testDisplayMode}] Acionar Tentar Novamente deve reiniciar a tentativa de reprodução`
+            );
+
+            // 5. Testar Grade Vazia (Canal 2), Carregando -> Vazia (Canal 3) e Erro de EPG (Canal 4) com saída previsível no ArrowLeft
+            await act(async () => {
+              ch2Btn.focus();
+              ch2Btn.click();
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            const emptyStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="empty"]');
+            assert(emptyStateEl, `[12.23][${testDisplayMode}] Canal 2 sem programação deve exibir estado vazio`);
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(document.activeElement, fav2Btn, `[12.23][${testDisplayMode}] Canal 2 -> Favorito 2`);
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              emptyStateEl,
+              `[12.23][${testDisplayMode}] Favorito 2 -> Estado de grade vazia`
+            );
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch2Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft na grade vazia devolve foco ao Canal 2`
+            );
+
+            // Canal 3: EPG carregando e depois concluindo enquanto focado
+            await act(async () => {
+              ch3Btn.focus();
+              ch3Btn.click();
+            });
+            const loadingStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="loading"]');
+            assert(loadingStateEl, `[12.23][${testDisplayMode}] Canal 3 com EPG pendente deve exibir estado carregando`);
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              loadingStateEl,
+              `[12.23][${testDisplayMode}] Favorito 3 -> Estado carregando do EPG`
+            );
+            await act(async () => {
+              resolvePendingCh3Epg?.({ epg_listings: [] });
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            const ch3EmptyAfterLoad = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="empty"]');
+            assertSameElement(
+              document.activeElement,
+              ch3EmptyAfterLoad,
+              `[12.23][${testDisplayMode}] Quando o carregamento do EPG termina, o foco deve ser preservado na área da programação`
+            );
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch3Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft devolve foco ao Canal 3`
+            );
+
+            // Canal 4: EPG com falha/indisponível
+            await act(async () => {
+              ch4Btn.focus();
+              ch4Btn.click();
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            const errorStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="error"]');
+            assert(errorStateEl, `[12.23][${testDisplayMode}] Canal 4 com falha no EPG deve exibir estado indisponível`);
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              errorStateEl,
+              `[12.23][${testDisplayMode}] Favorito 4 -> Estado indisponível do EPG`
+            );
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch4Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft no estado de erro do EPG devolve foco ao Canal 4`
+            );
+
+            // Voltar fecha o preview e mantém foco no Canal 4
+            await dispatchArrowKey('Escape');
+            assert.strictEqual(
+              liveEpgContainer.querySelector('video'),
+              null,
+              `[12.23][${testDisplayMode}] Voltar no preview fecha o player`
+            );
+            assertSameElement(
+              document.activeElement,
+              ch4Btn,
+              `[12.23][${testDisplayMode}] Fechar o preview mantém o foco no canal selecionado`
+            );
+          }
+
+          console.log(
+            `📊 [Métricas 12.23 — Grade de Programação e Navegação por Setas na TV ao Vivo]\n` +
+              `   • Percurso D-Pad validado (default e tv): Canal -> Favorito -> Programação (6 itens) -> ArrowDown até item #6 -> ArrowLeft retorna à linha de canal de origem\n` +
+              `   • Exclusão de foco nos controles do preview embutido: ativa (clique/toque e botão Tentar Novamente preservados; tela cheia mantém controles focáveis e mesma instância de <video>)\n` +
+              `   • Layout 961×541: ${layoutSummaryLines.join(' | ')}`
+          );
+        } finally {
+          (XtreamService as any).getShortEpg = savedGetShortEpgLiveTest;
+          if (prevDocDisplayMode !== null) {
+            document.documentElement.setAttribute('data-display-mode', prevDocDisplayMode);
+          } else {
+            document.documentElement.removeAttribute('data-display-mode');
+          }
+          if (prevDocScale) {
+            document.documentElement.style.setProperty('--nc-ui-scale', prevDocScale);
+          } else {
+            document.documentElement.style.removeProperty('--nc-ui-scale');
+          }
+          (windowInstance as any).innerWidth = prevInnerW;
+          (windowInstance as any).innerHeight = prevInnerH;
+          await act(async () => {
+            liveEpgRoot.unmount();
+          });
+          if (liveEpgContainer.parentNode) {
+            document.body.removeChild(liveEpgContainer);
+          }
+        }
+      }
     } finally {
       setTransportTestConfig({
         mode: 'auto',
@@ -18928,7 +19742,7 @@ if (args[0] === 'add' && args[1] === 'android') {
       `   • Home c/ 500 em Continuar Assistindo (11 fileiras): cartões montados=254 (antes: 740; fileira CW=14 no início/meio/fim vs 500) | assinaturas observer=265 (antes: 751) | img[src]=9 (antes: 741)\n` +
       `   • Sonda 500 Cartões × 10 Scrolls: c/ IntersectionObserver -> 0 leituras manuais | Fallback agrupado -> 1 leitura container + 14 cartões montados (antes: 500 cartões)`
   );
-  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), isolamento do contexto compartilhado (12.18 / P2.2), otimização do histórico (12.19 / P2.3), diagnóstico P3.1/P3.2 e transferência de catálogos grandes via arquivo temporário P3.3 (12.20 / 12.21 / 12.22), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
+  console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), isolamento do contexto compartilhado (12.18 / P2.2), otimização do histórico (12.19 / P2.3), diagnóstico P3.1/P3.2, transferência de catálogos grandes via arquivo temporário P3.3 (12.20 / 12.21 / 12.22), grade de programação e navegação por setas da TV ao vivo (12.23), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
 async function main() {

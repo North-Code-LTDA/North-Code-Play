@@ -795,6 +795,18 @@ function pickBestItemInBlock(
       );
       if (selectedSeasonBtn) return selectedSeasonBtn;
     }
+    if (block.container.getAttribute('data-nav-row') === 'player-error') {
+      const primaryErrBtn = block.items.find(
+        (item) => item.getAttribute('data-player-error-primary') === 'true'
+      );
+      if (primaryErrBtn) return primaryErrBtn;
+    }
+    if (block.container.getAttribute('data-nav-row') === 'live-variants') {
+      const activeVariantBtn = block.items.find(
+        (item) => item.getAttribute('data-variant-active') === 'true'
+      );
+      if (activeVariantBtn) return activeVariantBtn;
+    }
   }
 
   if (hasRealGeometry) {
@@ -951,6 +963,11 @@ function pickPreferredZoneEntry(
   if (zoneItems.length === 0) return null;
 
   if (targetZone === 'categories') {
+    const originChannel = zoneItems.find(
+      (c) => c.getAttribute('data-live-channel-origin') === 'true'
+    );
+    if (originChannel) return originChannel;
+
     const selectedChannel = zoneItems.find(
       (c) => c.getAttribute('data-live-channel-selected') === 'true'
     );
@@ -967,6 +984,11 @@ function pickPreferredZoneEntry(
       (c) => c.getAttribute('data-config-primary') === 'true'
     );
     if (primaryConfig) return primaryConfig;
+
+    const epgPrimary = zoneItems.find(
+      (c) => c.getAttribute('data-epg-primary') === 'true'
+    );
+    if (epgPrimary) return epgPrimary;
 
     const autofocusItem = zoneItems.find((c) => c.getAttribute('data-autofocus') === 'true');
     if (autofocusItem) return autofocusItem;

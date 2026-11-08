@@ -27,6 +27,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   programTitle,
   onBack,
   embedded = false,
+  disableEmbeddedControlsFocus = false,
   startAt,
   streamId,
   attemptTrigger: externalAttemptTrigger = 0,
@@ -919,6 +920,9 @@ export const VideoPlayer = React.memo(function VideoPlayer({
       {/* Unified React Player Controls */}
       <PlayerControls
         embedded={embedded && !isVisuallyExpanded}
+        disableRemoteFocus={Boolean(
+          embedded && disableEmbeddedControlsFocus && !isPlayerInFullLayer
+        )}
         isVisible={areBarsVisible}
         title={title}
         channelName={channelName}
@@ -993,37 +997,68 @@ export const VideoPlayer = React.memo(function VideoPlayer({
       {/* Error Overlay */}
       {activeError && !isCurrentlyLoading && (
         <div
-          className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center pointer-events-auto"
+          data-player-error-overlay="true"
+          className={`absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md text-center pointer-events-auto overflow-y-auto ${
+            embedded && !isVisuallyExpanded ? 'p-2.5 sm:p-3.5' : 'p-6'
+          }`}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
-            <AlertCircle className="w-7 h-7 text-red-500" />
+          <div
+            className={`rounded-full bg-red-500/20 flex items-center justify-center shrink-0 ${
+              embedded && !isVisuallyExpanded ? 'w-8 h-8 mb-1.5' : 'w-14 h-14 mb-4'
+            }`}
+          >
+            <AlertCircle
+              className={embedded && !isVisuallyExpanded ? 'w-4 h-4 text-red-500' : 'w-7 h-7 text-red-500'}
+            />
           </div>
-          <h3 className="text-lg font-bold text-white mb-2">Erro de Reprodução Direta</h3>
-          <p className="text-red-400 text-sm max-w-lg mb-6 leading-relaxed">
+          <h3
+            className={`font-bold text-white ${
+              embedded && !isVisuallyExpanded ? 'text-xs sm:text-sm mb-1' : 'text-lg mb-2'
+            }`}
+          >
+            Erro de Reprodução Direta
+          </h3>
+          <p
+            className={`text-red-400 max-w-lg leading-snug ${
+              embedded && !isVisuallyExpanded
+                ? 'text-[11px] sm:text-xs line-clamp-2 mb-2'
+                : 'text-sm leading-relaxed mb-6'
+            }`}
+          >
             {activeError}
           </p>
 
-          <div data-nav-row="player-error" className="flex flex-wrap gap-3 justify-center">
+          <div
+            data-nav-row="player-error"
+            className={`flex flex-wrap justify-center ${
+              embedded && !isVisuallyExpanded ? 'gap-1.5 sm:gap-2' : 'gap-3'
+            }`}
+          >
             <button
               type="button"
               data-player-error-primary="true"
               onClick={handleRetry}
-              className="px-5 py-2.5 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center gap-2 text-sm cursor-pointer"
+              className={`bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center gap-1.5 cursor-pointer ${
+                embedded && !isVisuallyExpanded ? 'px-3 py-1.5 text-xs' : 'px-5 py-2.5 text-sm gap-2'
+              }`}
             >
-              <RefreshCw className="w-4 h-4" /> Tentar Novamente
+              <RefreshCw className={embedded && !isVisuallyExpanded ? 'w-3.5 h-3.5' : 'w-4 h-4'} /> Tentar Novamente
             </button>
             <button
               type="button"
+              data-player-error-diagnostics="true"
               onClick={() => {
                 setShowDiagnostics(true);
                 resetInactivityTimer();
               }}
-              className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white font-medium rounded-xl transition-colors border border-nc-border/40 flex items-center gap-2 text-sm cursor-pointer"
+              className={`bg-white/10 hover:bg-white/20 text-white font-medium rounded-xl transition-colors border border-nc-border/40 flex items-center gap-1.5 cursor-pointer ${
+                embedded && !isVisuallyExpanded ? 'px-2.5 py-1.5 text-xs' : 'px-5 py-2.5 text-sm gap-2'
+              }`}
             >
-              <Wrench className="w-4 h-4 text-nc-primary" /> Diagnóstico
+              <Wrench className={embedded && !isVisuallyExpanded ? 'w-3.5 h-3.5 text-nc-primary' : 'w-4 h-4 text-nc-primary'} /> Diagnóstico
             </button>
-            {onBack && (
+            {onBack && (!embedded || isVisuallyExpanded) && (
               <button
                 type="button"
                 onClick={onBack}

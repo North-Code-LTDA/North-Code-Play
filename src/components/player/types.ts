@@ -48,6 +48,7 @@ export interface VideoPlayerProps {
   programTitle?: string;
   onBack: () => void;
   embedded?: boolean;
+  disableEmbeddedControlsFocus?: boolean;
   startAt?: number;
   streamId?: string | number;
   attemptTrigger?: number;
@@ -60,4 +61,5 @@ export interface VideoPlayerProps {
   onPlaybackSuccess?: (attemptId?: number) => void;
   onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
 }
+
 

@@ -22,6 +22,7 @@ import { BufferedTimeRange } from './types';
 
 interface PlayerControlsProps {
   embedded: boolean;
+  disableRemoteFocus?: boolean;
   isVisible: boolean;
   title: string;
   channelName?: string;
@@ -48,7 +49,7 @@ interface PlayerControlsProps {
   onTogglePiP: () => void;
   onOpenSettings: () => void;
   onOpenDiagnostics: () => void;
-  onBack: () => void;
+  onBack?: () => void;
   onNext?: () => void;
   onPrevious?: () => void;
   onUserInteraction?: () => void;
@@ -69,6 +70,7 @@ export function formatTime(secs: number): string {
 
 export function PlayerControls({
   embedded,
+  disableRemoteFocus = false,
   isVisible,
   title,
   channelName,
@@ -108,7 +110,9 @@ export function PlayerControls({
   const effectiveVolume = isMuted ? 0 : volume;
   const isRemoteMode =
     typeof document !== 'undefined' && document.documentElement.dataset.navMode === 'remote';
-  const isVolumeSliderExpanded = showVolumeSlider || isVolumeGroupFocused || isRemoteMode;
+  const isVolumeSliderExpanded =
+    showVolumeSlider || isVolumeGroupFocused || (isRemoteMode && !disableRemoteFocus);
+  const isControlFocusable = isVisible && !disableRemoteFocus;
 
   const VolumeIcon =
     effectiveVolume === 0 || isMuted
@@ -134,6 +138,7 @@ export function PlayerControls({
 
   return (
     <div
+      data-nav-ignore={disableRemoteFocus ? 'true' : undefined}
       onFocusCapture={() => onUserInteraction?.()}
       className="absolute inset-0 z-20 pointer-events-none overflow-hidden select-none"
     >
@@ -142,7 +147,7 @@ export function PlayerControls({
         data-nav-row="player-top"
         className={`absolute top-0 left-0 right-0 z-20 w-full bg-gradient-to-b from-black/85 via-black/40 to-transparent flex items-center justify-between transition-all duration-300 ${
           isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
-        } ${embedded ? 'p-2.5 sm:p-3' : 'p-4 sm:p-6 nc-safe-player-top'}`}
+        } ${embedded ? 'p-2 sm:p-2.5' : 'p-4 sm:p-6 nc-safe-player-top'}`}
         onClick={stopProp}
         onPointerDown={stopProp}
         aria-hidden={!isVisible}
@@ -154,7 +159,7 @@ export function PlayerControls({
               data-player-control="back"
               data-player-primary="true"
               onClick={(e) => handleControlClick(e, onBack)}
-              tabIndex={isVisible ? 0 : -1}
+              tabIndex={isControlFocusable ? 0 : -1}
               className={`bg-white/10 hover:bg-white/20 active:scale-95 backdrop-blur-md rounded-full text-white transition-all cursor-pointer shrink-0 ${
                 embedded ? 'p-1.5' : 'p-2 sm:p-2.5'
               }`}
@@ -195,7 +200,7 @@ export function PlayerControls({
             type="button"
             data-player-control="diagnostics"
             onClick={(e) => handleControlClick(e, onOpenDiagnostics)}
-            tabIndex={isVisible ? 0 : -1}
+            tabIndex={isControlFocusable ? 0 : -1}
             className={`bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors cursor-pointer flex items-center gap-1 text-xs ${
               embedded ? 'p-1.5 px-2' : 'px-2.5 py-2'
             }`}
@@ -210,7 +215,7 @@ export function PlayerControls({
             type="button"
             data-player-control="settings"
             onClick={(e) => handleControlClick(e, onOpenSettings)}
-            tabIndex={isVisible ? 0 : -1}
+            tabIndex={isControlFocusable ? 0 : -1}
             className={`bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors cursor-pointer ${
               embedded ? 'p-1.5' : 'p-2'
             }`}
@@ -247,21 +252,21 @@ export function PlayerControls({
             onClick={(e) => handleControlClick(e, onTogglePlay)}
             tabIndex={-1}
             className={`bg-white/15 hover:bg-white/25 active:scale-95 backdrop-blur-md rounded-full text-white transition-all shadow-2xl pointer-events-auto cursor-pointer ${
-              embedded ? 'p-3.5 sm:p-4' : 'p-5 sm:p-6'
+              embedded ? 'p-3 sm:p-3.5' : 'p-5 sm:p-6'
             }`}
             title="Reproduzir"
             aria-label="Reproduzir no centro"
           >
-            <Play className={`${embedded ? 'w-6 h-6' : 'w-8 h-8 sm:w-10 sm:h-10'} fill-white translate-x-0.5`} />
+            <Play className={`${embedded ? 'w-5 h-5' : 'w-8 h-8 sm:w-10 sm:h-10'} fill-white translate-x-0.5`} />
           </button>
         </div>
       )}
 
       {/* Bottom Controls Bar */}
       <div
-        className={`absolute bottom-0 left-0 right-0 z-20 w-full bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col gap-1.5 transition-all duration-300 ${
+        className={`absolute bottom-0 left-0 right-0 z-20 w-full bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col gap-1 transition-all duration-300 ${
           isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
-        } ${embedded ? 'px-3 pb-2.5 pt-4' : 'px-4 pb-4 sm:px-6 sm:pb-6 pt-8 nc-safe-player-bottom'}`}
+        } ${embedded ? 'px-2.5 pb-2 pt-3' : 'px-4 pb-4 sm:px-6 sm:pb-6 pt-8 nc-safe-player-bottom'}`}
         onClick={stopProp}
         onPointerDown={stopProp}
         aria-hidden={!isVisible}
@@ -273,7 +278,7 @@ export function PlayerControls({
           bufferedRanges={bufferedRanges}
           isLive={isLive}
           liveEdgeDistance={liveEdgeDistance}
-          isVisible={isVisible}
+          isVisible={isControlFocusable}
           onSeek={onSeek}
           onUserInteraction={onUserInteraction}
           formatTime={formatTime}
@@ -285,23 +290,23 @@ export function PlayerControls({
           className="flex items-center justify-between text-white text-xs select-none"
         >
           {/* Left Group */}
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-3">
             {/* Play/Pause */}
             <button
               type="button"
               data-player-control="play-pause"
               data-player-primary="true"
-              data-autofocus="true"
+              data-autofocus={disableRemoteFocus ? undefined : 'true'}
               onClick={(e) => handleControlClick(e, onTogglePlay)}
-              tabIndex={isVisible ? 0 : -1}
-              className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+              tabIndex={isControlFocusable ? 0 : -1}
+              className="p-1.5 sm:p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
               title={isPlaying ? 'Pausar (Espaço/K)' : 'Reproduzir (Espaço/K)'}
               aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
             >
               {isPlaying ? (
-                <Pause className="w-5 h-5 fill-white" />
+                <Pause className={embedded ? 'w-4 h-4 fill-white' : 'w-5 h-5 fill-white'} />
               ) : (
-                <Play className="w-5 h-5 fill-white translate-x-0.5" />
+                <Play className={`${embedded ? 'w-4 h-4' : 'w-5 h-5'} fill-white translate-x-0.5`} />
               )}
             </button>
 
@@ -311,7 +316,7 @@ export function PlayerControls({
                 type="button"
                 data-player-control="previous"
                 onClick={(e) => handleControlClick(e, onPrevious)}
-                tabIndex={isVisible ? 0 : -1}
+                tabIndex={isControlFocusable ? 0 : -1}
                 className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
                 title="Episódio Anterior"
                 aria-label="Episódio Anterior"
@@ -326,7 +331,7 @@ export function PlayerControls({
                 type="button"
                 data-player-control="seek-back"
                 onClick={(e) => handleControlClick(e, () => onSeekBy(-10))}
-                tabIndex={isVisible ? 0 : -1}
+                tabIndex={isControlFocusable ? 0 : -1}
                 className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
                 title="Voltar 10 segundos (Seta Esquerda)"
                 aria-label="Voltar 10 segundos"
@@ -341,7 +346,7 @@ export function PlayerControls({
                 type="button"
                 data-player-control="seek-forward"
                 onClick={(e) => handleControlClick(e, () => onSeekBy(10))}
-                tabIndex={isVisible ? 0 : -1}
+                tabIndex={isControlFocusable ? 0 : -1}
                 className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
                 title="Avançar 10 segundos (Seta Direita)"
                 aria-label="Avançar 10 segundos"
@@ -356,7 +361,7 @@ export function PlayerControls({
                 type="button"
                 data-player-control="next"
                 onClick={(e) => handleControlClick(e, onNext)}
-                tabIndex={isVisible ? 0 : -1}
+                tabIndex={isControlFocusable ? 0 : -1}
                 className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
                 title="Próximo Episódio"
                 aria-label="Próximo Episódio"
@@ -367,7 +372,7 @@ export function PlayerControls({
 
             {/* Volume Control */}
             <div
-              className="relative flex items-center gap-1.5"
+              className="relative flex items-center gap-1"
               onMouseEnter={() => setShowVolumeSlider(true)}
               onMouseLeave={() => setShowVolumeSlider(false)}
               onFocusCapture={() => setIsVolumeGroupFocused(true)}
@@ -382,7 +387,7 @@ export function PlayerControls({
                 type="button"
                 data-player-control="mute"
                 onClick={(e) => handleControlClick(e, onToggleMute)}
-                tabIndex={isVisible ? 0 : -1}
+                tabIndex={isControlFocusable ? 0 : -1}
                 className={`hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white ${
                   embedded ? 'p-1.5' : 'p-2'
                 }`}
@@ -396,7 +401,7 @@ export function PlayerControls({
                 className={`transition-all duration-200 overflow-hidden flex items-center px-1 ${
                   isVolumeSliderExpanded
                     ? embedded
-                      ? 'w-16 opacity-100'
+                      ? 'w-14 opacity-100'
                       : 'w-20 opacity-100'
                     : 'w-0 opacity-0 pointer-events-none invisible'
                 }`}
@@ -411,7 +416,7 @@ export function PlayerControls({
                   max={1}
                   step={0.05}
                   value={effectiveVolume}
-                  tabIndex={isVisible && isVolumeSliderExpanded ? 0 : -1}
+                  tabIndex={isControlFocusable && isVolumeSliderExpanded ? 0 : -1}
                   onChange={(e) => {
                     e.stopPropagation();
                     onUserInteraction?.();
@@ -445,15 +450,15 @@ export function PlayerControls({
                     data-player-control="live-edge"
                     onClick={(e) => handleControlClick(e, onSeekToLive)}
                     disabled={isAtLiveEdge}
-                    tabIndex={isVisible && !isAtLiveEdge ? 0 : -1}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold transition-all ${
+                    tabIndex={isControlFocusable && !isAtLiveEdge ? 0 : -1}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold transition-all ${
                       isAtLiveEdge
                         ? 'bg-nc-primary/20 text-nc-primary cursor-default'
                         : 'bg-white/20 text-white hover:bg-white/30 cursor-pointer animate-pulse'
                     }`}
                     title={isAtLiveEdge ? 'Sincronizado na borda ao vivo' : 'Ir para o momento ao vivo'}
                   >
-                    <Radio className="w-3.5 h-3.5" />
+                    <Radio className="w-3 h-3" />
                     <span>{isAtLiveEdge ? 'DIRETO' : 'IR PARA AO VIVO'}</span>
                   </button>
                   {liveEdgeDistance > 6 && (
@@ -471,15 +476,15 @@ export function PlayerControls({
           </div>
 
           {/* Right Group */}
-          <div className="flex items-center gap-1.5 sm:gap-2">
+          <div className="flex items-center gap-1 sm:gap-2">
             {/* Picture in Picture */}
             {hasPiP && (
               <button
                 type="button"
                 data-player-control="pip"
                 onClick={(e) => handleControlClick(e, onTogglePiP)}
-                tabIndex={isVisible ? 0 : -1}
-                className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+                tabIndex={isControlFocusable ? 0 : -1}
+                className="p-1.5 sm:p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
                 title="Picture-in-Picture"
                 aria-label="Picture-in-Picture"
               >
@@ -492,8 +497,8 @@ export function PlayerControls({
               type="button"
               data-player-control="fullscreen"
               onClick={(e) => handleControlClick(e, onToggleFullscreen)}
-              tabIndex={isVisible ? 0 : -1}
-              className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+              tabIndex={isControlFocusable ? 0 : -1}
+              className="p-1.5 sm:p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
               title={isFullscreen ? 'Sair da Tela Cheia (F)' : 'Tela Cheia (F)'}
               aria-label={isFullscreen ? 'Sair da Tela Cheia' : 'Tela Cheia'}
             >
