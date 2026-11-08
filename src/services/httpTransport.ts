@@ -1,9 +1,19 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import type { HttpOptions, HttpResponse } from '@capacitor/core';
 import {
+  type CapacitorNativeAttemptDiagnosticsInput,
   type CatalogDiagnosticAttemptHandle,
   nowMonotonicMs,
 } from '../utils/catalogDiagnostics';
+
+export type DiagnosticHttpOptions = HttpOptions & {
+  collectDiagnostics?: boolean;
+};
+
+export type DiagnosticHttpResponse = HttpResponse & {
+  nativeDiagnostics?: CapacitorNativeAttemptDiagnosticsInput | null;
+  diagnostics?: CapacitorNativeAttemptDiagnosticsInput | null;
+};
 
 export interface TransportRequestOptions {
   url: string;
@@ -24,7 +34,9 @@ export type TransportMode = 'auto' | 'web' | 'capacitor';
 const MAX_NATIVE_CONNECT_TIMEOUT_MS = 15000;
 
 let transportModeOverride: TransportMode = 'auto';
-let capacitorHttpGetOverride: ((options: HttpOptions) => Promise<HttpResponse>) | null = null;
+let capacitorHttpGetOverride:
+  | ((options: DiagnosticHttpOptions) => Promise<DiagnosticHttpResponse>)
+  | null = null;
 
 /**
  * Permite selecionar explicitamente o modo de transporte ('web' ou 'capacitor')
@@ -32,7 +44,7 @@ let capacitorHttpGetOverride: ((options: HttpOptions) => Promise<HttpResponse>) 
  */
 export function setTransportTestConfig(config: {
   mode?: TransportMode;
-  capacitorHttpGet?: ((options: HttpOptions) => Promise<HttpResponse>) | null;
+  capacitorHttpGet?: ((options: DiagnosticHttpOptions) => Promise<DiagnosticHttpResponse>) | null;
 }): void {
   if (config.mode !== undefined) {
     transportModeOverride = config.mode;
@@ -172,6 +184,20 @@ function createNetworkError(): TransportError {
   );
   netError.isTransient = true;
   return netError;
+}
+
+function extractNativeDiagnosticsFromSource(
+  source: unknown
+): CapacitorNativeAttemptDiagnosticsInput | null {
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+  const candidate = source as Record<string, unknown>;
+  const rawDiag = candidate.nativeDiagnostics ?? candidate.diagnostics ?? null;
+  if (rawDiag && typeof rawDiag === 'object') {
+    return rawDiag as CapacitorNativeAttemptDiagnosticsInput;
+  }
+  return null;
 }
 
 /**
@@ -323,15 +349,18 @@ async function executeCapacitorHttpGet<T = any>({
 }: TransportRequestOptions): Promise<T> {
   const connectTimeout = Math.min(timeoutMs, MAX_NATIVE_CONNECT_TIMEOUT_MS);
   const readTimeout = timeoutMs;
-  const httpGetFn = capacitorHttpGetOverride ?? ((opts: HttpOptions) => CapacitorHttp.get(opts));
+  const httpGetFn =
+    capacitorHttpGetOverride ??
+    ((opts: DiagnosticHttpOptions) => CapacitorHttp.get(opts) as Promise<DiagnosticHttpResponse>);
 
   let settled = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let onCallerAbort: (() => void) | null = null;
-  const nativeStartMs = diagAttempt?.isActive() ? nowMonotonicMs() : 0;
+  const trackDiag = Boolean(diagAttempt && diagAttempt.isActive());
+  const nativeStartMs = trackDiag ? nowMonotonicMs() : 0;
 
   try {
-    const response = await new Promise<HttpResponse>((resolve, reject) => {
+    const response = await new Promise<DiagnosticHttpResponse>((resolve, reject) => {
       onCallerAbort = () => {
         if (settled) return;
         settled = true;
@@ -360,7 +389,7 @@ async function executeCapacitorHttpGet<T = any>({
         reject(tErr);
       }, timeoutMs);
 
-      httpGetFn({
+      const requestOptions: DiagnosticHttpOptions = {
         url,
         connectTimeout,
         readTimeout,
@@ -368,7 +397,12 @@ async function executeCapacitorHttpGet<T = any>({
         headers: {
           Accept: 'application/json, text/plain, */*',
         },
-      })
+      };
+      if (trackDiag) {
+        requestOptions.collectDiagnostics = true;
+      }
+
+      httpGetFn(requestOptions)
         .then((res) => {
           if (settled) {
             // Resposta tardia após cancelamento lógico ou timeout: descartada sem processamento
@@ -380,9 +414,14 @@ async function executeCapacitorHttpGet<T = any>({
         .catch((err: any) => {
           if (settled) return;
           settled = true;
+          const errNativeDiag = extractNativeDiagnosticsFromSource(err);
           if (signal?.aborted) {
             if (diagAttempt?.isActive()) {
-              diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
+              diagAttempt.recordCapacitorTransportAndBridge(
+                nowMonotonicMs() - nativeStartMs,
+                undefined,
+                errNativeDiag
+              );
             }
             reject(new Error('Operação cancelada pelo usuário.'));
             return;
@@ -391,14 +430,22 @@ async function executeCapacitorHttpGet<T = any>({
           if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('sockettimeout')) {
             const tErr = createTimeoutError();
             if (diagAttempt?.isActive()) {
-              diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
+              diagAttempt.recordCapacitorTransportAndBridge(
+                nowMonotonicMs() - nativeStartMs,
+                undefined,
+                errNativeDiag
+              );
             }
             reject(tErr);
             return;
           }
           const nErr = createNetworkError();
           if (diagAttempt?.isActive()) {
-            diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
+            diagAttempt.recordCapacitorTransportAndBridge(
+              nowMonotonicMs() - nativeStartMs,
+              undefined,
+              errNativeDiag
+            );
           }
           reject(nErr);
         });
@@ -408,7 +455,8 @@ async function executeCapacitorHttpGet<T = any>({
     if (diagAttempt?.isActive()) {
       diagAttempt.recordCapacitorTransportAndBridge(
         nowMonotonicMs() - nativeStartMs,
-        status || undefined
+        status || undefined,
+        extractNativeDiagnosticsFromSource(response)
       );
     }
 

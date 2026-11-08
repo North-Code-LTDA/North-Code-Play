@@ -10996,13 +10996,15 @@ async function runPerformanceAndVirtualizationTests() {
           React.createElement(NavigationProvider, null, React.createElement(AppRoutes, null))
         )
       );
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 25));
-        if (routeTestContainer.querySelector('[data-home-shell="true"]') !== null) {
-          break;
-        }
-      }
     });
+    for (let i = 0; i < 80; i++) {
+      if (routeTestContainer.querySelector('[data-home-shell="true"]') !== null) {
+        break;
+      }
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+      });
+    }
 
     assert.strictEqual(
       getHomeRouteLoadCountForTest(),
@@ -15999,11 +16001,719 @@ async function runPerformanceAndVirtualizationTests() {
         heroBannerTestRoot.unmount();
       });
 
+      // -----------------------------------------------------------------------
+      // 12.21: P3.2 — Medição por etapa do carregamento dos catálogos no Android (CapacitorHttp + patch HttpRequestHandler 8.6.0)
+      // -----------------------------------------------------------------------
+      // Restaurar métodos reais de XtreamService para exercitar o transporte completo
+      (XtreamService as any).getLiveCategories = origXtreamMethods.getLiveCategories;
+      (XtreamService as any).getVodCategories = origXtreamMethods.getVodCategories;
+      (XtreamService as any).getSeriesCategories = origXtreamMethods.getSeriesCategories;
+      (XtreamService as any).getLiveStreams = origXtreamMethods.getLiveStreams;
+      (XtreamService as any).getVodStreams = origXtreamMethods.getVodStreams;
+      (XtreamService as any).getSeries = origXtreamMethods.getSeries;
+
+      const syntheticVodRawPayload = [
+        {
+          stream_id: 7001,
+          name: 'Filme Sintético TV 1 (2025)',
+          category_id: '10',
+          rating: '8.9',
+          stream_icon: 'http://secret-iptv-host.internal:8080/images/7001.jpg',
+        },
+        {
+          stream_id: 7002,
+          name: 'Filme Sintético TV 2 (2024)',
+          category_id: '10',
+          rating: '7.8',
+          stream_icon: 'http://secret-iptv-host.internal:8080/images/7002.jpg',
+        },
+        null,
+      ];
+
+      const syntheticSeriesRawPayload = [
+        {
+          series_id: 8001,
+          name: 'Série Sintética TV 1 (2025)',
+          category_id: '20',
+          rating: '9.1',
+          cover: 'http://secret-iptv-host.internal:8080/images/8001.jpg',
+        },
+        {
+          series_id: 8002,
+          name: 'Série Sintética TV 2 (2023)',
+          category_id: '20',
+          rating: '8.4',
+          cover: 'http://secret-iptv-host.internal:8080/images/8002.jpg',
+        },
+      ];
+      const syntheticSeriesRawJsonText = JSON.stringify(syntheticSeriesRawPayload);
+
+      // 12.21.1: Coleta desligada — caminho atual sem medições adicionais, sem collectDiagnostics e única chamada HTTP
+      resetCatalogDiagnosticsForTest(false);
+      assert.strictEqual(
+        isCatalogLoadDiagnosticsEnabled(),
+        false,
+        '[12.21.1] Coleta deve estar desligada para validar o caminho padrão'
+      );
+
+      let disabledAndroidHttpCalls = 0;
+      let disabledCapturedOptions: any = null;
+      setTransportTestConfig({
+        mode: 'capacitor',
+        capacitorHttpGet: async (opts) => {
+          disabledAndroidHttpCalls++;
+          disabledCapturedOptions = opts;
+          return {
+            status: 200,
+            data: syntheticVodRawPayload,
+            headers: { 'Content-Type': 'application/json' },
+            url: opts.url,
+          };
+        },
+      });
+
+      const vodBaselineDisabled = await XtreamService.getVodStreams({
+        serverUrl: 'http://secret-iptv-host.internal:8080',
+        username: 'tv_secret_user',
+        password: 'tv_secret_password',
+      });
+
+      assert.strictEqual(
+        disabledAndroidHttpCalls,
+        1,
+        '[12.21.1] Com coleta desligada, a consulta deve fazer exatamente 1 chamada HTTP'
+      );
+      assert.strictEqual(
+        disabledCapturedOptions?.collectDiagnostics,
+        undefined,
+        '[12.21.1] Com coleta desligada, CapacitorHttp.get NÃO deve solicitar collectDiagnostics'
+      );
+      assert.strictEqual(
+        vodBaselineDisabled.length,
+        2,
+        '[12.21.1] Catálogo retornado com coleta desligada deve conter os 2 filmes válidos'
+      );
+      assert.strictEqual(
+        getCatalogDiagnosticsSnapshot(),
+        null,
+        '[12.21.1] Com coleta desligada, nenhum snapshot deve ser criado'
+      );
+      assert.strictEqual(
+        getCatalogDiagnosticsRecordedEventsCountForTest(),
+        0,
+        '[12.21.1] Com coleta desligada, nenhum evento de diagnóstico deve ser registrado'
+      );
+
+      // Baseline de séries com coleta desligada e payload textual
+      let disabledSeriesHttpCalls = 0;
+      setTransportTestConfig({
+        mode: 'capacitor',
+        capacitorHttpGet: async (opts) => {
+          disabledSeriesHttpCalls++;
+          return {
+            status: 200,
+            data: syntheticSeriesRawJsonText,
+            headers: { 'Content-Type': 'text/plain' },
+            url: opts.url,
+          };
+        },
+      });
+      const seriesBaselineDisabled = await XtreamService.getSeries({
+        serverUrl: 'http://secret-iptv-host.internal:8080',
+        username: 'tv_secret_user',
+        password: 'tv_secret_password',
+      });
+      assert.strictEqual(disabledSeriesHttpCalls, 1);
+      assert.strictEqual(seriesBaselineDisabled.length, 2);
+
+      // 12.21.2: Coleta ligada — Resposta JSON já interpretada no Android (pre-parsed-object)
+      controlledNowMs = 50000;
+      setCatalogDiagnosticsClockForTest(() => controlledNowMs);
+      setCatalogLoadDiagnosticsEnabled(true);
+      const p32SessionId = startCatalogDiagnosticsSession(501, 2);
+
+      let enabledVodHttpCalls = 0;
+      let enabledVodCapturedOptions: any = null;
+      let preParsedStringifiedInP32 = false;
+      const origStringifyP32 = JSON.stringify;
+      JSON.stringify = ((val: any, ...rest: any[]) => {
+        if (val === syntheticVodRawPayload) {
+          preParsedStringifiedInP32 = true;
+        }
+        return origStringifyP32(val, ...rest);
+      }) as typeof JSON.stringify;
+
+      setTransportTestConfig({
+        mode: 'capacitor',
+        capacitorHttpGet: async (opts) => {
+          enabledVodHttpCalls++;
+          enabledVodCapturedOptions = opts;
+          // Simula 80.010,0 ms observados pelo JS (transporte + ponte nativa)
+          controlledNowMs += 80010;
+          return {
+            status: 200,
+            data: syntheticVodRawPayload,
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Content-Length': '14850240',
+            },
+            url: opts.url,
+            nativeDiagnostics: {
+              statusAndHeadersMs: 420.5,
+              bodyReadMs: 31200.25,
+              nativeJsonParseExecuted: true,
+              nativeJsonParseMs: 40750.5,
+              nativeTotalMs: 72400.0,
+              contentLengthHeaderBytes: 14850240,
+              payloadChars: 14620100,
+            },
+          };
+        },
+      });
+
+      const p32VodOp = recordCatalogOperationEnqueued(p32SessionId, 'vod_catalog', 60);
+      controlledNowMs += 20;
+      recordCatalogOperationStarted(p32VodOp);
+      const vodWithDiagPreParsed = await XtreamService.getVodStreams(
+        {
+          serverUrl: 'http://secret-iptv-host.internal:8080',
+          username: 'tv_secret_user',
+          password: 'tv_secret_password',
+        },
+        undefined,
+        { diagOp: p32VodOp }
+      );
+      JSON.stringify = origStringifyP32;
+      recordCatalogOperationFinished(p32VodOp, 'success');
+
+      assert.strictEqual(
+        enabledVodHttpCalls,
+        1,
+        '[12.21.2] Tentativa acompanhada no Android deve fazer exatamente 1 chamada HTTP'
+      );
+      assert.strictEqual(
+        enabledVodCapturedOptions?.collectDiagnostics,
+        true,
+        '[12.21.2] Tentativa acompanhada com coleta ligada DEVE enviar collectDiagnostics: true para CapacitorHttp.get'
+      );
+      assert.strictEqual(
+        preParsedStringifiedInP32,
+        false,
+        '[12.21.2] Resposta já interpretada no Android NÃO deve passar por JSON.stringify no JS'
+      );
+      assert.deepStrictEqual(
+        vodWithDiagPreParsed,
+        vodBaselineDisabled,
+        '[12.21.2] Resultado do catálogo de filmes com diagnóstico ativo deve permanecer idêntico ao baseline'
+      );
+
+      // 12.21.3: Resposta textual com JSON.parse no JavaScript (Content-Type text/plain no Android)
+      let enabledSeriesHttpCalls = 0;
+      let enabledSeriesCapturedOptions: any = null;
+      const origParseP32 = JSON.parse;
+      JSON.parse = ((txt: string, rev?: any) => {
+        if (txt === syntheticSeriesRawJsonText) {
+          controlledNowMs += 145; // 145ms em JSON.parse no JS
+        }
+        return origParseP32(txt, rev);
+      }) as typeof JSON.parse;
+
+      setTransportTestConfig({
+        mode: 'capacitor',
+        capacitorHttpGet: async (opts) => {
+          enabledSeriesHttpCalls++;
+          enabledSeriesCapturedOptions = opts;
+          controlledNowMs += 2620; // 2620ms observados pelo JS em CapacitorHttp.get
+          return {
+            status: 200,
+            data: syntheticSeriesRawJsonText,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+            },
+            url: opts.url,
+            nativeDiagnostics: {
+              statusAndHeadersMs: 310.0,
+              bodyReadMs: 1850.5,
+              nativeJsonParseExecuted: false,
+              nativeJsonParseMs: null,
+              nativeTotalMs: 2170.0,
+              contentLengthHeaderBytes: null,
+              payloadChars: syntheticSeriesRawJsonText.length,
+            },
+          };
+        },
+      });
+
+      const p32SeriesOp = recordCatalogOperationEnqueued(p32SessionId, 'series_catalog', 55);
+      controlledNowMs += 10;
+      recordCatalogOperationStarted(p32SeriesOp);
+      const seriesWithDiagText = await XtreamService.getSeries(
+        {
+          serverUrl: 'http://secret-iptv-host.internal:8080',
+          username: 'tv_secret_user',
+          password: 'tv_secret_password',
+        },
+        undefined,
+        { diagOp: p32SeriesOp }
+      );
+      JSON.parse = origParseP32;
+      recordCatalogOperationFinished(p32SeriesOp, 'success');
+
+      assert.strictEqual(
+        enabledSeriesHttpCalls,
+        1,
+        '[12.21.3] Tentativa textual acompanhada no Android deve fazer exatamente 1 chamada HTTP'
+      );
+      assert.strictEqual(
+        enabledSeriesCapturedOptions?.collectDiagnostics,
+        true,
+        '[12.21.3] Tentativa textual acompanhada deve enviar collectDiagnostics: true'
+      );
+      assert.deepStrictEqual(
+        seriesWithDiagText,
+        seriesBaselineDisabled,
+        '[12.21.3] Resultado do catálogo de séries deve permanecer idêntico ao baseline'
+      );
+
+      // 12.21.4: Ausência de metadados + etapas não alcançadas em retry (associados à tentativa e sessão corretas)
+      let liveCatCallsP32 = 0;
+      XtreamService.setRetryDelayMsForTest(15);
+      setTransportTestConfig({
+        mode: 'capacitor',
+        capacitorHttpGet: async (opts) => {
+          liveCatCallsP32++;
+          if (liveCatCallsP32 === 1) {
+            controlledNowMs += 210;
+            // 1ª tentativa alcança apenas status + cabeçalhos (HTTP 503) sem leitura de corpo nem total nativo
+            return {
+              status: 503,
+              data: '',
+              headers: {},
+              url: opts.url,
+              nativeDiagnostics: {
+                statusAndHeadersMs: 180.0,
+                bodyReadMs: null,
+                nativeJsonParseExecuted: null,
+                nativeJsonParseMs: null,
+                nativeTotalMs: null,
+                contentLengthHeaderBytes: null,
+                payloadChars: null,
+              },
+            };
+          }
+          // 2ª tentativa responde sem objeto nativeDiagnostics (ausência total de metadados nativos)
+          controlledNowMs += 95;
+          return {
+            status: 200,
+            data: [{ category_id: '1', category_name: 'Canais Abertos' }],
+            headers: {},
+            url: opts.url,
+          };
+        },
+      });
+
+      const p32LiveCatOp = recordCatalogOperationEnqueued(p32SessionId, 'live_categories', 90);
+      recordCatalogOperationStarted(p32LiveCatOp);
+      const liveCatsP32 = await XtreamService.getLiveCategories(
+        {
+          serverUrl: 'http://secret-iptv-host.internal:8080',
+          username: 'tv_secret_user',
+          password: 'tv_secret_password',
+        },
+        { diagOp: p32LiveCatOp }
+      );
+      recordCatalogOperationFinished(p32LiveCatOp, 'success');
+      XtreamService.setRetryDelayMsForTest(1000);
+      assert.strictEqual(liveCatsP32.length, 1);
+      assert.strictEqual(
+        liveCatCallsP32,
+        2,
+        '[12.21.4] Operação com 1 falha transitória seguida de sucesso deve fazer 1 chamada HTTP por tentativa (2 no total)'
+      );
+
+      const snapP32 = getCatalogDiagnosticsSnapshot()!;
+      assert(snapP32 !== null, '[12.21.4] Snapshot da sessão P3.2 deve existir');
+      assert.strictEqual(snapP32.sessionId, p32SessionId);
+
+      // Verificações detalhadas de 12.21.2 (vod_catalog — JSON no Android)
+      const vodAttP32 = snapP32.operations.vod_catalog!.attempts[0];
+      assert.strictEqual(vodAttP32.nativeTransportAndBridgeMs, 80010);
+      assert.strictEqual(vodAttP32.nativeStatusAndHeadersMs, 420.5);
+      assert.strictEqual(vodAttP32.nativeBodyReadMs, 31200.25);
+      assert.strictEqual(vodAttP32.nativeJsonParseExecuted, true);
+      assert.strictEqual(vodAttP32.nativeJsonParseMs, 40750.5);
+      assert.strictEqual(vodAttP32.nativeTotalMs, 72400);
+      assert.strictEqual(
+        vodAttP32.outsideNativeMeasuredMs,
+        7610,
+        '[12.21.2] Tempo fora do trecho nativo medido deve ser a diferença entre transporte+ponte (80010ms) e total nativo (72400ms) = 7610ms'
+      );
+      assert.strictEqual(vodAttP32.contentLengthHeaderBytes, 14850240);
+      assert.strictEqual(vodAttP32.payloadChars, 14620100);
+      assert.strictEqual(vodAttP32.payloadFormat, 'pre-parsed-object');
+      assert.strictEqual(vodAttP32.jsonParseExecuted, false);
+      assert.strictEqual(vodAttP32.jsonParseMs, null);
+
+      // Verificações detalhadas de 12.21.3 (series_catalog — texto JSON com JSON.parse no JS)
+      const seriesAttP32 = snapP32.operations.series_catalog!.attempts[0];
+      assert.strictEqual(seriesAttP32.nativeTransportAndBridgeMs, 2620);
+      assert.strictEqual(seriesAttP32.nativeStatusAndHeadersMs, 310);
+      assert.strictEqual(seriesAttP32.nativeBodyReadMs, 1850.5);
+      assert.strictEqual(seriesAttP32.nativeJsonParseExecuted, false);
+      assert.strictEqual(seriesAttP32.nativeJsonParseMs, null);
+      assert.strictEqual(seriesAttP32.nativeTotalMs, 2170);
+      assert.strictEqual(
+        seriesAttP32.outsideNativeMeasuredMs,
+        450,
+        '[12.21.3] Tempo fora do trecho nativo medido deve ser 2620ms - 2170ms = 450ms'
+      );
+      assert.strictEqual(seriesAttP32.contentLengthHeaderBytes, null);
+      assert.strictEqual(seriesAttP32.payloadChars, syntheticSeriesRawJsonText.length);
+      assert.strictEqual(seriesAttP32.payloadFormat, 'text-json');
+      assert.strictEqual(seriesAttP32.jsonParseExecuted, true);
+      assert.strictEqual(seriesAttP32.jsonParseMs, 145);
+
+      // Verificações detalhadas de 12.21.4 (live_categories — tentativa 1 parcial e tentativa 2 sem metadados)
+      const liveAtt1P32 = snapP32.operations.live_categories!.attempts[0];
+      assert.strictEqual(liveAtt1P32.nativeTransportAndBridgeMs, 210);
+      assert.strictEqual(liveAtt1P32.nativeStatusAndHeadersMs, 180);
+      assert.strictEqual(liveAtt1P32.nativeBodyReadMs, null);
+      assert.strictEqual(liveAtt1P32.nativeJsonParseExecuted, null);
+      assert.strictEqual(liveAtt1P32.nativeTotalMs, null);
+      assert.strictEqual(liveAtt1P32.outsideNativeMeasuredMs, null);
+
+      const liveAtt2P32 = snapP32.operations.live_categories!.attempts[1];
+      assert.strictEqual(liveAtt2P32.nativeTransportAndBridgeMs, 95);
+      assert.strictEqual(liveAtt2P32.nativeStatusAndHeadersMs, null);
+      assert.strictEqual(liveAtt2P32.nativeBodyReadMs, null);
+      assert.strictEqual(liveAtt2P32.nativeJsonParseExecuted, null);
+      assert.strictEqual(liveAtt2P32.nativeJsonParseMs, null);
+      assert.strictEqual(liveAtt2P32.nativeTotalMs, null);
+      assert.strictEqual(liveAtt2P32.outsideNativeMeasuredMs, null);
+      assert.strictEqual(liveAtt2P32.contentLengthHeaderBytes, null);
+      assert.strictEqual(liveAtt2P32.payloadChars, null);
+
+      // Validar relatório formatado e sanitizado para P3.2
+      const reportP32Text = catalogDiagMod.formatCatalogDiagnosticsReport(snapP32);
+      assert(
+        reportP32Text.includes(
+          '• Etapas Android (P3.2): status + cabeçalhos=420.5 ms | leitura + decodificação do corpo=31200.3 ms | JSON no Android=40750.5 ms (executado no Android) | total no trecho nativo=72400.0 ms | tempo fora do trecho nativo medido=7610.0 ms | Content-Length=14850240 (valor do cabeçalho) | texto lido=14620100 caracteres'
+        ),
+        '[12.21.4] Relatório formatado deve conter a linha de etapas Android para JSON já interpretado no Android'
+      );
+      assert(
+        reportP32Text.includes(
+          `• Etapas Android (P3.2): status + cabeçalhos=310.0 ms | leitura + decodificação do corpo=1850.5 ms | JSON no Android=não executado | total no trecho nativo=2170.0 ms | tempo fora do trecho nativo medido=450.0 ms | Content-Length=indisponível | texto lido=${syntheticSeriesRawJsonText.length} caracteres`
+        ),
+        '[12.21.4] Relatório formatado deve conter a linha de etapas Android para resposta textual com JSON.parse no JS'
+      );
+      assert(
+        reportP32Text.includes(
+          '• Etapas Android (P3.2): status + cabeçalhos=180.0 ms | leitura + decodificação do corpo=indisponível | JSON no Android=indisponível | total no trecho nativo=indisponível | tempo fora do trecho nativo medido=indisponível | Content-Length=indisponível | texto lido=indisponível'
+        ),
+        '[12.21.4] Relatório formatado deve exibir "indisponível" para etapas não alcançadas'
+      );
+      assert(
+        reportP32Text.includes(
+          '• Etapas Android (P3.2): status + cabeçalhos=indisponível | leitura + decodificação do corpo=indisponível | JSON no Android=indisponível | total no trecho nativo=indisponível | tempo fora do trecho nativo medido=indisponível | Content-Length=indisponível | texto lido=indisponível'
+        ),
+        '[12.21.4] Relatório formatado deve exibir "indisponível" quando metadados nativos estão ausentes'
+      );
+      assert(
+        !reportP32Text.includes('secret-iptv-host') &&
+          !reportP32Text.includes('tv_secret_user') &&
+          !reportP32Text.includes('tv_secret_password') &&
+          !reportP32Text.includes('Filme Sintético TV') &&
+          !reportP32Text.includes('Série Sintética TV'),
+        '[12.21.4] Relatório P3.2 deve conter apenas números e rótulos sanitizados'
+      );
+
+      // -----------------------------------------------------------------------
+      // 12.21.5: Teste do patch Android em preparo limpo e em segundo preparo (prepare-android.mjs)
+      // -----------------------------------------------------------------------
+      const fsNode = await import('node:fs');
+      const pathNode = await import('node:path');
+      const osNode = await import('node:os');
+      const prepareAndroidMod = await import('../tooling/android/prepare-android.mjs');
+
+      // Aplicar e validar o patch na árvore real do projeto (idempotente)
+      const realWorkspacePatchRes1 =
+        prepareAndroidMod.applyCapacitorAndroidHttpDiagnosticsPatch();
+      assert.strictEqual(
+        realWorkspacePatchRes1.version,
+        '8.6.0',
+        '[12.21.5] Versão de @capacitor/android no workspace real deve ser 8.6.0'
+      );
+      prepareAndroidMod.verifyCapacitorAndroidHttpDiagnosticsPatch();
+      const realWorkspacePatchRes2 =
+        prepareAndroidMod.applyCapacitorAndroidHttpDiagnosticsPatch();
+      assert.strictEqual(
+        realWorkspacePatchRes2.applied,
+        false,
+        '[12.21.5] Segunda chamada no workspace real não deve reaplicar o patch'
+      );
+      assert.strictEqual(
+        realWorkspacePatchRes2.alreadyApplied,
+        true,
+        '[12.21.5] Segunda chamada no workspace real deve detectar patch já aplicado'
+      );
+
+      // Reconstruir o fonte original não patcheado de @capacitor/android@8.6.0 para testar preparo limpo -> 2º preparo em diretório temporário isolado
+      const realPatchedJavaPath = pathNode.join(
+        process.cwd(),
+        prepareAndroidMod.CAPACITOR_HTTP_HANDLER_REL_PATH
+      );
+      const patchFileContent = fsNode.readFileSync(
+        pathNode.join(process.cwd(), prepareAndroidMod.CAPACITOR_HTTP_DIAGNOSTICS_PATCH_REL_PATH),
+        'utf8'
+      );
+      const patchedLinesForRevert = fsNode
+        .readFileSync(realPatchedJavaPath, 'utf8')
+        .replace(/\r\n/g, '\n')
+        .split('\n');
+
+      // Reverter os hunks para obter o HttpRequestHandler.java original de @capacitor/android@8.6.0
+      const parsedPatchLines = patchFileContent.replace(/\r\n/g, '\n').split('\n');
+      const revertHunks: Array<{
+        oldStart: number;
+        newStart: number;
+        preLines: string[];
+        postLines: string[];
+      }> = [];
+      let curRevertHunk: any = null;
+      for (const line of parsedPatchLines) {
+        if (line.startsWith('--- ') || line.startsWith('+++ ')) continue;
+        const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (m) {
+          if (curRevertHunk) revertHunks.push(curRevertHunk);
+          curRevertHunk = {
+            oldStart: Number.parseInt(m[1], 10),
+            newStart: Number.parseInt(m[2], 10),
+            preLines: [],
+            postLines: [],
+          };
+          continue;
+        }
+        if (!curRevertHunk) continue;
+        if (line.startsWith(' ')) {
+          curRevertHunk.preLines.push(line.slice(1));
+          curRevertHunk.postLines.push(line.slice(1));
+        } else if (line.startsWith('-')) {
+          curRevertHunk.preLines.push(line.slice(1));
+        } else if (line.startsWith('+')) {
+          curRevertHunk.postLines.push(line.slice(1));
+        }
+      }
+      if (curRevertHunk) revertHunks.push(curRevertHunk);
+
+      const cleanOriginalLines = [...patchedLinesForRevert];
+      for (let i = revertHunks.length - 1; i >= 0; i--) {
+        const h = revertHunks[i];
+        cleanOriginalLines.splice(h.newStart - 1, h.postLines.length, ...h.preLines);
+      }
+      const cleanUnpatchedJavaSource = cleanOriginalLines.join('\n');
+      assert(
+        !cleanUnpatchedJavaSource.includes('buildResponseWithDiagnostics'),
+        '[12.21.5] Fonte revertido para o teste limpo não deve conter buildResponseWithDiagnostics antes do 1º preparo'
+      );
+
+      const tmpPrepDir = fsNode.mkdtempSync(
+        pathNode.join(osNode.tmpdir(), 'nc-android-prep-p32-')
+      );
+      try {
+        // Montar estrutura mínima do projeto para executar prepareAndroidProject completo (1º preparo limpo e 2º preparo)
+        fsNode.copyFileSync(
+          pathNode.join(process.cwd(), 'package.json'),
+          pathNode.join(tmpPrepDir, 'package.json')
+        );
+        fsNode.mkdirSync(pathNode.join(tmpPrepDir, 'dist'), { recursive: true });
+        fsNode.writeFileSync(
+          pathNode.join(tmpPrepDir, 'dist', 'index.html'),
+          '<!doctype html><html><body>North Code Play</body></html>',
+          'utf8'
+        );
+        fsNode.mkdirSync(pathNode.join(tmpPrepDir, 'src', 'assets'), { recursive: true });
+        fsNode.copyFileSync(
+          pathNode.join(process.cwd(), 'src', 'assets', 'logo.png'),
+          pathNode.join(tmpPrepDir, 'src', 'assets', 'logo.png')
+        );
+
+        // Copiar tooling/android (overlay + patches)
+        fsNode.cpSync(
+          pathNode.join(process.cwd(), 'tooling', 'android'),
+          pathNode.join(tmpPrepDir, 'tooling', 'android'),
+          { recursive: true }
+        );
+
+        // Criar node_modules/@capacitor/android@8.6.0 com HttpRequestHandler.java limpo (sem patch)
+        const tmpCapAndroidPkgDir = pathNode.join(
+          tmpPrepDir,
+          'node_modules',
+          '@capacitor',
+          'android'
+        );
+        const tmpJavaHandlerPath = pathNode.join(
+          tmpPrepDir,
+          prepareAndroidMod.CAPACITOR_HTTP_HANDLER_REL_PATH
+        );
+        fsNode.mkdirSync(pathNode.dirname(tmpJavaHandlerPath), { recursive: true });
+        fsNode.copyFileSync(
+          pathNode.join(process.cwd(), 'node_modules', '@capacitor', 'android', 'package.json'),
+          pathNode.join(tmpCapAndroidPkgDir, 'package.json')
+        );
+        fsNode.writeFileSync(tmpJavaHandlerPath, cleanUnpatchedJavaSource, 'utf8');
+
+        // Criar stub determinístico de Capacitor CLI para simular `cap add android` e `cap sync android` no diretório temporário
+        const tmpCapCliBin = pathNode.join(
+          tmpPrepDir,
+          'node_modules',
+          '@capacitor',
+          'cli',
+          'bin',
+          'capacitor'
+        );
+        fsNode.mkdirSync(pathNode.dirname(tmpCapCliBin), { recursive: true });
+        fsNode.writeFileSync(
+          tmpCapCliBin,
+          `#!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
+const args = process.argv.slice(2);
+const root = process.cwd();
+const androidAppDir = path.join(root, 'android', 'app');
+if (args[0] === 'add' && args[1] === 'android') {
+  fs.mkdirSync(path.join(androidAppDir, 'src', 'main', 'assets', 'public'), { recursive: true });
+  fs.writeFileSync(
+    path.join(androidAppDir, 'build.gradle'),
+    'android {\\n  namespace "com.example.app"\\n  defaultConfig {\\n    applicationId "com.example.app"\\n    versionCode 1\\n    versionName "1.0"\\n  }\\n}\\n',
+    'utf8'
+  );
+} else if (args[0] === 'sync' && args[1] === 'android') {
+  const assetsDir = path.join(androidAppDir, 'src', 'main', 'assets');
+  fs.mkdirSync(path.join(assetsDir, 'public'), { recursive: true });
+  fs.copyFileSync(path.join(root, 'dist', 'index.html'), path.join(assetsDir, 'public', 'index.html'));
+  fs.writeFileSync(path.join(assetsDir, 'capacitor.config.json'), '{"appId":"com.northcode.play"}', 'utf8');
+  fs.writeFileSync(path.join(assetsDir, 'capacitor.plugins.json'), '[]', 'utf8');
+}
+`,
+          'utf8'
+        );
+
+        // 1º Preparo (limpo): deve gerar android/, aplicar o patch P3.2 em HttpRequestHandler.java e validar tudo
+        const firstPrepResult = prepareAndroidMod.prepareAndroidProject({
+          rootDir: tmpPrepDir,
+          skipWebBuild: true,
+        });
+        assert.strictEqual(
+          firstPrepResult.reusedExistingAndroid,
+          false,
+          '[12.21.5] 1º preparo limpo deve gerar a pasta android/'
+        );
+        assert.strictEqual(
+          firstPrepResult.patchApplied,
+          true,
+          '[12.21.5] 1º preparo limpo DEVE aplicar o patch P3.2 em HttpRequestHandler.java'
+        );
+        assert.strictEqual(
+          firstPrepResult.patchAlreadyApplied,
+          false,
+          '[12.21.5] No 1º preparo limpo, patchAlreadyApplied deve ser false'
+        );
+
+        const javaContentAfterFirstPrep = fsNode.readFileSync(tmpJavaHandlerPath, 'utf8');
+        assert(
+          javaContentAfterFirstPrep.includes('buildResponseWithDiagnostics') &&
+            javaContentAfterFirstPrep.includes('statusAndHeadersMs') &&
+            javaContentAfterFirstPrep.includes('bodyReadMs') &&
+            javaContentAfterFirstPrep.includes('nativeJsonParseExecuted') &&
+            javaContentAfterFirstPrep.includes('nativeJsonParseMs') &&
+            javaContentAfterFirstPrep.includes('nativeTotalMs') &&
+            javaContentAfterFirstPrep.includes('contentLengthHeaderBytes') &&
+            javaContentAfterFirstPrep.includes('payloadChars'),
+          '[12.21.5] HttpRequestHandler.java após 1º preparo deve conter todas as medições por etapa do P3.2'
+        );
+
+        // 2º Preparo (repetido): deve reutilizar android/ e detectar que o patch já está aplicado sem reaplicá-lo
+        const secondPrepResult = prepareAndroidMod.prepareAndroidProject({
+          rootDir: tmpPrepDir,
+          skipWebBuild: true,
+        });
+        assert.strictEqual(
+          secondPrepResult.reusedExistingAndroid,
+          true,
+          '[12.21.5] 2º preparo deve reutilizar a pasta android/ existente'
+        );
+        assert.strictEqual(
+          secondPrepResult.patchApplied,
+          false,
+          '[12.21.5] 2º preparo NÃO deve reaplicar o patch já presente'
+        );
+        assert.strictEqual(
+          secondPrepResult.patchAlreadyApplied,
+          true,
+          '[12.21.5] 2º preparo deve reportar patchAlreadyApplied = true'
+        );
+
+        const javaContentAfterSecondPrep = fsNode.readFileSync(tmpJavaHandlerPath, 'utf8');
+        assert.strictEqual(
+          javaContentAfterSecondPrep,
+          javaContentAfterFirstPrep,
+          '[12.21.5] Conteúdo de HttpRequestHandler.java deve permanecer idêntico após o 2º preparo'
+        );
+
+        // Validar rejeição caso o conteúdo de HttpRequestHandler.java seja corrompido/inesperado
+        fsNode.writeFileSync(
+          tmpJavaHandlerPath,
+          'package com.getcapacitor.plugin.util;\npublic class HttpRequestHandler { /* arquivo adulterado */ }\n',
+          'utf8'
+        );
+        let threwOnCorruptedContent = false;
+        try {
+          prepareAndroidMod.applyCapacitorAndroidHttpDiagnosticsPatch({
+            rootDir: tmpPrepDir,
+          });
+        } catch (err: any) {
+          threwOnCorruptedContent = /Conteúdo inesperado/i.test(String(err?.message || err));
+        }
+        assert.strictEqual(
+          threwOnCorruptedContent,
+          true,
+          '[12.21.5] O preparo deve falhar com erro claro se HttpRequestHandler.java tiver conteúdo inesperado'
+        );
+
+        // Validar rejeição caso a versão de @capacitor/android seja diferente de 8.6.0
+        fsNode.writeFileSync(tmpJavaHandlerPath, cleanUnpatchedJavaSource, 'utf8');
+        fsNode.writeFileSync(
+          pathNode.join(tmpCapAndroidPkgDir, 'package.json'),
+          JSON.stringify({ name: '@capacitor/android', version: '8.5.0' }),
+          'utf8'
+        );
+        let threwOnWrongVersion = false;
+        try {
+          prepareAndroidMod.applyCapacitorAndroidHttpDiagnosticsPatch({
+            rootDir: tmpPrepDir,
+          });
+        } catch (err: any) {
+          threwOnWrongVersion = /Versão incompatível de @capacitor\/android/i.test(
+            String(err?.message || err)
+          );
+        }
+        assert.strictEqual(
+          threwOnWrongVersion,
+          true,
+          '[12.21.5] O preparo deve falhar com erro claro se a versão de @capacitor/android divergir de 8.6.0'
+        );
+      } finally {
+        fsNode.rmSync(tmpPrepDir, { recursive: true, force: true });
+      }
+
       console.log(
-        `📊 [Métricas P3.1 — Diagnóstico do Carregamento Inicial dos Catálogos (Auditado)]\n` +
-          `   • Coleta desativada por padrão: eventos capturados=0 | requisições iniciais=6 (0 extras)\n` +
+        `📊 [Métricas P3.1 / P3.2 — Diagnóstico do Carregamento Inicial dos Catálogos (Auditado)]\n` +
+          `   • Coleta desativada por padrão: eventos capturados=0 | requisições iniciais=6 (0 extras) | collectDiagnostics omitido\n` +
           `   • Transporte Web (fetch): espera resposta=35ms | leitura corpo=20ms | JSON.parse=12ms\n` +
-          `   • Transporte Android (CapacitorHttp): transporte + ponte nativa=48ms | payload pré-parseado sem re-serializar (jsonParseMs=n/a)\n` +
+          `   • Transporte Android P3.2 (JSON nativo sintético): status+cabeçalhos=420.5ms | leitura+decodificação=31200.3ms | JSON Android=40750.5ms | total nativo=72400.0ms | fora do trecho nativo=7610.0ms (total JS=80010.0ms)\n` +
+          `   • Transporte Android P3.2 (texto JSON c/ parse JS sintético): status+cabeçalhos=310.0ms | leitura+decodificação=1850.5ms | JSON Android=não executado | total nativo=2170.0ms | fora do trecho nativo=450.0ms | JSON.parse JS=145.0ms\n` +
+          `   • Patch @capacitor/android@8.6.0: 1º preparo limpo (aplicado=true) | 2º preparo (já aplicado=true, sem reaplicar) | versão/conteúdo validados\n` +
           `   • Marcos reais da Home: seletor desde 1ª montagem=150ms (separado de homeAvailableAtMs=320ms) | botão manual: intenção=350ms → disponível pós-render=358ms → 6 operações=520ms | HTTP 401/auth:0 → auth_rejected (preservado após recuperação)\n` +
           `   • Preparação da Home vs navegação: filmes prontos c/ séries pendentes=1 ordenação | abertura completa=2 ordenações + 2 mesclagens | HeroBanner sem capas=1 mesclagem (0 itens) + 1 hit cache | navegação posterior em TV ao vivo=0 alterações`
       );

@@ -1,0 +1,165 @@
+--- a/capacitor/src/main/java/com/getcapacitor/plugin/util/HttpRequestHandler.java
++++ b/capacitor/src/main/java/com/getcapacitor/plugin/util/HttpRequestHandler.java
+@@ -384,6 +384,8 @@
+      */
+     public static JSObject request(PluginCall call, String httpMethod, Bridge bridge)
+         throws IOException, URISyntaxException, JSONException {
++        boolean collectDiagnostics = Boolean.TRUE.equals(call.getBoolean("collectDiagnostics", false));
++        long requestStartNs = collectDiagnostics ? System.nanoTime() : 0L;
+         String urlString = call.getString("url", "");
+         JSObject headers = call.getObject("headers", new JSObject());
+         JSObject params = call.getObject("params", new JSObject());
+@@ -440,12 +442,140 @@
+         call.getData().put("activeCapacitorHttpUrlConnection", connection);
+         connection.connect();
+ 
+-        JSObject response = buildResponse(connection, responseType);
++        if (!collectDiagnostics) {
++            JSObject response = buildResponse(connection, responseType);
++
++            connection.disconnect();
++            call.getData().remove("activeCapacitorHttpUrlConnection");
++
++            return response;
++        }
++
++        JSObject nativeDiagnostics = new JSObject();
++        JSObject response = buildResponseWithDiagnostics(connection, responseType, requestStartNs, nativeDiagnostics);
+ 
+         connection.disconnect();
+         call.getData().remove("activeCapacitorHttpUrlConnection");
+ 
++        nativeDiagnostics.put("nativeTotalMs", nanosToMillis(System.nanoTime() - requestStartNs));
++        response.put("nativeDiagnostics", nativeDiagnostics);
++
+         return response;
++    }
++
++    private static double nanosToMillis(long durationNs) {
++        return Math.max(0L, durationNs) / 1_000_000.0;
++    }
++
++    private static Long parseContentLengthHeader(ICapacitorHttpUrlConnection connection) {
++        String raw = connection.getHeaderField("Content-Length");
++        if (raw == null) {
++            raw = connection.getHeaderField("content-length");
++        }
++        if (raw == null && connection instanceof CapacitorHttpUrlConnection) {
++            Map<String, List<String>> fields = ((CapacitorHttpUrlConnection) connection).getHeaderFields();
++            if (fields != null) {
++                for (Map.Entry<String, List<String>> entry : fields.entrySet()) {
++                    if (entry.getKey() != null && "content-length".equalsIgnoreCase(entry.getKey())) {
++                        List<String> values = entry.getValue();
++                        if (values != null && !values.isEmpty()) {
++                            raw = values.get(0);
++                            break;
++                        }
++                    }
++                }
++            }
++        }
++        if (raw == null) {
++            return null;
++        }
++        try {
++            long parsed = Long.parseLong(raw.trim());
++            return parsed >= 0L ? parsed : null;
++        } catch (NumberFormatException ignored) {
++            return null;
++        }
++    }
++
++    private static JSObject buildResponseWithDiagnostics(
++        CapacitorHttpUrlConnection connection,
++        ResponseType responseType,
++        long requestStartNs,
++        JSObject nativeDiagnostics
++    ) throws IOException, JSONException {
++        int statusCode = connection.getResponseCode();
++        JSObject responseHeaders = buildResponseHeaders(connection);
++        double statusAndHeadersMs = nanosToMillis(System.nanoTime() - requestStartNs);
++        Long contentLengthHeaderBytes = parseContentLengthHeader(connection);
++
++        long bodyReadStartNs = System.nanoTime();
++        InputStream errorStream = connection.getErrorStream();
++        String contentType = connection.getHeaderField("Content-Type");
++        Object parsedData;
++        double bodyReadMs;
++        boolean nativeJsonParseExecuted = false;
++        Double nativeJsonParseMs = null;
++        Integer payloadChars = null;
++
++        if (errorStream != null) {
++            String rawBody = readStreamAsString(errorStream);
++            bodyReadMs = nanosToMillis(System.nanoTime() - bodyReadStartNs);
++            payloadChars = rawBody.length();
++            if (isOneOf(contentType, MimeType.APPLICATION_JSON, MimeType.APPLICATION_VND_API_JSON)) {
++                long parseStartNs = System.nanoTime();
++                parsedData = parseJSON(rawBody);
++                nativeJsonParseMs = nanosToMillis(System.nanoTime() - parseStartNs);
++                nativeJsonParseExecuted = true;
++            } else {
++                parsedData = rawBody;
++            }
++        } else if (contentType != null && contentType.contains(MimeType.APPLICATION_JSON.getValue())) {
++            String rawBody = readStreamAsString(connection.getInputStream());
++            bodyReadMs = nanosToMillis(System.nanoTime() - bodyReadStartNs);
++            payloadChars = rawBody.length();
++            long parseStartNs = System.nanoTime();
++            parsedData = parseJSON(rawBody);
++            nativeJsonParseMs = nanosToMillis(System.nanoTime() - parseStartNs);
++            nativeJsonParseExecuted = true;
++        } else {
++            InputStream stream = connection.getInputStream();
++            switch (responseType) {
++                case ARRAY_BUFFER:
++                case BLOB:
++                    parsedData = readStreamAsBase64(stream);
++                    bodyReadMs = nanosToMillis(System.nanoTime() - bodyReadStartNs);
++                    break;
++                case JSON: {
++                    String rawBody = readStreamAsString(stream);
++                    bodyReadMs = nanosToMillis(System.nanoTime() - bodyReadStartNs);
++                    payloadChars = rawBody.length();
++                    long parseStartNs = System.nanoTime();
++                    parsedData = parseJSON(rawBody);
++                    nativeJsonParseMs = nanosToMillis(System.nanoTime() - parseStartNs);
++                    nativeJsonParseExecuted = true;
++                    break;
++                }
++                case DOCUMENT:
++                case TEXT:
++                default: {
++                    String rawBody = readStreamAsString(stream);
++                    bodyReadMs = nanosToMillis(System.nanoTime() - bodyReadStartNs);
++                    payloadChars = rawBody.length();
++                    parsedData = rawBody;
++                    break;
++                }
++            }
++        }
++
++        JSObject output = new JSObject();
++        output.put("status", statusCode);
++        output.put("headers", responseHeaders);
++        output.put("url", connection.getURL());
++        output.put("data", parsedData);
++
++        if (errorStream != null) {
++            output.put("error", true);
++        }
++
++        nativeDiagnostics.put("statusAndHeadersMs", statusAndHeadersMs);
++        nativeDiagnostics.put("bodyReadMs", bodyReadMs);
++        nativeDiagnostics.put("nativeJsonParseExecuted", nativeJsonParseExecuted);
++        nativeDiagnostics.put("nativeJsonParseMs", nativeJsonParseMs != null ? nativeJsonParseMs : JSONObject.NULL);
++        nativeDiagnostics.put(
++            "contentLengthHeaderBytes",
++            contentLengthHeaderBytes != null ? contentLengthHeaderBytes.longValue() : JSONObject.NULL
++        );
++        nativeDiagnostics.put("payloadChars", payloadChars != null ? payloadChars.intValue() : JSONObject.NULL);
++
++        return output;
+     }
+ 
+     public static Boolean isDomainExcludedFromSSL(Bridge bridge, URL url) {

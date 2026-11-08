@@ -67,11 +67,29 @@ export interface CatalogAttemptDiagnostics {
   bodyReadMs: number | null;
   // Android (CapacitorHttp) combined transport + native bridge metric
   nativeTransportAndBridgeMs: number | null;
+  // Android (CapacitorHttp) per-stage native metrics (P3.2)
+  nativeStatusAndHeadersMs: number | null;
+  nativeBodyReadMs: number | null;
+  nativeJsonParseExecuted: boolean | null;
+  nativeJsonParseMs: number | null;
+  nativeTotalMs: number | null;
+  outsideNativeMeasuredMs: number | null;
+  contentLengthHeaderBytes: number | null;
   // Payload & JSON.parse metrics
   payloadFormat: CatalogPayloadFormat | null;
   jsonParseExecuted: boolean;
   jsonParseMs: number | null;
   payloadChars: number | null;
+}
+
+export interface CapacitorNativeAttemptDiagnosticsInput {
+  statusAndHeadersMs?: number | null;
+  bodyReadMs?: number | null;
+  nativeJsonParseExecuted?: boolean | null;
+  nativeJsonParseMs?: number | null;
+  nativeTotalMs?: number | null;
+  contentLengthHeaderBytes?: number | null;
+  payloadChars?: number | null;
 }
 
 export interface CatalogOperationDiagnostics {
@@ -162,7 +180,11 @@ export interface CatalogDiagnosticAttemptHandle {
   isActive(): boolean;
   recordWebResponseWait(durationMs: number, httpStatus?: number): void;
   recordWebBodyRead(durationMs: number, charLength: number): void;
-  recordCapacitorTransportAndBridge(durationMs: number, httpStatus?: number): void;
+  recordCapacitorTransportAndBridge(
+    durationMs: number,
+    httpStatus?: number,
+    nativeDiag?: CapacitorNativeAttemptDiagnosticsInput | null
+  ): void;
   recordPayloadNormalization(params: {
     payloadFormat: CatalogPayloadFormat;
     jsonParseExecuted: boolean;
@@ -411,6 +433,20 @@ function cloneSessionReport(
 
 function roundMs(value: number): number {
   return Math.max(0, Math.round(value * 100) / 100);
+}
+
+function normalizeOptionalNonNegativeMs(val: unknown): number | null {
+  if (typeof val !== 'number' || !Number.isFinite(val) || val < 0) {
+    return null;
+  }
+  return roundMs(val);
+}
+
+function normalizeOptionalNonNegativeInt(val: unknown): number | null {
+  if (typeof val !== 'number' || !Number.isFinite(val) || val < 0) {
+    return null;
+  }
+  return Math.floor(val);
 }
 
 function relativeToSessionMs(
@@ -759,6 +795,13 @@ export function recordCatalogOperationEnqueued(
         responseWaitMs: null,
         bodyReadMs: null,
         nativeTransportAndBridgeMs: null,
+        nativeStatusAndHeadersMs: null,
+        nativeBodyReadMs: null,
+        nativeJsonParseExecuted: null,
+        nativeJsonParseMs: null,
+        nativeTotalMs: null,
+        outsideNativeMeasuredMs: null,
+        contentLengthHeaderBytes: null,
         payloadFormat: null,
         jsonParseExecuted: false,
         jsonParseMs: null,
@@ -791,12 +834,53 @@ export function recordCatalogOperationEnqueued(
           attemptRecord.bodyReadMs = roundMs(durationMs);
           attemptRecord.payloadChars = charLength;
         },
-        recordCapacitorTransportAndBridge(durationMs: number, httpStatus?: number) {
+        recordCapacitorTransportAndBridge(
+          durationMs: number,
+          httpStatus?: number,
+          nativeDiag?: CapacitorNativeAttemptDiagnosticsInput | null
+        ) {
           if (!isAttemptActive()) return;
           recordedEventsCountForTest++;
           attemptRecord.nativeTransportAndBridgeMs = roundMs(durationMs);
           if (httpStatus !== undefined) {
             attemptRecord.httpStatus = httpStatus;
+          }
+          if (nativeDiag && typeof nativeDiag === 'object') {
+            attemptRecord.nativeStatusAndHeadersMs = normalizeOptionalNonNegativeMs(
+              nativeDiag.statusAndHeadersMs
+            );
+            attemptRecord.nativeBodyReadMs = normalizeOptionalNonNegativeMs(
+              nativeDiag.bodyReadMs
+            );
+            if (typeof nativeDiag.nativeJsonParseExecuted === 'boolean') {
+              attemptRecord.nativeJsonParseExecuted = nativeDiag.nativeJsonParseExecuted;
+              attemptRecord.nativeJsonParseMs = nativeDiag.nativeJsonParseExecuted
+                ? normalizeOptionalNonNegativeMs(nativeDiag.nativeJsonParseMs)
+                : null;
+            } else {
+              attemptRecord.nativeJsonParseExecuted = null;
+              attemptRecord.nativeJsonParseMs = null;
+            }
+            attemptRecord.nativeTotalMs = normalizeOptionalNonNegativeMs(
+              nativeDiag.nativeTotalMs
+            );
+            attemptRecord.contentLengthHeaderBytes = normalizeOptionalNonNegativeInt(
+              nativeDiag.contentLengthHeaderBytes
+            );
+            const nativeChars = normalizeOptionalNonNegativeInt(nativeDiag.payloadChars);
+            if (nativeChars !== null) {
+              attemptRecord.payloadChars = nativeChars;
+            }
+          }
+          if (
+            attemptRecord.nativeTransportAndBridgeMs !== null &&
+            attemptRecord.nativeTotalMs !== null
+          ) {
+            attemptRecord.outsideNativeMeasuredMs = roundMs(
+              Math.max(0, attemptRecord.nativeTransportAndBridgeMs - attemptRecord.nativeTotalMs)
+            );
+          } else {
+            attemptRecord.outsideNativeMeasuredMs = null;
           }
         },
         recordPayloadNormalization(params) {
@@ -1288,6 +1372,30 @@ function formatIndexBuildModeLabel(mode: CatalogIndexBuildMode, fromCache: boole
   return 'síncrona';
 }
 
+function formatNativeJsonParseDetail(att: CatalogAttemptDiagnostics): string {
+  if (att.nativeJsonParseExecuted === true) {
+    return `${formatMs(att.nativeJsonParseMs)} (executado no Android)`;
+  }
+  if (att.nativeJsonParseExecuted === false) {
+    return 'não executado';
+  }
+  return 'indisponível';
+}
+
+function formatContentLengthHeader(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes < 0) {
+    return 'indisponível';
+  }
+  return `${Math.floor(bytes)} (valor do cabeçalho)`;
+}
+
+function formatPayloadChars(chars: number | null | undefined): string {
+  if (chars === null || chars === undefined || !Number.isFinite(chars) || chars < 0) {
+    return 'indisponível';
+  }
+  return `${Math.floor(chars)} caracteres`;
+}
+
 /**
  * Generates a sanitized, human-readable and machine-verifiable diagnostics report
  * for the most recent session in memory.
@@ -1411,6 +1519,24 @@ export function formatCatalogDiagnosticsReport(
           att.durationMs
         )}`
       );
+
+      if (att.transportKind === 'capacitor-native') {
+        lines.push(
+          `    • Etapas Android (P3.2): status + cabeçalhos=${formatMs(
+            att.nativeStatusAndHeadersMs
+          )} | leitura + decodificação do corpo=${formatMs(
+            att.nativeBodyReadMs
+          )} | JSON no Android=${formatNativeJsonParseDetail(
+            att
+          )} | total no trecho nativo=${formatMs(
+            att.nativeTotalMs
+          )} | tempo fora do trecho nativo medido=${formatMs(
+            att.outsideNativeMeasuredMs
+          )} | Content-Length=${formatContentLengthHeader(
+            att.contentLengthHeaderBytes
+          )} | texto lido=${formatPayloadChars(att.payloadChars)}`
+        );
+      }
     }
 
     if (op.normalizationMs !== null || op.validItemsCount !== null) {
