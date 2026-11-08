@@ -16937,12 +16937,24 @@ if (args[0] === 'add' && args[1] === 'android') {
           const activeFilesSetP33 = new Set<string>();
           const cancelledTransfersP33 = new Set<string>();
           const lastBridgeResponsesP33: any[] = [];
+          const cleanupRequestedFileIdsP33: string[] = [];
+          let customCleanupHookP33:
+            | ((fileId: string, performDiskDelete: () => boolean) => Promise<{ deleted?: boolean }>)
+            | null = null;
+
+          const androidPrivateCacheDirP33 = '/data/user/0/com.northcode.play/cache';
+          const androidDedicatedTransferDirP33 = `${androidPrivateCacheDirP33}/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}`;
 
           // Simulador fiel do plugin Java CatalogFileTransferPlugin gravando arquivos reais em disco
           let simulatedProviderHandlerP33: (
             opts: any,
             fileHelpers: {
-              writeTempAndFinalize: (content: string) => { fileId: string; filePath: string; bytesWritten: number };
+              writeTempAndFinalize: (content: string) => {
+                fileId: string;
+                filePath: string;
+                cacheDir: string;
+                bytesWritten: number;
+              };
               isCancelled: () => boolean;
             }
           ) => Promise<any>;
@@ -16968,7 +16980,8 @@ if (args[0] === 'add' && args[1] === 'android') {
               const tempFileName = `nc_catalog_${safeToken}.json.tmp`;
               const finalFileName = `nc_catalog_${safeToken}.json`;
               const tempFilePath = pathNodeP33.join(dedicatedTransferDirP33, tempFileName);
-              const finalFilePath = pathNodeP33.join(dedicatedTransferDirP33, finalFileName);
+              const finalDiskFilePath = pathNodeP33.join(dedicatedTransferDirP33, finalFileName);
+              const finalAndroidFilePath = `${androidDedicatedTransferDirP33}/${finalFileName}`;
 
               cleanupStaleFilesSimP33();
               activeFilesSetP33.add(tempFileName);
@@ -16985,11 +16998,12 @@ if (args[0] === 'add' && args[1] === 'android') {
                     if (cancelledTransfersP33.has(opts.transferId)) {
                       throw new Error('TRANSFER_CANCELLED');
                     }
-                    fsNodeP33.renameSync(tempFilePath, finalFilePath);
+                    fsNodeP33.renameSync(tempFilePath, finalDiskFilePath);
                     keepFinal = true;
                     return {
                       fileId: finalFileName,
-                      filePath: finalFilePath,
+                      filePath: finalAndroidFilePath,
+                      cacheDir: androidDedicatedTransferDirP33,
                       bytesWritten: buf.byteLength,
                     };
                   },
@@ -17001,7 +17015,7 @@ if (args[0] === 'add' && args[1] === 'android') {
                 fsNodeP33.rmSync(tempFilePath, { force: true });
                 if (!keepFinal || cancelledTransfersP33.has(opts.transferId)) {
                   activeFilesSetP33.delete(finalFileName);
-                  fsNodeP33.rmSync(finalFilePath, { force: true });
+                  fsNodeP33.rmSync(finalDiskFilePath, { force: true });
                 }
               }
             },
@@ -17010,6 +17024,7 @@ if (args[0] === 'add' && args[1] === 'android') {
               return { cancelled: true };
             },
             async cleanupTransferFile({ fileId }: { fileId: string }) {
+              cleanupRequestedFileIdsP33.push(fileId);
               if (!/^nc_catalog_[a-zA-Z0-9_-]+\.json(?:\.tmp)?$/.test(fileId)) {
                 throw new Error(
                   'Identificador de arquivo temporário inválido ou fora do diretório permitido.'
@@ -17021,12 +17036,19 @@ if (args[0] === 'add' && args[1] === 'android') {
               ) {
                 throw new Error('Caminho fora da pasta dedicada.');
               }
-              activeFilesSetP33.delete(fileId);
-              activeFilesSetP33.delete(`${fileId}.tmp`);
-              const existed = fsNodeP33.existsSync(target);
-              if (existed) {
-                fsNodeP33.rmSync(target, { force: true });
+              const performDiskDelete = () => {
+                activeFilesSetP33.delete(fileId);
+                activeFilesSetP33.delete(`${fileId}.tmp`);
+                const existed = fsNodeP33.existsSync(target);
+                if (existed) {
+                  fsNodeP33.rmSync(target, { force: true });
+                }
+                return existed;
+              };
+              if (customCleanupHookP33) {
+                return customCleanupHookP33(fileId, performDiskDelete);
               }
+              const existed = performDiskDelete();
               return { deleted: existed };
             },
           };
@@ -17047,7 +17069,15 @@ if (args[0] === 'add' && args[1] === 'android') {
             const prefix = 'http://localhost/_capacitor_file_';
             if (urlStr.startsWith(prefix)) {
               localWebViewFileFetchCount++;
-              const localDiskPath = urlStr.slice(prefix.length);
+              const requestedAndroidPath = urlStr.slice(prefix.length);
+              const localDiskPath = requestedAndroidPath.startsWith(
+                `${androidDedicatedTransferDirP33}/`
+              )
+                ? pathNodeP33.join(
+                    dedicatedTransferDirP33,
+                    requestedAndroidPath.slice(androidDedicatedTransferDirP33.length + 1)
+                  )
+                : requestedAndroidPath;
               if (localFetchInterceptionHookP33) {
                 await localFetchInterceptionHookP33(localDiskPath);
               }
@@ -17064,6 +17094,8 @@ if (args[0] === 'add' && args[1] === 'android') {
               return {
                 ok: true,
                 status: 200,
+                redirected: false,
+                type: 'basic',
                 text: async () => {
                   if (init?.signal?.aborted) {
                     throw new Error('Aborted');
@@ -17632,31 +17664,234 @@ if (args[0] === 'add' && args[1] === 'android') {
           activeFilesSetP33.delete(activeProtectedName);
           fsNodeP33.rmSync(activeProtectedPath, { force: true });
 
-          // (d) Rejeição de caminhos arbitrários para leitura ou exclusão
+          // (d) Rejeição de caminhos arbitrários, URLs externas, caminhos externos com mesmo sufixo,
+          // tentativas de escape (normais e codificadas) e URLs de outra origem em convertFileSrc
+          const validPrivateFileId = 'nc_catalog_valid_1.json';
+          const validPrivateFilePath = `${androidDedicatedTransferDirP33}/${validPrivateFileId}`;
+          const validDataDataFilePath = `/data/data/com.northcode.play/cache/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`;
+
           assert.strictEqual(
             androidAdapterModP33.isValidCatalogTransferFileReference(
-              '../secret.json',
-              '/data/user/0/com.northcode.play/cache/nc_catalog_transfers/../secret.json'
+              validPrivateFileId,
+              validPrivateFilePath,
+              androidDedicatedTransferDirP33
             ),
-            false,
-            '[12.22.4] Caminho com traversal (..) deve ser rejeitado'
+            true,
+            '[12.22.4] Referência válida no cache privado (getCacheDir() /data/user/0/...) deve ser aceita'
           );
           assert.strictEqual(
             androidAdapterModP33.isValidCatalogTransferFileReference(
-              'nc_catalog_1.json',
-              '/sdcard/Download/nc_catalog_1.json'
+              validPrivateFileId,
+              validDataDataFilePath
             ),
-            false,
-            '[12.22.4] Caminho fora da pasta dedicada nc_catalog_transfers deve ser rejeitado'
+            true,
+            '[12.22.4] Referência válida no cache privado (/data/data/...) deve ser aceita'
           );
+
+          // URLs externas com o mesmo sufixo
+          for (const externalUrl of [
+            `https://evil.example.org/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            `https://evil.example.org${validPrivateFilePath}`,
+            `http://evil.example.org${validPrivateFilePath}`,
+            `file://${validPrivateFilePath}`,
+            `content://com.northcode.play.provider/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+          ]) {
+            assert.strictEqual(
+              androidAdapterModP33.isValidCatalogTransferFileReference(
+                validPrivateFileId,
+                externalUrl
+              ),
+              false,
+              `[12.22.4] URL externa com o mesmo sufixo deve ser rejeitada: ${externalUrl}`
+            );
+          }
+
+          // Caminhos externos com o mesmo sufixo
+          for (const externalPath of [
+            `/sdcard/Download/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            `/storage/emulated/0/Android/data/com.northcode.play/cache/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            `/data/local/tmp/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            `/data/user/0/com.other.app/cache/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            `/tmp/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+          ]) {
+            assert.strictEqual(
+              androidAdapterModP33.isValidCatalogTransferFileReference(
+                validPrivateFileId,
+                externalPath
+              ),
+              false,
+              `[12.22.4] Caminho externo com o mesmo sufixo deve ser rejeitado: ${externalPath}`
+            );
+          }
+
+          // Tentativas de escapar do diretório (segmentos normais ou codificados e divergência de fileId)
+          for (const [badFileId, badPath] of [
+            ['../secret.json', `${androidDedicatedTransferDirP33}/../secret.json`],
+            [
+              validPrivateFileId,
+              `${androidDedicatedTransferDirP33}/../${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            ],
+            [
+              validPrivateFileId,
+              `/data/user/0/com.northcode.play/cache/../files/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            ],
+            [
+              validPrivateFileId,
+              `${androidDedicatedTransferDirP33}/%2e%2e/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            ],
+            [
+              validPrivateFileId,
+              `${androidDedicatedTransferDirP33}/%2e%2e%2f${validPrivateFileId}`,
+            ],
+            [
+              validPrivateFileId,
+              `${androidDedicatedTransferDirP33}/..%5c${validPrivateFileId}`,
+            ],
+            [
+              validPrivateFileId,
+              `${androidDedicatedTransferDirP33}/sub/${validPrivateFileId}`,
+            ],
+            [
+              validPrivateFileId,
+              `${androidDedicatedTransferDirP33}/nc_catalog_other_file_99.json`,
+            ],
+            ['arbitrary_file.txt', `${androidDedicatedTransferDirP33}/arbitrary_file.txt`],
+          ] as const) {
+            assert.strictEqual(
+              androidAdapterModP33.isValidCatalogTransferFileReference(badFileId, badPath),
+              false,
+              `[12.22.4] Tentativa de escape ou fileId divergente deve ser rejeitada: fileId=${badFileId} path=${badPath}`
+            );
+          }
+
+          // Validação de URL pós-convertFileSrc (origem local da WebView e mesmo arquivo aprovado)
           assert.strictEqual(
-            androidAdapterModP33.isValidCatalogTransferFileReference(
-              'arbitrary_file.txt',
-              `${dedicatedTransferDirP33}/arbitrary_file.txt`
+            androidAdapterModP33.isValidConvertedLocalCatalogUrl(
+              `http://localhost/_capacitor_file_${validPrivateFilePath}`,
+              validPrivateFilePath
             ),
-            false,
-            '[12.22.4] Nome de arquivo fora do padrão nc_catalog_*.json deve ser rejeitado'
+            true,
+            '[12.22.4] URL local da WebView apontando para o mesmo arquivo aprovado deve ser aceita'
           );
+          for (const badConvertedUrl of [
+            `https://evil.example.org/_capacitor_file_${validPrivateFilePath}`,
+            `http://127.0.0.1:8080/_capacitor_file_${validPrivateFilePath}`,
+            `https://localhost/_capacitor_file_${validPrivateFilePath}`, // origem diferente de window.location.origin (http://localhost)
+            `http://localhost/_capacitor_file_${androidDedicatedTransferDirP33}/nc_catalog_other_file_99.json`,
+            `http://localhost/_capacitor_file_${validPrivateFilePath}?redirect=https://evil.example.org`,
+            `http://localhost/_capacitor_file_${validPrivateFilePath}#frag`,
+            `http://localhost/_capacitor_file_${androidDedicatedTransferDirP33}/%2e%2e/secret.json`,
+            `http://localhost/other_prefix${validPrivateFilePath}`,
+          ]) {
+            assert.strictEqual(
+              androidAdapterModP33.isValidConvertedLocalCatalogUrl(
+                badConvertedUrl,
+                validPrivateFilePath
+              ),
+              false,
+              `[12.22.4] URL pós-convertFileSrc inválida ou de outra origem deve ser rejeitada: ${badConvertedUrl}`
+            );
+          }
+
+          // Verificar ponta a ponta que referências inválidas e URLs de outra origem devolvidas por
+          // convertFileSrc NÃO chegam ao fetch, são classificadas como local_file_read e NÃO acionam CapacitorHttp
+          const invalidEndToEndScenarios: Array<{
+            label: string;
+            fileId: string;
+            filePath: string;
+            convertFileSrcOverride?: (fp: string) => string;
+          }> = [
+            {
+              label: 'URL HTTPS externa com o mesmo sufixo',
+              fileId: validPrivateFileId,
+              filePath: `https://evil.example.org${validPrivateFilePath}`,
+            },
+            {
+              label: 'Caminho externo (/sdcard) com o mesmo sufixo',
+              fileId: validPrivateFileId,
+              filePath: `/sdcard/Download/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            },
+            {
+              label: 'Tentativa de escapar do diretório (segmento normal ..)',
+              fileId: validPrivateFileId,
+              filePath: `${androidDedicatedTransferDirP33}/../${validPrivateFileId}`,
+            },
+            {
+              label: 'Tentativa de escapar do diretório (segmento codificado %2e%2e)',
+              fileId: validPrivateFileId,
+              filePath: `${androidDedicatedTransferDirP33}/%2e%2e/${androidAdapterModP33.CATALOG_TRANSFER_CACHE_SUBDIR}/${validPrivateFileId}`,
+            },
+            {
+              label: 'URL de outra origem devolvida por convertFileSrc',
+              fileId: validPrivateFileId,
+              filePath: validPrivateFilePath,
+              convertFileSrcOverride: (fp: string) =>
+                `https://other-origin.example.org/_capacitor_file_${fp}`,
+            },
+          ];
+
+          for (const scenario of invalidEndToEndScenarios) {
+            const fetchBeforeScenario = localWebViewFileFetchCount + webFetchProviderCount;
+            const capHttpBeforeScenario = capacitorHttpGetCount;
+            let pluginCallsForScenario = 0;
+
+            androidAdapterModP33.setAndroidCatalogFileAdapterTestOverride({
+              plugin: nativePluginSimP33,
+              convertFileSrc:
+                scenario.convertFileSrcOverride ??
+                ((fp: string) => `http://localhost/_capacitor_file_${fp}`),
+            });
+
+            simulatedProviderHandlerP33 = async () => {
+              pluginCallsForScenario++;
+              return {
+                status: 200,
+                fileId: scenario.fileId,
+                filePath: scenario.filePath,
+                cacheDir: androidDedicatedTransferDirP33,
+              };
+            };
+
+            let caughtScenarioErr: any = null;
+            try {
+              await XtreamService.getVodStreams(credsP33);
+            } catch (err) {
+              caughtScenarioErr = err;
+            }
+
+            assert(
+              caughtScenarioErr && caughtScenarioErr.isLocalFileReadError === true,
+              `[12.22.4] Cenário "${scenario.label}" deve falhar com isLocalFileReadError=true`
+            );
+            assert.strictEqual(
+              catalogDiagMod.classifyDiagnosticErrorCategory(caughtScenarioErr),
+              'local_file_read',
+              `[12.22.4] Cenário "${scenario.label}" deve ser classificado como local_file_read`
+            );
+            assert.strictEqual(
+              localWebViewFileFetchCount + webFetchProviderCount,
+              fetchBeforeScenario,
+              `[12.22.4] Cenário "${scenario.label}" NÃO deve chegar ao fetch`
+            );
+            assert.strictEqual(
+              capacitorHttpGetCount,
+              capHttpBeforeScenario,
+              `[12.22.4] Cenário "${scenario.label}" NÃO deve acionar CapacitorHttp na tentativa`
+            );
+            assert.strictEqual(
+              pluginCallsForScenario,
+              2,
+              `[12.22.4] Cenário "${scenario.label}" deve respeitar 1 GET por tentativa (2 tentativas com retry existente)`
+            );
+          }
+
+          // Restaurar convertFileSrc padrão do teste
+          androidAdapterModP33.setAndroidCatalogFileAdapterTestOverride({
+            plugin: nativePluginSimP33,
+            convertFileSrc: (filePath: string) =>
+              `http://localhost/_capacitor_file_${filePath}`,
+          });
+
           let rejectedArbitraryCleanup = false;
           try {
             await nativePluginSimP33.cleanupTransferFile({ fileId: '../outside.json' });
@@ -17668,6 +17903,260 @@ if (args[0] === 'add' && args[1] === 'android') {
             true,
             '[12.22.4] cleanupTransferFile deve rejeitar caminhos arbitrários'
           );
+
+          // (f) Desacoplamento da limpeza em relação ao prazo e à conclusão da consulta:
+          // - Limpeza lenta ou sem resposta (ou com falha): leitura concluída retorna sem ficar presa,
+          //   sem mascarar o resultado e sem disparar outro GET; exclusão continua sendo solicitada.
+          // - Se a consulta já tiver sido cancelada ou expirado antes de entregar o resultado,
+          //   devolve o erro correspondente e o corpo NÃO é interpretado (JSON.parse não é chamado),
+          //   enquanto a exclusão continua sendo solicitada.
+          cleanupRequestedFileIdsP33.length = 0;
+          let hangingCleanupReleases: Array<() => void> = [];
+          customCleanupHookP33 = async (_fileId, performDiskDelete) => {
+            performDiskDelete();
+            await new Promise<void>((resolve) => {
+              hangingCleanupReleases.push(resolve);
+            });
+            return { deleted: true };
+          };
+
+          try {
+            // Caso 1: Leitura concluída com cleanupTransferFile sem resposta (preso indefinidamente)
+            let slowCleanupPluginGets = 0;
+            let expectedSlowCleanupFileId = '';
+            simulatedProviderHandlerP33 = async (_opts, helpers) => {
+              slowCleanupPluginGets++;
+              const written = helpers.writeTempAndFinalize(
+                JSON.stringify([{ stream_id: 9501, name: 'Filme Limpeza Lenta', category_id: '1' }])
+              );
+              expectedSlowCleanupFileId = written.fileId;
+              return {
+                status: 200,
+                fileId: written.fileId,
+                filePath: written.filePath,
+                cacheDir: written.cacheDir,
+              };
+            };
+
+            let slowCleanupResolved = false;
+            const slowCleanupResult = await Promise.race([
+              XtreamService.getVodStreams(credsP33).then((items) => {
+                slowCleanupResolved = true;
+                return items;
+              }),
+              new Promise<never>((_r, rej) =>
+                setTimeout(
+                  () => rej(new Error('Consulta ficou presa aguardando cleanupTransferFile')),
+                  150
+                )
+              ),
+            ]);
+
+            assert.strictEqual(
+              slowCleanupResolved,
+              true,
+              '[12.22.4] Leitura concluída deve retornar imediatamente sem ficar presa em cleanupTransferFile sem resposta'
+            );
+            assert.strictEqual(slowCleanupResult.length, 1);
+            assert.strictEqual(slowCleanupResult[0].stream_id, 9501);
+            assert.strictEqual(
+              slowCleanupPluginGets,
+              1,
+              '[12.22.4] Limpeza lenta não deve disparar outro GET'
+            );
+            assert(
+              cleanupRequestedFileIdsP33.includes(expectedSlowCleanupFileId),
+              '[12.22.4] Exclusão do arquivo deve continuar sendo solicitada em caso de sucesso'
+            );
+
+            // Caso 2: Falha na limpeza (rejeição de cleanupTransferFile) não mascara o resultado nem dispara outro GET
+            customCleanupHookP33 = async (_fileId, performDiskDelete) => {
+              performDiskDelete();
+              throw new Error('Falha simulada ao excluir arquivo temporário');
+            };
+            let failingCleanupGets = 0;
+            simulatedProviderHandlerP33 = async (_opts, helpers) => {
+              failingCleanupGets++;
+              const written = helpers.writeTempAndFinalize(
+                JSON.stringify([{ stream_id: 9502, name: 'Filme Limpeza Falhou', category_id: '1' }])
+              );
+              return {
+                status: 200,
+                fileId: written.fileId,
+                filePath: written.filePath,
+                cacheDir: written.cacheDir,
+              };
+            };
+            const failingCleanupRes = await XtreamService.getVodStreams(credsP33);
+            assert.strictEqual(failingCleanupRes.length, 1);
+            assert.strictEqual(failingCleanupRes[0].stream_id, 9502);
+            assert.strictEqual(
+              failingCleanupGets,
+              1,
+              '[12.22.4] Falha em cleanupTransferFile não deve mascarar o resultado nem disparar outro GET'
+            );
+
+            // Caso 3: Cancelamento chega antes de o resultado ser entregue (com limpeza sem resposta):
+            // retorna erro de cancelamento sem ficar preso, NÃO interpreta o JSON e solicita exclusão
+            customCleanupHookP33 = async (_fileId, performDiskDelete) => {
+              performDiskDelete();
+              await new Promise<void>((resolve) => {
+                hangingCleanupReleases.push(resolve);
+              });
+              return { deleted: true };
+            };
+
+            const abortBeforeDeliveryCtrl = new AbortController();
+            let cancelledCatalogParsedCount = 0;
+            let expectedCancelledFileId = '';
+            const origParseCancelCheck = JSON.parse;
+            JSON.parse = ((text: string, ...rest: any[]) => {
+              if (typeof text === 'string' && text.includes('Filme Cancelado Antes da Entrega')) {
+                cancelledCatalogParsedCount++;
+              }
+              return origParseCancelCheck(text, ...rest);
+            }) as typeof JSON.parse;
+
+            simulatedProviderHandlerP33 = async (_opts, helpers) => {
+              const written = helpers.writeTempAndFinalize(
+                JSON.stringify([
+                  { stream_id: 9503, name: 'Filme Cancelado Antes da Entrega', category_id: '1' },
+                ])
+              );
+              expectedCancelledFileId = written.fileId;
+              return {
+                status: 200,
+                fileId: written.fileId,
+                filePath: written.filePath,
+                cacheDir: written.cacheDir,
+              };
+            };
+
+            // Simular o cancelamento disparando no instante em que a leitura local termina (antes de normalizeTransportPayload)
+            const origFetchForCancelBeforeParse = globalThis.fetch;
+            globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+              const res = await origFetchForCancelBeforeParse(input, init);
+              const origText = res.text.bind(res);
+              return {
+                ok: res.ok,
+                status: res.status,
+                redirected: false,
+                type: 'basic',
+                text: async () => {
+                  const body = await origText();
+                  abortBeforeDeliveryCtrl.abort();
+                  return body;
+                },
+              } as unknown as Response;
+            }) as typeof fetch;
+
+            let caughtCancelBeforeDelivery: any = null;
+            try {
+              await Promise.race([
+                XtreamService.getVodStreams(credsP33, undefined, {
+                  signal: abortBeforeDeliveryCtrl.signal,
+                }),
+                new Promise<never>((_r, rej) =>
+                  setTimeout(
+                    () => rej(new Error('Cancelamento ficou preso aguardando cleanupTransferFile')),
+                    150
+                  )
+                ),
+              ]);
+            } catch (err) {
+              caughtCancelBeforeDelivery = err;
+            } finally {
+              globalThis.fetch = origFetchForCancelBeforeParse;
+              JSON.parse = origParseCancelCheck;
+            }
+
+            assert(
+              caughtCancelBeforeDelivery &&
+                /Operação cancelada pelo usuário/i.test(String(caughtCancelBeforeDelivery.message)),
+              '[12.22.4] Cancelamento antes de entregar o resultado deve rejeitar imediatamente com erro de cancelamento'
+            );
+            assert.strictEqual(
+              cancelledCatalogParsedCount,
+              0,
+              '[12.22.4] Catálogo cancelado antes da entrega NUNCA deve ser interpretado por JSON.parse'
+            );
+            assert(
+              cleanupRequestedFileIdsP33.includes(expectedCancelledFileId),
+              '[12.22.4] Exclusão do arquivo deve continuar sendo solicitada após cancelamento'
+            );
+
+            // Caso 4: Prazo (timeout) expira antes de o resultado ser entregue (com limpeza sem resposta)
+            // e resposta nativa tardia também solicita exclusão:
+            let lateNativeResolve: ((val: any) => void) | null = null;
+            let lateNativeFileId = '';
+            let timedOutCatalogParsedCount = 0;
+            JSON.parse = ((text: string, ...rest: any[]) => {
+              if (typeof text === 'string' && text.includes('Filme Expirado Por Timeout')) {
+                timedOutCatalogParsedCount++;
+              }
+              return origParseCancelCheck(text, ...rest);
+            }) as typeof JSON.parse;
+
+            simulatedProviderHandlerP33 = async (_opts, helpers) => {
+              return new Promise((resolve) => {
+                lateNativeResolve = () => {
+                  const written = helpers.writeTempAndFinalize(
+                    JSON.stringify([
+                      { stream_id: 9504, name: 'Filme Expirado Por Timeout', category_id: '1' },
+                    ])
+                  );
+                  lateNativeFileId = written.fileId;
+                  resolve({
+                    status: 200,
+                    fileId: written.fileId,
+                    filePath: written.filePath,
+                    cacheDir: written.cacheDir,
+                  });
+                };
+              });
+            };
+
+            let caughtTimeoutErr: any = null;
+            try {
+              await httpTransportModP33.executeXtreamGetRequest({
+                url: 'http://p33-secret-provider.iptv.local:8080/player_api.php?action=get_vod_streams',
+                timeoutMs: 30,
+                isFullCatalogRequest: true,
+              });
+            } catch (err) {
+              caughtTimeoutErr = err;
+            } finally {
+              JSON.parse = origParseCancelCheck;
+            }
+
+            assert(
+              caughtTimeoutErr &&
+                /Tempo limite esgotado/i.test(String(caughtTimeoutErr.message)),
+              '[12.22.4] Expiração do prazo antes da entrega deve devolver erro de timeout'
+            );
+            assert.strictEqual(
+              timedOutCatalogParsedCount,
+              0,
+              '[12.22.4] Catálogo cujo prazo expirou não deve ter o corpo interpretado'
+            );
+
+            // Disparar resposta nativa tardia após o timeout e confirmar que a exclusão é solicitada
+            cancelledTransfersP33.clear();
+            if (lateNativeResolve) {
+              (lateNativeResolve as any)();
+              await new Promise((r) => setTimeout(r, 20));
+            }
+            assert(
+              lateNativeFileId && cleanupRequestedFileIdsP33.includes(lateNativeFileId),
+              '[12.22.4] Resposta nativa tardia após timeout/cancelamento deve solicitar cleanupTransferFile'
+            );
+          } finally {
+            customCleanupHookP33 = null;
+            for (const release of hangingCleanupReleases) {
+              release();
+            }
+            hangingCleanupReleases = [];
+          }
 
           // (e) Troca de conta durante transferência de catálogo grande via arquivo temporário:
           // descarta resultado tardio da conta anterior e limpa o arquivo temporário

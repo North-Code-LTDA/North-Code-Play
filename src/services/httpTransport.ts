@@ -123,8 +123,13 @@ export function isAndroidTempFileCatalogTransportAvailable(): boolean {
  */
 export function normalizeTransportPayload<T = any>(
   rawPayload: unknown,
-  diagAttempt?: CatalogDiagnosticAttemptHandle | null
+  diagAttempt?: CatalogDiagnosticAttemptHandle | null,
+  signal?: AbortSignal
 ): T {
+  if (signal?.aborted) {
+    throw new Error('Operação cancelada pelo usuário.');
+  }
+
   const trackDiag = Boolean(diagAttempt && diagAttempt.isActive());
 
   if (rawPayload === null || rawPayload === undefined) {
@@ -163,6 +168,9 @@ export function normalizeTransportPayload<T = any>(
         });
       }
       return [] as unknown as T;
+    }
+    if (signal?.aborted) {
+      throw new Error('Operação cancelada pelo usuário.');
     }
     const parseStartMs = trackDiag ? nowMonotonicMs() : 0;
     try {
@@ -275,13 +283,19 @@ export async function executeXtreamGetRequest<T = any>({
     const { executeAndroidTempFileCatalogDownload } = await import(
       './androidCatalogFileAdapter'
     );
+    if (signal?.aborted) {
+      throw new Error('Operação cancelada pelo usuário.');
+    }
     const rawText = await executeAndroidTempFileCatalogDownload({
       url,
       timeoutMs,
       signal,
       diagAttempt,
     });
-    return normalizeTransportPayload<T>(rawText, diagAttempt);
+    if (signal?.aborted) {
+      throw new Error('Operação cancelada pelo usuário.');
+    }
+    return normalizeTransportPayload<T>(rawText, diagAttempt, signal);
   }
 
   if (isUsingCapacitorNativeTransport()) {
@@ -393,7 +407,7 @@ async function executeBrowserFetchGet<T = any>({
       );
     }
 
-    return normalizeTransportPayload<T>(textData, diagAttempt);
+    return normalizeTransportPayload<T>(textData, diagAttempt, signal);
   } finally {
     clearTimeout(timeoutId);
     if (signal) {
@@ -529,7 +543,7 @@ async function executeCapacitorHttpGet<T = any>({
       throw createHttpError(status || 500, status ? `Status ${status}` : 'Erro');
     }
 
-    return normalizeTransportPayload<T>(response.data, diagAttempt);
+    return normalizeTransportPayload<T>(response.data, diagAttempt, signal);
   } finally {
     if (timeoutId !== null) {
       clearTimeout(timeoutId);

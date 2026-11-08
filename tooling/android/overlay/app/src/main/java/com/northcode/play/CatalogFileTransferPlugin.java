@@ -126,11 +126,17 @@ public class CatalogFileTransferPlugin extends Plugin {
         if (getContext() == null || getContext().getCacheDir() == null) {
             throw new IOException("Diretório de cache interno indisponível.");
         }
-        File dir = new File(getContext().getCacheDir(), CACHE_SUBDIR_NAME);
+        File baseCacheDir = getContext().getCacheDir().getCanonicalFile();
+        File dir = new File(baseCacheDir, CACHE_SUBDIR_NAME);
         if (!dir.exists() && !dir.mkdirs() && !dir.exists()) {
             throw new IOException("Não foi possível preparar o diretório de cache de catálogos.");
         }
-        return dir.getCanonicalFile();
+        File canonicalDir = dir.getCanonicalFile();
+        File parentDir = canonicalDir.getParentFile();
+        if (parentDir == null || !parentDir.equals(baseCacheDir) || !CACHE_SUBDIR_NAME.equals(canonicalDir.getName())) {
+            throw new IOException("Diretório dedicado de catálogos fora de getCacheDir().");
+        }
+        return canonicalDir;
     }
 
     private File resolveValidatedCacheFile(String fileId) throws IOException {
@@ -143,7 +149,7 @@ public class CatalogFileTransferPlugin extends Plugin {
         File cacheDir = getTransferCacheDir();
         File candidate = new File(cacheDir, fileId).getCanonicalFile();
         File parent = candidate.getParentFile();
-        if (parent == null || !parent.equals(cacheDir)) {
+        if (parent == null || !parent.equals(cacheDir) || !fileId.equals(candidate.getName())) {
             return null;
         }
         String cacheDirPath = cacheDir.getPath();
@@ -374,6 +380,11 @@ public class CatalogFileTransferPlugin extends Plugin {
                     errorStatusResult.put("status", statusCode);
                     errorStatusResult.put("fileId", JSONObject.NULL);
                     errorStatusResult.put("filePath", JSONObject.NULL);
+                    File parentCacheDir = finalFile.getParentFile();
+                    errorStatusResult.put(
+                        "cacheDir",
+                        parentCacheDir != null ? parentCacheDir.getPath() : JSONObject.NULL
+                    );
 
                     if (collectDiagnostics) {
                         JSObject nativeDiagnostics = new JSObject();
@@ -428,6 +439,18 @@ public class CatalogFileTransferPlugin extends Plugin {
                     throw new IOException("TEMP_FILE_FINALIZE_FAILED");
                 }
 
+                File canonicalFinalFile = finalFile.getCanonicalFile();
+                File canonicalParentDir = canonicalFinalFile.getParentFile();
+                File expectedCacheDir = getTransferCacheDir();
+                if (
+                    canonicalParentDir == null ||
+                    !canonicalParentDir.equals(expectedCacheDir) ||
+                    !finalFileName.equals(canonicalFinalFile.getName())
+                ) {
+                    safeDeleteFile(finalFile);
+                    throw new IOException("TEMP_FILE_OUTSIDE_CACHE_DIR");
+                }
+
                 double fileWriteMs = collectDiagnostics
                     ? nanosToMillis(System.nanoTime() - writeStartNs)
                     : 0.0;
@@ -443,7 +466,8 @@ public class CatalogFileTransferPlugin extends Plugin {
                 JSObject result = new JSObject();
                 result.put("status", statusCode);
                 result.put("fileId", finalFileName);
-                result.put("filePath", finalFile.getAbsolutePath());
+                result.put("filePath", canonicalFinalFile.getPath());
+                result.put("cacheDir", expectedCacheDir.getPath());
 
                 if (collectDiagnostics) {
                     JSObject nativeDiagnostics = new JSObject();
