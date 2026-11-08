@@ -359,10 +359,9 @@ html[data-display-mode="tv"] .nc-tv-hero-title {
 .nc-tv-epg-card:focus-visible,
 .nc-tv-epg-state:focus,
 .nc-tv-epg-state:focus-visible {
-  outline: none !important;
-  border-color: #00E5FF !important;
-  box-shadow: 0 0 0 2px #00E5FF, 0 0 18px rgba(0, 229, 255, 0.3) !important;
-  background-color: rgba(0, 229, 255, 0.08) !important;
+  outline: 2px solid #ffffff !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.85), 0 8px 20px -4px rgba(255, 255, 255, 0.18) !important;
   transform: none !important;
 }
 

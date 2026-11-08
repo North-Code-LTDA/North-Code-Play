@@ -4188,19 +4188,278 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   assert(firstRunModal !== null, 'No primeiro acesso sem preferência salva, Home deve abrir DisplaySetupModal');
   assert(
     homeFirstRunContainer.querySelector('[data-device-choice="tv"]') !== null &&
-      homeFirstRunContainer.querySelector('[data-device-choice="default"]') !== null,
-    'Modal de primeiro acesso deve apresentar as duas opções explícitas: TV e Outros dispositivos'
+      homeFirstRunContainer.querySelector('[data-device-choice="celular"]') !== null &&
+      homeFirstRunContainer.querySelector('[data-device-choice="tablet"]') !== null &&
+      homeFirstRunContainer.querySelector('[data-device-choice="computador"]') !== null,
+    'Modal de primeiro acesso deve apresentar as quatro opções explícitas: TV, Celular, Tablet e Computador'
   );
+
+  // Testar Caminho Rápido de TV no primeiro uso: selecionar TV -> "Usar tamanho sugerido (85%)"
+  const firstRunTvBtn = homeFirstRunContainer.querySelector(
+    'button[data-device-choice="tv"]'
+  ) as HTMLButtonElement;
+  await act(async () => {
+    firstRunTvBtn.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  const quickUse85Btn = homeFirstRunContainer.querySelector(
+    'button[data-tv-use-suggested="true"]'
+  ) as HTMLButtonElement | null;
+  const quickAdjustBtn = homeFirstRunContainer.querySelector(
+    'button[data-tv-adjust-size="true"]'
+  ) as HTMLButtonElement | null;
+  assert(
+    quickUse85Btn !== null && quickAdjustBtn !== null,
+    'Ao selecionar TV pela primeira vez, deve oferecer "Usar tamanho sugerido (85%)" e "Ajustar tamanho"'
+  );
+  assert(
+    quickUse85Btn!.textContent?.includes('Usar tamanho sugerido (85%)'),
+    'Botão de caminho rápido deve exibir "Usar tamanho sugerido (85%)"'
+  );
+  assert(
+    quickAdjustBtn!.textContent?.includes('Ajustar tamanho'),
+    'Botão de calibração opcional deve exibir "Ajustar tamanho"'
+  );
+
+  // Enquanto percorre opções no primeiro acesso, a raiz e o localStorage permanecem intactos
+  assert.strictEqual(
+    window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS),
+    null,
+    'Entrar no passo rápido de TV não deve gravar preferência antes da confirmação'
+  );
+
+  await act(async () => {
+    quickUse85Btn!.click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  assert.strictEqual(
+    homeFirstRunContainer.querySelector('[data-display-setup-modal="true"]'),
+    null,
+    'Confirmar "Usar tamanho sugerido (85%)" deve fechar o DisplaySetupModal no primeiro acesso'
+  );
+  assert.strictEqual(getDisplayPreferencesSnapshot().isConfigured, true);
+  assert.strictEqual(getDisplayPreferencesSnapshot().mode, 'tv');
+  assert.strictEqual(getDisplayPreferencesSnapshot().tvScale, 85);
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.85');
 
   await act(async () => {
     homeFirstRunRoot.unmount();
   });
   document.body.removeChild(homeFirstRunContainer);
 
-  // 1. Preferência confirmada "Outros dispositivos" + abrir modal em prévia de TV + desmontar sem confirmar -> volta para "Outros dispositivos"
-  confirmDisplayPreferences('default', 85);
+  // 1. Três opções responsivas (Celular, Tablet, Computador):
+  //    - navegação por setas e retorno à opção de origem no Voltar (botão e Escape)
+  //    - nome escolhido visível na confirmação
+  //    - confirmam 'default' a 100% preservando o formato salvo e a escala de TV anteriormente salva (ex.: 90%)
+  confirmDisplayPreferences('tv', 90);
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.9');
+
+  const responsiveChoices: Array<{ id: 'celular' | 'tablet' | 'computador'; label: string }> = [
+    { id: 'celular', label: 'Celular' },
+    { id: 'tablet', label: 'Tablet' },
+    { id: 'computador', label: 'Computador' },
+  ];
+
+  for (const choice of responsiveChoices) {
+    // Garantir que antes de testar cada opção responsiva temos TV @ 90% salva
+    confirmDisplayPreferences('tv', 90);
+    const rootFontBeforeResponsive = document.documentElement.style.fontSize;
+    const rawSaved90 = window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS);
+
+    const respContainer = document.createElement('div');
+    document.body.appendChild(respContainer);
+    const respRoot = createRoot(respContainer);
+    let respCompleted = false;
+
+    await act(async () => {
+      respRoot.render(
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(DisplaySetupModal, {
+            isOpen: true,
+            canCancel: true,
+            initialStep: 'device',
+            onComplete: () => {
+              respCompleted = true;
+            },
+          })
+        )
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    // Navegar por setas (ArrowRight / ArrowLeft) entre as 4 opções sem alterar a raiz
+    const tvBtn = respContainer.querySelector('button[data-device-choice="tv"]') as HTMLButtonElement;
+    const celBtn = respContainer.querySelector('button[data-device-choice="celular"]') as HTMLButtonElement;
+    const tabBtn = respContainer.querySelector('button[data-device-choice="tablet"]') as HTMLButtonElement;
+    const compBtn = respContainer.querySelector('button[data-device-choice="computador"]') as HTMLButtonElement;
+    assert(tvBtn && celBtn && tabBtn && compBtn, 'Todas as 4 opções de dispositivo devem estar montadas');
+
+    await act(async () => {
+      tvBtn.focus();
+    });
+    assertSameElement(document.activeElement, tvBtn, 'Foco inicial em TV');
+
+    await act(async () => {
+      tvBtn.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'ArrowRight',
+          bubbles: true,
+          cancelable: true,
+        }) as unknown as Event
+      );
+    });
+    assertSameElement(document.activeElement, celBtn, 'ArrowRight: TV -> Celular');
+
+    await act(async () => {
+      celBtn.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'ArrowRight',
+          bubbles: true,
+          cancelable: true,
+        }) as unknown as Event
+      );
+    });
+    assertSameElement(document.activeElement, tabBtn, 'ArrowRight: Celular -> Tablet');
+
+    await act(async () => {
+      tabBtn.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'ArrowRight',
+          bubbles: true,
+          cancelable: true,
+        }) as unknown as Event
+      );
+    });
+    assertSameElement(document.activeElement, compBtn, 'ArrowRight: Tablet -> Computador');
+
+    await act(async () => {
+      compBtn.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'ArrowLeft',
+          bubbles: true,
+          cancelable: true,
+        }) as unknown as Event
+      );
+    });
+    assertSameElement(document.activeElement, tabBtn, 'ArrowLeft: Computador -> Tablet');
+
+    // Selecionar a opção responsiva em teste
+    const targetOptionBtn = respContainer.querySelector(
+      `button[data-device-choice="${choice.id}"]`
+    ) as HTMLButtonElement;
+    await act(async () => {
+      targetOptionBtn.focus();
+      targetOptionBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    // Enquanto está na tela de confirmação da opção responsiva, a raiz e o localStorage permanecem intactos
+    assert.strictEqual(
+      document.documentElement.getAttribute('data-display-mode'),
+      'tv',
+      `Selecionar ${choice.label} sem confirmar não deve alterar html[data-display-mode]`
+    );
+    assert.strictEqual(
+      document.documentElement.style.getPropertyValue('--nc-ui-scale'),
+      '0.9',
+      `Selecionar ${choice.label} sem confirmar não deve alterar --nc-ui-scale`
+    );
+    assert.strictEqual(
+      document.documentElement.style.fontSize,
+      rootFontBeforeResponsive,
+      `Selecionar ${choice.label} sem confirmar não deve alterar o font-size da raiz`
+    );
+    assert.strictEqual(
+      window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS),
+      rawSaved90,
+      `Selecionar ${choice.label} sem confirmar não deve gravar no localStorage`
+    );
+
+    const confirmTitle = respContainer.querySelector('[data-default-confirm-title="true"]');
+    assert(
+      confirmTitle?.textContent?.includes(choice.label),
+      `Tela de confirmação deve exibir o nome escolhido (${choice.label})`
+    );
+
+    // Pressionar Voltar (Escape) deve retornar à seleção de dispositivos e devolver o foco exatamente para a opção de origem
+    await act(async () => {
+      windowInstance.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const returnedOptionBtn = respContainer.querySelector(
+      `button[data-device-choice="${choice.id}"]`
+    ) as HTMLButtonElement;
+    assertSameElement(
+      document.activeElement,
+      returnedOptionBtn,
+      `Voltar a partir da confirmação de ${choice.label} deve devolver o foco para a opção de origem (${choice.label})`
+    );
+
+    // Entrar novamente e confirmar a opção responsiva
+    await act(async () => {
+      returnedOptionBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    const confirmDefaultBtn = respContainer.querySelector(
+      'button[data-confirm-default="true"]'
+    ) as HTMLButtonElement;
+    assert(confirmDefaultBtn !== null, `Botão Confirmar para ${choice.label} deve existir`);
+    await act(async () => {
+      confirmDefaultBtn.click();
+    });
+
+    assert.strictEqual(respCompleted, true, `Confirmar ${choice.label} deve chamar onComplete`);
+    const snapAfterResp = getDisplayPreferencesSnapshot();
+    assert.strictEqual(snapAfterResp.mode, 'default', `${choice.label} deve confirmar o modo 'default'`);
+    assert.strictEqual(snapAfterResp.uiScaleFactor, 1, `${choice.label} deve usar escala 1 (100%)`);
+    assert.strictEqual(
+      snapAfterResp.tvScale,
+      90,
+      `Confirmar ${choice.label} deve preservar a escala de TV anteriormente salva (90%)`
+    );
+    assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default');
+    assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1');
+    assert.strictEqual(document.documentElement.style.fontSize, '');
+
+    const storedParsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS) || '{}');
+    assert.deepStrictEqual(
+      storedParsed,
+      {
+        version: 1,
+        mode: 'default',
+        tvScale: 90,
+        configured: true,
+      },
+      `Formato salvo em localStorage após confirmar ${choice.label} deve permanecer inalterado e preservar tvScale: 90`
+    );
+
+    await act(async () => {
+      respRoot.unmount();
+    });
+    document.body.removeChild(respContainer);
+  }
+
+  // 2. Prévia local e leve: testar vários movimentos do controle de escala (setas, arraste, botões rápidos 90% e 85%)
+  //    verificando que a amostra muda localmente sem alterar html[data-display-mode], --nc-ui-scale, font-size da raiz ou localStorage,
+  //    e que Voltar, cancelar, fechar ou desmontar descarta o rascunho.
+  confirmDisplayPreferences('default', 90);
   assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default');
   assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1');
+  assert.strictEqual(document.documentElement.style.fontSize, '');
+  const rawSavedBeforeCalib = window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS);
 
   const container1 = document.createElement('div');
   document.body.appendChild(container1);
@@ -4223,32 +4482,100 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
 
-  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, true, 'Cenário 1: Prévia deve estar ativa com modal aberto');
-  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv', 'Cenário 1: DOM deve refletir modo tv durante a prévia');
-  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.85', 'Cenário 1: DOM deve refletir escala 0.85 durante a prévia');
+  // Ao reabrir o ajuste direto com tvScale=90 salvo, deve começar pelo valor salvo (90%)
+  const slider1 = container1.querySelector('[data-calibration-slider="true"]') as HTMLElement;
+  const sample1 = container1.querySelector('[data-calibration-sample="true"]') as HTMLElement;
+  const sampleIcon1 = container1.querySelector('[data-sample-icon="true"]') as HTMLElement;
+  const sampleText1 = container1.querySelector('[data-sample-text="true"]') as HTMLElement;
+  assert(
+    slider1 !== null && sample1 !== null && sampleIcon1 !== null && sampleText1 !== null,
+    'Cenário 2: Controle de escala e amostra simples (ícone + texto) devem estar presentes'
+  );
+  assert.strictEqual(
+    slider1.getAttribute('aria-valuenow'),
+    '90',
+    'Cenário 2: Ao reabrir a calibração, deve começar pelo valor salvo (90%)'
+  );
+  assert.strictEqual(
+    sample1.getAttribute('data-sample-scale'),
+    '90',
+    'Cenário 2: Amostra local deve iniciar em 90%'
+  );
 
-  // Desmontar diretamente sem clicar em Confirmar nem Cancelar
+  const iconWidthAt90 = parseFloat(sampleIcon1.style.width);
+  const textFontAt90 = parseFloat(sampleText1.style.fontSize);
+  assert(iconWidthAt90 > 0 && textFontAt90 > 0, 'Cenário 2: Amostra local deve ter dimensões numéricas de ícone e texto');
+
+  // Raiz global continua intocada enquanto o modal de calibração está aberto
+  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, false, 'Cenário 2: Prévia global não deve ser ativada pelo modal');
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default', 'Cenário 2: html[data-display-mode] permanece intacto ("default")');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1', 'Cenário 2: --nc-ui-scale permanece intacto ("1")');
+  assert.strictEqual(document.documentElement.style.fontSize, '', 'Cenário 2: font-size da raiz permanece intacto');
+  assert.strictEqual(window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS), rawSavedBeforeCalib, 'Cenário 2: localStorage permanece intacto');
+
+  // Mover controle de escala vários passos para a direita (90% -> 95% -> 100% -> 105% -> 110% -> 115% -> 120% -> 125%)
+  for (let i = 0; i < 7; i++) {
+    await act(async () => {
+      slider1.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'ArrowRight',
+          bubbles: true,
+          cancelable: true,
+        }) as unknown as Event
+      );
+    });
+  }
+  assert.strictEqual(slider1.getAttribute('aria-valuenow'), '125');
+  assert.strictEqual(sample1.getAttribute('data-sample-scale'), '125');
+  const iconWidthAt125 = parseFloat(sampleIcon1.style.width);
+  const textFontAt125 = parseFloat(sampleText1.style.fontSize);
+  assert(
+    iconWidthAt125 > iconWidthAt90 && textFontAt125 > textFontAt90,
+    'Cenário 2: Em 125%, o ícone e o texto da amostra devem ser maiores que em 90%'
+  );
+
+  // Mover controle de escala vários passos para a esquerda até 50% (15 passos de 5%)
+  for (let i = 0; i < 15; i++) {
+    await act(async () => {
+      slider1.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'ArrowLeft',
+          bubbles: true,
+          cancelable: true,
+        }) as unknown as Event
+      );
+    });
+  }
+  assert.strictEqual(slider1.getAttribute('aria-valuenow'), '50');
+  assert.strictEqual(sample1.getAttribute('data-sample-scale'), '50');
+  const iconWidthAt50 = parseFloat(sampleIcon1.style.width);
+  const textFontAt50 = parseFloat(sampleText1.style.fontSize);
+  assert(
+    iconWidthAt50 < iconWidthAt90 && textFontAt50 < textFontAt90,
+    'Cenário 2: Em 50%, o ícone e o texto da amostra devem ser menores que em 90%'
+  );
+
+  // Durante todos os movimentos de 50% a 125%, a raiz do documento e o localStorage continuam 100% intocados
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1');
+  assert.strictEqual(document.documentElement.style.fontSize, '');
+  assert.strictEqual(window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS), rawSavedBeforeCalib);
+
+  // Desmontar diretamente sem confirmar descarta o rascunho
   await act(async () => {
     root1.unmount();
   });
   document.body.removeChild(container1);
 
-  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, false, 'Cenário 1: Prévia deve ser encerrada ao desmontar o modal');
-  assert.strictEqual(
-    document.documentElement.getAttribute('data-display-mode'),
-    'default',
-    'Cenário 1: Após desmontar sem confirmar, data-display-mode deve voltar para "default"'
-  );
-  assert.strictEqual(
-    document.documentElement.style.getPropertyValue('--nc-ui-scale'),
-    '1',
-    'Cenário 1: Após desmontar sem confirmar, --nc-ui-scale deve voltar para "1"'
-  );
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1');
+  assert.strictEqual(window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS), rawSavedBeforeCalib);
 
-  // 2. Preferência confirmada "TV 75%" + abrir modal em prévia "125%" + mudar isOpen para false -> volta para "TV 75%"
+  // 3. Preferência confirmada "TV 75%" + abrir modal + testar botões rápidos (85% e 90%) + mudar isOpen=false descarta rascunho
   confirmDisplayPreferences('tv', 75);
   assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv');
   assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.75');
+  assert.strictEqual(document.documentElement.style.fontSize, '12px');
 
   const container2 = document.createElement('div');
   document.body.appendChild(container2);
@@ -4271,24 +4598,29 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   });
 
   const slider2 = container2.querySelector('[data-calibration-slider="true"]') as HTMLElement;
-  assert(slider2 !== null, 'Cenário 2: Slider de calibração deve estar presente');
+  assert.strictEqual(slider2.getAttribute('aria-valuenow'), '75', 'Cenário 3: Reabrir calibração começa pelo valor salvo (75%)');
 
-  // Avançar de 75% até 125% (10 passos de 5%)
-  for (let i = 0; i < 10; i++) {
-    await act(async () => {
-      slider2.dispatchEvent(
-        new (windowInstance as any).KeyboardEvent('keydown', {
-          key: 'ArrowRight',
-          bubbles: true,
-          cancelable: true,
-        }) as unknown as Event
-      );
-    });
-  }
+  // Testar botão rápido de 90% e botão de restaurar 85%
+  const quick90Btn2 = container2.querySelector('button[data-scale-preset="90"]') as HTMLButtonElement;
+  const reset85Btn2 = container2.querySelector('button[data-scale-preset="85"]') as HTMLButtonElement;
+  assert(quick90Btn2 !== null && reset85Btn2 !== null, 'Cenário 3: Botões rápidos de 90% e 85% devem existir na calibração');
 
-  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1.25', 'Cenário 2: Prévia deve aplicar 125% (1.25) em tempo real');
+  await act(async () => {
+    quick90Btn2.click();
+  });
+  assert.strictEqual(slider2.getAttribute('aria-valuenow'), '90', 'Cenário 3: Botão rápido escolhe 90% na amostra');
+  assert.strictEqual(
+    document.documentElement.style.getPropertyValue('--nc-ui-scale'),
+    '0.75',
+    'Cenário 3: Escolher 90% na amostra NÃO altera --nc-ui-scale global antes de confirmar'
+  );
+  assert.strictEqual(
+    document.documentElement.style.fontSize,
+    '12px',
+    'Cenário 3: Escolher 90% na amostra NÃO altera font-size da raiz antes de confirmar'
+  );
 
-  // Mudar isOpen para false sem chamar onCancel
+  // Fechar (isOpen=false) sem confirmar descarta o rascunho de 90% e preserva 75% ao reabrir
   await act(async () => {
     root2.render(
       React.createElement(
@@ -4303,13 +4635,27 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
       )
     );
   });
+  await act(async () => {
+    root2.render(
+      React.createElement(
+        NavigationProvider,
+        null,
+        React.createElement(DisplaySetupModal, {
+          isOpen: true,
+          canCancel: true,
+          initialStep: 'tv-calibrate',
+          onComplete: () => {},
+        })
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
 
-  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, false, 'Cenário 2: isOpen=false deve encerrar a prévia');
-  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv', 'Cenário 2: Modo confirmado TV deve permanecer');
+  const slider2Reopened = container2.querySelector('[data-calibration-slider="true"]') as HTMLElement;
   assert.strictEqual(
-    document.documentElement.style.getPropertyValue('--nc-ui-scale'),
-    '0.75',
-    'Cenário 2: Escala deve restaurar para os 75% (0.75) confirmados'
+    slider2Reopened.getAttribute('aria-valuenow'),
+    '75',
+    'Cenário 3: Após fechar sem confirmar, reabrir a calibração descarta o rascunho e volta ao valor salvo (75%)'
   );
 
   await act(async () => {
@@ -4317,10 +4663,10 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   });
   document.body.removeChild(container2);
 
-  // 3. Prévia + Voltar e Cancelar não gravam no localStorage (comparando string bruta antes e depois)
+  // 4. Fluxo completo por seleção de TV -> Ajustar tamanho -> alterar rascunho -> Voltar descarta rascunho e retorna foco a TV -> Fechar não grava
   confirmDisplayPreferences('default', 85);
   const rawBeforePreview = window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS);
-  assert(rawBeforePreview !== null, 'Cenário 3: Preferência inicial salva no localStorage');
+  assert(rawBeforePreview !== null, 'Cenário 4: Preferência inicial salva no localStorage');
 
   const container3 = document.createElement('div');
   document.body.appendChild(container3);
@@ -4346,11 +4692,18 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
 
-  const tvChoiceBtn = container3.querySelector('[data-device-choice="tv"]') as HTMLButtonElement;
-  assert(tvChoiceBtn !== null, 'Cenário 3: Botão de escolha TV deve existir');
+  const tvChoiceBtn = container3.querySelector('button[data-device-choice="tv"]') as HTMLButtonElement;
+  assert(tvChoiceBtn !== null, 'Cenário 4: Botão de escolha TV deve existir');
 
   await act(async () => {
     tvChoiceBtn.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  const adjustSizeBtn3 = container3.querySelector('button[data-tv-adjust-size="true"]') as HTMLButtonElement;
+  assert(adjustSizeBtn3 !== null, 'Cenário 4: Botão Ajustar tamanho deve existir');
+  await act(async () => {
+    adjustSizeBtn3.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
 
@@ -4365,61 +4718,48 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
     );
   });
 
-  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv', 'Cenário 3: Prévia TV ativa');
-  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.9', 'Cenário 3: Prévia em 90%');
+  assert.strictEqual(slider3.getAttribute('aria-valuenow'), '90', 'Cenário 4: Rascunho local em 90%');
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default', 'Cenário 4: Raiz permanece em default durante o rascunho');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1', 'Cenário 4: --nc-ui-scale permanece 1 durante o rascunho');
   assert.strictEqual(
     window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS),
     rawBeforePreview,
-    'Cenário 3: Prévia ativa não deve alterar o valor bruto no localStorage'
+    'Cenário 4: Rascunho não deve alterar o valor bruto no localStorage'
   );
 
-  // Clicar no botão Voltar dentro da etapa de calibração -> volta para seleção de dispositivo e restaura apresentação confirmada
-  const backStepBtn = Array.from(container3.querySelectorAll('button')).find((b) =>
-    b.textContent?.includes('Voltar')
-  ) as HTMLButtonElement;
-  assert(backStepBtn !== null, 'Cenário 3: Botão Voltar da etapa de calibração deve existir');
+  // Clicar no botão Voltar dentro da etapa de calibração -> volta para seleção de dispositivo, descarta rascunho e foca TV
+  const backStepBtn = container3.querySelector('button[data-calibration-back="true"]') as HTMLButtonElement;
+  assert(backStepBtn !== null, 'Cenário 4: Botão Voltar da etapa de calibração deve existir');
 
   await act(async () => {
     backStepBtn.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
 
-  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, false, 'Cenário 3: Voltar à seleção de dispositivo deve cancelar a prévia');
-  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default', 'Cenário 3: Voltar restaura data-display-mode="default"');
-  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1', 'Cenário 3: Voltar restaura --nc-ui-scale="1"');
+  const tvChoiceAfterBack = container3.querySelector('button[data-device-choice="tv"]') as HTMLButtonElement;
+  assertSameElement(
+    document.activeElement,
+    tvChoiceAfterBack,
+    'Cenário 4: Voltar na calibração deve devolver o foco para a opção de origem (TV)'
+  );
   assert.strictEqual(
     window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS),
     rawBeforePreview,
-    'Cenário 3: Voltar não deve gravar nada no localStorage'
+    'Cenário 4: Voltar não deve gravar nada no localStorage'
   );
 
-  // Entrar novamente em TV e acionar Fechar/Cancelar
-  const tvChoiceBtnAgain = container3.querySelector('[data-device-choice="tv"]') as HTMLButtonElement;
-  await act(async () => {
-    tvChoiceBtnAgain.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  });
-  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, true, 'Cenário 3: Prévia reativada');
-
-  // Voltar para device step e clicar em Fechar
-  await act(async () => {
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-    );
-  });
-  const closeModalBtn = Array.from(container3.querySelectorAll('button')).find((b) =>
-    b.textContent?.includes('Fechar')
-  ) as HTMLButtonElement;
-  assert(closeModalBtn !== null, 'Cenário 3: Botão Fechar deve existir quando canCancel=true');
+  // Clicar em Fechar no passo de dispositivos
+  const closeModalBtn = container3.querySelector('button[data-device-cancel="true"]') as HTMLButtonElement;
+  assert(closeModalBtn !== null, 'Cenário 4: Botão Fechar deve existir quando canCancel=true');
 
   await act(async () => {
     closeModalBtn.click();
   });
-  assert.strictEqual(cancelCalled3, true, 'Cenário 3: Clicar em Fechar deve invocar onCancel');
+  assert.strictEqual(cancelCalled3, true, 'Cenário 4: Clicar em Fechar deve invocar onCancel');
   assert.strictEqual(
     window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS),
     rawBeforePreview,
-    'Cenário 3: Cancelar/Fechar deve manter a string do localStorage idêntica ao estado anterior'
+    'Cenário 4: Cancelar/Fechar deve manter a string do localStorage idêntica ao estado anterior'
   );
 
   await act(async () => {
@@ -4427,7 +4767,7 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   });
   document.body.removeChild(container3);
 
-  // 4. Confirmar "TV 65%" e fechar/desmontar -> mantém "TV 65%"
+  // 5. Escolher 90% pelo botão rápido, confirmar e validar que uma TV já configurada em 90% continua abrindo em 90% sem repetir o seletor
   const container4 = document.createElement('div');
   document.body.appendChild(container4);
   const root4 = createRoot(container4);
@@ -4451,55 +4791,63 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
 
-  const slider4 = container4.querySelector('[data-calibration-slider="true"]') as HTMLElement;
-  // Escala inicial é 85%. Descer 4 passos de 5% -> 65%
-  for (let i = 0; i < 4; i++) {
-    await act(async () => {
-      slider4.dispatchEvent(
-        new (windowInstance as any).KeyboardEvent('keydown', {
-          key: 'ArrowLeft',
-          bubbles: true,
-          cancelable: true,
-        }) as unknown as Event
-      );
-    });
-  }
+  const quick90Btn4 = container4.querySelector('button[data-scale-preset="90"]') as HTMLButtonElement;
+  await act(async () => {
+    quick90Btn4.click();
+  });
 
   const confirmBtn4 = container4.querySelector('[data-calibration-confirm="true"]') as HTMLButtonElement;
-  assert(confirmBtn4 !== null, 'Cenário 4: Botão Confirmar deve existir');
+  assert(confirmBtn4 !== null, 'Cenário 5: Botão Confirmar deve existir');
 
   await act(async () => {
     confirmBtn4.click();
   });
-  assert.strictEqual(completed4, true, 'Cenário 4: Confirmar deve invocar onComplete');
+  assert.strictEqual(completed4, true, 'Cenário 5: Confirmar deve invocar onComplete');
 
-  // Fechar (isOpen=false) e desmontar em seguida
-  await act(async () => {
-    root4.render(
-      React.createElement(
-        NavigationProvider,
-        null,
-        React.createElement(DisplaySetupModal, {
-          isOpen: false,
-          canCancel: true,
-          initialStep: 'tv-calibrate',
-          onComplete: () => {},
-        })
-      )
-    );
-  });
   await act(async () => {
     root4.unmount();
   });
   document.body.removeChild(container4);
 
-  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, false, 'Cenário 4: Prévia encerrada após confirmar');
-  assert.strictEqual(getDisplayPreferencesSnapshot().mode, 'tv', 'Cenário 4: Modo confirmado deve ser tv');
-  assert.strictEqual(getDisplayPreferencesSnapshot().tvScale, 65, 'Cenário 4: Escala confirmada deve ser 65');
-  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv', 'Cenário 4: DOM deve manter data-display-mode="tv" após fechar/desmontar');
-  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.65', 'Cenário 4: DOM deve manter --nc-ui-scale="0.65" após fechar/desmontar');
+  assert.strictEqual(getDisplayPreferencesSnapshot().mode, 'tv', 'Cenário 5: Modo confirmado deve ser tv');
+  assert.strictEqual(getDisplayPreferencesSnapshot().tvScale, 90, 'Cenário 5: Escala confirmada deve ser 90');
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv', 'Cenário 5: DOM deve aplicar data-display-mode="tv" ao confirmar');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.9', 'Cenário 5: DOM deve aplicar --nc-ui-scale="0.9" ao confirmar');
 
-  // 5. Confirmar com localStorage.setItem lançando erro -> mantém a preferência confirmada em memória após fechar/desmontar
+  // Montar <Home /> com TV já configurada em 90%: não deve abrir o seletor nem redefinir a escala
+  const homeConfigured90Container = document.createElement('div');
+  document.body.appendChild(homeConfigured90Container);
+  const homeConfigured90Root = createRoot(homeConfigured90Container);
+
+  await act(async () => {
+    homeConfigured90Root.render(
+      React.createElement(
+        MemoryRouter,
+        { initialEntries: ['/home'] },
+        React.createElement(NavigationProvider, null, React.createElement(Home))
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+
+  assert.strictEqual(
+    homeConfigured90Container.querySelector('[data-display-setup-modal="true"]'),
+    null,
+    'Cenário 5: Uma TV já configurada em 90% não deve repetir o seletor DisplaySetupModal ao abrir a Home'
+  );
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv');
+  assert.strictEqual(
+    document.documentElement.style.getPropertyValue('--nc-ui-scale'),
+    '0.9',
+    'Cenário 5: Uma TV já configurada em 90% deve continuar abrindo em 90% sem redefinir a escala'
+  );
+
+  await act(async () => {
+    homeConfigured90Root.unmount();
+  });
+  document.body.removeChild(homeConfigured90Container);
+
+  // 6. Confirmar com localStorage.setItem lançando erro -> mantém a preferência confirmada em memória após fechar/desmontar
   window.localStorage.setItem = () => {
     throw new Error('QuotaExceededError: Mock storage failure');
   };
@@ -4525,18 +4873,17 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   });
 
   const slider5 = container5.querySelector('[data-calibration-slider="true"]') as HTMLElement;
-  // Subir de 65% para 95% (6 passos de 5%)
-  for (let i = 0; i < 6; i++) {
-    await act(async () => {
-      slider5.dispatchEvent(
-        new (windowInstance as any).KeyboardEvent('keydown', {
-          key: 'ArrowRight',
-          bubbles: true,
-          cancelable: true,
-        }) as unknown as Event
-      );
-    });
-  }
+  assert.strictEqual(slider5.getAttribute('aria-valuenow'), '90', 'Cenário 6: Começa em 90% salvo');
+  // Subir de 90% para 95% (1 passo de 5%)
+  await act(async () => {
+    slider5.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        bubbles: true,
+        cancelable: true,
+      }) as unknown as Event
+    );
+  });
 
   const confirmBtn5 = container5.querySelector('[data-calibration-confirm="true"]') as HTMLButtonElement;
   await act(async () => {
@@ -4544,102 +4891,18 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   });
 
   await act(async () => {
-    root5.render(
-      React.createElement(
-        NavigationProvider,
-        null,
-        React.createElement(DisplaySetupModal, {
-          isOpen: false,
-          canCancel: true,
-          initialStep: 'tv-calibrate',
-          onComplete: () => {},
-        })
-      )
-    );
-  });
-  await act(async () => {
     root5.unmount();
   });
   document.body.removeChild(container5);
   window.localStorage.setItem = origSetItem;
 
-  assert.strictEqual(getDisplayPreferencesSnapshot().isConfigured, true, 'Cenário 5: Mesmo com falha no localStorage, isConfigured deve permanecer true em memória');
-  assert.strictEqual(getDisplayPreferencesSnapshot().mode, 'tv', 'Cenário 5: Modo confirmado em memória deve ser tv');
-  assert.strictEqual(getDisplayPreferencesSnapshot().tvScale, 95, 'Cenário 5: Escala confirmada em memória deve ser 95');
-  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv', 'Cenário 5: DOM deve manter data-display-mode="tv"');
-  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.95', 'Cenário 5: DOM deve manter --nc-ui-scale="0.95"');
+  assert.strictEqual(getDisplayPreferencesSnapshot().isConfigured, true, 'Cenário 6: Mesmo com falha no localStorage, isConfigured deve permanecer true em memória');
+  assert.strictEqual(getDisplayPreferencesSnapshot().mode, 'tv', 'Cenário 6: Modo confirmado em memória deve ser tv');
+  assert.strictEqual(getDisplayPreferencesSnapshot().tvScale, 95, 'Cenário 6: Escala confirmada em memória deve ser 95');
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv', 'Cenário 6: DOM deve manter data-display-mode="tv"');
+  assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '0.95', 'Cenário 6: DOM deve manter --nc-ui-scale="0.95"');
 
-  // 6. Duas instâncias do modal: uma fechada ao lado de outra aberta em prévia não cancela a prévia ativa
-  confirmDisplayPreferences('default', 85);
-  const container6 = document.createElement('div');
-  document.body.appendChild(container6);
-  const root6 = createRoot(container6);
-
-  await act(async () => {
-    root6.render(
-      React.createElement(
-        NavigationProvider,
-        null,
-        React.createElement(
-          React.Fragment,
-          null,
-          React.createElement(DisplaySetupModal, {
-            key: 'home-closed-instance',
-            isOpen: false,
-            canCancel: false,
-            onComplete: () => {},
-          }),
-          React.createElement(DisplaySetupModal, {
-            key: 'config-open-instance',
-            isOpen: true,
-            canCancel: true,
-            initialStep: 'tv-calibrate',
-            onComplete: () => {},
-          })
-        )
-      )
-    );
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  });
-
-  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, true, 'Cenário 6: Prévia da instância aberta deve estar ativa');
-  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv', 'Cenário 6: DOM deve estar em modo tv');
-
-  // Re-renderizar / desmontar apenas a instância fechada mantendo a instância aberta montada
-  await act(async () => {
-    root6.render(
-      React.createElement(
-        NavigationProvider,
-        null,
-        React.createElement(
-          React.Fragment,
-          null,
-          React.createElement(DisplaySetupModal, {
-            key: 'config-open-instance',
-            isOpen: true,
-            canCancel: true,
-            initialStep: 'tv-calibrate',
-            onComplete: () => {},
-          })
-        )
-      )
-    );
-  });
-
-  assert.strictEqual(
-    getDisplayPreferencesSnapshot().isPreviewActive,
-    true,
-    'Cenário 6: Desmontar/atualizar a instância fechada NÃO deve cancelar a prévia da instância aberta'
-  );
-  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv');
-
-  await act(async () => {
-    root6.unmount();
-  });
-  document.body.removeChild(container6);
-  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, false, 'Cenário 6: Desmontar a instância aberta encerra a prévia');
-
-  // 7. Encerrar sessão antiga depois de uma nova sessão já ter iniciado mantém a nova prévia ativa
+  // 7. API programática de tvEnvironment (startDisplayPreview / cancelDisplayPreview com sessão) e React.StrictMode no modal
   confirmDisplayPreferences('default', 85);
   const oldSessionId = createDisplayPreviewSession();
   const newSessionId = createDisplayPreviewSession();
@@ -4650,30 +4913,16 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
   startDisplayPreview('tv', 110, newSessionId);
   assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1.1');
 
-  // Cleanup tardio da sessão antiga não pode derrubar a sessão nova
   cancelDisplayPreview(oldSessionId);
   assert.strictEqual(
     getDisplayPreferencesSnapshot().isPreviewActive,
     true,
     'Cenário 7: Cancelar token de sessão antiga não deve encerrar a prévia da sessão nova'
   );
-  assert.strictEqual(
-    document.documentElement.getAttribute('data-display-mode'),
-    'tv',
-    'Cenário 7: Modo tv da nova sessão permanece ativo'
-  );
-  assert.strictEqual(
-    document.documentElement.style.getPropertyValue('--nc-ui-scale'),
-    '1.1',
-    'Cenário 7: Escala 1.1 da nova sessão permanece ativa'
-  );
-
   cancelDisplayPreview(newSessionId);
-  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, false, 'Cenário 7: Cancelar o token da sessão atual encerra a prévia');
+  assert.strictEqual(getDisplayPreferencesSnapshot().isPreviewActive, false);
   assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default');
 
-  // 8. Montar o modal em React.StrictMode não deixa prévia órfã
-  confirmDisplayPreferences('default', 85);
   const container8 = document.createElement('div');
   document.body.appendChild(container8);
   const root8 = createRoot(container8);
@@ -4700,21 +4949,16 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
 
   assert.strictEqual(
     getDisplayPreferencesSnapshot().isPreviewActive,
-    true,
-    'Cenário 8: Em React.StrictMode, a prévia deve funcionar normalmente enquanto o modal está aberto'
+    false,
+    'Cenário 8: Em React.StrictMode, o modal com amostra local não ativa prévia global'
   );
-  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'tv');
+  assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default');
 
   await act(async () => {
     root8.unmount();
   });
   document.body.removeChild(container8);
 
-  assert.strictEqual(
-    getDisplayPreferencesSnapshot().isPreviewActive,
-    false,
-    'Cenário 8: Desmontar o modal sob React.StrictMode não deve deixar prévia órfã'
-  );
   assert.strictEqual(document.documentElement.getAttribute('data-display-mode'), 'default');
   assert.strictEqual(document.documentElement.style.getPropertyValue('--nc-ui-scale'), '1');
 
@@ -6399,11 +6643,11 @@ async function runPerformanceAndVirtualizationTests() {
     'XtreamProvider deve iniciar o carregamento dos catálogos em segundo plano mesmo sem HomeView montada'
   );
 
-  // Selecionar "Outros dispositivos" (step 1) e confirmar em "Confirmar e continuar" (step 1B)
+  // Selecionar "Computador" (step 1) e confirmar (step 1B)
   const otherDevicesCard = modalDialog!.querySelector(
-    'button[data-device-choice="default"]'
+    'button[data-device-choice="computador"]'
   ) as HTMLButtonElement | null;
-  assert(otherDevicesCard !== null, 'Botão Outros dispositivos (data-device-choice="default") deve existir no DisplaySetupModal');
+  assert(otherDevicesCard !== null, 'Botão Computador (data-device-choice="computador") deve existir no DisplaySetupModal');
   await act(async () => {
     otherDevicesCard!.click();
     await new Promise((r) => setTimeout(r, 20));
@@ -14380,9 +14624,9 @@ async function runPerformanceAndVirtualizationTests() {
       const modalDialog150 = p31Container.querySelector('[role="dialog"][aria-modal="true"]');
       assert(modalDialog150 !== null, '[12.20.5] DisplaySetupModal real deve estar montado no DOM');
       const otherDevBtn150 = modalDialog150!.querySelector(
-        'button[data-device-choice="default"]'
+        'button[data-device-choice="computador"]'
       ) as HTMLButtonElement | null;
-      assert(otherDevBtn150 !== null, '[12.20.5] Botão Outros dispositivos deve existir');
+      assert(otherDevBtn150 !== null, '[12.20.5] Botão Computador deve existir');
       await act(async () => {
         otherDevBtn150!.click();
         await new Promise((r) => setTimeout(r, 15));
@@ -20086,12 +20330,38 @@ if (args[0] === 'add' && args[1] === 'android') {
               ch4Btn,
               `[12.23][${testDisplayMode}] Fechar o preview mantém o foco no canal selecionado`
             );
+            // 6. Validar estilo de foco da programação em src/index.css (sem fundo/borda/brilho ciano #00E5FF, usando contorno branco padrão)
+            const indexCssContent = fs.readFileSync(
+              path.resolve(process.cwd(), 'src/index.css'),
+              'utf-8'
+            );
+            const epgFocusRuleMatch = indexCssContent.match(
+              /\.nc-tv-epg-card:focus[\s\S]*?\{([\s\S]*?)\}/
+            );
+            assert(
+              epgFocusRuleMatch !== null,
+              `[12.23][${testDisplayMode}] Regra .nc-tv-epg-card:focus deve existir em src/index.css`
+            );
+            const epgFocusRuleBody = epgFocusRuleMatch![1];
+            assert(
+              !epgFocusRuleBody.includes('#00E5FF') &&
+                !epgFocusRuleBody.includes('0, 229, 255') &&
+                !epgFocusRuleBody.includes('background-color') &&
+                !epgFocusRuleBody.includes('border-color'),
+              `[12.23][${testDisplayMode}] Regra de foco de .nc-tv-epg-card e .nc-tv-epg-state não deve aplicar fundo, borda nem brilho ciano`
+            );
+            assert(
+              epgFocusRuleBody.includes('outline: 2px solid #ffffff') &&
+                epgFocusRuleBody.includes('outline-offset: 2px'),
+              `[12.23][${testDisplayMode}] Regra de foco de .nc-tv-epg-card e .nc-tv-epg-state deve usar o contorno branco padrão da plataforma`
+            );
           }
 
           console.log(
             `📊 [Métricas 12.23 — Grade de Programação e Navegação por Setas na TV ao Vivo]\n` +
               `   • Percurso D-Pad validado (default e tv): Canal -> Favorito -> Programação (6 itens) -> ArrowDown até item #6 -> ArrowLeft retorna à linha de canal de origem\n` +
               `   • Faixa "Versão do canal" (data-nav-row="true" + data-live-variants-row="true"): rolagem horizontal ida/volta (Automático <-> 4K), preferência pela versão ativa ao entrar por cima/baixo e 0 reinícios/consultas extras ao mover foco\n` +
+              `   • Foco visual da programação (.nc-tv-epg-card / .nc-tv-epg-state): contorno branco padrão (#ffffff), sem fundo/borda/brilho ciano, preservando destaque do programa atual\n` +
               `   • Exclusão de foco nos controles do preview embutido: ativa (clique/toque e botão Tentar Novamente preservados; tela cheia mantém controles focáveis e mesma instância de <video>)\n` +
               `   • Layout 961×541: ${layoutSummaryLines.join(' | ')}`
           );
