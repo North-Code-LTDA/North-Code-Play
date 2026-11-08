@@ -19037,7 +19037,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           const key = String(streamId);
           epgCallsByStreamId[key] = (epgCallsByStreamId[key] || 0) + 1;
           assert.strictEqual(limit, 10, '[12.23] getShortEpg deve preservar o limite 10');
-          if (key === '501') {
+          if (key === '501' || key === '5011' || key === '5012' || key === '5013') {
             return { epg_listings: sixPrograms };
           }
           if (key === '502') {
@@ -19056,7 +19056,9 @@ if (args[0] === 'add' && args[1] === 'android') {
 
         const dispatchArrowKey = async (key: 'ArrowRight' | 'ArrowLeft' | 'ArrowDown' | 'ArrowUp' | 'Enter' | 'Escape') => {
           await act(async () => {
-            windowInstance.dispatchEvent(
+            const target =
+              document.activeElement instanceof HTMLElement ? document.activeElement : windowInstance;
+            target.dispatchEvent(
               new (windowInstance as any).KeyboardEvent('keydown', {
                 key,
                 bubbles: true,
@@ -19097,8 +19099,30 @@ if (args[0] === 'add' && args[1] === 'android') {
             const liveTestStreams = [
               {
                 stream_id: 501,
+                name: 'Canal Notícias SD',
+                category_id: 'cat_epg_1',
+                epg_channel_id: 'epg_noticias',
+                stream_icon: '',
+              },
+              {
+                stream_id: 5011,
                 name: 'Canal Notícias HD',
                 category_id: 'cat_epg_1',
+                epg_channel_id: 'epg_noticias',
+                stream_icon: '',
+              },
+              {
+                stream_id: 5012,
+                name: 'Canal Notícias FHD',
+                category_id: 'cat_epg_1',
+                epg_channel_id: 'epg_noticias',
+                stream_icon: '',
+              },
+              {
+                stream_id: 5013,
+                name: 'Canal Notícias 4K',
+                category_id: 'cat_epg_1',
+                epg_channel_id: 'epg_noticias',
                 stream_icon: '',
               },
               {
@@ -19173,7 +19197,21 @@ if (args[0] === 'add' && args[1] === 'android') {
                   React.createElement(
                     XtreamMockProvider,
                     { value: liveMockCtx },
-                    React.createElement(LiveTvView, { key: testDisplayMode, onPlay: () => {} })
+                    React.createElement(
+                      'div',
+                      { key: testDisplayMode, className: 'flex flex-col w-full h-full' },
+                      React.createElement(
+                        'div',
+                        { 'data-nav-zone': 'header' },
+                        React.createElement('input', {
+                          type: 'text',
+                          readOnly: true,
+                          'data-test-header-search': 'true',
+                          placeholder: 'Pesquisar...',
+                        })
+                      ),
+                      React.createElement(LiveTvView, { onPlay: () => {} })
+                    )
                   )
                 )
               );
@@ -19498,9 +19536,338 @@ if (args[0] === 'add' && args[1] === 'android') {
               `[12.23][${testDisplayMode}] Mesma instância de <video> preservada após navegar pela grade`
             );
 
-            // 3. Fluxo de Tela Cheia (2º OK no canal já selecionado) + controles em tela cheia + sequência Voltar preservando o mesmo <video>
+            // 2.B. Rolagem horizontal da faixa "Versão do canal" (data-nav-row="true" + data-live-variants-row="true"),
+            // preferência pela versão ativa ao entrar por cima/baixo e preservação de reprodução e EPG
             await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] Foco de volta no Canal 1 agrupado`
+            );
+
+            const variantsRowEl = liveEpgContainer.querySelector<HTMLElement>(
+              '[data-live-variants-row="true"]'
+            );
+            assert(
+              variantsRowEl,
+              `[12.23][${testDisplayMode}] Faixa "Versão do canal" deve estar montada para o canal agrupado`
+            );
+            assert.strictEqual(
+              variantsRowEl.getAttribute('data-nav-row'),
+              'true',
+              `[12.23][${testDisplayMode}] Faixa de versões deve usar data-nav-row="true" para reaproveitar a rolagem horizontal`
+            );
+            assert.strictEqual(
+              variantsRowEl.getAttribute('data-live-variants-row'),
+              'true',
+              `[12.23][${testDisplayMode}] Faixa de versões deve ter o marcador data-live-variants-row="true"`
+            );
+            assert(
+              variantsRowEl.className.includes('overflow-x-auto') &&
+                variantsRowEl.className.includes('touch-pan-x'),
+              `[12.23][${testDisplayMode}] Faixa de versões deve preservar rolagem horizontal e toque (overflow-x-auto touch-pan-x)`
+            );
+
+            const variantBtns = Array.from(
+              variantsRowEl.querySelectorAll<HTMLButtonElement>('button')
+            );
+            assert.strictEqual(
+              variantBtns.length,
+              5,
+              `[12.23][${testDisplayMode}] Faixa de versões deve conter 5 opções (Automático + 4 resoluções)`
+            );
+            assert.strictEqual(
+              variantBtns[0].textContent?.trim(),
+              'Automático',
+              `[12.23][${testDisplayMode}] Primeira opção da faixa deve ser Automático`
+            );
+            assert.strictEqual(
+              variantBtns[4].textContent?.trim(),
+              '4K',
+              `[12.23][${testDisplayMode}] Última opção da faixa deve ser 4K`
+            );
+
+            // Configurar geometria horizontal onde as 5 opções (largura total 266px) não cabem na largura disponível (140px)
+            const variantsRowLeft = 480;
+            const variantsRowWidth = 140;
+            const variantsRowRight = variantsRowLeft + variantsRowWidth; // 620
+            const variantMetrics = [
+              { offsetLeft: 0, width: 76 },   // Automático: [0..76]
+              { offsetLeft: 82, width: 40 },  // FHD: [82..122]
+              { offsetLeft: 128, width: 42 }, // HD: [128..170]
+              { offsetLeft: 176, width: 46 }, // SD: [176..222]
+              { offsetLeft: 228, width: 38 }, // 4K: [228..266]
+            ];
+            const variantsTotalScrollWidth = 266;
+
+            variantsRowEl.scrollLeft = 0;
+            Object.defineProperty(variantsRowEl, 'clientWidth', {
+              value: variantsRowWidth,
+              configurable: true,
+            });
+            Object.defineProperty(variantsRowEl, 'scrollWidth', {
+              value: variantsTotalScrollWidth,
+              configurable: true,
+            });
+            variantsRowEl.getBoundingClientRect = () =>
+              ({
+                top: 96,
+                bottom: 124,
+                left: variantsRowLeft,
+                right: variantsRowRight,
+                width: variantsRowWidth,
+                height: 28,
+                x: variantsRowLeft,
+                y: 96,
+                toJSON: () => ({}),
+              }) as DOMRect;
+
+            variantBtns.forEach((btn, idx) => {
+              const m = variantMetrics[idx];
+              btn.getBoundingClientRect = () => {
+                const left = variantsRowLeft + m.offsetLeft - variantsRowEl.scrollLeft;
+                return {
+                  top: 98,
+                  bottom: 122,
+                  left,
+                  right: left + m.width,
+                  width: m.width,
+                  height: 24,
+                  x: left,
+                  y: 98,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
+            });
+
+            // Confirmar que em scrollLeft=0 a última opção (4K) está inicialmente fora da área visível
+            assert(
+              variantBtns[4].getBoundingClientRect().right > variantsRowEl.getBoundingClientRect().right,
+              `[12.23][${testDisplayMode}] Em scrollLeft=0, a última opção (4K) deve estar fora da área visível da faixa`
+            );
+
+            // Entrar na programação (Canal 1 -> Favorito 1 -> 1º item da programação) e subir (ArrowUp) para a faixa de versões
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(document.activeElement, fav1Btn, `[12.23][${testDisplayMode}] Canal 1 -> Favorito 1`);
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              epgItems[0],
+              `[12.23][${testDisplayMode}] Favorito 1 -> 1º item da programação preservado com canal agrupado`
+            );
+
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[0],
+              `[12.23][${testDisplayMode}] Entrar na faixa de versões por baixo (ArrowUp) deve focar a versão ativa (Automático)`
+            );
+
+            // Subir (ArrowUp) para o controle acima da faixa e entrar na faixa de versões por cima (ArrowDown)
+            const mobileBackWrapper = liveEpgContainer.querySelector<HTMLElement>('div.md\\:hidden');
+            const mobileBackBtn = mobileBackWrapper?.querySelector<HTMLButtonElement>('button') || null;
+            const headerSearchInput = liveEpgContainer.querySelector<HTMLInputElement>(
+              'input[data-test-header-search="true"]'
+            );
+            assert(
+              mobileBackBtn && headerSearchInput,
+              `[12.23][${testDisplayMode}] Controles acima da faixa de versões devem existir`
+            );
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              mobileBackBtn,
+              `[12.23][${testDisplayMode}] ArrowUp a partir da faixa de versões sobe para o bloco superior`
+            );
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[0],
+              `[12.23][${testDisplayMode}] Entrar na faixa de versões por cima (ArrowDown a partir do bloco superior) deve focar a versão ativa (Automático)`
+            );
+
+            // Em viewport md+ (961px, onde .md:hidden fica oculto), ArrowUp sobe para o header e ArrowDown entra na faixa focando a versão ativa
+            if (mobileBackWrapper) {
+              mobileBackWrapper.style.display = 'none';
+            }
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              headerSearchInput,
+              `[12.23][${testDisplayMode}] Com .md:hidden oculto em 961px, ArrowUp sobe para o header`
+            );
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[0],
+              `[12.23][${testDisplayMode}] Entrar na faixa de versões por cima (ArrowDown a partir do header) deve focar a versão ativa (Automático)`
+            );
+
+            // Avançar com ArrowRight até a última opção (4K), verificando que cada opção focada fica visível na faixa
+            for (let vIdx = 1; vIdx < variantBtns.length; vIdx++) {
+              await dispatchArrowKey('ArrowRight');
+              assertSameElement(
+                document.activeElement,
+                variantBtns[vIdx],
+                `[12.23][${testDisplayMode}] ArrowRight na faixa de versões deve focar a opção #${vIdx + 1} (${variantBtns[vIdx].textContent?.trim()})`
+              );
+              const rRect = variantsRowEl.getBoundingClientRect();
+              const bRect = variantBtns[vIdx].getBoundingClientRect();
+              assert(
+                bRect.left >= rRect.left && bRect.right <= rRect.right,
+                `[12.23][${testDisplayMode}] Opção #${vIdx + 1} (${variantBtns[vIdx].textContent?.trim()}) deve ficar visível dentro da faixa ao avançar (btn=[${bRect.left}..${bRect.right}], row=[${rRect.left}..${rRect.right}], scrollLeft=${variantsRowEl.scrollLeft})`
+              );
+            }
+            assert(
+              variantsRowEl.scrollLeft > 0,
+              `[12.23][${testDisplayMode}] A faixa deve ter rolado para a direita para exibir a última opção 4K (scrollLeft=${variantsRowEl.scrollLeft})`
+            );
+            assert(
+              variantBtns[0].getBoundingClientRect().left < variantsRowEl.getBoundingClientRect().left,
+              `[12.23][${testDisplayMode}] Com o foco na última opção (4K), a primeira opção (Automático) está deslocada à esquerda`
+            );
+
+            // Voltar com ArrowLeft até a primeira opção (Automático) e confirmar que ela volta a ficar visível
+            for (let vIdx = variantBtns.length - 2; vIdx >= 0; vIdx--) {
+              await dispatchArrowKey('ArrowLeft');
+              assertSameElement(
+                document.activeElement,
+                variantBtns[vIdx],
+                `[12.23][${testDisplayMode}] ArrowLeft na faixa de versões deve focar a opção #${vIdx + 1} (${variantBtns[vIdx].textContent?.trim()})`
+              );
+              const rRect = variantsRowEl.getBoundingClientRect();
+              const bRect = variantBtns[vIdx].getBoundingClientRect();
+              assert(
+                bRect.left >= rRect.left && bRect.right <= rRect.right,
+                `[12.23][${testDisplayMode}] Opção #${vIdx + 1} (${variantBtns[vIdx].textContent?.trim()}) deve ficar visível dentro da faixa ao recuar (btn=[${bRect.left}..${bRect.right}], row=[${rRect.left}..${rRect.right}], scrollLeft=${variantsRowEl.scrollLeft})`
+              );
+            }
+            assert.strictEqual(
+              variantsRowEl.scrollLeft,
+              0,
+              `[12.23][${testDisplayMode}] Ao retornar à primeira opção (Automático), scrollLeft deve voltar a 0`
+            );
+
+            // Confirmar que apenas mover o foco pela faixa NÃO alterou a versão ativa, NÃO reiniciou o vídeo e NÃO consultou o EPG novamente
+            assert.strictEqual(
+              variantBtns[0].getAttribute('data-variant-active'),
+              'true',
+              `[12.23][${testDisplayMode}] Mover o foco pela faixa NÃO deve alterar a versão selecionada (Automático continua ativo)`
+            );
+            assert.strictEqual(
+              variantBtns[4].getAttribute('data-variant-active'),
+              'false',
+              `[12.23][${testDisplayMode}] 4K não deve ficar ativo apenas por receber foco`
+            );
+            assert.strictEqual(
+              videoLoadCallCount,
+              loadCountBeforeNav,
+              `[12.23][${testDisplayMode}] Mover o foco pela faixa de versões NÃO deve reiniciar o vídeo`
+            );
+            assert.strictEqual(
+              epgCallsByStreamId['501'],
+              1,
+              `[12.23][${testDisplayMode}] Mover o foco pela faixa de versões NÃO deve consultar novamente a programação`
+            );
+            assert.strictEqual(
+              epgCallsByStreamId['5013'] || 0,
+              0,
+              `[12.23][${testDisplayMode}] Nenhuma consulta de EPG deve ser disparada para 4K sem pressionar OK/Enter`
+            );
+
+            // Mais um ArrowLeft na primeira opção (Automático) devolve o foco ao canal de origem (Canal 1)
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft na primeira opção da faixa de versões devolve o foco ao canal de origem`
+            );
+
+            // Selecionar 4K com OK/Enter e verificar preferência pela versão ativa ao entrar por baixo e por cima mesmo com a faixa em scrollLeft=0
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowUp');
+            for (let vIdx = 1; vIdx < variantBtns.length; vIdx++) {
+              await dispatchArrowKey('ArrowRight');
+            }
+            assertSameElement(document.activeElement, variantBtns[4], `[12.23][${testDisplayMode}] Foco em 4K antes de Enter`);
+            await dispatchArrowKey('Enter');
+            await act(async () => {
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            assert.strictEqual(
+              variantBtns[4].getAttribute('data-variant-active'),
+              'true',
+              `[12.23][${testDisplayMode}] OK/Enter deve selecionar a versão 4K`
+            );
+            assert.strictEqual(
+              variantBtns[0].getAttribute('data-variant-active'),
+              'false',
+              `[12.23][${testDisplayMode}] Automático deixa de ser a versão ativa após selecionar 4K`
+            );
+
+            // Descer para a programação, rebobinar scrollLeft=0 na faixa (deixando 4K fora da área visível) e subir (ArrowUp):
+            // deve focar 4K (versão ativa) e rolar a faixa horizontalmente para torná-lo visível
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              epgItems[0],
+              `[12.23][${testDisplayMode}] ArrowDown a partir da faixa de versões entra no 1º item da programação`
+            );
+            variantsRowEl.scrollLeft = 0;
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[4],
+              `[12.23][${testDisplayMode}] Entrar por baixo (ArrowUp) com 4K ativo deve focar diretamente 4K`
+            );
+            {
+              const rRect = variantsRowEl.getBoundingClientRect();
+              const bRect = variantBtns[4].getBoundingClientRect();
+              assert(
+                bRect.left >= rRect.left && bRect.right <= rRect.right && variantsRowEl.scrollLeft > 0,
+                `[12.23][${testDisplayMode}] Entrar por baixo em 4K deve ajustar a rolagem horizontal da faixa (scrollLeft=${variantsRowEl.scrollLeft})`
+              );
+            }
+
+            // Subir para o header, rebobinar scrollLeft=0 na faixa e descer (ArrowDown):
+            // deve focar 4K (versão ativa) e rolar a faixa horizontalmente para torná-lo visível
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(document.activeElement, headerSearchInput, `[12.23][${testDisplayMode}] Foco no header acima da faixa`);
+            variantsRowEl.scrollLeft = 0;
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[4],
+              `[12.23][${testDisplayMode}] Entrar por cima (ArrowDown) com 4K ativo deve focar diretamente 4K`
+            );
+            {
+              const rRect = variantsRowEl.getBoundingClientRect();
+              const bRect = variantBtns[4].getBoundingClientRect();
+              assert(
+                bRect.left >= rRect.left && bRect.right <= rRect.right && variantsRowEl.scrollLeft > 0,
+                `[12.23][${testDisplayMode}] Entrar por cima em 4K deve ajustar a rolagem horizontal da faixa (scrollLeft=${variantsRowEl.scrollLeft})`
+              );
+            }
+
+            // Voltar até Automático e pressionar Enter para restaurar o modo automático antes do teste de tela cheia
+            for (let vIdx = variantBtns.length - 2; vIdx >= 0; vIdx--) {
+              await dispatchArrowKey('ArrowLeft');
+            }
+            assertSameElement(document.activeElement, variantBtns[0], `[12.23][${testDisplayMode}] Foco de volta em Automático`);
+            await dispatchArrowKey('Enter');
+            await act(async () => {
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            assert.strictEqual(
+              variantBtns[0].getAttribute('data-variant-active'),
+              'true',
+              `[12.23][${testDisplayMode}] OK/Enter restaura Automático como versão ativa`
+            );
+            await dispatchArrowKey('ArrowLeft');
             assertSameElement(document.activeElement, ch1Btn, `[12.23][${testDisplayMode}] Foco de volta no Canal 1`);
+
+            // 3. Fluxo de Tela Cheia (2º OK no canal já selecionado) + controles em tela cheia + sequência Voltar preservando o mesmo <video>
 
             await act(async () => {
               ch1Btn.click();
@@ -19550,10 +19917,13 @@ if (args[0] === 'add' && args[1] === 'android') {
             );
 
             // 4. Testar erro de reprodução no preview e acesso a "Tentar Novamente" por setas
-            await act(async () => {
-              previewVideoEl.dispatchEvent(new windowInstance.Event('error') as unknown as Event);
-              await new Promise((r) => setTimeout(r, 25));
-            });
+            for (let errStep = 0; errStep < 16; errStep++) {
+              if (liveEpgContainer.querySelector('[data-player-error-primary="true"]')) break;
+              await act(async () => {
+                previewVideoEl.dispatchEvent(new windowInstance.Event('error') as unknown as Event);
+                await new Promise((r) => setTimeout(r, 25));
+              });
+            }
             const retryErrorBtn = liveEpgContainer.querySelector<HTMLButtonElement>(
               '[data-player-error-primary="true"]'
             );
@@ -19561,16 +19931,57 @@ if (args[0] === 'add' && args[1] === 'android') {
               retryErrorBtn && isLiveElementFocusable(retryErrorBtn),
               `[12.23][${testDisplayMode}] Em caso de falha na reprodução, o botão Tentar Novamente deve estar visível e focável`
             );
+            retryErrorBtn.getBoundingClientRect = () =>
+              ({
+                top: 68,
+                bottom: 100,
+                left: 740,
+                right: 880,
+                width: 140,
+                height: 32,
+                x: 740,
+                y: 68,
+                toJSON: () => ({}),
+              }) as DOMRect;
 
-            // Navegar Canal 1 -> Favorito -> Programação -> ArrowUp até "Tentar Novamente"
+            const epgItemsAfterError = Array.from(
+              liveEpgContainer.querySelectorAll<HTMLElement>('[data-epg-item="true"]')
+            );
+            epgItemsAfterError.forEach((item, idx) => {
+              const itemTopOffset = idx * (layout90.epgCardHeight + 10);
+              item.getBoundingClientRect = () => {
+                const baseTop =
+                  layout90.topSectionHeight +
+                  layout90.epgHeaderHeight +
+                  itemTopOffset -
+                  epgScrollEl.scrollTop;
+                return {
+                  top: baseTop,
+                  bottom: baseTop + layout90.epgCardHeight,
+                  left: 410,
+                  right: 945,
+                  width: 535,
+                  height: layout90.epgCardHeight,
+                  x: 410,
+                  y: baseTop,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
+            });
+
+            // Navegar Canal 1 -> Favorito -> Programação -> ArrowUp (faixa de versão -> Tentar Novamente)
             await dispatchArrowKey('ArrowRight');
             await dispatchArrowKey('ArrowRight');
             assertSameElement(
               document.activeElement,
-              epgItems[0],
+              epgItemsAfterError[0],
               `[12.23][${testDisplayMode}] ArrowRight entra na programação mesmo com erro no player`
             );
             await dispatchArrowKey('ArrowUp');
+            if (document.activeElement !== retryErrorBtn) {
+              // Em canal agrupado, o 1º ArrowUp passa pela faixa "Versão do canal" e o 2º alcança o botão Tentar Novamente no preview
+              await dispatchArrowKey('ArrowUp');
+            }
             assertSameElement(
               document.activeElement,
               retryErrorBtn,
@@ -19680,6 +20091,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           console.log(
             `📊 [Métricas 12.23 — Grade de Programação e Navegação por Setas na TV ao Vivo]\n` +
               `   • Percurso D-Pad validado (default e tv): Canal -> Favorito -> Programação (6 itens) -> ArrowDown até item #6 -> ArrowLeft retorna à linha de canal de origem\n` +
+              `   • Faixa "Versão do canal" (data-nav-row="true" + data-live-variants-row="true"): rolagem horizontal ida/volta (Automático <-> 4K), preferência pela versão ativa ao entrar por cima/baixo e 0 reinícios/consultas extras ao mover foco\n` +
               `   • Exclusão de foco nos controles do preview embutido: ativa (clique/toque e botão Tentar Novamente preservados; tela cheia mantém controles focáveis e mesma instância de <video>)\n` +
               `   • Layout 961×541: ${layoutSummaryLines.join(' | ')}`
           );

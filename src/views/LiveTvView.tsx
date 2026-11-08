@@ -1590,11 +1590,15 @@ export const LiveTvView = React.memo(function LiveTvView({
 
                 {/* Version Selector for Grouped Channels */}
                 {selectedGroup.isGrouped && selectedGroup.variants.length > 0 && (
-                  <div className="nc-live-variants-bar w-full px-2.5 py-1.5 bg-nc-bg-card/70 border border-nc-border/50 rounded-xl flex flex-row items-center justify-between gap-2 shadow-sm">
+                  <div
+                    key={selectedGroup.groupId}
+                    className="nc-live-variants-bar w-full min-w-0 overflow-hidden px-2.5 py-1.5 bg-nc-bg-card/70 border border-nc-border/50 rounded-xl flex flex-row items-center justify-between gap-2 shadow-sm"
+                  >
                     <span className="text-[11px] font-semibold text-white/90 shrink-0">Versão do canal:</span>
                     <div
-                      data-nav-row="live-variants"
-                      className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar w-auto max-w-full"
+                      data-nav-row="true"
+                      data-live-variants-row="true"
+                      className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar min-w-0 w-auto max-w-full touch-pan-x"
                     >
                       <button
                         type="button"

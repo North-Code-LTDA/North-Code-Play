@@ -337,7 +337,14 @@ export function findScrollContainer(el: HTMLElement | null): HTMLElement | null 
       return curr;
     }
     const cls = typeof curr.className === 'string' ? curr.className : '';
-    if (cls.includes('overflow-y-auto') || cls.includes('overflow-y-scroll')) {
+    const isMdOverflowHidden =
+      cls.includes('md:overflow-hidden') &&
+      typeof window !== 'undefined' &&
+      (window.innerWidth || 1024) >= 768;
+    if (
+      !isMdOverflowHidden &&
+      (cls.includes('overflow-y-auto') || cls.includes('overflow-y-scroll'))
+    ) {
       return curr;
     }
     if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
@@ -385,16 +392,31 @@ export function ensureElementScrolledIntoView(
       const rowRect = rowContainer.getBoundingClientRect();
       const elRect = el.getBoundingClientRect();
       if (rowRect.width > 0 && elRect.width > 0) {
-        const padX = 16;
+        const isLiveVariantsRow = rowContainer.getAttribute('data-live-variants-row') === 'true';
+        const padX = isLiveVariantsRow
+          ? Math.min(16, Math.max(0, Math.floor((rowRect.width - elRect.width) / 2)))
+          : 16;
+        const maxScrollLeft =
+          isLiveVariantsRow &&
+          rowContainer.scrollWidth > rowContainer.clientWidth &&
+          rowContainer.clientWidth > 0
+            ? Math.max(0, rowContainer.scrollWidth - rowContainer.clientWidth)
+            : Infinity;
         if (elRect.left < rowRect.left + padX) {
           setElementScrollLeftImmediate(
             rowContainer,
-            Math.max(0, rowContainer.scrollLeft + (elRect.left - rowRect.left) - padX)
+            Math.min(
+              maxScrollLeft,
+              Math.max(0, rowContainer.scrollLeft + (elRect.left - rowRect.left) - padX)
+            )
           );
         } else if (elRect.right > rowRect.right - padX) {
           setElementScrollLeftImmediate(
             rowContainer,
-            Math.max(0, rowContainer.scrollLeft + (elRect.right - rowRect.right) + padX)
+            Math.min(
+              maxScrollLeft,
+              Math.max(0, rowContainer.scrollLeft + (elRect.right - rowRect.right) + padX)
+            )
           );
         }
       } else if (direction === 'left' || direction === 'right') {
@@ -801,7 +823,10 @@ function pickBestItemInBlock(
       );
       if (primaryErrBtn) return primaryErrBtn;
     }
-    if (block.container.getAttribute('data-nav-row') === 'live-variants') {
+    if (
+      block.container.getAttribute('data-live-variants-row') === 'true' ||
+      block.container.getAttribute('data-nav-row') === 'live-variants'
+    ) {
       const activeVariantBtn = block.items.find(
         (item) => item.getAttribute('data-variant-active') === 'true'
       );
@@ -1266,6 +1291,18 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
 
     if (direction === 'down') {
       if (currentZone === 'header') {
+        const contentCandidates = candidates.filter((c) => getLogicalZone(c, ctx) === 'content');
+        const contentBlocks = buildZoneBlocks(contentCandidates, ctx);
+        if (
+          contentBlocks.length > 0 &&
+          contentBlocks[0].type === 'row' &&
+          (contentBlocks[0].container.getAttribute('data-live-variants-row') === 'true' ||
+            contentBlocks[0].container.getAttribute('data-nav-row') === 'live-variants')
+        ) {
+          const nextEl = pickBestItemInBlock(activeEl, contentBlocks[0], hasRealGeometry, ctx);
+          focusElementSafely(nextEl, direction);
+          return nextEl;
+        }
         const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
         if (contentTarget) {
           focusElementSafely(contentTarget, direction);
