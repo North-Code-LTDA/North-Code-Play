@@ -1311,7 +1311,7 @@ export const LiveTvView = React.memo(function LiveTvView({
         {leftPaneView === 'categories' && (
           <div className="flex flex-col h-full overflow-hidden">
             <div className="p-4 border-b border-nc-border/50 bg-nc-bg shrink-0">
-              <h2 className="text-sm font-semibold text-white uppercase tracking-wider">CATEGORIAS DE TV</h2>
+              <h2 className="nc-heading-section font-semibold text-white uppercase tracking-wider">CATEGORIAS DE TV</h2>
             </div>
             <div
               ref={categoriesListRef}
@@ -1323,13 +1323,13 @@ export const LiveTvView = React.memo(function LiveTvView({
             >
               {liveCategoriesError && liveCategories.length === 0 && (
                 <div className="p-3 mb-2 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-2">
-                  <p className="text-xs text-red-400">{liveCategoriesError}</p>
+                  <p className="nc-text-meta text-red-400 break-words">{liveCategoriesError}</p>
                   <button
                     onClick={() => fetchLiveCategories()}
-                    className="flex items-center gap-1.5 px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg text-xs font-medium transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg nc-text-meta font-medium transition-colors"
                   >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    Tentar novamente
+                    <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+                    <span>Tentar novamente</span>
                   </button>
                 </div>
               )}
@@ -1377,12 +1377,12 @@ export const LiveTvView = React.memo(function LiveTvView({
                   type="button"
                   data-live-back-to-categories="true"
                   onClick={handleReturnToCategories}
-                  className="flex items-center gap-2 text-nc-text-secondary hover:text-white text-sm w-fit transition-colors"
+                  className="flex items-center gap-2 text-nc-text-secondary hover:text-white nc-text-subtitle w-fit transition-colors"
                 >
-                  <ArrowLeft className="w-4 h-4" /> Voltar às Categorias
+                  <ArrowLeft className="w-4 h-4 shrink-0" /> <span>Voltar às Categorias</span>
                 </button>
               )}
-              <h2 className="text-lg font-semibold text-white truncate">
+              <h2 className="nc-heading-section font-semibold text-white line-clamp-2 whitespace-normal break-words">
                 {searchQuery ? `BUSCA: ${searchQuery.toUpperCase()}` : formatCategoryLabel(activeCategory?.category_name, 'live')}
               </h2>
             </div>
@@ -1471,17 +1471,17 @@ export const LiveTvView = React.memo(function LiveTvView({
                           <div className="nc-tv-channel-info flex-1 min-w-0 text-left flex flex-col gap-0.5">
                             <p
                               data-live-channel-name="true"
-                              className={`nc-tv-channel-name font-medium text-sm truncate ${isSelected ? 'text-nc-primary' : 'text-white'}`}
+                              className={`nc-tv-channel-name font-medium text-sm ${isSelected ? 'text-nc-primary' : 'text-white'}`}
                             >
                               {group.displayName}
                             </p>
                             {group.isGrouped && (
-                              <div className="nc-tv-channel-meta flex items-center gap-1.5 text-[10px] text-nc-text-secondary overflow-hidden">
-                                <span className="inline-flex items-center gap-0.5 font-semibold text-nc-primary/90 bg-nc-primary/10 px-1.5 py-0.5 rounded border border-nc-primary/20 shrink-0">
-                                  <Layers className="w-2.5 h-2.5" />
+                              <div className="nc-tv-channel-meta nc-text-meta flex items-center gap-1.5 text-nc-text-secondary overflow-hidden">
+                                <span className="inline-flex items-center gap-1 font-semibold text-nc-primary/90 bg-nc-primary/10 px-1.5 py-0.5 rounded border border-nc-primary/20 shrink-0">
+                                  <Layers className="w-3 h-3 shrink-0" />
                                   {group.variants.length} versões
                                 </span>
-                                <span className="truncate opacity-75">
+                                <span className="truncate opacity-80">
                                   {group.variants.map((v) => v.label).join(' · ')}
                                 </span>
                               </div>
@@ -1571,16 +1571,16 @@ export const LiveTvView = React.memo(function LiveTvView({
                     />
                   </div>
                   <div className="overflow-hidden min-w-0 flex-1">
-                    <h1 className="nc-live-channel-title text-base md:text-lg lg:text-xl font-bold text-white truncate block w-full">
+                    <h1 className="nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words block w-full">
                       {selectedGroup.displayName}
                     </h1>
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-500/10 text-red-400 text-[11px] font-medium border border-red-500/20">
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
+                      <span className="nc-badge-info inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-500/10 text-red-400 font-medium border border-red-500/20">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0"></span>
                         AO VIVO
                       </span>
                       {activeVariantStream?.name && parseChannelVariantSuffix(activeVariantStream.name).resolution && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-nc-primary/20 text-nc-primary border border-nc-primary/30 text-[11px] font-bold">
+                        <span className="nc-badge-info inline-flex items-center px-2 py-0.5 rounded-full bg-nc-primary/20 text-nc-primary border border-nc-primary/30 font-bold">
                           {parseChannelVariantSuffix(activeVariantStream.name).resolution}
                         </span>
                       )}
@@ -1592,9 +1592,9 @@ export const LiveTvView = React.memo(function LiveTvView({
                 {selectedGroup.isGrouped && selectedGroup.variants.length > 0 && (
                   <div
                     key={selectedGroup.groupId}
-                    className="nc-live-variants-bar w-full min-w-0 overflow-hidden px-2.5 py-1.5 bg-nc-bg-card/70 border border-nc-border/50 rounded-xl flex flex-row items-center justify-between gap-2 shadow-sm"
+                    className="nc-live-variants-bar w-full min-w-0 overflow-hidden px-2.5 py-1.5 bg-nc-bg-card/70 border border-nc-border/50 rounded-xl flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 shadow-sm"
                   >
-                    <span className="text-[11px] font-semibold text-white/90 shrink-0">Versão do canal:</span>
+                    <span className="nc-text-meta font-semibold text-white/90 shrink-0">Versão do canal:</span>
                     <div
                       data-nav-row="true"
                       data-live-variants-row="true"
@@ -1604,7 +1604,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                         type="button"
                         data-variant-active={selectedResolutionMode === 'auto' ? 'true' : 'false'}
                         onClick={() => handleSelectResolutionMode('auto')}
-                        className={`px-2.5 py-0.5 rounded-lg text-[11px] font-medium transition-colors shrink-0 ${
+                        className={`px-2.5 py-1 rounded-lg nc-text-meta font-medium transition-colors shrink-0 ${
                           selectedResolutionMode === 'auto'
                             ? 'bg-nc-primary text-black font-bold shadow-md'
                             : 'bg-nc-bg-input hover:bg-nc-border/60 text-nc-text-secondary hover:text-white'
@@ -1623,7 +1623,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                               isCurrentActive && selectedResolutionMode !== 'auto' ? 'true' : 'false'
                             }
                             onClick={() => handleSelectResolutionMode(v.stream)}
-                            className={`px-2 py-0.5 rounded-lg text-[11px] font-medium transition-colors shrink-0 flex items-center gap-1 ${
+                            className={`px-2.5 py-1 rounded-lg nc-text-meta font-medium transition-colors shrink-0 flex items-center gap-1 ${
                               isCurrentActive
                                 ? 'bg-nc-primary/20 text-nc-primary border border-nc-primary/50 font-bold'
                                 : 'bg-nc-bg-input hover:bg-nc-border/60 text-nc-text-secondary hover:text-white'
@@ -1631,7 +1631,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                           >
                             <span>{v.label}</span>
                             {isCurrentActive && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-nc-primary animate-pulse" />
+                              <span className="w-1.5 h-1.5 rounded-full bg-nc-primary animate-pulse shrink-0" />
                             )}
                           </button>
                         );
@@ -1646,8 +1646,8 @@ export const LiveTvView = React.memo(function LiveTvView({
                     data-live-now-playing="true"
                     className="nc-live-now-playing w-full px-3 py-2 bg-nc-bg-card/50 rounded-xl border border-nc-border/50 flex flex-col gap-0.5"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-[11px] text-nc-primary font-semibold uppercase tracking-wider">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <p className="nc-text-meta text-nc-primary font-semibold uppercase tracking-wider">
                         Passando Agora
                       </p>
                       {(() => {
@@ -1655,7 +1655,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                         const endStr = formatEpgTime(epgData[0].end);
                         if (startStr && endStr) {
                           return (
-                            <p className="text-[11px] text-nc-text-secondary font-mono shrink-0">
+                            <p className="nc-text-meta text-nc-text-secondary font-mono shrink-0">
                               {startStr} - {endStr}
                             </p>
                           );
@@ -1664,12 +1664,12 @@ export const LiveTvView = React.memo(function LiveTvView({
                       })()}
                     </div>
                     {decodeBase64(epgData[0].title) && (
-                      <p className="text-xs sm:text-sm text-white font-medium truncate">
+                      <p className="nc-text-subtitle text-white font-medium line-clamp-2 whitespace-normal break-words">
                         {decodeBase64(epgData[0].title)}
                       </p>
                     )}
                     {decodeBase64(epgData[0].description) && (
-                      <p className="nc-live-now-playing-desc text-xs text-nc-text-secondary line-clamp-1 lg:line-clamp-2">
+                      <p className="nc-live-now-playing-desc nc-text-meta text-nc-text-secondary line-clamp-1 lg:line-clamp-2 break-words">
                         {decodeBase64(epgData[0].description)}
                       </p>
                     )}
@@ -1717,13 +1717,13 @@ export const LiveTvView = React.memo(function LiveTvView({
             >
               <div
                 data-live-epg-header="true"
-                className="nc-live-epg-header px-3.5 py-2 lg:px-4 lg:py-2.5 shrink-0 border-b border-nc-border/40 bg-nc-bg flex items-center justify-between gap-2"
+                className="nc-live-epg-header px-3.5 py-2 lg:px-4 lg:py-2.5 shrink-0 border-b border-nc-border/40 bg-nc-bg flex items-center justify-between gap-2 flex-wrap"
               >
-                <h3 className="text-sm sm:text-base font-semibold text-white flex items-center gap-2">
+                <h3 className="nc-heading-section font-semibold text-white flex items-center gap-2">
                   <Calendar className="w-4 h-4 sm:w-5 sm:h-5 text-nc-primary shrink-0" /> Programação
                 </h3>
                 {!loadingEpg && !epgError && epgData.length > 0 && (
-                  <span className="text-[11px] text-nc-text-secondary font-mono">
+                  <span className="nc-text-meta text-nc-text-secondary font-mono">
                     {epgData.length} {epgData.length === 1 ? 'programa' : 'programas'}
                   </span>
                 )}
@@ -1823,7 +1823,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                                 {startStr && endStr && (
                                   <div
                                     data-epg-time="true"
-                                    className={`text-xs font-semibold uppercase tracking-wider font-mono ${
+                                    className={`nc-text-meta font-semibold uppercase tracking-wider font-mono ${
                                       isFirst ? 'text-nc-primary' : 'text-nc-text-secondary'
                                     }`}
                                   >
@@ -1831,7 +1831,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                                   </div>
                                 )}
                                 {isFirst && (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-nc-primary/20 text-nc-primary text-[10px] font-bold uppercase tracking-wider">
+                                  <span className="nc-badge-info inline-flex items-center px-2 py-0.5 rounded-full bg-nc-primary/20 text-nc-primary font-bold uppercase tracking-wider">
                                     Agora
                                   </span>
                                 )}
@@ -1839,7 +1839,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                               {title && (
                                 <h4
                                   data-epg-title="true"
-                                  className={`font-medium text-sm sm:text-base leading-snug ${
+                                  className={`font-medium text-sm sm:text-base leading-snug break-words ${
                                     isFirst ? 'text-white font-semibold' : 'text-white/85'
                                   }`}
                                 >
@@ -1849,7 +1849,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                               {description && (
                                 <p
                                   data-epg-description="true"
-                                  className="text-xs sm:text-sm text-nc-text-secondary line-clamp-2 mt-0.5 leading-snug"
+                                  className="text-xs sm:text-sm text-nc-text-secondary line-clamp-2 mt-0.5 leading-snug break-words"
                                 >
                                   {description}
                                 </p>
@@ -1898,7 +1898,7 @@ export const LiveTvView = React.memo(function LiveTvView({
         >
           <div className="flex items-center gap-2 min-w-0">
             <AlertCircle className="w-5 h-5 text-white shrink-0" />
-            <span className="truncate sm:whitespace-normal">
+            <span className="whitespace-normal break-words">
               {favActionError || favoriteError}
             </span>
           </div>

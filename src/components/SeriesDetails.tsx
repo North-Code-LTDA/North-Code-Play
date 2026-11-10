@@ -355,22 +355,22 @@ export const SeriesDetails = React.memo(function SeriesDetails({ seriesId, serie
       <div
         data-nav-row="true"
         data-scroll-top-anchor="true"
-        className="nc-tv-details-header flex items-center justify-between p-4 border-b border-nc-border/50 bg-black/50 shrink-0"
+        className="nc-tv-details-header flex items-center justify-between gap-2 p-3.5 sm:p-4 border-b border-nc-border/50 bg-black/50 shrink-0"
       >
         <button 
           onClick={handleClose}
-          className="flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors"
+          className="flex items-center gap-1.5 sm:gap-2 text-nc-text-secondary hover:text-white transition-colors shrink-0"
         >
-          <ChevronLeft className="w-5 h-5" />
-          <span>Voltar</span>
+          <ChevronLeft className="w-5 h-5 shrink-0" />
+          <span className="nc-text-subtitle font-medium">Voltar</span>
         </button>
-        <h2 className="text-lg font-semibold truncate flex-1 px-4 text-center">
+        <h2 className="nc-heading-section font-semibold text-white truncate flex-1 px-2 sm:px-4 text-center min-w-0">
           {seriesInfo?.info?.name || seriesName}
         </h2>
         <button 
           onClick={handleClose}
           aria-label="Fechar"
-          className="p-2 hover:bg-white/10 rounded-full transition-colors"
+          className="p-2 hover:bg-white/10 rounded-full transition-colors shrink-0"
         >
           <X className="w-5 h-5" />
         </button>
@@ -415,12 +415,12 @@ export const SeriesDetails = React.memo(function SeriesDetails({ seriesId, serie
                <div className="absolute inset-0 bg-gradient-to-t from-nc-bg via-nc-bg/40 to-transparent z-0" />
                <div className="absolute inset-0 bg-gradient-to-r from-nc-bg via-nc-bg/40 to-transparent z-0" />
                
-               <div className="nc-tv-details-hero-inner relative z-10 p-6 md:p-10 pt-20 md:pt-36 flex items-end">
+               <div className="nc-tv-details-hero-inner relative z-10 p-5 sm:p-6 md:p-10 pt-16 sm:pt-20 md:pt-36 flex items-end">
                   <div className="max-w-4xl min-w-0 w-full">
-                     <h1 className="nc-tv-details-title text-3xl md:text-5xl font-bold text-white mb-3 md:mb-4">
+                     <h1 className="nc-heading-details nc-tv-details-title font-bold text-white mb-2.5 md:mb-4">
                         {seriesInfo.info?.name || seriesName}
                      </h1>
-                     <div className="flex flex-wrap items-center gap-4 text-xs md:text-sm font-medium text-nc-text-secondary mb-3 md:mb-4">
+                     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 nc-text-subtitle font-medium text-nc-text-secondary mb-3 md:mb-4">
                         {seriesInfo.info?.rating && seriesInfo.info.rating !== "0" && (
                           <span className="flex items-center gap-1 text-green-400">
                              ★ {seriesInfo.info.rating}
@@ -430,7 +430,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({ seriesId, serie
                           <span>{new Date(seriesInfo.info.releasedate).getFullYear() || seriesInfo.info.releasedate}</span>
                         )}
                         {seriesInfo.info?.genre && (
-                          <span className="px-2 py-0.5 rounded border border-nc-border/50 text-nc-text-secondary">
+                          <span className="px-2.5 py-0.5 rounded border border-nc-border/50 nc-text-meta text-nc-text-secondary break-words">
                             {seriesInfo.info.genre}
                           </span>
                         )}
@@ -445,43 +445,45 @@ export const SeriesDetails = React.memo(function SeriesDetails({ seriesId, serie
                        data-scroll-top-anchor="true"
                        className="nc-tv-details-synopsis rounded-xl p-2.5 mb-3 md:mb-4 max-w-3xl max-h-40 md:max-h-56 overflow-y-auto custom-scrollbar focus:outline-none transition-colors"
                      >
-                       <p className="text-gray-300 text-sm md:text-base leading-relaxed">
+                       <p className="nc-text-reading text-gray-300">
                          {seriesInfo.info?.plot || 'Sinopse não disponível.'}
                        </p>
                      </div>
-                     <button 
-                       ref={favoriteBtnRef}
-                       data-autofocus="true"
-                       data-scroll-block="true"
-                       onClick={() => handleToggleFavorite({
-                         id: seriesId,
-                         name: seriesInfo.info?.name || seriesName,
-                         cover: normalizeImageSource(seriesInfo.info?.cover) || normalizeImageSource(seriesCover) || '',
-                         type: 'series'
-                       })}
-                       className="nc-tv-details-action flex items-center gap-2 px-6 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors w-fit font-medium text-white shadow-xl mt-1"
-                     >
-                       <Heart className={`w-5 h-5 ${isFavorite(seriesId, 'series') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
-                       {isFavorite(seriesId, 'series') ? 'Favoritado' : 'Adicionar aos Favoritos'}
-                     </button>
+                     <div className="nc-action-group mt-1">
+                       <button 
+                         ref={favoriteBtnRef}
+                         data-autofocus="true"
+                         data-scroll-block="true"
+                         onClick={() => handleToggleFavorite({
+                           id: seriesId,
+                           name: seriesInfo.info?.name || seriesName,
+                           cover: normalizeImageSource(seriesInfo.info?.cover) || normalizeImageSource(seriesCover) || '',
+                           type: 'series'
+                         })}
+                         className="nc-tv-details-action flex items-center gap-2 px-5 sm:px-6 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md transition-colors w-fit font-medium text-white shadow-xl"
+                       >
+                         <Heart className={`w-5 h-5 shrink-0 ${isFavorite(seriesId, 'series') ? 'fill-nc-primary text-nc-primary' : 'text-white'}`} />
+                         <span className="whitespace-normal text-left">{isFavorite(seriesId, 'series') ? 'Favoritado' : 'Adicionar aos Favoritos'}</span>
+                       </button>
+                     </div>
                   </div>
                </div>
             </div>
 
             {/* Metadata and Episodes Section */}
-            <div className="nc-tv-details-body flex flex-col lg:flex-row gap-6 lg:gap-8 max-w-[1400px] w-full min-w-0 min-h-0 mx-auto px-2 sm:px-4">
+            <div className="nc-tv-details-body flex flex-col lg:flex-row gap-6 lg:gap-8 max-w-[1400px] w-full min-w-0 min-h-0 mx-auto px-1 sm:px-4">
                {/* Sidebar Metadata */}
-               <div className="nc-tv-details-meta w-full lg:w-1/4 shrink-0 flex flex-col gap-4 lg:gap-6">
+               <div className="nc-tv-details-meta w-full lg:w-1/4 shrink-0 flex flex-col gap-4 lg:gap-6 min-w-0">
                   {seriesInfo.info?.cast && (
                      <div>
-                        <span className="text-nc-text-secondary text-sm block mb-1">Elenco</span>
-                        <span className="text-white text-sm leading-relaxed">{seriesInfo.info.cast}</span>
+                        <span className="nc-text-meta text-nc-text-secondary/80 font-medium uppercase tracking-wider block mb-1">Elenco</span>
+                        <span className="nc-text-subtitle text-white leading-relaxed break-words block">{seriesInfo.info.cast}</span>
                      </div>
                   )}
                   {seriesInfo.info?.director && (
                      <div>
-                        <span className="text-nc-text-secondary text-sm block mb-1">Diretor</span>
-                        <span className="text-white text-sm">{seriesInfo.info.director}</span>
+                        <span className="nc-text-meta text-nc-text-secondary/80 font-medium uppercase tracking-wider block mb-1">Diretor</span>
+                        <span className="nc-text-subtitle text-white break-words block">{seriesInfo.info.director}</span>
                      </div>
                   )}
                </div>
@@ -534,11 +536,11 @@ export const SeriesDetails = React.memo(function SeriesDetails({ seriesId, serie
                             <Play className="w-4 h-4 md:w-5 md:h-5 ml-0.5" />
                           </div>
                           <div className="flex-1 min-w-0">
-                            <h4 className="text-white font-medium text-sm md:text-base truncate">
+                            <h4 className="text-white font-medium text-sm md:text-base line-clamp-2 whitespace-normal break-words leading-snug">
                               {episode.title || `Episódio ${episode.episode_num}`}
                             </h4>
                             {episode.duration && (
-                              <p className="text-xs text-nc-text-secondary mt-0.5">
+                              <p className="nc-text-meta text-nc-text-secondary mt-0.5">
                                 {episode.duration}
                               </p>
                             )}
@@ -686,7 +688,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({ seriesId, serie
         >
           <div className="flex items-center gap-2 min-w-0">
             <AlertCircle className="w-5 h-5 text-white shrink-0" />
-            <span className="truncate sm:whitespace-normal">
+            <span className="whitespace-normal break-words">
               {favActionError || favoriteError}
             </span>
           </div>

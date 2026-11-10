@@ -1225,7 +1225,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
       data-home-row-index={rowIndex}
       className="w-full group"
     >
-      <h2 className="text-xl md:text-2xl font-semibold text-white mb-4">{title}</h2>
+      <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">{title}</h2>
       <div className="relative w-full">
         <button
           type="button"

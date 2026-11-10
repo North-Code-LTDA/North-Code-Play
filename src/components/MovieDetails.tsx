@@ -206,12 +206,12 @@ export const MovieDetails = React.memo(function MovieDetails({ streamId, streamN
     return (
       <div data-focus-scope="modal" className="absolute inset-0 z-50 bg-nc-bg flex flex-col items-center justify-center p-6 text-center">
         <Info className="w-12 h-12 text-red-500 mb-4" />
-        <h2 className="text-xl font-medium text-white mb-2">Ops, algo deu errado</h2>
-        <p className="text-nc-text-secondary mb-6">{error || 'Informações não disponíveis.'}</p>
-        <div data-nav-row="true" className="flex gap-4">
-          <button ref={primaryActionRef} onClick={handleClose} className="px-6 py-2 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg transition-colors">Voltar</button>
-          <button onClick={handlePlay} className="px-6 py-2 bg-nc-primary text-black font-medium rounded-lg transition-colors flex items-center gap-2">
-            <Play className="w-4 h-4 fill-black" /> Formatar de qualquer forma
+        <h2 className="nc-heading-view font-semibold text-white mb-2">Ops, algo deu errado</h2>
+        <p className="nc-text-reading text-nc-text-secondary mb-6 max-w-md break-words">{error || 'Informações não disponíveis.'}</p>
+        <div data-nav-row="true" className="nc-action-group justify-center">
+          <button ref={primaryActionRef} onClick={handleClose} className="px-6 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg transition-colors">Voltar</button>
+          <button onClick={handlePlay} className="px-6 py-2.5 bg-nc-primary text-black font-medium rounded-lg transition-colors flex items-center gap-2">
+            <Play className="w-4 h-4 fill-black shrink-0" /> <span>Reproduzir mesmo assim</span>
           </button>
         </div>
       </div>
@@ -307,46 +307,46 @@ export const MovieDetails = React.memo(function MovieDetails({ streamId, streamN
             <ArrowLeft className="w-5 h-5 md:w-6 md:h-6" />
           </button>
 
-          <div className="nc-tv-details-hero-inner relative z-20 p-6 md:p-12 pt-20 md:pt-28">
+          <div className="nc-tv-details-hero-inner relative z-20 p-5 sm:p-6 md:p-12 pt-16 sm:pt-20 md:pt-28">
             <div className="max-w-4xl min-w-0">
-            <h1 className="nc-tv-details-title text-3xl md:text-5xl font-bold text-white mb-3 md:mb-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
+            <h1 className="nc-heading-details nc-tv-details-title font-bold text-white mb-2.5 md:mb-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
               {info.name || streamName}
             </h1>
             
-            <div className="flex flex-wrap items-center gap-4 text-sm md:text-base font-medium text-nc-text-secondary mb-4 md:mb-6 animate-in fade-in slide-in-from-bottom-5 duration-700 delay-100">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 nc-text-subtitle font-medium text-nc-text-secondary mb-4 md:mb-6 animate-in fade-in slide-in-from-bottom-5 duration-700 delay-100">
               {info.rating && info.rating !== "0" && (
                 <span className="flex items-center gap-1 text-green-400">
-                  <Star className="w-4 h-4 fill-green-400" />
+                  <Star className="w-4 h-4 fill-green-400 shrink-0" />
                   {info.rating} Relevância
                 </span>
               )}
               {info.releasedate && (
                 <span className="flex items-center gap-1">
-                  <Calendar className="w-4 h-4" />
+                  <Calendar className="w-4 h-4 shrink-0" />
                   {new Date(info.releasedate).getFullYear() || info.releasedate}
                 </span>
               )}
               {durationText && (
                 <span className="flex items-center gap-1">
-                  <Clock className="w-4 h-4" />
+                  <Clock className="w-4 h-4 shrink-0" />
                   {durationText}
                 </span>
               )}
               {info.genre && (
-                <span className="px-2 py-0.5 rounded border border-nc-border/50 text-xs text-nc-text-secondary">
+                <span className="px-2.5 py-0.5 rounded border border-nc-border/50 nc-text-meta text-nc-text-secondary break-words">
                   {info.genre}
                 </span>
               )}
             </div>
 
-            <div data-nav-row="true" data-scroll-block="true" data-scroll-top-anchor="true" className="flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
+            <div data-nav-row="true" data-scroll-block="true" data-scroll-top-anchor="true" className="nc-action-group animate-in fade-in slide-in-from-bottom-6 duration-700 delay-200">
               <button 
                 ref={primaryActionRef}
                 data-autofocus="true"
                 onClick={handlePlay}
-                className="nc-tv-details-action flex items-center gap-3 bg-nc-primary hover:bg-nc-primary/90 text-black px-7 md:px-8 py-3 md:py-3.5 rounded-xl font-semibold w-fit transition-transform active:scale-95"
+                className="nc-tv-details-action flex items-center gap-3 bg-nc-primary hover:bg-nc-primary/90 text-black px-6 sm:px-7 md:px-8 py-3 md:py-3.5 rounded-xl font-semibold w-fit transition-transform active:scale-95"
               >
-                <Play className="w-5 h-5 md:w-6 md:h-6 fill-black m-0 p-0" />
+                <Play className="w-5 h-5 md:w-6 md:h-6 fill-black m-0 p-0 shrink-0" />
                 <span className="text-base md:text-lg">Assistir</span>
               </button>
               
@@ -381,7 +381,7 @@ export const MovieDetails = React.memo(function MovieDetails({ streamId, streamN
               data-scroll-block="true"
               className="nc-tv-details-synopsis rounded-2xl p-3 max-h-52 md:max-h-64 overflow-y-auto custom-scrollbar focus:outline-none transition-colors"
             >
-              <p className="text-gray-200 text-base md:text-lg leading-relaxed mix-blend-plus-lighter drop-shadow-md">
+              <p className="nc-text-reading text-gray-200 mix-blend-plus-lighter drop-shadow-md">
                 {info.plot || 'Sinopse não disponível.'}
               </p>
             </div>
@@ -390,14 +390,14 @@ export const MovieDetails = React.memo(function MovieDetails({ streamId, streamN
           <div className="space-y-4 min-w-0">
             {info.director && (
               <div>
-                <span className="text-nc-text-secondary/70 text-sm block">Diretor</span>
-                <span className="text-white text-sm">{info.director}</span>
+                <span className="nc-text-meta text-nc-text-secondary/80 font-medium uppercase tracking-wider block mb-0.5">Diretor</span>
+                <span className="nc-text-subtitle text-white break-words block">{info.director}</span>
               </div>
             )}
             {info.cast && (
               <div>
-                <span className="text-nc-text-secondary/70 text-sm block">Elenco</span>
-                <span className="text-white text-sm leading-relaxed">{info.cast}</span>
+                <span className="nc-text-meta text-nc-text-secondary/80 font-medium uppercase tracking-wider block mb-0.5">Elenco</span>
+                <span className="nc-text-subtitle text-white leading-relaxed break-words block">{info.cast}</span>
               </div>
             )}
           </div>
@@ -457,7 +457,7 @@ export const MovieDetails = React.memo(function MovieDetails({ streamId, streamN
         >
           <div className="flex items-center gap-2 min-w-0">
             <AlertCircle className="w-5 h-5 text-white shrink-0" />
-            <span className="truncate sm:whitespace-normal">
+            <span className="whitespace-normal break-words">
               {favActionError || favoriteError}
             </span>
           </div>

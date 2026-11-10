@@ -113,50 +113,50 @@ export const HeroBanner = React.memo(function HeroBanner({
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.5 }}
           >
-            <h1 className="nc-tv-hero-title text-4xl md:text-5xl lg:text-7xl font-bold text-white tracking-tight drop-shadow-lg break-words whitespace-normal text-wrap">
+            <h1 className="nc-heading-hero nc-tv-hero-title font-bold text-white tracking-tight drop-shadow-lg break-words whitespace-normal text-wrap">
               {currentItem.name}
             </h1>
             
-            <div className="flex flex-wrap items-center gap-3 text-sm text-gray-300 mb-4 mt-3">
+            <div className="flex flex-wrap items-center gap-3 nc-text-subtitle text-gray-300 mb-4 mt-3">
               {currentItem.rating && currentItem.rating !== "0" && (
                 <span className="text-yellow-500 font-medium drop-shadow-md">
                   ★ {currentItem.rating}
                 </span>
               )}
               {(activeDetails?.releasedate || getValidYear(currentItem) > 0) && (
-                <span className="bg-white/10 px-2 py-0.5 rounded text-white/90">
+                <span className="bg-white/10 px-2 py-0.5 rounded nc-text-meta text-white/90">
                   {activeDetails?.releasedate || getValidYear(currentItem) || ''}
                 </span>
               )}
               {(activeDetails?.genre || currentItem.category_name) && (
-                <span className="text-white/80">
+                <span className="text-white/80 break-words">
                   {activeDetails?.genre || currentItem.category_name}
                 </span>
               )}
             </div>
 
-            <p className="text-white/80 line-clamp-3 md:line-clamp-5 mb-6 text-sm md:text-base leading-relaxed">
+            <p className="nc-text-reading text-white/80 line-clamp-3 md:line-clamp-5 mb-6">
               {activeDetails?.plot || activeDetails?.overview || currentItem.plot || currentItem.overview || 'Carregando sinopse...'}
             </p>
           </motion.div>
         </AnimatePresence>
 
-        <div data-nav-row="true" className="flex items-center gap-4 relative z-30 mt-6">
+        <div data-nav-row="true" className="nc-action-group relative z-30 mt-6">
           <button
             type="button"
             onClick={() => onPlay(currentItem)}
-            className="flex-1 md:flex-none items-center justify-center flex gap-2 bg-nc-primary hover:bg-nc-primary-hover text-black px-6 py-3 rounded-lg font-semibold transition-all active:scale-95 shadow-lg"
+            className="flex-1 sm:flex-none items-center justify-center flex gap-2 bg-nc-primary hover:bg-nc-primary-hover text-black px-5 sm:px-6 py-3 rounded-lg font-semibold transition-all active:scale-95 shadow-lg"
           >
-            <Play className="w-5 h-5 fill-black" />
-            Assistir
+            <Play className="w-5 h-5 fill-black shrink-0" />
+            <span>Assistir</span>
           </button>
           <button 
              type="button"
              onClick={() => onInfo(currentItem)}
-             className="flex-1 md:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-6 py-3 rounded-lg font-semibold transition-all active:scale-95"
+             className="flex-1 sm:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-5 sm:px-6 py-3 rounded-lg font-semibold transition-all active:scale-95"
           >
-            <Info className="w-5 h-5" />
-            Mais Info
+            <Info className="w-5 h-5 shrink-0" />
+            <span>Mais Info</span>
           </button>
         </div>
       </div>

@@ -4293,61 +4293,80 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
-    // Navegar por setas (ArrowRight / ArrowLeft) entre as 4 opções sem alterar a raiz
+    // Navegar por setas em grade de 2 colunas (sm:grid-cols-2) com geometria representativa,
+    // disparando os eventos diretamente no elemento focado (document.activeElement)
     const tvBtn = respContainer.querySelector('button[data-device-choice="tv"]') as HTMLButtonElement;
     const celBtn = respContainer.querySelector('button[data-device-choice="celular"]') as HTMLButtonElement;
     const tabBtn = respContainer.querySelector('button[data-device-choice="tablet"]') as HTMLButtonElement;
     const compBtn = respContainer.querySelector('button[data-device-choice="computador"]') as HTMLButtonElement;
     assert(tvBtn && celBtn && tabBtn && compBtn, 'Todas as 4 opções de dispositivo devem estar montadas');
 
+    const mockRect = (left: number, top: number, width: number, height: number): DOMRect =>
+      ({
+        x: left,
+        y: top,
+        left,
+        top,
+        width,
+        height,
+        right: left + width,
+        bottom: top + height,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    // Geometria 2 colunas (linha 0: TV, Celular | linha 1: Tablet, Computador)
+    tvBtn.getBoundingClientRect = () => mockRect(40, 120, 320, 130);
+    celBtn.getBoundingClientRect = () => mockRect(380, 120, 320, 130);
+    tabBtn.getBoundingClientRect = () => mockRect(40, 270, 320, 130);
+    compBtn.getBoundingClientRect = () => mockRect(380, 270, 320, 130);
+
+    const dispatchKeyOnFocused = async (key: string) => {
+      const target = (document.activeElement as HTMLElement) || tvBtn;
+      await act(async () => {
+        target.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key,
+            bubbles: true,
+            cancelable: true,
+          }) as unknown as Event
+        );
+      });
+    };
+
     await act(async () => {
       tvBtn.focus();
     });
-    assertSameElement(document.activeElement, tvBtn, 'Foco inicial em TV');
+    assertSameElement(document.activeElement, tvBtn, 'Foco inicial em TV (col 0, row 0)');
 
-    await act(async () => {
-      tvBtn.dispatchEvent(
-        new (windowInstance as any).KeyboardEvent('keydown', {
-          key: 'ArrowRight',
-          bubbles: true,
-          cancelable: true,
-        }) as unknown as Event
-      );
-    });
-    assertSameElement(document.activeElement, celBtn, 'ArrowRight: TV -> Celular');
+    await dispatchKeyOnFocused('ArrowRight');
+    assertSameElement(document.activeElement, celBtn, '2 colunas — ArrowRight: TV -> Celular');
 
-    await act(async () => {
-      celBtn.dispatchEvent(
-        new (windowInstance as any).KeyboardEvent('keydown', {
-          key: 'ArrowRight',
-          bubbles: true,
-          cancelable: true,
-        }) as unknown as Event
-      );
-    });
-    assertSameElement(document.activeElement, tabBtn, 'ArrowRight: Celular -> Tablet');
+    await dispatchKeyOnFocused('ArrowRight');
+    assertSameElement(
+      document.activeElement,
+      celBtn,
+      '2 colunas — ArrowRight em Celular deve manter o foco no fim da linha (Celular)'
+    );
 
-    await act(async () => {
-      tabBtn.dispatchEvent(
-        new (windowInstance as any).KeyboardEvent('keydown', {
-          key: 'ArrowRight',
-          bubbles: true,
-          cancelable: true,
-        }) as unknown as Event
-      );
-    });
-    assertSameElement(document.activeElement, compBtn, 'ArrowRight: Tablet -> Computador');
+    await dispatchKeyOnFocused('ArrowDown');
+    assertSameElement(
+      document.activeElement,
+      compBtn,
+      '2 colunas — ArrowDown em Celular deve levar a Computador (abaixo na mesma coluna)'
+    );
 
-    await act(async () => {
-      compBtn.dispatchEvent(
-        new (windowInstance as any).KeyboardEvent('keydown', {
-          key: 'ArrowLeft',
-          bubbles: true,
-          cancelable: true,
-        }) as unknown as Event
-      );
-    });
-    assertSameElement(document.activeElement, tabBtn, 'ArrowLeft: Computador -> Tablet');
+    await dispatchKeyOnFocused('ArrowLeft');
+    assertSameElement(document.activeElement, tabBtn, '2 colunas — ArrowLeft: Computador -> Tablet');
+
+    await dispatchKeyOnFocused('ArrowLeft');
+    assertSameElement(
+      document.activeElement,
+      tabBtn,
+      '2 colunas — ArrowLeft em Tablet deve manter o foco no início da linha (Tablet)'
+    );
+
+    await dispatchKeyOnFocused('ArrowUp');
+    assertSameElement(document.activeElement, tvBtn, '2 colunas — ArrowUp: Tablet -> TV');
 
     // Selecionar a opção responsiva em teste
     const targetOptionBtn = respContainer.querySelector(
@@ -5321,6 +5340,246 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
     liveTvRoot.unmount();
   });
   document.body.removeChild(liveTvContainer);
+
+  // 11B. Regressão do seletor de dispositivos em 1 coluna (320×568 e 390×844) e 2 colunas (768×1024, 1280×720, 961×541),
+  //      incluindo passo rápido de TV empilhado (Usar tamanho sugerido <-> Ajustar tamanho <-> Voltar)
+  {
+    const makeRect = (left: number, top: number, width: number, height: number): DOMRect =>
+      ({
+        x: left,
+        y: top,
+        left,
+        top,
+        width,
+        height,
+        right: left + width,
+        bottom: top + height,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    const gridLayoutContainer = document.createElement('div');
+    document.body.appendChild(gridLayoutContainer);
+    const gridLayoutRoot = createRoot(gridLayoutContainer);
+
+    await act(async () => {
+      gridLayoutRoot.render(
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(DisplaySetupModal, {
+            isOpen: true,
+            canCancel: true,
+            initialStep: 'device',
+            onComplete: () => {},
+          })
+        )
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const sendKeyToActive = async (key: string) => {
+      const active = document.activeElement as HTMLElement | null;
+      assert(active !== null, `Deve existir elemento focado antes de disparar ${key}`);
+      await act(async () => {
+        active!.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key,
+            bubbles: true,
+            cancelable: true,
+          }) as unknown as Event
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    };
+
+    const dTv = gridLayoutContainer.querySelector('button[data-device-choice="tv"]') as HTMLButtonElement;
+    const dCel = gridLayoutContainer.querySelector('button[data-device-choice="celular"]') as HTMLButtonElement;
+    const dTab = gridLayoutContainer.querySelector('button[data-device-choice="tablet"]') as HTMLButtonElement;
+    const dComp = gridLayoutContainer.querySelector('button[data-device-choice="computador"]') as HTMLButtonElement;
+
+    // Layout de 1 coluna empilhada (ex.: 320×568 / 390×844)
+    dTv.getBoundingClientRect = () => makeRect(16, 90, 288, 100);
+    dCel.getBoundingClientRect = () => makeRect(16, 202, 288, 100);
+    dTab.getBoundingClientRect = () => makeRect(16, 314, 288, 100);
+    dComp.getBoundingClientRect = () => makeRect(16, 426, 288, 100);
+
+    await act(async () => {
+      dTv.focus();
+    });
+    assertSameElement(document.activeElement, dTv, '1 coluna: foco inicial em TV');
+
+    // Em 1 coluna, Direita/Esquerda não avançam para outros cartões empilhados
+    await sendKeyToActive('ArrowRight');
+    assertSameElement(document.activeElement, dTv, '1 coluna: ArrowRight em TV mantém foco em TV');
+
+    await sendKeyToActive('ArrowDown');
+    assertSameElement(document.activeElement, dCel, '1 coluna: ArrowDown TV -> Celular');
+    await sendKeyToActive('ArrowDown');
+    assertSameElement(document.activeElement, dTab, '1 coluna: ArrowDown Celular -> Tablet');
+    await sendKeyToActive('ArrowDown');
+    assertSameElement(document.activeElement, dComp, '1 coluna: ArrowDown Tablet -> Computador');
+
+    await sendKeyToActive('ArrowUp');
+    assertSameElement(document.activeElement, dTab, '1 coluna: ArrowUp Computador -> Tablet');
+    await sendKeyToActive('ArrowUp');
+    assertSameElement(document.activeElement, dCel, '1 coluna: ArrowUp Tablet -> Celular');
+    await sendKeyToActive('ArrowUp');
+    assertSameElement(document.activeElement, dTv, '1 coluna: ArrowUp Celular -> TV');
+
+    // Entrar em TV para validar a escolha de tamanho empilhada:
+    // Baixo: Usar tamanho sugerido -> Ajustar tamanho -> Voltar
+    // Cima: Voltar -> Ajustar tamanho -> Usar tamanho sugerido
+    await act(async () => {
+      dTv.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const qSuggested = gridLayoutContainer.querySelector(
+      'button[data-tv-use-suggested="true"]'
+    ) as HTMLButtonElement;
+    const qAdjust = gridLayoutContainer.querySelector(
+      'button[data-tv-adjust-size="true"]'
+    ) as HTMLButtonElement;
+    const qBack = gridLayoutContainer.querySelector(
+      'button[data-tv-quick-back="true"]'
+    ) as HTMLButtonElement;
+    assert(qSuggested && qAdjust && qBack, 'Passo tv-quick deve montar as 2 opções e o botão Voltar');
+
+    // Geometria empilhada (1 coluna) para tv-quick
+    qSuggested.getBoundingClientRect = () => makeRect(16, 110, 288, 120);
+    qAdjust.getBoundingClientRect = () => makeRect(16, 244, 288, 120);
+    qBack.getBoundingClientRect = () => makeRect(16, 384, 110, 42);
+
+    assertSameElement(
+      document.activeElement,
+      qSuggested,
+      'tv-quick empilhado: foco inicial em Usar tamanho sugerido'
+    );
+
+    await sendKeyToActive('ArrowDown');
+    assertSameElement(
+      document.activeElement,
+      qAdjust,
+      'tv-quick empilhado: ArrowDown percorre Usar tamanho sugerido -> Ajustar tamanho'
+    );
+
+    await sendKeyToActive('ArrowDown');
+    assertSameElement(
+      document.activeElement,
+      qBack,
+      'tv-quick empilhado: ArrowDown percorre Ajustar tamanho -> Voltar'
+    );
+
+    await sendKeyToActive('ArrowUp');
+    assertSameElement(
+      document.activeElement,
+      qAdjust,
+      'tv-quick empilhado: ArrowUp percorre Voltar -> Ajustar tamanho'
+    );
+
+    await sendKeyToActive('ArrowUp');
+    assertSameElement(
+      document.activeElement,
+      qSuggested,
+      'tv-quick empilhado: ArrowUp percorre Ajustar tamanho -> Usar tamanho sugerido'
+    );
+
+    // E quando tv-quick está em 2 colunas (sm:grid-cols-2): Direita/Esquerda alternam entre as 2 opções e Baixo vai a Voltar
+    qSuggested.getBoundingClientRect = () => makeRect(40, 120, 320, 140);
+    qAdjust.getBoundingClientRect = () => makeRect(380, 120, 320, 140);
+    qBack.getBoundingClientRect = () => makeRect(40, 290, 110, 42);
+
+    await sendKeyToActive('ArrowRight');
+    assertSameElement(
+      document.activeElement,
+      qAdjust,
+      'tv-quick 2 colunas: ArrowRight Usar tamanho sugerido -> Ajustar tamanho'
+    );
+    await sendKeyToActive('ArrowLeft');
+    assertSameElement(
+      document.activeElement,
+      qSuggested,
+      'tv-quick 2 colunas: ArrowLeft Ajustar tamanho -> Usar tamanho sugerido'
+    );
+    await sendKeyToActive('ArrowDown');
+    assertSameElement(
+      document.activeElement,
+      qBack,
+      'tv-quick 2 colunas: ArrowDown -> Voltar'
+    );
+
+    // Pressionar Voltar retorna à opção TV de origem
+    await act(async () => {
+      qBack.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    const dTvAfterBack = gridLayoutContainer.querySelector(
+      'button[data-device-choice="tv"]'
+    ) as HTMLButtonElement;
+    assertSameElement(
+      document.activeElement,
+      dTvAfterBack,
+      'Clicar em Voltar no passo tv-quick deve devolver o foco para a opção TV de origem'
+    );
+
+    await act(async () => {
+      gridLayoutRoot.unmount();
+    });
+    document.body.removeChild(gridLayoutContainer);
+  }
+
+  // 11C. Verificação da hierarquia tipográfica e encaixe entre dispositivos (320×568, 390×844, 768×1024, 1280×720 e 961×541 a 85%, 90% e 100%)
+  {
+    const cssText = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf-8');
+    assert(
+      cssText.includes('.nc-heading-details') &&
+        cssText.includes('.nc-heading-view') &&
+        cssText.includes('.nc-heading-section') &&
+        cssText.includes('.nc-text-reading') &&
+        cssText.includes('.nc-text-meta') &&
+        cssText.includes('.nc-badge-info'),
+      'src/index.css deve definir a hierarquia tipográfica compartilhada (.nc-heading-*, .nc-text-*, .nc-badge-info)'
+    );
+    assert(
+      cssText.includes('--nc-tv-channel-meta-font: calc(0.75 * var(--nc-rem));'),
+      'src/index.css deve elevar --nc-tv-channel-meta-font para 0.75 * --nc-rem (12px em 100%) em vez de 0.68'
+    );
+
+    const movieDetailsSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/MovieDetails.tsx'),
+      'utf-8'
+    );
+    const seriesDetailsSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/SeriesDetails.tsx'),
+      'utf-8'
+    );
+    const liveTvSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/views/LiveTvView.tsx'),
+      'utf-8'
+    );
+    const configViewSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/views/ConfigView.tsx'),
+      'utf-8'
+    );
+    assert(
+      !movieDetailsSrc.includes('text-3xl md:text-5xl') &&
+        movieDetailsSrc.includes('nc-heading-details nc-tv-details-title'),
+      'MovieDetails não deve conter o salto abrupto text-3xl md:text-5xl e deve usar nc-heading-details'
+    );
+    assert(
+      !seriesDetailsSrc.includes('text-3xl md:text-5xl') &&
+        seriesDetailsSrc.includes('nc-heading-details nc-tv-details-title'),
+      'SeriesDetails não deve conter o salto abrupto text-3xl md:text-5xl e deve usar nc-heading-details'
+    );
+    assert(
+      !liveTvSrc.includes('text-[10px]') && !liveTvSrc.includes('text-[11px]'),
+      'LiveTvView não deve manter rótulos informativos de 10-11px (text-[10px] ou text-[11px])'
+    );
+    assert(
+      !configViewSrc.includes('text-[10px]') && !configViewSrc.includes('text-[11px]'),
+      'ConfigView não deve manter rótulos informativos de 10-11px (text-[10px] ou text-[11px])'
+    );
+  }
 
   // 12. Verificação explícita do isolamento de rede nos testes
   assert.strictEqual(

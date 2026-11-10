@@ -473,7 +473,7 @@ function HomeContent({ credentials }: { credentials: any }) {
               <span>Sair</span>
             </button>
             <div className="mt-2.5 pt-2 border-t border-nc-border/30 text-center">
-              <span className="text-[10px] font-mono text-nc-text-secondary/60">
+              <span className="nc-text-meta font-mono text-nc-text-secondary/60">
                 v{APP_VERSION} ({formatCommitShort(APP_COMMIT)})
               </span>
             </div>
@@ -559,7 +559,7 @@ function HomeContent({ credentials }: { credentials: any }) {
                     <span>Sair</span>
                   </button>
                   <div className="mt-3 pt-2 border-t border-nc-border/30 text-center">
-                    <span className="text-[10px] font-mono text-nc-text-secondary/60">
+                    <span className="nc-text-meta font-mono text-nc-text-secondary/60">
                       v{APP_VERSION} ({formatCommitShort(APP_COMMIT)})
                     </span>
                   </div>
@@ -609,30 +609,30 @@ function HomeContent({ credentials }: { credentials: any }) {
             <div
               role="status"
               data-transient-recovery="true"
-              className="w-full shrink-0 px-4 py-3 md:px-8 bg-amber-500/10 border-b border-amber-500/30 flex flex-wrap items-center justify-between gap-3 z-[35]"
+              className="nc-notice-banner w-full shrink-0 px-4 py-3 md:px-8 bg-amber-500/10 border-b border-amber-500/30 z-[35]"
             >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
-                <p className="text-xs sm:text-sm text-amber-200 truncate sm:whitespace-normal">
+              <div className="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
+                <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+                <p className="nc-text-subtitle text-amber-200 whitespace-normal break-words">
                   {transientFailureMessage} Suas credenciais continuam salvas neste dispositivo.
                 </p>
               </div>
-              <div data-nav-row="transient-recovery-actions" className="flex items-center gap-2 shrink-0">
+              <div data-nav-row="transient-recovery-actions" className="nc-action-group shrink-0">
                 <button
                   type="button"
                   data-transient-retry="true"
                   disabled={isRetryingSession}
                   onClick={handleRetrySession}
-                  className="px-3.5 py-1.5 rounded-lg bg-nc-primary text-black text-xs sm:text-sm font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                  className="px-3.5 py-1.5 rounded-lg bg-nc-primary text-black nc-text-subtitle font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-1.5 disabled:opacity-50"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isRetryingSession ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isRetryingSession ? 'animate-spin' : ''}`} />
                   <span>Tentar novamente</span>
                 </button>
                 <button
                   type="button"
                   data-transient-edit-login="true"
                   onClick={handleEditCredentialsOnTransientFailure}
-                  className="px-3.5 py-1.5 rounded-lg bg-nc-bg-card hover:bg-nc-bg-input text-white border border-nc-border/60 text-xs sm:text-sm font-medium transition-colors"
+                  className="px-3.5 py-1.5 rounded-lg bg-nc-bg-card hover:bg-nc-bg-input text-white border border-nc-border/60 nc-text-subtitle font-medium transition-colors"
                 >
                   Revisar servidor
                 </button>
@@ -660,7 +660,7 @@ function HomeContent({ credentials }: { credentials: any }) {
           >
             <div className="flex items-center gap-2 min-w-0">
               <AlertCircle className="w-5 h-5 text-white shrink-0" />
-              <span className="truncate sm:whitespace-normal">{logoutError}</span>
+              <span className="whitespace-normal break-words">{logoutError}</span>
             </div>
             <button
               onClick={() => setLogoutError(null)}

@@ -387,46 +387,46 @@ export const HomeView = React.memo(function HomeView({ onPlay, onSelectLiveChann
 
         {/* Specific Category Error Banners */}
         {liveCategoriesError && liveCategories.length === 0 && (
-          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-red-400">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar categorias de TV: {liveCategoriesError}</span>
+          <div className="nc-notice-banner w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl nc-text-subtitle">
+            <div className="flex items-start sm:items-center gap-2 text-red-400 min-w-0 flex-1">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 sm:mt-0" />
+              <span className="break-words">Falha ao carregar categorias de TV: {liveCategoriesError}</span>
             </div>
             <button
               onClick={() => { fetchLiveCategories().catch(() => {}); }}
-              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 nc-text-meta font-medium shrink-0"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+              <RefreshCw className="w-3.5 h-3.5 shrink-0" /> <span>Tentar novamente</span>
             </button>
           </div>
         )}
 
         {vodCategoriesError && vodCategories.length === 0 && (
-          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-red-400">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar categorias de filmes: {vodCategoriesError}</span>
+          <div className="nc-notice-banner w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl nc-text-subtitle">
+            <div className="flex items-start sm:items-center gap-2 text-red-400 min-w-0 flex-1">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 sm:mt-0" />
+              <span className="break-words">Falha ao carregar categorias de filmes: {vodCategoriesError}</span>
             </div>
             <button
               onClick={() => { fetchVodCategories().catch(() => {}); }}
-              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 nc-text-meta font-medium shrink-0"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+              <RefreshCw className="w-3.5 h-3.5 shrink-0" /> <span>Tentar novamente</span>
             </button>
           </div>
         )}
 
         {seriesCategoriesError && seriesCategories.length === 0 && (
-          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-red-400">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar categorias de séries: {seriesCategoriesError}</span>
+          <div className="nc-notice-banner w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl nc-text-subtitle">
+            <div className="flex items-start sm:items-center gap-2 text-red-400 min-w-0 flex-1">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 sm:mt-0" />
+              <span className="break-words">Falha ao carregar categorias de séries: {seriesCategoriesError}</span>
             </div>
             <button
               onClick={() => { fetchSeriesCategories().catch(() => {}); }}
-              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 nc-text-meta font-medium shrink-0"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+              <RefreshCw className="w-3.5 h-3.5 shrink-0" /> <span>Tentar novamente</span>
             </button>
           </div>
         )}
@@ -434,8 +434,8 @@ export const HomeView = React.memo(function HomeView({ onPlay, onSelectLiveChann
         {/* Live TV Section: Discrete loading, Error with Retry, or Content */}
         {(liveCatalogStatus === 'loading' || (credentials && liveCatalogStatus === 'idle')) && allLiveStreams.length === 0 && (
           <div className="w-full flex flex-col gap-3 py-2" role="status" aria-label="Carregando canais ao vivo">
-            <div className="flex items-center gap-2 text-nc-text-secondary text-sm px-2">
-              <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none text-nc-primary" />
+            <div className="flex items-center gap-2 text-nc-text-secondary nc-text-subtitle px-2">
+              <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none text-nc-primary shrink-0" />
               <span>Carregando canais ao vivo...</span>
             </div>
             <div className="flex gap-4 overflow-hidden px-2 opacity-30">
@@ -447,16 +447,16 @@ export const HomeView = React.memo(function HomeView({ onPlay, onSelectLiveChann
         )}
 
         {liveCatalogStatus === 'error' && allLiveStreams.length === 0 && (
-          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-red-400">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar canais ao vivo: {liveError}</span>
+          <div className="nc-notice-banner w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl nc-text-subtitle">
+            <div className="flex items-start sm:items-center gap-2 text-red-400 min-w-0 flex-1">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 sm:mt-0" />
+              <span className="break-words">Falha ao carregar canais ao vivo: {liveError}</span>
             </div>
             <button
               onClick={() => { fetchLiveStreams().catch(() => {}); }}
-              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 nc-text-meta font-medium shrink-0"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+              <RefreshCw className="w-3.5 h-3.5 shrink-0" /> <span>Tentar novamente</span>
             </button>
           </div>
         )}
@@ -490,16 +490,16 @@ export const HomeView = React.memo(function HomeView({ onPlay, onSelectLiveChann
         )}
 
         {vodCatalogStatus === 'error' && allVodStreams.length === 0 && (
-          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-red-400">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar filmes: {vodError}</span>
+          <div className="nc-notice-banner w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl nc-text-subtitle">
+            <div className="flex items-start sm:items-center gap-2 text-red-400 min-w-0 flex-1">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 sm:mt-0" />
+              <span className="break-words">Falha ao carregar filmes: {vodError}</span>
             </div>
             <button
               onClick={() => { fetchVodStreams().catch(() => {}); }}
-              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 nc-text-meta font-medium shrink-0"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+              <RefreshCw className="w-3.5 h-3.5 shrink-0" /> <span>Tentar novamente</span>
             </button>
           </div>
         )}
@@ -520,8 +520,8 @@ export const HomeView = React.memo(function HomeView({ onPlay, onSelectLiveChann
         {/* Series Section: Discrete loading, Error with Retry, or Content */}
         {(seriesCatalogStatus === 'loading' || (credentials && seriesCatalogStatus === 'idle')) && allSeriesStreams.length === 0 && (
           <div className="w-full flex flex-col gap-3 py-2" role="status" aria-label="Carregando séries em destaque">
-            <div className="flex items-center gap-2 text-nc-text-secondary text-sm px-2">
-              <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none text-nc-primary" />
+            <div className="flex items-center gap-2 text-nc-text-secondary nc-text-subtitle px-2">
+              <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none text-nc-primary shrink-0" />
               <span>Carregando séries em destaque...</span>
             </div>
             <div className="flex gap-4 overflow-hidden px-2 opacity-30">
@@ -533,16 +533,16 @@ export const HomeView = React.memo(function HomeView({ onPlay, onSelectLiveChann
         )}
 
         {seriesCatalogStatus === 'error' && allSeriesStreams.length === 0 && (
-          <div className="w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-red-400">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>Falha ao carregar séries: {seriesError}</span>
+          <div className="nc-notice-banner w-full p-4 bg-red-500/10 border border-red-500/30 rounded-xl nc-text-subtitle">
+            <div className="flex items-start sm:items-center gap-2 text-red-400 min-w-0 flex-1">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 sm:mt-0" />
+              <span className="break-words">Falha ao carregar séries: {seriesError}</span>
             </div>
             <button
               onClick={() => { fetchSeriesStreams().catch(() => {}); }}
-              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 text-xs font-medium shrink-0"
+              className="px-3 py-1.5 bg-nc-bg-card hover:bg-nc-bg-input text-white rounded-lg flex items-center gap-1.5 transition-colors border border-nc-border/50 nc-text-meta font-medium shrink-0"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Tentar novamente
+              <RefreshCw className="w-3.5 h-3.5 shrink-0" /> <span>Tentar novamente</span>
             </button>
           </div>
         )}
@@ -620,7 +620,7 @@ export const HomeView = React.memo(function HomeView({ onPlay, onSelectLiveChann
               </div>
               <h3 className="text-xl font-bold text-white mb-2">Erro de Reprodução</h3>
               <p className="text-red-400 text-sm mb-4 leading-relaxed">{homePlayError}</p>
-              <div className="flex gap-3 w-full">
+              <div className="flex flex-wrap gap-3 w-full">
                 {retryAction && (
                   <button
                     onClick={() => {
@@ -628,14 +628,14 @@ export const HomeView = React.memo(function HomeView({ onPlay, onSelectLiveChann
                       setHomePlayError(null);
                       act();
                     }}
-                    className="flex-1 py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center justify-center gap-2"
+                    className="flex-1 min-w-[140px] py-3 bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center justify-center gap-2"
                   >
-                    <RefreshCw className="w-4 h-4" /> Tentar Novamente
+                    <RefreshCw className="w-4 h-4 shrink-0" /> <span>Tentar Novamente</span>
                   </button>
                 )}
                 <button
                   onClick={() => setHomePlayError(null)}
-                  className="flex-1 py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/50"
+                  className="flex-1 min-w-[120px] py-3 bg-nc-bg-card hover:bg-nc-bg-input text-white font-medium rounded-xl transition-colors border border-nc-border/50"
                 >
                   Fechar
                 </button>

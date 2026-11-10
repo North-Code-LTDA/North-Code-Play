@@ -24,6 +24,8 @@ import {
   BACK_PRIORITY,
   focusElementSafely,
   setNavMode,
+  moveSpatialFocus,
+  SpatialDirection,
 } from '../navigation';
 
 export type DeviceChoiceId = 'tv' | 'celular' | 'tablet' | 'computador';
@@ -301,6 +303,66 @@ export function DisplaySetupModal({
     [applyScaleValue]
   );
 
+  const handleModalKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.defaultPrevented) return;
+      let direction: SpatialDirection | null = null;
+      if (e.key === 'ArrowUp') direction = 'up';
+      else if (e.key === 'ArrowDown') direction = 'down';
+      else if (e.key === 'ArrowLeft') direction = 'left';
+      else if (e.key === 'ArrowRight') direction = 'right';
+      if (!direction) return;
+
+      const activeEl =
+        typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+
+      // Let the continuous scale slider handle ArrowLeft/ArrowRight directly
+      if (
+        activeEl &&
+        activeEl.getAttribute('role') === 'slider' &&
+        (direction === 'left' || direction === 'right')
+      ) {
+        return;
+      }
+
+      e.preventDefault();
+      setNavMode('remote');
+
+      // In TV quick step, when options are stacked vertically (1 column) and focus is on Voltar,
+      // ArrowUp should move to the bottom option ("Ajustar tamanho") before "Usar tamanho sugerido".
+      if (
+        step === 'tv-quick' &&
+        direction === 'up' &&
+        activeEl &&
+        activeEl.getAttribute('data-tv-quick-back') === 'true' &&
+        modalRef.current
+      ) {
+        const useSuggestedBtn = modalRef.current.querySelector<HTMLElement>(
+          '[data-tv-use-suggested="true"]'
+        );
+        const adjustSizeBtn = modalRef.current.querySelector<HTMLElement>(
+          '[data-tv-adjust-size="true"]'
+        );
+        if (useSuggestedBtn && adjustSizeBtn) {
+          const r1 = useSuggestedBtn.getBoundingClientRect();
+          const r2 = adjustSizeBtn.getBoundingClientRect();
+          const isStacked =
+            (r1.width === 0 && r1.height === 0 && r2.width === 0 && r2.height === 0) ||
+            r2.top >= r1.top + Math.max(1, r1.height * 0.5);
+          if (isStacked) {
+            focusElementSafely(adjustSizeBtn, 'up');
+            return;
+          }
+        }
+      }
+
+      moveSpatialFocus(direction);
+    },
+    [step]
+  );
+
   if (!isOpen) return null;
 
   const selectedOptionMeta =
@@ -325,22 +387,23 @@ export function DisplaySetupModal({
       aria-label="Configuração de apresentação da interface"
       data-focus-scope="modal"
       data-display-setup-modal="true"
+      onKeyDown={handleModalKeyDown}
       className="nc-calibration-modal nc-safe-modal fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex items-center justify-center sm:p-5 overflow-y-auto select-none"
     >
       <div className="nc-calibration-shell w-full max-w-[780px] bg-nc-bg-card border border-nc-border/70 rounded-2xl shadow-2xl overflow-hidden my-auto">
         {/* Step 1: Four Explicit Device Options (TV, Celular, Tablet, Computador) */}
         {step === 'device' && (
           <div className="nc-calibration-safe p-5 sm:p-7 space-y-6">
-            <div className="flex items-start justify-between gap-4 border-b border-nc-border/50 pb-4">
-              <div className="flex items-center gap-3.5">
+            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-nc-border/50 pb-4">
+              <div className="flex items-center gap-3.5 min-w-0 flex-1">
                 <div className="w-11 h-11 rounded-xl bg-nc-primary/15 border border-nc-primary/30 flex items-center justify-center text-nc-primary shrink-0">
                   <Tv className="w-6 h-6" />
                 </div>
-                <div>
-                  <h2 className="nc-cal-title font-bold text-white">
+                <div className="min-w-0">
+                  <h2 className="nc-cal-title font-bold text-white break-words">
                     Como você está usando o North Code Play?
                   </h2>
-                  <p className="nc-cal-subtitle text-nc-text-secondary mt-0.5">
+                  <p className="nc-cal-subtitle text-nc-text-secondary mt-0.5 break-words">
                     Escolha o tipo de dispositivo para ajustar a apresentação da interface.
                   </p>
                 </div>
@@ -362,26 +425,6 @@ export function DisplaySetupModal({
             <div
               data-nav-grid="true"
               data-device-choices="true"
-              onKeyDown={(e) => {
-                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                  const items = Array.from(
-                    e.currentTarget.querySelectorAll('button[data-device-choice]')
-                  ) as HTMLElement[];
-                  const idx = items.indexOf(document.activeElement as HTMLElement);
-                  if (idx !== -1) {
-                    const nextIdx = e.key === 'ArrowRight' ? idx + 1 : idx - 1;
-                    if (nextIdx >= 0 && nextIdx < items.length) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setNavMode('remote');
-                      focusElementSafely(
-                        items[nextIdx],
-                        e.key === 'ArrowRight' ? 'right' : 'left'
-                      );
-                    }
-                  }
-                }
-              }}
               className="grid grid-cols-1 sm:grid-cols-2 gap-3.5"
             >
               {DEVICE_OPTIONS.map((opt) => {
@@ -497,7 +540,8 @@ export function DisplaySetupModal({
             </div>
 
             <div
-              data-nav-row="tv-quick-choices"
+              data-nav-grid="true"
+              data-tv-quick-choices="true"
               className="grid grid-cols-1 sm:grid-cols-2 gap-3.5"
             >
               <button

@@ -399,13 +399,13 @@ export const ConfigView = React.memo(function ConfigView() {
           animate={{ opacity: 1, y: 0 }}
           className="w-full max-w-3xl bg-nc-bg-card border border-nc-border/50 rounded-2xl p-5 sm:p-6 md:p-8 shadow-2xl mb-8"
         >
-          <div className="flex items-center gap-4 mb-6 border-b border-nc-border/50 pb-5">
-            <div className="p-3 bg-nc-bg-input rounded-xl text-nc-primary">
-              <Settings className="w-7 h-7" />
+          <div className="flex items-start sm:items-center gap-3.5 sm:gap-4 mb-6 border-b border-nc-border/50 pb-5">
+            <div className="p-3 bg-nc-bg-input rounded-xl text-nc-primary shrink-0">
+              <Settings className="w-6 h-6 sm:w-7 sm:h-7" />
             </div>
-            <div>
-              <h2 className="text-xl md:text-2xl font-bold text-white">Configurações & Diagnóstico</h2>
-              <p className="text-nc-text-secondary text-sm">
+            <div className="min-w-0">
+              <h2 className="nc-heading-view font-bold text-white">Configurações & Diagnóstico</h2>
+              <p className="nc-text-subtitle text-nc-text-secondary mt-0.5 break-words">
                 Ajuste a apresentação da interface por dispositivo e verifique os detalhes da conta
               </p>
             </div>
@@ -418,10 +418,10 @@ export const ConfigView = React.memo(function ConfigView() {
             className="mb-8 pb-6 border-b border-nc-border/50 space-y-4"
           >
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <h3 className="text-lg font-medium text-white flex items-center gap-2">
-                <Tv className="w-5 h-5 text-nc-primary" /> Apresentação e Tamanho da Interface
+              <h3 className="nc-heading-section font-semibold text-white flex items-center gap-2">
+                <Tv className="w-5 h-5 text-nc-primary shrink-0" /> <span>Apresentação e Tamanho da Interface</span>
               </h3>
-              <span className="text-xs px-2.5 py-1 rounded-md bg-nc-bg-input border border-nc-border/60 text-gray-300">
+              <span className="nc-text-meta px-2.5 py-1 rounded-md bg-nc-bg-input border border-nc-border/60 text-gray-300">
                 Ativo:{' '}
                 <strong className="text-white">
                   {effectiveMode === 'tv'
@@ -432,21 +432,21 @@ export const ConfigView = React.memo(function ConfigView() {
             </div>
 
             <div className="p-4 rounded-xl bg-nc-bg-input/80 border border-nc-border/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-white font-semibold text-sm">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-2 text-white font-semibold nc-text-subtitle">
                   {mode === 'tv' ? (
                     <>
                       <Tv className="w-4 h-4 text-nc-primary shrink-0" />
-                      <span>Modo TV &mdash; Tamanho da interface em {tvScale}%</span>
+                      <span className="break-words">Modo TV &mdash; Tamanho da interface em {tvScale}%</span>
                     </>
                   ) : (
                     <>
                       <Monitor className="w-4 h-4 text-nc-primary shrink-0" />
-                      <span>Outros dispositivos &mdash; Apresentação responsiva padrão (100%)</span>
+                      <span className="break-words">Outros dispositivos &mdash; Apresentação responsiva padrão (100%)</span>
                     </>
                   )}
                 </div>
-                <p className="text-xs text-nc-text-secondary leading-relaxed">
+                <p className="nc-text-meta text-nc-text-secondary leading-relaxed break-words">
                   {mode === 'tv'
                     ? 'A escala contínua de TV ajusta textos, barra lateral, categorias, cartões, detalhes e controles do player.'
                     : 'Utiliza o layout original para computador, celular ou tablet sem aplicar escala de TV.'}
@@ -455,7 +455,7 @@ export const ConfigView = React.memo(function ConfigView() {
 
               <div
                 data-nav-row="config-presentation-actions"
-                className="flex flex-wrap items-center gap-2.5 shrink-0"
+                className="nc-action-group shrink-0"
               >
                 <button
                   type="button"
@@ -465,7 +465,7 @@ export const ConfigView = React.memo(function ConfigView() {
                   onClick={(e) => handleOpenAdjustModal('device', e.currentTarget)}
                   className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-nc-primary text-black font-semibold text-sm hover:bg-nc-primary-hover transition-colors shadow-md"
                 >
-                  <Sliders className="w-4 h-4" />
+                  <Sliders className="w-4 h-4 shrink-0" />
                   <span>Ajustar apresentação</span>
                 </button>
 
@@ -476,7 +476,7 @@ export const ConfigView = React.memo(function ConfigView() {
                     onClick={(e) => handleOpenAdjustModal('tv-calibrate', e.currentTarget)}
                     className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-nc-bg-card hover:bg-nc-border/50 text-white border border-nc-border/60 font-medium text-sm transition-colors"
                   >
-                    <Tv className="w-4 h-4 text-nc-primary" />
+                    <Tv className="w-4 h-4 text-nc-primary shrink-0" />
                     <span>Calibrar escala ({tvScale}%)</span>
                   </button>
                 )}
@@ -495,34 +495,34 @@ export const ConfigView = React.memo(function ConfigView() {
             </div>
           ) : (
             <div className="space-y-5">
-              <h3 className="text-lg font-medium text-white mb-2">Informações da Conta</h3>
+              <h3 className="nc-heading-section font-semibold text-white mb-2">Informações da Conta</h3>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-nc-bg-input rounded-xl p-4 border border-nc-border/50 flex items-start gap-3.5">
+                <div className="bg-nc-bg-input rounded-xl p-4 border border-nc-border/50 flex items-start gap-3.5 min-w-0">
                   <User className="w-5 h-5 text-nc-text-secondary mt-1 shrink-0" />
-                  <div className="overflow-hidden">
-                    <p className="text-xs text-nc-text-secondary">Usuário Logado</p>
-                    <p className="font-semibold text-white truncate text-base mt-0.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="nc-text-meta text-nc-text-secondary">Usuário Logado</p>
+                    <p className="font-semibold text-white break-words text-base mt-0.5">
                       {credentials?.username || 'Desconhecido'}
                     </p>
                   </div>
                 </div>
 
-                <div className="bg-nc-bg-input rounded-xl p-4 border border-nc-border/50 flex items-start gap-3.5">
+                <div className="bg-nc-bg-input rounded-xl p-4 border border-nc-border/50 flex items-start gap-3.5 min-w-0">
                   <Server className="w-5 h-5 text-nc-text-secondary mt-1 shrink-0" />
-                  <div className="overflow-hidden w-full">
-                    <p className="text-xs text-nc-text-secondary">URL do Servidor</p>
-                    <p className="font-semibold text-white truncate text-base mt-0.5 w-full">
+                  <div className="min-w-0 flex-1">
+                    <p className="nc-text-meta text-nc-text-secondary">URL do Servidor</p>
+                    <p className="font-semibold text-white break-words text-base mt-0.5 w-full">
                       {credentials?.serverUrl || 'Desconhecido'}
                     </p>
                   </div>
                 </div>
 
-                <div className="bg-nc-bg-input rounded-xl p-4 border border-nc-border/50 flex items-start gap-3.5 md:col-span-2">
+                <div className="bg-nc-bg-input rounded-xl p-4 border border-nc-border/50 flex items-start gap-3.5 md:col-span-2 min-w-0">
                   <Calendar className="w-5 h-5 text-nc-text-secondary mt-1 shrink-0" />
-                  <div className="overflow-hidden">
-                    <p className="text-xs text-nc-text-secondary">Validade da Assinatura</p>
-                    <p className="font-semibold text-white truncate text-base mt-0.5 text-nc-primary">
+                  <div className="min-w-0 flex-1">
+                    <p className="nc-text-meta text-nc-text-secondary">Validade da Assinatura</p>
+                    <p className="font-semibold text-nc-primary break-words text-base mt-0.5">
                       {formatDate(accountInfo?.exp_date)}
                     </p>
                   </div>
@@ -530,8 +530,8 @@ export const ConfigView = React.memo(function ConfigView() {
               </div>
 
               {accountInfo?.status && (
-                <div className="mt-3 flex items-center gap-2 text-sm text-nc-text-secondary">
-                  <span className="relative flex h-3 w-3">
+                <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 nc-text-subtitle text-nc-text-secondary">
+                  <span className="relative flex h-3 w-3 shrink-0">
                     <span
                       className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
                         accountInfo.status.toLowerCase() === 'active' ? 'bg-green-400' : 'bg-red-400'
@@ -543,9 +543,11 @@ export const ConfigView = React.memo(function ConfigView() {
                       }`}
                     ></span>
                   </span>
-                  Status da Conta: <strong className="text-white ml-1">{accountInfo.status}</strong>
+                  <span>
+                    Status da Conta: <strong className="text-white ml-1">{accountInfo.status}</strong>
+                  </span>
                   {accountInfo.max_connections && (
-                    <span className="ml-4 text-xs text-nc-text-secondary">
+                    <span className="sm:ml-3 nc-text-meta text-nc-text-secondary">
                       Conexões ativas: {accountInfo.active_cons || 0} / {accountInfo.max_connections}
                     </span>
                   )}
@@ -557,8 +559,8 @@ export const ConfigView = React.memo(function ConfigView() {
           {/* Build & Diagnostics Section */}
           <div data-scroll-block="true" className="mt-8 pt-6 border-t border-nc-border/50 space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <h3 className="text-lg font-medium text-white flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-nc-primary" /> Arquitetura & Diagnóstico
+              <h3 className="nc-heading-section font-semibold text-white flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-nc-primary shrink-0" /> <span>Arquitetura & Diagnóstico</span>
               </h3>
               <div className="flex flex-wrap items-center gap-2">
                 <button
@@ -648,7 +650,7 @@ export const ConfigView = React.memo(function ConfigView() {
 
                 {/* Group 1: Requested Values (Application State) */}
                 <div className="space-y-2">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-nc-primary">
+                  <div className="nc-text-meta font-semibold uppercase tracking-wider text-nc-primary">
                     1. Valores Solicitados pelo Estado
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-black/30 p-3 rounded-lg border border-nc-border/30">
@@ -688,7 +690,7 @@ export const ConfigView = React.memo(function ConfigView() {
 
                 {/* Group 2: Measured Values (DOM & Computed Layout) */}
                 <div className="space-y-2">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-nc-primary">
+                  <div className="nc-text-meta font-semibold uppercase tracking-wider text-nc-primary">
                     2. Valores Medidos no DOM e Layout Real
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-black/30 p-3 rounded-lg border border-nc-border/30">
@@ -755,7 +757,7 @@ export const ConfigView = React.memo(function ConfigView() {
 
                 {/* Group 3: Viewport, Native Bridge, Browser/WebView & App Version */}
                 <div className="space-y-2">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-nc-primary">
+                  <div className="nc-text-meta font-semibold uppercase tracking-wider text-nc-primary">
                     3. Viewport, Ambiente e Versão
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-black/30 p-3 rounded-lg border border-nc-border/30">
@@ -812,7 +814,7 @@ export const ConfigView = React.memo(function ConfigView() {
 
                 {/* Group 4: Initial Catalog Load Diagnostics (P3.1) */}
                 <div className="space-y-2" data-catalog-diagnostics-section="true">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-nc-primary">
+                  <div className="nc-text-meta font-semibold uppercase tracking-wider text-nc-primary">
                     4. Diagnóstico de Carregamento Inicial dos Catálogos (P3.1)
                   </div>
                   <div className="bg-black/30 p-3 rounded-lg border border-nc-border/30 space-y-2">
@@ -884,7 +886,7 @@ export const ConfigView = React.memo(function ConfigView() {
                       data-diagnostics-text="true"
                       value={diagnosticsReportText}
                       onClick={(e) => e.currentTarget.select()}
-                      className="w-full rounded-lg bg-black/70 border border-nc-border/60 p-2.5 text-[11px] font-mono text-gray-200 select-all focus:outline-none focus:border-nc-primary"
+                      className="w-full rounded-lg bg-black/70 border border-nc-border/60 p-2.5 nc-text-meta font-mono text-gray-200 select-all focus:outline-none focus:border-nc-primary"
                     />
                   </div>
                 )}
@@ -893,36 +895,36 @@ export const ConfigView = React.memo(function ConfigView() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
               <div className="bg-nc-bg-input/60 rounded-xl p-4 border border-nc-border/30">
-                <span className="text-nc-text-secondary text-xs block mb-1 flex items-center gap-1.5">
-                  <GitCommit className="w-4 h-4 text-nc-primary" /> Identificação do Build
+                <span className="text-nc-text-secondary nc-text-meta block mb-1 flex items-center gap-1.5">
+                  <GitCommit className="w-4 h-4 text-nc-primary shrink-0" /> <span>Identificação do Build</span>
                 </span>
-                <span className="font-mono text-white text-xs select-all break-all">
+                <span className="font-mono text-white nc-text-meta select-all break-all">
                   {APP_COMMIT}
                 </span>
-                <span className="text-gray-500 text-[11px] block mt-1">
+                <span className="text-gray-400 nc-text-meta block mt-1">
                   Versão: v{APP_VERSION} ({formatCommitShort(APP_COMMIT)}) &bull; {APP_BUILD_TIME.slice(0, 10)}
                 </span>
               </div>
 
               <div className="bg-nc-bg-input/60 rounded-xl p-4 border border-nc-border/30">
-                <span className="text-nc-text-secondary text-xs block mb-1 flex items-center gap-1.5">
-                  <Radio className="w-4 h-4 text-nc-primary" /> Formatos do Provedor
+                <span className="text-nc-text-secondary nc-text-meta block mb-1 flex items-center gap-1.5">
+                  <Radio className="w-4 h-4 text-nc-primary shrink-0" /> <span>Formatos do Provedor</span>
                 </span>
                 <div className="flex flex-wrap gap-1.5 mt-1">
                   {allowedFormats.length > 0 ? (
                     allowedFormats.map((fmt) => (
                       <span
                         key={fmt}
-                        className="px-2 py-0.5 rounded bg-nc-primary/10 border border-nc-primary/30 text-nc-primary font-mono text-xs uppercase"
+                        className="px-2 py-0.5 rounded bg-nc-primary/10 border border-nc-primary/30 text-nc-primary font-mono nc-text-meta uppercase"
                       >
                         {fmt}
                       </span>
                     ))
                   ) : (
-                    <span className="text-gray-400 text-xs">Padrão (HLS / MP4)</span>
+                    <span className="text-gray-400 nc-text-meta">Padrão (HLS / MP4)</span>
                   )}
                 </div>
-                <span className="text-gray-500 text-[11px] block mt-1">
+                <span className="text-gray-400 nc-text-meta block mt-1">
                   Canais ao vivo priorizam HLS (.m3u8) para reprodução direta
                 </span>
               </div>
