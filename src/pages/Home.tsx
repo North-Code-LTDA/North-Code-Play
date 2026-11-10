@@ -611,9 +611,12 @@ function HomeContent({ credentials }: { credentials: any }) {
               data-transient-recovery="true"
               className="nc-notice-banner w-full shrink-0 px-4 py-3 md:px-8 bg-amber-500/10 border-b border-amber-500/30 z-[35]"
             >
-              <div className="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
+              <div
+                data-transient-recovery-message="true"
+                className="flex items-start sm:items-center gap-2.5 grow shrink basis-72 min-w-[min(100%,18rem)]"
+              >
                 <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
-                <p className="nc-text-subtitle text-amber-200 whitespace-normal break-words">
+                <p className="nc-text-subtitle text-amber-200 whitespace-normal break-words min-w-0 flex-1">
                   {transientFailureMessage} Suas credenciais continuam salvas neste dispositivo.
                 </p>
               </div>

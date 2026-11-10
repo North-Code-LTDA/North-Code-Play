@@ -5576,6 +5576,11 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
       'LiveTvView não deve manter rótulos informativos de 10-11px (text-[10px] ou text-[11px])'
     );
     assert(
+      liveTvSrc.includes('nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words w-full') &&
+        !liveTvSrc.includes('line-clamp-2 whitespace-normal break-words block'),
+      'h1.nc-live-channel-title em LiveTvView deve usar line-clamp-2 sem a classe block para preservar display: -webkit-box no CSS compilado'
+    );
+    assert(
       !configViewSrc.includes('text-[10px]') && !configViewSrc.includes('text-[11px]'),
       'ConfigView não deve manter rótulos informativos de 10-11px (text-[10px] ou text-[11px])'
     );
@@ -6441,14 +6446,19 @@ async function runCapacitorTransportAndAuditFixTests() {
     'Ao salvar credenciais válidas novamente, canAutoLogin deve voltar a ser true'
   );
 
+  confirmDisplayPreferences('default', 85);
   let categoryLoadCount = 0;
   (XtreamService as any).authenticate = async () => {
-    throw new Error('Tempo limite de conexão esgotado (timeout).');
+    throw new Error(
+      'Tempo limite de conexão esgotado (timeout) ao consultar o servidor principal da lista IPTV em horário de pico.'
+    );
   };
   (XtreamService as any).getLiveCategories = async () => {
     categoryLoadCount++;
     if (categoryLoadCount === 1) {
-      throw new Error('Tempo limite de conexão esgotado (timeout).');
+      throw new Error(
+        'Tempo limite de conexão esgotado (timeout) ao consultar o servidor principal da lista IPTV em horário de pico.'
+      );
     }
     return [{ category_id: '1', category_name: 'Canais Recuperados' }];
   };
@@ -6486,10 +6496,76 @@ async function runCapacitorTransportAndAuditFixTests() {
     'Falha transitória NÃO deve invalidar as credenciais salvas nem desativar o auto-login'
   );
 
-  const transientBanner = transientContainer.querySelector('[data-transient-recovery="true"]');
+  const transientBanner = transientContainer.querySelector('[data-transient-recovery="true"]') as HTMLElement | null;
   assert(
     transientBanner !== null,
     'Quando a carga inicial falha por erro transitório, o banner de repetição ([data-transient-recovery="true"]) deve ser exibido'
+  );
+
+  const transientMsgBlock = transientBanner!.querySelector('[data-transient-recovery-message="true"]') as HTMLElement | null;
+  const transientMsgParagraph = transientMsgBlock?.querySelector('p') as HTMLElement | null;
+  const transientActionsGroup = transientBanner!.querySelector('[data-nav-row="transient-recovery-actions"]') as HTMLElement | null;
+  const transientRetryBtn = transientContainer.querySelector('[data-transient-retry="true"]') as HTMLButtonElement | null;
+  const transientEditBtn = transientContainer.querySelector('[data-transient-edit-login="true"]') as HTMLButtonElement | null;
+
+  assert(
+    transientMsgBlock !== null && transientMsgParagraph !== null && transientActionsGroup !== null,
+    'Banner transitório deve conter o bloco da mensagem ([data-transient-recovery-message="true"]), o parágrafo e o grupo de ações'
+  );
+  assert(
+    transientRetryBtn !== null && transientEditBtn !== null,
+    'Ambos os botões ([data-transient-retry="true"] e [data-transient-edit-login="true"]) devem estar visíveis no banner transitório'
+  );
+  assert(
+    transientMsgBlock!.classList.contains('grow') &&
+      transientMsgBlock!.classList.contains('shrink') &&
+      transientMsgBlock!.classList.contains('basis-72') &&
+      transientMsgBlock!.classList.contains('min-w-[min(100%,18rem)]') &&
+      !transientMsgBlock!.classList.contains('flex-1'),
+    'Bloco da mensagem do aviso transitório deve ter largura de base útil (grow shrink basis-72 min-w-[min(100%,18rem)]) sem conflito com flex-1'
+  );
+  assert(
+    transientMsgParagraph!.classList.contains('whitespace-normal') &&
+      transientMsgParagraph!.classList.contains('break-words') &&
+      !transientMsgParagraph!.classList.contains('truncate'),
+    'Parágrafo do aviso transitório deve quebrar linha sem truncar (whitespace-normal break-words)'
+  );
+
+  // Validar que ambos os botões recebem foco normalmente
+  await act(async () => {
+    transientEditBtn!.focus();
+  });
+  assertSameElement(document.activeElement, transientEditBtn, 'Botão Revisar servidor deve ser focável');
+  await act(async () => {
+    transientRetryBtn!.focus();
+  });
+  assertSameElement(document.activeElement, transientRetryBtn, 'Botão Tentar novamente deve ser focável');
+
+  // Validar cálculo de quebra de linha do flex-wrap com base de 18rem (288px) em 320, 390, 430 e 1280 px
+  const computeTransientBannerLayout = (viewportW: number) => {
+    const horizontalPad = viewportW >= 768 ? 64 : 32; // px-4 (32px) ou md:px-8 (64px)
+    const sidebarW = viewportW >= 768 ? 256 : 0;
+    const innerWidth = Math.max(0, viewportW - sidebarW - horizontalPad);
+    const msgMinBasis = Math.min(innerWidth, 288); // min(100%, 18rem)
+    const gapPx = 12; // 0.75rem
+    const actionsWidth = 304; // "Tentar novamente" + "Revisar servidor"
+    const wrapsBelow = msgMinBasis + gapPx + actionsWidth > innerWidth;
+    return { innerWidth, msgMinBasis, actionsWidth, wrapsBelow };
+  };
+
+  for (const narrowW of [320, 390, 430]) {
+    const layout = computeTransientBannerLayout(narrowW);
+    assert.strictEqual(
+      layout.wrapsBelow,
+      true,
+      `Em ${narrowW}px (innerWidth=${layout.innerWidth}px), o grupo de ações deve passar para a linha abaixo da mensagem`
+    );
+  }
+  const desktopBannerLayout = computeTransientBannerLayout(1280);
+  assert.strictEqual(
+    desktopBannerLayout.wrapsBelow,
+    false,
+    `Em desktop 1280px (innerWidth=${desktopBannerLayout.innerWidth}px), mensagem e grupo de ações devem caber lado a lado na mesma linha`
   );
 
   // Restaurar authenticate e clicar em "Tentar novamente"
@@ -6497,9 +6573,6 @@ async function runCapacitorTransportAndAuditFixTests() {
   (XtreamService as any).getLiveCategories = async () => [
     { category_id: '1', category_name: 'Canais Recuperados' },
   ];
-
-  const transientRetryBtn = transientContainer.querySelector('[data-transient-retry="true"]') as HTMLButtonElement;
-  assert(transientRetryBtn !== null, 'Botão [data-transient-retry="true"] deve estar disponível');
 
   await act(async () => {
     transientRetryBtn.click();
@@ -19602,28 +19675,28 @@ if (args[0] === 'add' && args[1] === 'android') {
             const liveTestStreams = [
               {
                 stream_id: 501,
-                name: 'Canal Notícias SD',
+                name: 'Canal Notícias Internacional Documentários Esportes e Entretenimento Ao Vivo Especial 24 Horas Transmissão Global Contínua SD',
                 category_id: 'cat_epg_1',
                 epg_channel_id: 'epg_noticias',
                 stream_icon: '',
               },
               {
                 stream_id: 5011,
-                name: 'Canal Notícias HD',
+                name: 'Canal Notícias Internacional Documentários Esportes e Entretenimento Ao Vivo Especial 24 Horas Transmissão Global Contínua HD',
                 category_id: 'cat_epg_1',
                 epg_channel_id: 'epg_noticias',
                 stream_icon: '',
               },
               {
                 stream_id: 5012,
-                name: 'Canal Notícias FHD',
+                name: 'Canal Notícias Internacional Documentários Esportes e Entretenimento Ao Vivo Especial 24 Horas Transmissão Global Contínua FHD',
                 category_id: 'cat_epg_1',
                 epg_channel_id: 'epg_noticias',
                 stream_icon: '',
               },
               {
                 stream_id: 5013,
-                name: 'Canal Notícias 4K',
+                name: 'Canal Notícias Internacional Documentários Esportes e Entretenimento Ao Vivo Especial 24 Horas Transmissão Global Contínua 4K',
                 category_id: 'cat_epg_1',
                 epg_channel_id: 'epg_noticias',
                 stream_icon: '',
@@ -19803,10 +19876,18 @@ if (args[0] === 'add' && args[1] === 'android') {
             const epgSectionEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-section="true"]');
             const epgHeaderEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-header="true"]');
             const epgScrollEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-scroll="true"]');
+            const selectedChannelTitleEl = liveEpgContainer.querySelector<HTMLElement>('h1.nc-live-channel-title');
 
             assert(
-              rightPaneEl && contentStackEl && topSectionEl && epgSectionEl && epgHeaderEl && epgScrollEl,
-              `[12.23][${testDisplayMode}] Estrutura da grade de programação deve estar presente`
+              rightPaneEl && contentStackEl && topSectionEl && epgSectionEl && epgHeaderEl && epgScrollEl && selectedChannelTitleEl,
+              `[12.23][${testDisplayMode}] Estrutura da grade de programação e título do canal selecionado devem estar presentes`
+            );
+            assert(
+              selectedChannelTitleEl.classList.contains('line-clamp-2') &&
+                selectedChannelTitleEl.classList.contains('whitespace-normal') &&
+                selectedChannelTitleEl.classList.contains('break-words') &&
+                !selectedChannelTitleEl.classList.contains('block'),
+              `[12.23][${testDisplayMode}] h1.nc-live-channel-title deve manter line-clamp-2 e quebra de nomes longos sem a classe block`
             );
             assert(
               rightPaneEl.className.includes('md:overflow-hidden') &&

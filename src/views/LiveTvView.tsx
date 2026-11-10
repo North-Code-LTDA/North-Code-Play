@@ -1571,7 +1571,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                     />
                   </div>
                   <div className="overflow-hidden min-w-0 flex-1">
-                    <h1 className="nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words block w-full">
+                    <h1 className="nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words w-full">
                       {selectedGroup.displayName}
                     </h1>
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
