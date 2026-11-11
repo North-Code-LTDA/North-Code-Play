@@ -144,6 +144,18 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
         return existing.sorted;
       }
       const rawCat = byCategoryId.get(key) || [];
+      if (
+        rawCat.length > 0 &&
+        rawCat.length === safeItems.length &&
+        sortedAllCache &&
+        sortedAllYear === maxYear
+      ) {
+        if (trackDiag && sortedAllCache.length >= 2) {
+          recordCatalogSortDiagnostic(domain, true, 0, sortedAllCache.length);
+        }
+        sortedByCategoryCache.set(key, { year: maxYear, sorted: sortedAllCache });
+        return sortedAllCache;
+      }
       const shouldRecordSort = trackDiag && rawCat.length >= 2;
       const sortStart = shouldRecordSort ? nowMonotonicMs() : 0;
       const sorted = rawCat.length > 0 ? sortByYearAndRating(rawCat) : [];

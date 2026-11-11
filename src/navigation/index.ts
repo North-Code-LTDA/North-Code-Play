@@ -21,6 +21,8 @@ export {
   unregisterVirtualContainer,
   registerShowcaseRowController,
   unregisterShowcaseRowController,
+  getActiveShowcaseRowControllerCount,
+  hasRegisteredShowcaseRowController,
   getActiveVirtualContainerCount,
   hasRegisteredVirtualContainer,
   hasPendingFocusRestore,

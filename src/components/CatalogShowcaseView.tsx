@@ -292,7 +292,6 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
                     alt={itemTitle}
                     itemId={rawId}
                     itemName={itemTitle}
-                    fallbackType="live"
                     active={isImageActive}
                     className="max-h-full max-w-full object-contain group-hover:scale-110 transition-transform"
                   />
@@ -424,11 +423,13 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   const mainContainerRef = useRef<HTMLElement | null>(null);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
   const showcaseRowsContainerRef = useRef<HTMLDivElement | null>(null);
+  const registeredShowcaseContainerRef = useRef<HTMLDivElement | null>(null);
   const categoriesTriggerRef = useRef<HTMLButtonElement | null>(null);
   const categoriesMenuRef = useRef<HTMLDivElement | null>(null);
 
   const savedScrollTopRef = useRef<number | null>(null);
   const preSearchScrollTopRef = useRef<number | null>(null);
+  const preSearchRowWindowStartRef = useRef<number | null>(null);
   const wasSearchingRef = useRef<boolean>(false);
   const lastOpenedGridKeyRef = useRef<string | null>(null);
   const lastShowcaseOriginRef = useRef<{
@@ -1015,20 +1016,70 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     [shouldVirtualizeShowcaseRows, totalShowcaseRows, maxRowWindowStart]
   );
 
-  // Register showcase row controller for D-Pad ArrowDown/ArrowUp across unmounted showcase rows
+  const latestShowcaseControllerRef = useRef<{
+    totalRows: number;
+    ensureRowMounted: (targetRowIndex: number, preserveRowIndex?: number) => boolean;
+  }>({
+    totalRows: totalShowcaseRows,
+    ensureRowMounted: ensureShowcaseRowMounted,
+  });
+  latestShowcaseControllerRef.current = {
+    totalRows: totalShowcaseRows,
+    ensureRowMounted: ensureShowcaseRowMounted,
+  };
+
+  // Bind showcase row controller directly to the mounted DOM node so recreating the element
+  // (e.g. closing search or returning from Ver todos / category) unregisters the old node and registers the new one.
+  const showcaseRowsContainerCallbackRef = useCallback((node: HTMLDivElement | null) => {
+    const prevNode = registeredShowcaseContainerRef.current;
+    if (prevNode && prevNode !== node) {
+      unregisterShowcaseRowController(prevNode);
+      registeredShowcaseContainerRef.current = null;
+    }
+    showcaseRowsContainerRef.current = node;
+    if (node && latestShowcaseControllerRef.current.totalRows > 0) {
+      registerShowcaseRowController(node, {
+        totalRows: latestShowcaseControllerRef.current.totalRows,
+        ensureRowMounted: (targetRowIndex: number, preserveRowIndex?: number) =>
+          latestShowcaseControllerRef.current.ensureRowMounted(targetRowIndex, preserveRowIndex),
+      });
+      registeredShowcaseContainerRef.current = node;
+    }
+  }, []);
+
+  // Update showcase row controller when totalShowcaseRows or ensureShowcaseRowMounted changes while mounted
   useLayoutEffect(() => {
     const containerEl = showcaseRowsContainerRef.current;
-    if (!containerEl || totalShowcaseRows === 0) return;
+    if (!containerEl || totalShowcaseRows === 0) {
+      if (registeredShowcaseContainerRef.current) {
+        unregisterShowcaseRowController(registeredShowcaseContainerRef.current);
+        registeredShowcaseContainerRef.current = null;
+      }
+      return;
+    }
+
+    if (
+      registeredShowcaseContainerRef.current &&
+      registeredShowcaseContainerRef.current !== containerEl
+    ) {
+      unregisterShowcaseRowController(registeredShowcaseContainerRef.current);
+    }
 
     registerShowcaseRowController(containerEl, {
       totalRows: totalShowcaseRows,
       ensureRowMounted: ensureShowcaseRowMounted,
     });
-
-    return () => {
-      unregisterShowcaseRowController(containerEl);
-    };
+    registeredShowcaseContainerRef.current = containerEl;
   }, [totalShowcaseRows, ensureShowcaseRowMounted]);
+
+  useEffect(() => {
+    return () => {
+      if (registeredShowcaseContainerRef.current) {
+        unregisterShowcaseRowController(registeredShowcaseContainerRef.current);
+        registeredShowcaseContainerRef.current = null;
+      }
+    };
+  }, []);
 
   // Capture origin before opening MovieDetails / SeriesDetails
   const captureOriginBeforeDetails = useCallback((item?: any, explicitCardEl?: HTMLElement | null) => {
@@ -1265,32 +1316,34 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
 
               if (foundEp) {
                 const confirmedExt =
-                  String(foundEp.container_extension || '')
-                    .trim()
-                    .replace(/^\./, '') || 'mp4';
-                const epNum = String(foundEp.episode_num || 1).padStart(2, '0');
-                const sNum = String(foundSeasonKey).padStart(2, '0');
-                const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${foundEp.title || `Episódio ${foundEp.episode_num || 1}`}`;
-                const directUrl = buildDirectMediaUrl(creds, {
-                  type: 'series',
-                  streamId: latestEpisodeRecord.id,
-                  containerExtension: confirmedExt,
-                });
-                if (directUrl) {
-                  playFn(
-                    directUrl,
-                    epTitle,
-                    latestEpisodeRecord.positionSec,
-                    latestEpisodeRecord.id,
-                    'episode'
-                  );
-                  return;
+                  typeof foundEp.container_extension === 'string'
+                    ? foundEp.container_extension.trim().replace(/^\.+/, '')
+                    : '';
+                if (confirmedExt.length > 0) {
+                  const epNum = String(foundEp.episode_num || 1).padStart(2, '0');
+                  const sNum = String(foundSeasonKey).padStart(2, '0');
+                  const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${foundEp.title || `Episódio ${foundEp.episode_num || 1}`}`;
+                  const directUrl = buildDirectMediaUrl(creds, {
+                    type: 'series',
+                    streamId: latestEpisodeRecord.id,
+                    containerExtension: confirmedExt,
+                  });
+                  if (directUrl) {
+                    playFn(
+                      directUrl,
+                      epTitle,
+                      latestEpisodeRecord.positionSec,
+                      latestEpisodeRecord.id,
+                      'episode'
+                    );
+                    return;
+                  }
                 }
               }
             }
 
-            // Se não for possível confirmar o episódio salvo nos metadados, encaminhar para os detalhes
-            // sem iniciar outro episódio e sem chutar extensão
+            // Se não for possível confirmar o episódio salvo ou uma extensão válida nos metadados,
+            // encaminhar para os detalhes sem iniciar outro episódio e sem chutar extensão
             handleSelectItem(item);
             return;
           }
@@ -1441,19 +1494,35 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const hasSearch = normalizedQuery.length > 0;
 
-  // Preserve scrollTop across search open/close
+  // Preserve scrollTop and vertical showcase window across search open/close
   useEffect(() => {
     if (hasSearch && !wasSearchingRef.current) {
       wasSearchingRef.current = true;
+      preSearchRowWindowStartRef.current = rowWindowStartRef.current;
       if (mainContainerRef.current) {
         preSearchScrollTopRef.current = mainContainerRef.current.scrollTop;
         mainContainerRef.current.scrollTop = 0;
       }
     } else if (!hasSearch && wasSearchingRef.current) {
       wasSearchingRef.current = false;
+      const savedPreSearchRowStart = preSearchRowWindowStartRef.current;
+      if (
+        savedPreSearchRowStart !== null &&
+        savedPreSearchRowStart !== rowWindowStartRef.current
+      ) {
+        isProgrammaticRowShiftRef.current = true;
+        rowWindowStartRef.current = savedPreSearchRowStart;
+        setRowWindowStart(savedPreSearchRowStart);
+        isProgrammaticRowShiftRef.current = false;
+      }
       const savedPreSearch = preSearchScrollTopRef.current;
       if (mainContainerRef.current && savedPreSearch !== null) {
-        mainContainerRef.current.scrollTop = savedPreSearch;
+        isProgrammaticRowShiftRef.current = true;
+        try {
+          mainContainerRef.current.scrollTop = savedPreSearch;
+        } finally {
+          isProgrammaticRowShiftRef.current = false;
+        }
       }
     }
   }, [hasSearch]);
@@ -1535,6 +1604,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     (catId: string | null) => {
       setIsCategoriesMenuOpen(false);
       if (catId === 'showcase' || catId === null) {
+        rowWindowStartRef.current = 0;
+        setRowWindowStart(0);
         setActiveCategoryId(null);
         if (mainContainerRef.current) {
           mainContainerRef.current.scrollTop = 0;
@@ -1647,6 +1718,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         !selectedMovie &&
         !selectedSeries
       ) {
+        rowWindowStartRef.current = 0;
+        setRowWindowStart(0);
         setActiveCategoryId(null);
         if (mainContainerRef.current) {
           mainContainerRef.current.scrollTop = 0;
@@ -2370,7 +2443,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               </div>
             ) : (
               <div
-                ref={showcaseRowsContainerRef}
+                ref={showcaseRowsContainerCallbackRef}
                 data-showcase-rows-container="true"
                 data-showcase-total-rows={totalShowcaseRows}
                 className="mt-2 sm:mt-4 px-4 sm:px-6 md:px-10 relative z-20 space-y-6"

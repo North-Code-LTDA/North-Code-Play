@@ -46,6 +46,7 @@ export interface ShowcaseRowController {
 const virtualControllers = new WeakMap<HTMLElement, VirtualContainerController>();
 const registeredVirtualContainers = new Set<HTMLElement>();
 const showcaseRowControllers = new WeakMap<HTMLElement, ShowcaseRowController>();
+const registeredShowcaseRowContainers = new Set<HTMLElement>();
 
 export function registerShowcaseRowController(
   container: HTMLElement | null,
@@ -53,13 +54,24 @@ export function registerShowcaseRowController(
 ): void {
   if (!container) return;
   showcaseRowControllers.set(container, controller);
+  registeredShowcaseRowContainers.add(container);
   invalidateCandidateCache();
 }
 
 export function unregisterShowcaseRowController(container: HTMLElement | null): void {
   if (!container) return;
   showcaseRowControllers.delete(container);
+  registeredShowcaseRowContainers.delete(container);
   invalidateCandidateCache();
+}
+
+export function getActiveShowcaseRowControllerCount(): number {
+  return registeredShowcaseRowContainers.size;
+}
+
+export function hasRegisteredShowcaseRowController(container: HTMLElement | null): boolean {
+  if (!container) return false;
+  return showcaseRowControllers.has(container);
 }
 
 export function registerVirtualContainer(

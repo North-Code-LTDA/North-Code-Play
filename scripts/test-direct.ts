@@ -6748,6 +6748,8 @@ async function runPerformanceAndVirtualizationTests() {
     resetSpatialNavPerfStats,
     getActiveVirtualContainerCount,
     hasRegisteredVirtualContainer,
+    getActiveShowcaseRowControllerCount,
+    hasRegisteredShowcaseRowController,
     NavigationProvider,
   } = await import('../src/navigation');
   const {
@@ -6767,7 +6769,7 @@ async function runPerformanceAndVirtualizationTests() {
     getActiveMediaImageRetryTimersCount,
   } = await import('../src/components/MediaImage');
   const { HomeView } = await import('../src/views/HomeView');
-  const { getHistoryKey } = await import('../src/utils/playbackHistory');
+  const { getHistoryKey, getItemProgress } = await import('../src/utils/playbackHistory');
 
   // =========================================================================
   // 12.1. Equivalência funcional exata de sortByYearAndRating + extração única + imutabilidade
@@ -12705,7 +12707,16 @@ async function runPerformanceAndVirtualizationTests() {
         const origType = compObj.type;
         originalMemoTypes.set(compObj, origType);
         compObj.type = function trackedComponentRender(...args: any[]) {
-          renderCounts[compName] = (renderCounts[compName] || 0) + 1;
+          if (compName === 'HorizontalRow') {
+            const rowProps = args[0];
+            if (rowProps && rowProps.title === 'Fileira Estável P2.2') {
+              renderCounts[compName] = (renderCounts[compName] || 0) + 1;
+            } else {
+              renderCounts.DomainShowcaseRows = (renderCounts.DomainShowcaseRows || 0) + 1;
+            }
+          } else {
+            renderCounts[compName] = (renderCounts[compName] || 0) + 1;
+          }
           return origType.apply(this, args);
         };
       }
@@ -22515,6 +22526,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             manyCatalogQueries++;
             return manySeriesStreams;
           };
+          let delayedSeriesExtMode: 'mkv' | 'missing' = 'mkv';
           (XtreamService as any).getSeriesInfo = async (_creds: any, serId: any) => {
             delayedSeriesInfoCalls++;
             await new Promise((r) => setTimeout(r, 120));
@@ -22538,7 +22550,7 @@ if (args[0] === 'add' && args[1] === 'android') {
                     id: 'ep_9001_mkv',
                     episode_num: 2,
                     title: 'Episódio Retomado MKV',
-                    container_extension: 'mkv',
+                    container_extension: delayedSeriesExtMode === 'mkv' ? 'mkv' : '',
                   },
                 ],
               },
@@ -22657,13 +22669,31 @@ if (args[0] === 'add' && args[1] === 'android') {
             await new Promise((r) => setTimeout(r, 550));
           });
 
+          const mountedLiveSearchCards = stage1Container.querySelectorAll(
+            '[data-search-domain="live"] [data-nav-grid="true"] [data-nav-item="true"]'
+          ).length;
+          const mountedVodSearchCards = stage1Container.querySelectorAll(
+            '[data-search-domain="vod"] [data-nav-grid="true"] [data-nav-item="true"]'
+          ).length;
+          const mountedSeriesSearchCards = stage1Container.querySelectorAll(
+            '[data-search-domain="series"] [data-nav-grid="true"] [data-nav-item="true"]'
+          ).length;
           const mountedSearchCards = stage1Container.querySelectorAll(
             '[data-nav-grid="true"] [data-nav-item="true"]'
           ).length;
           const mountedSearchImgs = stage1Container.querySelectorAll('img[src]').length;
           assert(
-            mountedSearchCards > 0 && mountedSearchCards <= 96,
-            `[12.25-Stage2] Busca no Início com 2.500 resultados deve manter janela limitada <= 96 cartões montados (montou ${mountedSearchCards} de 2.500)`
+            mountedLiveSearchCards > 0 &&
+              mountedLiveSearchCards <= 36 &&
+              mountedVodSearchCards > 0 &&
+              mountedVodSearchCards <= 36 &&
+              mountedSeriesSearchCards > 0 &&
+              mountedSeriesSearchCards <= 36,
+            `[12.25-Stage2] Busca no Início deve limitar cada grupo a <= 36 cartões (6 linhas x 6 colunas): live=${mountedLiveSearchCards}, vod=${mountedVodSearchCards}, series=${mountedSeriesSearchCards}`
+          );
+          assert(
+            mountedSearchCards > 0 && mountedSearchCards <= 108,
+            `[12.25-Stage2] Busca no Início com 2.500 resultados deve manter janela limitada <= 108 cartões montados (montou ${mountedSearchCards} de 2.500)`
           );
           assert(
             mountedSearchImgs <= 80,
@@ -22713,7 +22743,12 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.25-Stage2] Ao fechar a busca de 2.500 itens no Início, o foco deve voltar à lupa montada'
           );
 
-          // (a.2) Navegar para Filmes: 13 fileiras totais (Filmes em Destaque + 12 categorias), rótulo SEM prefixo ("Cat Filme 1"), percorrer por D-Pad ArrowDown até a última fileira ("Cinema Experimental Único" com 1 título) e preservar foco/rolagem ao voltar de detalhes
+          // (a.2) Navegar para Filmes: 13 fileiras totais (Filmes em Destaque + 12 categorias), rótulo SEM prefixo ("Cat Filme 1"),
+          // percorrer até a última fileira ("Cinema Experimental Único" com 1 título) por D-Pad:
+          //   1) Na abertura inicial;
+          //   2) Depois de abrir e fechar a busca;
+          //   3) Depois de abrir e voltar de "Ver todos";
+          //   4) Depois de abrir e voltar de uma categoria ("Cat Filme 1").
           const manyMoviesNavBtn = stage1Container.querySelector<HTMLButtonElement>(
             'button[data-header-nav-id="movies"]'
           )!;
@@ -22723,14 +22758,25 @@ if (args[0] === 'add' && args[1] === 'android') {
             await new Promise((r) => setTimeout(r, 40));
           });
 
-          const moviesRowsContainer = stage1Container.querySelector<HTMLElement>(
+          const moviesRowsContainerInitial = stage1Container.querySelector<HTMLElement>(
             '[data-showcase-rows-container="true"]'
           )!;
           assert.strictEqual(
-            moviesRowsContainer.getAttribute('data-showcase-total-rows'),
+            moviesRowsContainerInitial.getAttribute('data-showcase-total-rows'),
             '13',
             '[12.25-Stage2] Filmes deve ter 13 fileiras (1 Destaque + 12 categorias)'
           );
+          assert.strictEqual(
+            hasRegisteredShowcaseRowController(moviesRowsContainerInitial),
+            true,
+            '[12.25-Stage2] O nó inicial [data-showcase-rows-container="true"] deve ter controlador registrado'
+          );
+          assert.strictEqual(
+            getActiveShowcaseRowControllerCount(),
+            1,
+            '[12.25-Stage2] Deve existir exatamente 1 controlador de fileiras registrado na vitrine ativa'
+          );
+
           const moviesInitialMountedRows = stage1Container.querySelectorAll('[data-home-row-index]').length;
           const moviesInitialMountedImgs = stage1Container.querySelectorAll('img[src]').length;
           assert.strictEqual(
@@ -22748,56 +22794,79 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.25-Stage2] Em Filmes, a fileira de categoria deve mostrar apenas o nome da categoria (sem prefixo Filmes ·)'
           );
 
-          // Focar o 1º cartão da fileira 0 e descer com D-Pad (ArrowDown) 12 vezes até a fileira 12 ("Cinema Experimental Único", com apenas 1 título)
-          const moviesRow0FirstCard = stage1Container.querySelector<HTMLElement>(
-            '[data-home-row-index="0"] [data-nav-item="true"]'
-          )!;
-          await act(async () => {
-            moviesRow0FirstCard.focus();
-          });
-          for (let step = 1; step <= 12; step++) {
+          // Helper para percorrer as 13 fileiras (0 -> 12) por D-Pad e validar que a última categoria (com 1 único título) é alcançada mantendo janela de 8 fileiras
+          const traverseMoviesShowcaseToLastRowByDpad = async (contextLabel: string) => {
+            const heroPlayInMovies = stage1Container.querySelector<HTMLElement>(
+              '[data-hero-stage="true"] button[data-hero-action="play"]'
+            )!;
+            await act(async () => {
+              heroPlayInMovies.focus();
+            });
+            // 1º ArrowDown sai do HeroBanner e garante montagem/foco na fileira 0
             await act(async () => {
               moveSpatialFocus('down');
             });
-            const activeRowEl = (document.activeElement as HTMLElement | null)?.closest(
+            const row0El = (document.activeElement as HTMLElement | null)?.closest(
               '[data-home-row-index]'
             );
             assert.strictEqual(
-              activeRowEl?.getAttribute('data-home-row-index'),
-              String(step),
-              `[12.25-Stage2] ArrowDown no D-Pad deve alcançar a fileira ${step} mesmo quando ela ainda não estava montada`
+              row0El?.getAttribute('data-home-row-index'),
+              '0',
+              `[12.25-Stage2] (${contextLabel}) ArrowDown a partir do HeroBanner deve focar a fileira 0`
             );
-          }
 
-          const moviesEndMountedRows = stage1Container.querySelectorAll('[data-home-row-index]').length;
-          const moviesEndMountedImgs = stage1Container.querySelectorAll('img[src]').length;
-          assert.strictEqual(
-            moviesEndMountedRows,
-            8,
-            `[12.25-Stage2] Ao alcançar a última fileira de Filmes por D-Pad, a janela deve continuar limitada a 8 fileiras (montou ${moviesEndMountedRows})`
-          );
+            for (let step = 1; step <= 12; step++) {
+              await act(async () => {
+                moveSpatialFocus('down');
+              });
+              const activeRowEl = (document.activeElement as HTMLElement | null)?.closest(
+                '[data-home-row-index]'
+              );
+              assert.strictEqual(
+                activeRowEl?.getAttribute('data-home-row-index'),
+                String(step),
+                `[12.25-Stage2] (${contextLabel}) ArrowDown no D-Pad deve alcançar a fileira ${step} mesmo quando ela ainda não estava montada`
+              );
+            }
 
-          const lastMovieCatRow = stage1Container.querySelector<HTMLElement>(
-            '[data-home-row-index="12"]'
-          )!;
-          assert(
-            lastMovieCatRow.querySelector('h2')?.textContent?.trim() ===
+            const mountedRowsAtEnd = stage1Container.querySelectorAll('[data-home-row-index]').length;
+            assert.strictEqual(
+              mountedRowsAtEnd,
+              8,
+              `[12.25-Stage2] (${contextLabel}) Ao alcançar a última fileira de Filmes por D-Pad, a janela deve continuar limitada a 8 fileiras (montou ${mountedRowsAtEnd})`
+            );
+
+            const lastRowEl = stage1Container.querySelector<HTMLElement>(
+              '[data-home-row-index="12"]'
+            )!;
+            assert.strictEqual(
+              lastRowEl.querySelector('h2')?.textContent?.trim(),
               'Cinema Experimental Único',
-            '[12.25-Stage2] A última fileira de Filmes deve ser "Cinema Experimental Único"'
-          );
-          const singleTitleCard = lastMovieCatRow.querySelector<HTMLElement>(
-            '[data-nav-item="true"]'
-          )!;
-          assert.strictEqual(
-            singleTitleCard.getAttribute('aria-label'),
-            'Filme Único na Última Categoria',
-            '[12.25-Stage2] Categoria com apenas 1 título deve montar e exibir seu cartão na vitrine'
-          );
-          assertSameElement(
-            document.activeElement,
-            singleTitleCard,
-            '[12.25-Stage2] D-Pad deve focar o cartão único da última categoria'
-          );
+              `[12.25-Stage2] (${contextLabel}) A última fileira de Filmes deve ser "Cinema Experimental Único"`
+            );
+            const lastSingleCard = lastRowEl.querySelector<HTMLElement>('[data-nav-item="true"]')!;
+            assert.strictEqual(
+              lastSingleCard.getAttribute('aria-label'),
+              'Filme Único na Última Categoria',
+              `[12.25-Stage2] (${contextLabel}) Categoria com apenas 1 título deve exibir seu cartão na vitrine`
+            );
+            assertSameElement(
+              document.activeElement,
+              lastSingleCard,
+              `[12.25-Stage2] (${contextLabel}) D-Pad deve focar o cartão único da última categoria`
+            );
+            return {
+              mountedRowsAtEnd,
+              mountedImgsAtEnd: stage1Container.querySelectorAll('img[src]').length,
+              lastSingleCard,
+            };
+          };
+
+          // Percurso 1: Na abertura inicial de Filmes
+          const dpadInitialRun = await traverseMoviesShowcaseToLastRowByDpad('abertura inicial');
+          const moviesEndMountedRows = dpadInitialRun.mountedRowsAtEnd;
+          const moviesEndMountedImgs = dpadInitialRun.mountedImgsAtEnd;
+          const singleTitleCard = dpadInitialRun.lastSingleCard;
 
           // Simular scrollTop na última categoria, abrir MovieDetails e voltar com Escape -> deve preservar foco e scrollTop na última fileira!
           const moviesScrollMain = stage1Container.querySelector<HTMLElement>(
@@ -22820,8 +22889,12 @@ if (args[0] === 'add' && args[1] === 'android') {
                 cancelable: true,
               })
             );
-            await new Promise((r) => setTimeout(r, 40));
           });
+          await waitForCondition(
+            () => document.querySelector('[data-focus-scope="modal"]') === null,
+            1200,
+            '[12.25-Stage2] Saída completa de MovieDetails antes de testar busca em Filmes'
+          );
           assert.strictEqual(
             moviesScrollMain.scrollTop,
             3600,
@@ -22836,7 +22909,189 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.25-Stage2] Voltar de MovieDetails deve restaurar o foco no cartão da última categoria'
           );
 
-          // (c) Navegar para Séries e clicar em "Continuar" ANTES de getSeriesInfo (120ms) terminar -> deve indicar carregamento, reaproveitar a consulta em andamento e abrir 1 única vez o episódio .mkv na posição 275s!
+          // Percurso 2: Abrir a busca em Filmes, fechar a busca (recriando [data-showcase-rows-container="true"]) e percorrer até a última fileira por D-Pad
+          const moviesSearchTrigger = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
+          await act(async () => {
+            moviesSearchTrigger.focus();
+            moviesSearchTrigger.click();
+          });
+          const stage2MoviesSearchInput = stage1Container.querySelector<HTMLInputElement>(
+            'input[data-header-search-input="true"]'
+          )!;
+          await act(async () => {
+            typeInRealInput(stage2MoviesSearchInput, 'Filme Único');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+          assert.strictEqual(
+            stage1Container.querySelector('[data-showcase-rows-container="true"]'),
+            null,
+            '[12.25-Stage2] Durante a busca em Filmes, o container da vitrine deve estar desmontado'
+          );
+          assert.strictEqual(
+            hasRegisteredShowcaseRowController(moviesRowsContainerInitial),
+            false,
+            '[12.25-Stage2] Ao desmontar a vitrine para exibir a busca, o controlador do nó antigo deve ser removido'
+          );
+          assert.strictEqual(
+            getActiveShowcaseRowControllerCount(),
+            0,
+            '[12.25-Stage2] Nenhum controlador de vitrine deve permanecer órfão durante a busca'
+          );
+
+          // Fechar a busca com Escape
+          await act(async () => {
+            stage2MoviesSearchInput.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+          const moviesRowsContainerAfterSearch = stage1Container.querySelector<HTMLElement>(
+            '[data-showcase-rows-container="true"]'
+          )!;
+          assert(
+            moviesRowsContainerAfterSearch !== null &&
+              moviesRowsContainerAfterSearch !== moviesRowsContainerInitial,
+            '[12.25-Stage2] Ao fechar a busca, um novo elemento [data-showcase-rows-container="true"] é montado no DOM'
+          );
+          assert.strictEqual(
+            hasRegisteredShowcaseRowController(moviesRowsContainerAfterSearch),
+            true,
+            '[12.25-Stage2] O novo elemento [data-showcase-rows-container="true"] recriado após fechar a busca DEVE ter controlador registrado'
+          );
+          assert.strictEqual(
+            getActiveShowcaseRowControllerCount(),
+            1,
+            '[12.25-Stage2] Recriar a vitrine após fechar a busca não deve duplicar controladores (count=1)'
+          );
+          assert.strictEqual(
+            moviesScrollMain.scrollTop,
+            3600,
+            '[12.25-Stage2] Fechar a busca deve preservar a rolagem anterior da vitrine (scrollTop=3600)'
+          );
+          const dpadAfterSearchCloseRun = await traverseMoviesShowcaseToLastRowByDpad(
+            'após fechar a busca'
+          );
+
+          // Percurso 3: Abrir "Categorias" -> selecionar "Ver todos" -> voltar à vitrine -> percorrer até a última fileira por D-Pad
+          const moviesCatBtnForAll = stage1Container.querySelector<HTMLButtonElement>(
+            '[data-nav-zone="categories"] button[data-categories-trigger="true"]'
+          )!;
+          await act(async () => {
+            moviesCatBtnForAll.focus();
+            moviesCatBtnForAll.click();
+          });
+          const verTodosOptionBtn = stage1Container.querySelector<HTMLButtonElement>(
+            '[data-categories-menu="true"] button[data-category-id="all"]'
+          )!;
+          await act(async () => {
+            verTodosOptionBtn.click();
+            await new Promise((r) => setTimeout(r, 30));
+          });
+          assert.strictEqual(
+            hasRegisteredShowcaseRowController(moviesRowsContainerAfterSearch),
+            false,
+            '[12.25-Stage2] Ao entrar em Ver todos, o controlador do nó anterior da vitrine deve ser removido'
+          );
+          assert.strictEqual(
+            getActiveShowcaseRowControllerCount(),
+            0,
+            '[12.25-Stage2] Enquanto estiver na grade de Ver todos, count de controladores da vitrine deve ser 0'
+          );
+
+          // Voltar de Ver todos com Escape -> deve devolver foco a Categorias, montar novo nó da vitrine com controlador registrado e permitir D-Pad até a última fileira
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 30));
+          });
+          assertSameElement(
+            document.activeElement,
+            moviesCatBtnForAll,
+            '[12.25-Stage2] Voltar de Ver todos deve devolver o foco ao botão Categorias'
+          );
+          const moviesRowsContainerAfterVerTodos = stage1Container.querySelector<HTMLElement>(
+            '[data-showcase-rows-container="true"]'
+          )!;
+          assert(
+            moviesRowsContainerAfterVerTodos !== null &&
+              moviesRowsContainerAfterVerTodos !== moviesRowsContainerAfterSearch,
+            '[12.25-Stage2] Voltar de Ver todos recria o elemento [data-showcase-rows-container="true"]'
+          );
+          assert.strictEqual(
+            hasRegisteredShowcaseRowController(moviesRowsContainerAfterVerTodos),
+            true,
+            '[12.25-Stage2] O novo nó [data-showcase-rows-container="true"] após voltar de Ver todos deve ter controlador registrado'
+          );
+          assert.strictEqual(
+            getActiveShowcaseRowControllerCount(),
+            1,
+            '[12.25-Stage2] Voltar de Ver todos não deve duplicar controladores (count=1)'
+          );
+          const dpadAfterVerTodosRun = await traverseMoviesShowcaseToLastRowByDpad(
+            'após voltar de Ver todos'
+          );
+
+          // Percurso 4: Abrir "Categorias" -> selecionar uma categoria ("Cat Filme 1") -> voltar à vitrine -> percorrer até a última fileira por D-Pad
+          await act(async () => {
+            moviesCatBtnForAll.focus();
+            moviesCatBtnForAll.click();
+          });
+          const catFilme1OptionBtn = stage1Container.querySelector<HTMLButtonElement>(
+            '[data-categories-menu="true"] button[data-category-id="m_cat_1"]'
+          )!;
+          await act(async () => {
+            catFilme1OptionBtn.click();
+            await new Promise((r) => setTimeout(r, 30));
+          });
+          assert.strictEqual(
+            getActiveShowcaseRowControllerCount(),
+            0,
+            '[12.25-Stage2] Enquanto estiver na grade de Cat Filme 1, count de controladores da vitrine deve ser 0'
+          );
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 30));
+          });
+          const moviesRowsContainerAfterCategory = stage1Container.querySelector<HTMLElement>(
+            '[data-showcase-rows-container="true"]'
+          )!;
+          assert.strictEqual(
+            hasRegisteredShowcaseRowController(moviesRowsContainerAfterCategory),
+            true,
+            '[12.25-Stage2] O novo nó [data-showcase-rows-container="true"] após voltar de uma categoria deve ter controlador registrado'
+          );
+          assert.strictEqual(
+            getActiveShowcaseRowControllerCount(),
+            1,
+            '[12.25-Stage2] Voltar de uma categoria não deve duplicar controladores (count=1)'
+          );
+          const dpadAfterCategoryRun = await traverseMoviesShowcaseToLastRowByDpad(
+            'após voltar de categoria'
+          );
+
+          // (c.1) Cenário 1 de retomada em Séries: metadados atrasados com extensão .mkv confirmada -> única reprodução na posição salva (275s)
+          delayedSeriesExtMode = 'mkv';
           delayedSeriesInfoCalls = 0;
           const manySeriesNavBtn = stage1Container.querySelector<HTMLButtonElement>(
             'button[data-header-nav-id="series"]'
@@ -22919,6 +23174,88 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.25-Stage2] Fechamento do VideoPlayer após teste de retomada .mkv'
           );
 
+          // (c.2) Cenário 2 de retomada em Séries: metadados com o episódio salvo (ep_9001_mkv), mas SEM container_extension ->
+          // NÃO deve usar fallback .mp4 nem iniciar o player; deve abrir SeriesDetails preservando a posição salva (275s)!
+          delayedSeriesExtMode = 'missing';
+          delayedSeriesInfoCalls = 0;
+          await act(async () => {
+            manyMoviesNavBtn.click();
+            await new Promise((r) => setTimeout(r, 20));
+          });
+          await act(async () => {
+            manySeriesNavBtn.click();
+            await new Promise((r) => setTimeout(r, 20));
+          });
+
+          const missingExtHeroPlayBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-hero-action="play"]'
+          )!;
+          await act(async () => {
+            missingExtHeroPlayBtn.focus();
+            missingExtHeroPlayBtn.click();
+          });
+          await waitForCondition(
+            () =>
+              document.querySelector(
+                '[data-focus-scope="modal"] [role="region"][aria-label="Sinopse da série"]'
+              ) !== null,
+            1000,
+            '[12.25-Stage2] Abertura de SeriesDetails quando o episódio salvo não possui container_extension confirmado'
+          );
+          assert.strictEqual(
+            document.querySelector('[data-player-container="true"]'),
+            null,
+            '[12.25-Stage2] Episódio salvo sem container_extension NÃO deve abrir o VideoPlayer com fallback .mp4'
+          );
+          assert.strictEqual(
+            getItemProgress(stage2ManyCreds, 'episode', 'ep_9001_mkv'),
+            275,
+            '[12.25-Stage2] Encaminhar para SeriesDetails por falta de extensão deve preservar a posição salva (275s)'
+          );
+
+          // Fechar SeriesDetails
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await waitForCondition(
+            () => document.querySelector('[data-focus-scope="modal"]') === null,
+            1200,
+            '[12.25-Stage2] Fechamento de SeriesDetails após teste de extensão ausente'
+          );
+
+          // (c.3) Descarte de ação pendente ao trocar de seção antes de getSeriesInfo terminar
+          delayedSeriesExtMode = 'mkv';
+          await act(async () => {
+            manyMoviesNavBtn.click();
+            await new Promise((r) => setTimeout(r, 20));
+          });
+          await act(async () => {
+            manySeriesNavBtn.click();
+            await new Promise((r) => setTimeout(r, 15));
+          });
+          const cancelHeroPlayBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-hero-action="play"]'
+          )!;
+          await act(async () => {
+            cancelHeroPlayBtn.click();
+          });
+          // Trocar para Filmes antes de os 120ms de getSeriesInfo terminarem
+          await act(async () => {
+            manyMoviesNavBtn.click();
+            await new Promise((r) => setTimeout(r, 180));
+          });
+          assert.strictEqual(
+            document.querySelector('[data-player-container="true"]'),
+            null,
+            '[12.25-Stage2] Trocar de seção enquanto aguarda getSeriesInfo deve descartar a retomada pendente sem abrir o player'
+          );
+
           assert.strictEqual(
             manyCatalogQueries,
             initialManyQueries,
@@ -22934,10 +23271,11 @@ if (args[0] === 'add' && args[1] === 'android') {
             `📊 [Métricas Vitrine Etapa 2]\n` +
               `   • Início (25 fileiras totais = 4 fixas + 12 Filmes + 9 Séries): início -> ${inicioInitialMountedRows} fileiras montadas, ${inicioInitialMountedImgs} img[src] | fim -> ${inicioEndMountedRows} fileiras montadas, ${inicioEndMountedImgs} img[src]\n` +
               `   • Filmes (13 fileiras totais = 1 fixa + 12 categorias, última c/ 1 título): início -> ${moviesInitialMountedRows} fileiras montadas, ${moviesInitialMountedImgs} img[src] | fim -> ${moviesEndMountedRows} fileiras montadas, ${moviesEndMountedImgs} img[src]\n` +
-              `   • Busca no Início (2.500 resultados): ${mountedSearchCards} cartões montados, ${mountedSearchImgs} img[src]`
+              `   • Percursos D-Pad até a fileira 12 ("Cinema Experimental Único", 1 título): abertura=${dpadInitialRun.mountedRowsAtEnd} fileiras | pós-busca=${dpadAfterSearchCloseRun.mountedRowsAtEnd} fileiras | pós-Ver-todos=${dpadAfterVerTodosRun.mountedRowsAtEnd} fileiras | pós-categoria=${dpadAfterCategoryRun.mountedRowsAtEnd} fileiras (controladores ativos=1)\n` +
+              `   • Busca no Início (2.500 resultados): ${mountedSearchCards} cartões montados (${mountedLiveSearchCards}+${mountedVodSearchCards}+${mountedSeriesSearchCards}), ${mountedSearchImgs} img[src]`
           );
           console.log(
-            '✅ [12.25] Etapa 2 validada com sucesso: vitrine completa sem limites artificiais, intercalação no Início, janela vertical limitada, busca virtualizada no Início (2.500 resultados) e retomada segura de episódio .mkv com metadados atrasados!'
+            '✅ [12.25] Etapa 2 validada com sucesso: vitrine completa sem limites artificiais, D-Pad preservado após busca/Ver todos/categoria, busca virtualizada no Início (2.500 resultados) e retomada segura de episódio apenas com extensão confirmada!'
           );
         } finally {
           useDelayedSeriesCategories = false;
