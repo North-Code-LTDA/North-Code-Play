@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Logo } from '../components/Logo';
-import { LogOut, Home as HomeIcon, Tv, Film, PlaySquare, Settings, Menu, X, Search, Heart, AlertCircle, Loader2, RefreshCw, KeyRound } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { X, AlertCircle, Loader2, RefreshCw, KeyRound } from 'lucide-react';
+import { AnimatePresence } from 'motion/react';
 import { VideoPlayer } from '../components/VideoPlayer';
+import { TopHeader, MainSectionId, PrimaryNavSectionId } from '../components/TopHeader';
 
 import { HomeView } from '../views/HomeView';
 import { LiveTvView, LiveChannelLaunchIntent } from '../views/LiveTvView';
@@ -15,12 +16,9 @@ import { XtreamProvider, useXtreamSession } from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
 import { normalizeServerUrl } from '../utils/mediaUtils';
 import { markCredentialsAuthRejected, safeRemoveCredentials } from '../utils/accountUtils';
-import { MediaImage } from '../components/MediaImage';
 import { DisplaySetupModal } from '../components/DisplaySetupModal';
 import { useDisplayPreferences } from '../platform/tvEnvironment';
-import { APP_VERSION, APP_COMMIT, formatCommitShort } from '../version';
 import {
-  useNavigationMode,
   useBackHandler,
   BACK_PRIORITY,
   pushFocusMemory,
@@ -34,20 +32,31 @@ import {
   recordHomeManualContinueIntent,
 } from '../utils/catalogDiagnostics';
 
-export type ViewType = 'inicio' | 'live' | 'movies' | 'series' | 'favorites' | 'config';
+export type ViewType = MainSectionId;
 
 function HomeContent({ credentials }: { credentials: any }) {
   const navigate = useNavigate();
-  const navMode = useNavigationMode();
   const { isConfigured } = useDisplayPreferences();
   const isDisplaySetupOpen = !isConfigured;
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [currentView, setCurrentView] = useState<ViewType>('inicio');
+  const [configFocusTarget, setConfigFocusTarget] = useState<'presentation' | 'account'>('presentation');
+  const [configFocusReqId, setConfigFocusReqId] = useState(0);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [liveLaunchIntent, setLiveLaunchIntent] = useState<LiveChannelLaunchIntent | null>(null);
   const liveLaunchReqCounterRef = useRef(0);
   const lastPointerDownTimeRef = useRef<number>(0);
   const homeRootRef = useRef<HTMLDivElement>(null);
+  const mainViewAreaRef = useRef<HTMLElement>(null);
   const authRecoveryPrimaryRef = useRef<HTMLButtonElement>(null);
+  const pendingSectionFocusRef = useRef<{
+    section: 'live' | 'movies' | 'series';
+    requestId: number;
+  } | null>(null);
+  const sectionFocusReqCounterRef = useRef(0);
+  const isApplyingSectionFocusRef = useRef(false);
+  const [sectionFocusTick, setSectionFocusTick] = useState(0);
+
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const [isRetryingSession, setIsRetryingSession] = useState(false);
   const [activeVideo, setActiveVideo] = useState<{
@@ -62,8 +71,6 @@ function HomeContent({ credentials }: { credentials: any }) {
     onPrevious?: () => void;
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isSearchEditing, setIsSearchEditing] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
   const debouncedSearchQuery = useDebounce(searchQuery, 500);
 
   // Overlay state & isolated session context consumption
@@ -76,37 +83,120 @@ function HomeContent({ credentials }: { credentials: any }) {
     retrySession,
   } = useXtreamSession();
 
-  // Back policy: 1) Exit search text editing mode
-  useBackHandler(
-    'home-search-edit',
-    BACK_PRIORITY.SUB_MODAL,
-    () => {
-      if (isSearchEditing) {
-        setIsSearchEditing(false);
-        return true;
-      }
+  // One-time focus forwarding when activating TV ao Vivo, Filmes, or Séries
+  const tryApplyPendingSectionFocus = useCallback((): boolean => {
+    const pending = pendingSectionFocusRef.current;
+    if (!pending || pending.section !== currentView) {
       return false;
-    },
-    isSearchEditing
-  );
+    }
+    const viewRoot = mainViewAreaRef.current;
+    if (!viewRoot) return false;
 
-  // Back policy: 2) Close mobile drawer menu
-  useBackHandler(
-    'home-mobile-menu',
-    BACK_PRIORITY.DRAWER_MENU,
-    () => {
-      if (isMobileMenuOpen) {
-        setIsMobileMenuOpen(false);
-        popFocusMemory();
-        return true;
-      }
+    const categoryBtns = Array.from(
+      viewRoot.querySelectorAll<HTMLButtonElement>(
+        '[data-nav-zone="categories"] button[data-category-id], [data-nav-zone="categories"] button[data-live-category-id]'
+      )
+    ).filter((btn) => isElementFocusable(btn));
+
+    if (categoryBtns.length === 0) {
       return false;
-    },
-    isMobileMenuOpen
-  );
+    }
 
-  // Back policy: 3) From categories of live/movies/series or content of config/favorites, focus the corresponding sidebar button while keeping the section open;
-  // on a subsequent Back (when focus is already on the sidebar or outside), return to 'inicio' (never logs out!)
+    const selectedBtn = categoryBtns.find(
+      (btn) => btn.getAttribute('data-category-selected') === 'true'
+    );
+    const targetBtn = selectedBtn || categoryBtns[0];
+
+    pendingSectionFocusRef.current = null;
+    isApplyingSectionFocusRef.current = true;
+    try {
+      focusElementSafely(targetBtn);
+    } finally {
+      isApplyingSectionFocusRef.current = false;
+    }
+    return true;
+  }, [currentView]);
+
+  useEffect(() => {
+    const pending = pendingSectionFocusRef.current;
+    if (!pending) return;
+    if (pending.section !== currentView) {
+      pendingSectionFocusRef.current = null;
+      return;
+    }
+
+    if (tryApplyPendingSectionFocus()) {
+      return;
+    }
+
+    const viewRoot = mainViewAreaRef.current;
+    let observer: MutationObserver | null = null;
+    if (viewRoot && typeof MutationObserver !== 'undefined') {
+      observer = new MutationObserver(() => {
+        if (tryApplyPendingSectionFocus() && observer) {
+          observer.disconnect();
+          observer = null;
+        }
+      });
+      observer.observe(viewRoot, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-category-selected', 'disabled', 'class'],
+      });
+    }
+
+    const cancelOnKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === 'ArrowUp' ||
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowLeft' ||
+        e.key === 'ArrowRight' ||
+        e.key === 'Tab' ||
+        e.key === 'Escape' ||
+        e.key === 'Backspace'
+      ) {
+        pendingSectionFocusRef.current = null;
+      }
+    };
+
+    const cancelOnPointerDown = (e: PointerEvent | MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const originNavBtn = target?.closest?.(`button[data-header-nav-id="${pending.section}"]`);
+      if (!originNavBtn) {
+        pendingSectionFocusRef.current = null;
+      }
+    };
+
+    const cancelOnFocusIn = (e: FocusEvent) => {
+      if (isApplyingSectionFocusRef.current) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const isOriginHeaderBtn =
+        target.getAttribute('data-header-nav-id') === pending.section ||
+        Boolean(target.closest(`button[data-header-nav-id="${pending.section}"]`));
+      if (!isOriginHeaderBtn) {
+        pendingSectionFocusRef.current = null;
+      }
+    };
+
+    window.addEventListener('keydown', cancelOnKeyDown, true);
+    window.addEventListener('pointerdown', cancelOnPointerDown, true);
+    window.addEventListener('focusin', cancelOnFocusIn, true);
+
+    return () => {
+      if (observer) {
+        observer.disconnect();
+      }
+      window.removeEventListener('keydown', cancelOnKeyDown, true);
+      window.removeEventListener('pointerdown', cancelOnPointerDown, true);
+      window.removeEventListener('focusin', cancelOnFocusIn, true);
+    };
+  }, [currentView, sectionFocusTick, tryApplyPendingSectionFocus]);
+
+  // Back policy: From categories of live/movies/series or content of config/favorites,
+  // focus the active section button in the new top header while keeping the section open;
+  // on a subsequent Back (when focus is already in the header or outside), return to 'inicio' (never logs out!)
   useBackHandler(
     'home-section-to-inicio',
     BACK_PRIORITY.SECTION_TO_HOME,
@@ -126,36 +216,36 @@ function HomeContent({ credentials }: { credentials: any }) {
 
           if (isInCategories || isInConfigOrFavoritesContent) {
             const root = homeRootRef.current || document.body;
-            const desktopSidebarBtns = Array.from(
-              root.querySelectorAll(
-                `aside[data-nav-zone="sidebar"] button[data-sidebar-nav-id="${currentView}"]`
-              )
-            ) as HTMLButtonElement[];
+            const headerTargetBtn =
+              currentView === 'config'
+                ? root.querySelector<HTMLButtonElement>(
+                    'header[data-nav-zone="header"] button[data-header-account-trigger="true"]'
+                  )
+                : root.querySelector<HTMLButtonElement>(
+                    `header[data-nav-zone="header"] button[data-header-nav-id="${currentView}"]`
+                  );
 
-            const isMobileViewport =
-              typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 768;
-
-            const visibleSidebarBtn = !isMobileViewport
-              ? desktopSidebarBtns.find((btn) => isElementFocusable(btn))
-              : undefined;
-
-            if (visibleSidebarBtn) {
-              focusElementSafely(visibleSidebarBtn);
-              return true;
-            }
-
-            const mobileMenuBtn = root.querySelector(
-              'button[data-mobile-menu-trigger="true"]'
-            ) as HTMLButtonElement | null;
-            if (mobileMenuBtn && isElementFocusable(mobileMenuBtn)) {
-              focusElementSafely(mobileMenuBtn);
+            if (headerTargetBtn && isElementFocusable(headerTargetBtn)) {
+              focusElementSafely(headerTargetBtn);
               return true;
             }
           }
         }
 
+        pendingSectionFocusRef.current = null;
         setCurrentView('inicio');
         setSearchQuery('');
+        setIsSearchOpen(false);
+        setIsAccountMenuOpen(false);
+        setTimeout(() => {
+          const root = homeRootRef.current || document.body;
+          const inicioBtn = root.querySelector<HTMLButtonElement>(
+            'header[data-nav-zone="header"] button[data-header-nav-id="inicio"]'
+          );
+          if (inicioBtn && isElementFocusable(inicioBtn) && getNavMode() === 'remote') {
+            focusElementSafely(inicioBtn);
+          }
+        }, 0);
         return true;
       }
       return false;
@@ -240,8 +330,12 @@ function HomeContent({ credentials }: { credentials: any }) {
       const root = homeRootRef.current;
       if (!root) return;
       const target =
-        root.querySelector<HTMLElement>('[data-nav-zone="content"] button, [data-nav-zone="content"] [data-nav-item="true"]') ||
-        root.querySelector<HTMLElement>('aside[data-nav-zone="sidebar"] button[data-sidebar-active="true"]');
+        root.querySelector<HTMLElement>(
+          '[data-nav-zone="content"] button, [data-nav-zone="content"] [data-nav-item="true"]'
+        ) ||
+        root.querySelector<HTMLElement>(
+          'header[data-nav-zone="header"] button[data-header-nav-active="true"]'
+        );
       if (target && isElementFocusable(target)) {
         focusElementSafely(target);
       }
@@ -255,7 +349,7 @@ function HomeContent({ credentials }: { credentials: any }) {
     }
   }, [logoutError]);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     const res = safeRemoveCredentials();
     if (!res.success) {
       setLogoutError('Não foi possível sair deste dispositivo. Tente novamente.');
@@ -263,7 +357,7 @@ function HomeContent({ credentials }: { credentials: any }) {
     }
     setLogoutError(null);
     navigate('/');
-  };
+  }, [navigate]);
 
   const handlePlay = useCallback(
     (
@@ -303,6 +397,7 @@ function HomeContent({ credentials }: { credentials: any }) {
   const handleSelectLiveFromHome = useCallback((stream: any) => {
     const reqId = ++liveLaunchReqCounterRef.current;
     const sId = stream?.stream_id ?? stream?.id ?? '';
+    pendingSectionFocusRef.current = null;
     setLiveLaunchIntent({
       streamId: sId,
       requestId: reqId,
@@ -310,60 +405,78 @@ function HomeContent({ credentials }: { credentials: any }) {
       streamSnapshot: stream,
     });
     setCurrentView('live');
-    setIsMobileMenuOpen(false);
+    setIsSearchOpen(false);
+    setIsAccountMenuOpen(false);
   }, []);
 
   const handleConsumeLiveIntent = useCallback((reqId: number) => {
     setLiveLaunchIntent((prev) => (prev && prev.requestId === reqId ? null : prev));
   }, []);
 
-  const renderNavItems = () => (
-    <>
-      <button data-sidebar-nav-id="inicio" data-sidebar-active={currentView === 'inicio' ? 'true' : 'false'} onClick={() => { setCurrentView('inicio'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'inicio' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <HomeIcon className="w-5 h-5" />
-        <span>Início</span>
-      </button>
-      <button data-sidebar-nav-id="live" data-sidebar-active={currentView === 'live' ? 'true' : 'false'} onClick={() => { setCurrentView('live'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'live' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <Tv className="w-5 h-5" />
-        <span>TV ao Vivo</span>
-      </button>
-      <button data-sidebar-nav-id="movies" data-sidebar-active={currentView === 'movies' ? 'true' : 'false'} onClick={() => { setCurrentView('movies'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'movies' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <Film className="w-5 h-5" />
-        <span>Filmes</span>
-      </button>
-      <button data-sidebar-nav-id="series" data-sidebar-active={currentView === 'series' ? 'true' : 'false'} onClick={() => { setCurrentView('series'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'series' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <PlaySquare className="w-5 h-5" />
-        <span>Séries</span>
-      </button>
-      <button data-sidebar-nav-id="favorites" data-sidebar-active={currentView === 'favorites' ? 'true' : 'false'} onClick={() => { setCurrentView('favorites'); setIsMobileMenuOpen(false); setSearchQuery(''); }} className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'favorites' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}>
-        <Heart className="w-5 h-5" />
-        <span>Meus Favoritos</span>
-      </button>
-      <div className="h-4" />
-      <button
-        data-sidebar-nav-id="config"
-        data-sidebar-active={currentView === 'config' ? 'true' : 'false'}
-        onClick={() => {
-          const alreadyConfig = currentView === 'config';
-          setCurrentView('config');
-          setIsMobileMenuOpen(false);
-          setSearchQuery('');
-          if (alreadyConfig && getNavMode() === 'remote') {
-            const root = homeRootRef.current || document.body;
-            const target =
-              root.querySelector<HTMLElement>('[data-config-primary="true"]') ||
-              root.querySelector<HTMLElement>('[data-nav-zone="content"] button');
-            if (target) {
-              focusElementSafely(target);
-            }
-          }
-        }}
-        className={`flex items-center gap-3 w-full px-4 py-3 rounded-xl transition-colors ${currentView === 'config' ? 'bg-nc-primary text-black font-semibold' : 'text-nc-text-secondary hover:text-white hover:bg-nc-bg-input'}`}
-      >
-        <Settings className="w-5 h-5" />
-        <span>Configurações</span>
-      </button>
-    </>
+  const handleSelectSection = useCallback((section: PrimaryNavSectionId) => {
+    setIsAccountMenuOpen(false);
+    setIsSearchOpen(false);
+    setSearchQuery('');
+    if (section === 'live' || section === 'movies' || section === 'series') {
+      pendingSectionFocusRef.current = {
+        section,
+        requestId: ++sectionFocusReqCounterRef.current,
+      };
+      setSectionFocusTick((t) => t + 1);
+    } else {
+      pendingSectionFocusRef.current = null;
+    }
+    setCurrentView(section);
+  }, []);
+
+  const handleOpenSearch = useCallback(() => {
+    pendingSectionFocusRef.current = null;
+    setIsAccountMenuOpen(false);
+    if (currentView === 'config') {
+      setCurrentView('inicio');
+    }
+    setIsSearchOpen(true);
+  }, [currentView]);
+
+  const handleCloseSearch = useCallback(() => {
+    setIsSearchOpen(false);
+    setSearchQuery('');
+  }, []);
+
+  const handleToggleAccountMenu = useCallback(() => {
+    pendingSectionFocusRef.current = null;
+    setIsAccountMenuOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        setIsSearchOpen(false);
+        setSearchQuery('');
+      }
+      return next;
+    });
+  }, []);
+
+  const handleCloseAccountMenu = useCallback(() => {
+    setIsAccountMenuOpen(false);
+  }, []);
+
+  const handleSelectAccountAction = useCallback(
+    (action: 'account' | 'config' | 'logout') => {
+      pendingSectionFocusRef.current = null;
+      setIsAccountMenuOpen(false);
+      setIsSearchOpen(false);
+      setSearchQuery('');
+
+      if (action === 'logout') {
+        handleLogout();
+        return;
+      }
+
+      const targetSection = action === 'account' ? 'account' : 'presentation';
+      setConfigFocusTarget(targetSection);
+      setConfigFocusReqId((prev) => prev + 1);
+      setCurrentView('config');
+    },
+    [handleLogout]
   );
 
   const isHeroPaused = Boolean(activeVideo || isOverlayActive || isDisplaySetupOpen);
@@ -395,7 +508,12 @@ function HomeContent({ credentials }: { credentials: any }) {
       case 'favorites':
         return <FavoritesView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
       case 'config':
-        return <ConfigView />;
+        return (
+          <ConfigView
+            focusTarget={configFocusTarget}
+            focusRequestId={configFocusReqId}
+          />
+        );
       default:
         return (
           <HomeView
@@ -416,14 +534,14 @@ function HomeContent({ credentials }: { credentials: any }) {
         onPointerDownCapture={() => {
           lastPointerDownTimeRef.current = Date.now();
         }}
-        className="h-[100dvh] nc-safe-screen bg-nc-bg flex flex-col md:flex-row w-full overflow-hidden"
+        className="h-[100dvh] nc-safe-screen bg-nc-bg flex flex-col w-full overflow-hidden"
         inert={isOverlayActive || isDisplaySetupOpen || isAuthRejected ? true : undefined}
       >
         <AnimatePresence>
           {activeVideo && (
-            <VideoPlayer 
-              streamUrl={activeVideo.url} 
-              title={activeVideo.title} 
+            <VideoPlayer
+              streamUrl={activeVideo.url}
+              title={activeVideo.title}
               contentType={activeVideo.contentType}
               channelName={activeVideo.channelName}
               programTitle={activeVideo.programTitle}
@@ -436,174 +554,24 @@ function HomeContent({ credentials }: { credentials: any }) {
           )}
         </AnimatePresence>
 
-        {/* Sidebar - Desktop */}
-        <aside data-nav-zone="sidebar" className="nc-tv-sidebar hidden md:flex flex-col w-64 border-r border-nc-border/50 bg-black/50 backdrop-blur-xl z-50 h-full shrink-0">
-          <div className="nc-tv-sidebar-logo p-6">
-            <Logo className="scale-90 origin-left" />
-          </div>
-          
-          <div className="nc-tv-sidebar-nav flex-1 px-4 py-2 space-y-2 overflow-y-auto custom-scrollbar flex flex-col">
-            {renderNavItems()}
-          </div>
+        {/* Shared Top Navigation Header across all authenticated views */}
+        <TopHeader
+          currentView={currentView}
+          onSelectSection={handleSelectSection}
+          onSelectAccountAction={handleSelectAccountAction}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+          isSearchOpen={isSearchOpen}
+          onOpenSearch={handleOpenSearch}
+          onCloseSearch={handleCloseSearch}
+          isAccountMenuOpen={isAccountMenuOpen}
+          onToggleAccountMenu={handleToggleAccountMenu}
+          onCloseAccountMenu={handleCloseAccountMenu}
+          username={credentials?.username || credentials?.playlistName}
+        />
 
-          <div className="nc-tv-sidebar-footer p-4 border-t border-nc-border/50 mt-auto shrink-0">
-            <div className="flex items-center gap-3 px-4 py-2.5 mb-1.5">
-              <div className="w-9 h-9 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0 overflow-hidden border border-nc-border">
-                {credentials.avatar ? (
-                  <MediaImage 
-                    src={credentials.avatar} 
-                    serverUrl={credentials.serverUrl}
-                    alt="Avatar" 
-                    className="w-full h-full object-cover" 
-                  />
-                ) : (
-                  (credentials.playlistName || 'M').charAt(0).toUpperCase()
-                )}
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <p className="text-sm font-medium text-white truncate">{credentials.playlistName || 'Minha Lista'}</p>
-                <p className="text-xs text-gray-400 truncate">{credentials.username}</p>
-              </div>
-            </div>
-            <button 
-              onClick={handleLogout}
-              className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
-            >
-              <LogOut className="w-5 h-5" />
-              <span>Sair</span>
-            </button>
-            <div className="mt-2.5 pt-2 border-t border-nc-border/30 text-center">
-              <span className="nc-text-meta font-mono text-nc-text-secondary/60">
-                v{APP_VERSION} ({formatCommitShort(APP_COMMIT)})
-              </span>
-            </div>
-          </div>
-        </aside>
-
-        {/* Mobile Header */}
-        <header className="md:hidden sticky top-0 w-full h-16 border-b border-nc-border/50 bg-black/80 backdrop-blur-xl z-[45] flex items-center justify-between px-4 shrink-0">
-          <Logo className="scale-75 origin-left" />
-          <button 
-            data-mobile-menu-trigger="true"
-            onClick={(e) => {
-              pushFocusMemory(e.currentTarget);
-              setIsMobileMenuOpen(true);
-            }}
-            className="p-2 text-white"
-          >
-            <Menu className="w-6 h-6" />
-          </button>
-        </header>
-
-        {/* Mobile Sidebar Overlay */}
-        <AnimatePresence>
-          {isMobileMenuOpen && (
-            <>
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => {
-                  setIsMobileMenuOpen(false);
-                  popFocusMemory();
-                }}
-                className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-[60]"
-              />
-              <motion.aside 
-                data-focus-scope="modal"
-                initial={{ x: '-100%' }}
-                animate={{ x: 0 }}
-                exit={{ x: '-100%' }}
-                transition={{ type: 'spring', bounce: 0, duration: 0.4 }}
-                className="md:hidden fixed inset-y-0 left-0 w-64 nc-safe-drawer bg-nc-bg-card border-r border-nc-border/50 z-[70] flex flex-col"
-              >
-                <div className="p-4 flex items-center justify-between border-b border-nc-border/50">
-                  <Logo className="scale-75 origin-left" />
-                  <button
-                    onClick={() => {
-                      setIsMobileMenuOpen(false);
-                      popFocusMemory();
-                    }}
-                    className="p-2 text-nc-text-secondary hover:text-white"
-                  >
-                    <X className="w-6 h-6" />
-                  </button>
-                </div>
-                <div className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
-                  {renderNavItems()}
-                </div>
-                <div className="p-4 border-t border-nc-border/50">
-                  <div className="flex items-center gap-3 px-4 py-3 mb-2">
-                    <div className="w-9 h-9 rounded-full bg-nc-primary/20 flex items-center justify-center text-nc-primary font-bold shrink-0 overflow-hidden border border-nc-border">
-                      {credentials.avatar ? (
-                        <MediaImage 
-                          src={credentials.avatar} 
-                          serverUrl={credentials.serverUrl}
-                          alt="Avatar" 
-                          className="w-full h-full object-cover" 
-                        />
-                      ) : (
-                        (credentials.playlistName || 'M').charAt(0).toUpperCase()
-                      )}
-                    </div>
-                    <div className="flex-1 overflow-hidden">
-                      <p className="text-sm font-medium text-white truncate">{credentials.playlistName || 'Minha Lista'}</p>
-                      <p className="text-xs text-gray-400 truncate">{credentials.username}</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={handleLogout}
-                    className="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors"
-                  >
-                    <LogOut className="w-5 h-5" />
-                    <span>Sair</span>
-                  </button>
-                  <div className="mt-3 pt-2 border-t border-nc-border/30 text-center">
-                    <span className="nc-text-meta font-mono text-nc-text-secondary/60">
-                      v{APP_VERSION} ({formatCommitShort(APP_COMMIT)})
-                    </span>
-                  </div>
-                </div>
-              </motion.aside>
-            </>
-          )}
-        </AnimatePresence>
-
-        {/* Main Content */}
+        {/* Main Content Area below the shared TopHeader */}
         <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col relative w-full h-full">
-          {/* Top Search Bar */}
-          {currentView !== 'config' && (
-            <div data-nav-zone="header" className="nc-tv-header w-full shrink-0 p-4 md:px-8 border-b border-nc-border/30 bg-nc-bg/80 backdrop-blur-lg flex items-center justify-center z-[40]">
-              <div className="relative w-full max-w-md">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-nc-text-secondary" />
-                <input 
-                  ref={searchInputRef}
-                  type="text" 
-                  readOnly={navMode === 'remote' && !isSearchEditing}
-                  data-search-editing={isSearchEditing ? 'true' : 'false'}
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onPointerDown={() => setIsSearchEditing(true)}
-                  onClick={() => {
-                    if (navMode === 'remote' && !isSearchEditing) {
-                      setIsSearchEditing(true);
-                    }
-                  }}
-                  onBlur={() => setIsSearchEditing(false)}
-                  onKeyDown={(e) => {
-                    if (navMode === 'remote' && !isSearchEditing && (e.key === 'Enter' || e.key === 'NumpadEnter')) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setIsSearchEditing(true);
-                    }
-                  }}
-                  placeholder="Pesquisar..." 
-                  className="w-full pl-10 pr-4 py-2.5 bg-nc-bg-input border border-nc-border/50 focus:border-nc-primary rounded-xl text-white outline-none transition-colors"
-                />
-              </div>
-            </div>
-          )}
-
           {/* Transient Failure Banner (preserves credentials, allows retry or optional credential editing) */}
           {hasTransientCategoriesFailure && (
             <div
@@ -643,7 +611,10 @@ function HomeContent({ credentials }: { credentials: any }) {
             </div>
           )}
 
-          <main className="flex-1 min-w-0 min-h-0 flex overflow-hidden relative">
+          <main
+            ref={mainViewAreaRef}
+            className="flex-1 min-w-0 min-h-0 flex overflow-hidden relative"
+          >
             {isDisplaySetupOpen || isAuthRejected ? (
               <div
                 data-home-deferred="true"

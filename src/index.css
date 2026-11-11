@@ -53,13 +53,6 @@
   padding-right: calc(1rem + var(--nc-safe-right, 0px));
 }
 
-.nc-safe-drawer {
-  box-sizing: border-box;
-  padding-top: var(--nc-safe-top, 0px);
-  padding-bottom: var(--nc-safe-bottom, 0px);
-  padding-left: var(--nc-safe-left, 0px);
-}
-
 .nc-safe-modal {
   box-sizing: border-box;
   padding-top: calc(0.75rem + var(--nc-safe-top, 0px));
@@ -180,11 +173,11 @@ html[data-display-mode="tv"] {
   --radius-3xl: calc(1.5 * var(--nc-rem));
 
   /* Structural TV tokens derived from --nc-rem (compensated once) */
-  --nc-tv-sidebar-width: calc(12.75 * var(--nc-rem));
+  --nc-tv-top-header-min-h: calc(4.75 * var(--nc-rem));
   --nc-tv-category-pane-width: calc(16.25 * var(--nc-rem));
-  --nc-tv-nav-item-py: calc(0.52 * var(--nc-rem));
-  --nc-tv-nav-item-px: calc(0.72 * var(--nc-rem));
-  --nc-tv-nav-item-font: calc(0.86 * var(--nc-rem));
+  --nc-tv-nav-item-py: calc(0.45 * var(--nc-rem));
+  --nc-tv-nav-item-px: calc(0.95 * var(--nc-rem));
+  --nc-tv-nav-item-font: calc(0.875 * var(--nc-rem));
   --nc-tv-cat-item-py: calc(0.48 * var(--nc-rem));
   --nc-tv-cat-item-px: calc(0.72 * var(--nc-rem));
   --nc-tv-cat-item-font: calc(0.82 * var(--nc-rem));
@@ -310,36 +303,134 @@ html[data-display-mode="tv"] {
   flex-wrap: wrap;
 }
 
-html[data-display-mode="tv"] .nc-tv-sidebar {
-  width: var(--nc-tv-sidebar-width) !important;
-  min-width: 0 !important;
+/* ============================================================================
+ * Shared Global Top Header (.nc-top-header)
+ * - 1-row centered layout on >= 768px (~76px / 4.75 * --nc-rem height)
+ * - 2-row responsive layout on < 768px (Row 1: Logo + Search + Account;
+ *   Row 2: 5 section pills with horizontal scroll contained in strip)
+ * - Active section highlighted with dark capsule (#262626), distinct from
+ *   the white platform focus outline (2px solid #ffffff)
+ * ============================================================================ */
+.nc-top-header {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
 }
 
-html[data-display-mode="tv"] .nc-tv-sidebar-logo {
-  padding: calc(0.7 * var(--nc-rem)) calc(0.9 * var(--nc-rem)) !important;
+.nc-top-header-inner {
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  row-gap: calc(0.375 * var(--nc-rem));
+  column-gap: calc(0.5 * var(--nc-rem));
+  padding: calc(0.55 * var(--nc-rem)) calc(0.875 * var(--nc-rem));
+  min-width: 0;
+  max-width: 100%;
 }
 
-html[data-display-mode="tv"] .nc-tv-sidebar-nav {
-  padding: calc(0.35 * var(--nc-rem)) calc(0.6 * var(--nc-rem)) !important;
-  gap: calc(0.25 * var(--nc-rem)) !important;
-  min-height: 0 !important;
+.nc-top-header-brand {
+  order: 1;
+  min-width: 0;
 }
 
-html[data-display-mode="tv"] .nc-tv-sidebar-nav > button {
-  padding-top: var(--nc-tv-nav-item-py) !important;
-  padding-bottom: var(--nc-tv-nav-item-py) !important;
-  padding-left: var(--nc-tv-nav-item-px) !important;
-  padding-right: var(--nc-tv-nav-item-px) !important;
-  font-size: var(--nc-tv-nav-item-font) !important;
+.nc-top-header-actions {
+  order: 2;
+  margin-left: auto;
+  min-width: 0;
 }
 
-html[data-display-mode="tv"] .nc-tv-sidebar-footer {
-  padding: calc(0.55 * var(--nc-rem)) calc(0.65 * var(--nc-rem)) !important;
+.nc-top-header-nav {
+  order: 3;
+  width: 100%;
+  max-width: 100%;
+  gap: calc(0.375 * var(--nc-rem));
+  padding-top: calc(0.25 * var(--nc-rem));
+  padding-bottom: calc(0.15 * var(--nc-rem));
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-html[data-display-mode="tv"] .nc-tv-header {
-  padding-top: calc(0.45 * var(--nc-rem)) !important;
-  padding-bottom: calc(0.45 * var(--nc-rem)) !important;
+@media (min-width: 768px) {
+  .nc-top-header-inner {
+    display: grid;
+    grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr);
+    align-items: center;
+    min-height: calc(4.75 * var(--nc-rem));
+    padding: calc(0.5 * var(--nc-rem)) calc(2 * var(--nc-rem));
+    column-gap: calc(1 * var(--nc-rem));
+  }
+
+  .nc-top-header-brand {
+    order: 1;
+    justify-self: start;
+  }
+
+  .nc-top-header-nav {
+    order: 2;
+    justify-self: center;
+    width: auto;
+    max-width: 100%;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top: none;
+    gap: calc(0.375 * var(--nc-rem));
+  }
+
+  .nc-top-header-actions {
+    order: 3;
+    justify-self: end;
+    margin-left: 0;
+  }
+}
+
+.nc-top-header-pill {
+  font-size: calc(0.875 * var(--nc-rem));
+  line-height: 1.25;
+  padding: calc(0.5 * var(--nc-rem)) calc(1.05 * var(--nc-rem));
+  border: 1px solid transparent;
+}
+
+.nc-top-header-pill-active {
+  background-color: #262626;
+  color: #ffffff;
+  font-weight: 600;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.nc-top-header-icon-btn {
+  width: calc(2.4 * var(--nc-rem));
+  height: calc(2.4 * var(--nc-rem));
+}
+
+.nc-top-header-icon {
+  width: calc(1.2 * var(--nc-rem));
+  height: calc(1.2 * var(--nc-rem));
+}
+
+.nc-top-header-search-box {
+  width: clamp(calc(9.5 * var(--nc-rem)), 36vw, calc(18 * var(--nc-rem)));
+  max-width: calc(100vw - calc(9.5 * var(--nc-rem)));
+  min-height: calc(2.35 * var(--nc-rem));
+}
+
+.nc-top-header-search-input {
+  font-size: calc(0.85 * var(--nc-rem));
+}
+
+.nc-top-header-avatar {
+  width: calc(2 * var(--nc-rem));
+  height: calc(2 * var(--nc-rem));
+  font-size: calc(0.8 * var(--nc-rem));
+}
+
+.nc-top-header-account-menu {
+  min-width: calc(13.5 * var(--nc-rem));
+}
+
+.nc-account-menu-item {
+  font-size: calc(0.875 * var(--nc-rem));
+  padding: calc(0.6 * var(--nc-rem)) calc(1 * var(--nc-rem));
 }
 
 html[data-display-mode="tv"] .nc-tv-category-pane {

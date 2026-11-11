@@ -324,9 +324,10 @@ function describeElement(el: Element | null | undefined): string {
   const player = el.getAttribute('data-player-container')
     ? `[data-player-container="${el.getAttribute('data-player-container')}"]`
     : '';
-  const navId = el.getAttribute('data-sidebar-nav-id')
-    ? `[data-sidebar-nav-id="${el.getAttribute('data-sidebar-nav-id')}"]`
-    : '';
+  const navId =
+    el.getAttribute('data-header-nav-id') || el.getAttribute('data-sidebar-nav-id')
+      ? `[nav="${el.getAttribute('data-header-nav-id') || el.getAttribute('data-sidebar-nav-id')}"]`
+      : '';
   const catId =
     el.getAttribute('data-category-id') || el.getAttribute('data-live-category-id')
       ? `[cat="${el.getAttribute('data-category-id') || el.getAttribute('data-live-category-id')}"]`
@@ -742,10 +743,18 @@ async function runSimpleFavoritesTests() {
     writable: true,
   });
 
-  // Localizar botão "Sair"
+  // Localizar botão "Sair" no menu da conta do cabeçalho superior
+  const accountTriggerHome = containerHome.querySelector<HTMLButtonElement>(
+    'button[data-header-account-trigger="true"]'
+  );
+  assert(accountTriggerHome, 'Botão da conta deve estar presente no cabeçalho');
+  await act(async () => {
+    accountTriggerHome.click();
+  });
+
   const logoutButtons = Array.from(containerHome.querySelectorAll('button'));
   const logoutBtn = logoutButtons.find((btn) => btn.textContent?.includes('Sair'));
-  assert(logoutBtn, 'Botão Sair deve estar presente na tela');
+  assert(logoutBtn, 'Botão Sair deve estar presente no menu da conta');
 
   await act(async () => {
     logoutBtn.click();
@@ -770,7 +779,14 @@ async function runSimpleFavoritesTests() {
   });
 
   await act(async () => {
-    logoutBtn.click();
+    accountTriggerHome.click();
+  });
+  const logoutBtnRetry = containerHome.querySelector<HTMLButtonElement>(
+    'button[data-account-action="logout"]'
+  );
+  assert(logoutBtnRetry, 'Botão Sair deve estar presente ao reabrir o menu da conta');
+  await act(async () => {
+    logoutBtnRetry.click();
   });
 
   assert.strictEqual(window.localStorage.getItem(CREDENTIALS_KEY), null, 'Credenciais devem ter sido removidas com sucesso no logout');
@@ -3109,51 +3125,66 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Retornar o foco ao HeroBanner com ArrowUp deve zerar scrollTop (0) para exibir o topo completo do Início'
   );
 
-  // 2. Campo de busca no topo fica readOnly durante passagem por setas e só edita ao pressionar Enter
-  const searchInput = container.querySelector('input[placeholder*="Pesquisar"]') as HTMLInputElement;
-  assert(searchInput, 'Campo de busca deve existir no cabeçalho');
+  // 2. Busca sob demanda pela lupa no cabeçalho superior: abre ao acionar a lupa, foca o input, e fecha/limpa ao pressionar Escape devolvendo o foco à lupa
   assert.strictEqual(
-    searchInput.readOnly,
-    true,
-    'No modo remote, o input de busca deve permanecer readOnly até o usuário pressionar OK/Enter'
+    container.querySelector('input[data-header-search-input="true"]'),
+    null,
+    'Campo de busca não deve estar visível permanentemente antes de acionar a lupa'
   );
+  const searchTriggerBtn = container.querySelector(
+    'button[data-header-search-trigger="true"]'
+  ) as HTMLButtonElement;
+  assert(searchTriggerBtn, 'Botão da lupa (data-header-search-trigger="true") deve existir no cabeçalho');
 
   await act(async () => {
-    searchInput.focus();
-    searchInput.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }) as unknown as Event
-    );
+    searchTriggerBtn.focus();
+    searchTriggerBtn.click();
   });
 
+  const searchInput = container.querySelector(
+    'input[data-header-search-input="true"]'
+  ) as HTMLInputElement;
+  assert(searchInput, 'Campo de busca deve abrir após acionar o botão da lupa');
+  assertSameElement(
+    document.activeElement,
+    searchInput,
+    'Abrir a busca pela lupa deve focar automaticamente o input de busca'
+  );
   assert.strictEqual(
     searchInput.getAttribute('data-search-editing'),
     'true',
-    'Pressionar Enter sobre o input de busca deve ativar o modo de edição (data-search-editing="true")'
+    'Ao abrir a busca pela lupa, o modo de edição deve estar ativo (data-search-editing="true")'
   );
   assert.strictEqual(searchInput.readOnly, false, 'Em modo de edição, readOnly deve ser false');
 
-  // Pressionar Escape/Voltar sai do modo de edição da busca sem deslogar
+  // Pressionar Escape/Voltar fecha a busca sob demanda, limpa searchQuery e devolve o foco ao botão da lupa sem deslogar
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
+    await new Promise((resolve) => setTimeout(resolve, 10));
   });
 
   assert.strictEqual(
-    searchInput.getAttribute('data-search-editing'),
-    'false',
-    'Pressionar Escape deve sair do modo de edição da busca'
+    container.querySelector('input[data-header-search-input="true"]'),
+    null,
+    'Pressionar Escape deve fechar o campo de busca sob demanda'
+  );
+  assertSameElement(
+    document.activeElement,
+    container.querySelector('button[data-header-search-trigger="true"]'),
+    'Fechar a busca com Escape deve devolver o foco ao botão da lupa'
   );
   assert(
     window.localStorage.getItem(CREDENTIALS_KEY) !== null,
-    'Sair da edição de busca com Voltar NUNCA deve remover credenciais'
+    'Fechar a busca com Voltar NUNCA deve remover credenciais'
   );
 
   // =========================================================================
-  // CRITÉRIO 4: Filmes (MoviesView), MovieDetails (sinopse longa + topo), VideoPlayer Escape único e Voltar da categoria para botão Filmes na sidebar mantendo seção aberta
+  // CRITÉRIO 4: Filmes (MoviesView), encaminhamento único de foco para categoria, MovieDetails (sinopse longa + topo), VideoPlayer Escape único e Voltar da categoria para botão Filmes no cabeçalho mantendo seção aberta
   // =========================================================================
-  const filmesNavBtn = container.querySelector('button[data-sidebar-nav-id="movies"]') as HTMLButtonElement;
-  assert(filmesNavBtn, 'Botão Filmes na barra lateral (data-sidebar-nav-id="movies") deve existir');
+  const filmesNavBtn = container.querySelector('button[data-header-nav-id="movies"]') as HTMLButtonElement;
+  assert(filmesNavBtn, 'Botão Filmes no cabeçalho superior (data-header-nav-id="movies") deve existir');
 
   await act(async () => {
     filmesNavBtn.focus();
@@ -3170,6 +3201,15 @@ async function runDpadNavigationAndBackPolicyTests() {
       ),
     1000,
     'Montagem da seção Filmes (MoviesView) e botões de categoria'
+  );
+
+  const initialMoviesCatBtn = container.querySelector(
+    '[data-nav-zone="categories"] button[data-category-selected="true"], [data-nav-zone="categories"] button[data-category-id]'
+  ) as HTMLButtonElement;
+  assertSameElement(
+    document.activeElement,
+    initialMoviesCatBtn,
+    'Ativar Filmes no cabeçalho deve encaminhar o foco uma única vez para a categoria selecionada/primeira categoria habilitada'
   );
 
   // Selecionar a categoria Ação por Enter e focar o card do filme
@@ -3390,22 +3430,22 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Voltar da grade para a categoria não deve resetar o scrollTop da grade de Filmes'
   );
 
-  // Passo 3 (Critério 4 - Filmes): Com foco na lista de categorias de Filmes, o próximo Escape foca o botão "Filmes" na sidebar E mantém a seção de Filmes aberta, preservando categoria e scroll!
+  // Passo 3 (Critério 4 - Filmes): Com foco na lista de categorias de Filmes, o próximo Escape foca o botão "Filmes" no cabeçalho superior E mantém a seção de Filmes aberta, preservando categoria e scroll!
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
 
-  const filmesSidebarBtn = container.querySelector('button[data-sidebar-nav-id="movies"]') as HTMLButtonElement;
+  const filmesHeaderBtn = container.querySelector('button[data-header-nav-id="movies"]') as HTMLButtonElement;
   assertSameElement(
     document.activeElement,
-    filmesSidebarBtn,
-    'Critério 4: Voltar a partir das categorias de Filmes deve focar o botão "Filmes" na barra lateral'
+    filmesHeaderBtn,
+    'Critério 4: Voltar a partir das categorias de Filmes deve focar o botão "Filmes" no cabeçalho superior'
   );
   assert(
     container.textContent?.includes('Categorias de Filmes'),
-    'Critério 4: Ao focar o botão "Filmes" na barra lateral, a seção de Filmes DEVE continuar aberta e montada'
+    'Critério 4: Ao focar o botão "Filmes" no cabeçalho superior, a seção de Filmes DEVE continuar aberta e montada'
   );
   assert.strictEqual(
     acaoBtn.getAttribute('data-category-selected'),
@@ -3418,7 +3458,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Critério 4: O scrollTop da lista de Filmes deve permanecer preservado (340)'
   );
 
-  // Passo 4 (Ação separada seguinte): Com o foco JÁ no botão lateral "Filmes", um novo Escape retorna ao Início
+  // Passo 4 (Ação separada seguinte): Com o foco JÁ no botão "Filmes" do cabeçalho, um novo Escape retorna ao Início
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -3427,14 +3467,14 @@ async function runDpadNavigationAndBackPolicyTests() {
   assert(
     !container.textContent?.includes('Categorias de Filmes') &&
       container.querySelector('[data-scroll-top-anchor="true"]') !== null,
-    'Ação seguinte de Voltar (quando o foco já estava no botão lateral de Filmes) deve retornar ao Início'
+    'Ação seguinte de Voltar (quando o foco já estava no botão Filmes do cabeçalho) deve retornar ao Início'
   );
 
   // =========================================================================
-  // CRITÉRIO 5: Séries (SeriesView), SeriesDetails (sinopse longa) e Voltar da categoria para botão Séries na sidebar mantendo seção aberta
+  // CRITÉRIO 5: Séries (SeriesView), encaminhamento único de foco para categoria, SeriesDetails (sinopse longa) e Voltar da categoria para botão Séries no cabeçalho mantendo seção aberta
   // =========================================================================
-  const seriesNavBtn = container.querySelector('button[data-sidebar-nav-id="series"]') as HTMLButtonElement;
-  assert(seriesNavBtn, 'Botão Séries na barra lateral (data-sidebar-nav-id="series") deve existir');
+  const seriesNavBtn = container.querySelector('button[data-header-nav-id="series"]') as HTMLButtonElement;
+  assert(seriesNavBtn, 'Botão Séries no cabeçalho superior (data-header-nav-id="series") deve existir');
 
   await act(async () => {
     seriesNavBtn.focus();
@@ -3451,6 +3491,15 @@ async function runDpadNavigationAndBackPolicyTests() {
       ),
     1000,
     'Montagem da seção Séries (SeriesView) e botões de categoria'
+  );
+
+  const initialSeriesCatBtn = container.querySelector(
+    '[data-nav-zone="categories"] button[data-category-selected="true"], [data-nav-zone="categories"] button[data-category-id]'
+  ) as HTMLButtonElement;
+  assertSameElement(
+    document.activeElement,
+    initialSeriesCatBtn,
+    'Ativar Séries no cabeçalho deve encaminhar o foco uma única vez para a categoria selecionada/primeira categoria habilitada'
   );
 
   const seriesCatBtns = Array.from(container.querySelectorAll('[data-nav-zone="categories"] button[data-category-id]')) as HTMLButtonElement[];
@@ -3676,21 +3725,21 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Voltar a partir da grade de Séries deve focar a categoria selecionada (Drama)'
   );
 
-  // Passo 3 (Critério 5 - Séries): Escape a partir da categoria foca o botão "Séries" na sidebar E mantém a seção de Séries aberta, preservando categoria e scroll!
+  // Passo 3 (Critério 5 - Séries): Escape a partir da categoria foca o botão "Séries" no cabeçalho superior E mantém a seção de Séries aberta, preservando categoria e scroll!
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
-  const seriesSidebarBtn = container.querySelector('button[data-sidebar-nav-id="series"]') as HTMLButtonElement;
+  const seriesHeaderBtn = container.querySelector('button[data-header-nav-id="series"]') as HTMLButtonElement;
   assertSameElement(
     document.activeElement,
-    seriesSidebarBtn,
-    'Critério 5: Voltar a partir das categorias de Séries deve focar o botão "Séries" na barra lateral'
+    seriesHeaderBtn,
+    'Critério 5: Voltar a partir das categorias de Séries deve focar o botão "Séries" no cabeçalho superior'
   );
   assert(
     container.textContent?.includes('Categorias de Séries'),
-    'Critério 5: Ao focar o botão "Séries" na barra lateral, a seção de Séries DEVE continuar aberta e montada'
+    'Critério 5: Ao focar o botão "Séries" no cabeçalho superior, a seção de Séries DEVE continuar aberta e montada'
   );
   assert.strictEqual(
     dramaBtn.getAttribute('data-category-selected'),
@@ -3703,7 +3752,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Critério 5: O scrollTop da lista de Séries deve permanecer preservado (290)'
   );
 
-  // Passo 4 (Ação separada seguinte): Com o foco JÁ no botão lateral "Séries", um novo Escape retorna ao Início
+  // Passo 4 (Ação separada seguinte): Com o foco JÁ no botão "Séries" do cabeçalho, um novo Escape retorna ao Início
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -3712,14 +3761,14 @@ async function runDpadNavigationAndBackPolicyTests() {
   assert(
     !container.textContent?.includes('Categorias de Séries') &&
       container.querySelector('[data-scroll-top-anchor="true"]') !== null,
-    'Ação seguinte de Voltar (quando o foco já estava no botão lateral de Séries) deve retornar ao Início'
+    'Ação seguinte de Voltar (quando o foco já estava no botão Séries do cabeçalho) deve retornar ao Início'
   );
 
   // =========================================================================
-  // CRITÉRIOS 1, 2 & 3: TV ao Vivo (LiveTvView) — foco no 1º canal da categoria, troca A -> B e sequência Voltar mantendo seção aberta
+  // CRITÉRIOS 1, 2 & 3: TV ao Vivo (LiveTvView) — encaminhamento único de foco para 1ª categoria na montagem, foco no 1º canal da categoria, troca A -> B e sequência Voltar mantendo seção aberta
   // =========================================================================
-  const liveNavBtn = container.querySelector('button[data-sidebar-nav-id="live"]') as HTMLButtonElement;
-  assert(liveNavBtn, 'Botão TV ao Vivo na barra lateral (data-sidebar-nav-id="live") deve existir');
+  const liveNavBtn = container.querySelector('button[data-header-nav-id="live"]') as HTMLButtonElement;
+  assert(liveNavBtn, 'Botão TV ao Vivo no cabeçalho superior (data-header-nav-id="live") deve existir');
 
   await act(async () => {
     liveNavBtn.focus();
@@ -3736,6 +3785,20 @@ async function runDpadNavigationAndBackPolicyTests() {
       ),
     1000,
     'Montagem de LiveTvView e lista de categorias da TV ao Vivo'
+  );
+
+  const initialLiveCatBtn = container.querySelector(
+    '[data-nav-zone="categories"] button[data-category-selected="true"], [data-nav-zone="categories"] button[data-live-category-id]'
+  ) as HTMLButtonElement;
+  assertSameElement(
+    document.activeElement,
+    initialLiveCatBtn,
+    'Ativar TV ao Vivo no cabeçalho deve encaminhar o foco uma única vez para a primeira categoria habilitada sem iniciar reprodução'
+  );
+  assert.strictEqual(
+    container.querySelector('video'),
+    null,
+    'Encaminhar foco ao entrar na TV ao Vivo não deve clicar no destino nem iniciar reprodução'
   );
 
   const liveCatList = container.querySelector('[data-nav-zone="categories"] [data-scroll-container="true"]') as HTMLElement;
@@ -3971,33 +4034,33 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
 
-  // 4º Escape (Critério 3 - na lista de categorias da TV ao Vivo): foca o botão "TV ao Vivo" na barra lateral E mantém a tela de TV visível!
+  // 4º Escape (Critério 3 - na lista de categorias da TV ao Vivo): foca o botão "TV ao Vivo" no cabeçalho superior E mantém a tela de TV visível!
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
-  const liveSidebarBtn = container.querySelector('button[data-sidebar-nav-id="live"]') as HTMLButtonElement;
+  const liveHeaderBtn = container.querySelector('button[data-header-nav-id="live"]') as HTMLButtonElement;
   assertSameElement(
     document.activeElement,
-    liveSidebarBtn,
-    'Critério 3: 4º Escape a partir das categorias da TV ao Vivo deve focar o botão "TV ao Vivo" na barra lateral'
+    liveHeaderBtn,
+    'Critério 3: 4º Escape a partir das categorias da TV ao Vivo deve focar o botão "TV ao Vivo" no cabeçalho superior'
   );
   assert(
     container.textContent?.includes('CATEGORIAS DE TV') &&
       container.querySelector('button[data-live-category-id="1"]') !== null,
-    'Critério 3: Ao alcançar o botão "TV ao Vivo" na barra lateral, a tela de TV DEVE continuar aberta e visível'
+    'Critério 3: Ao alcançar o botão "TV ao Vivo" no cabeçalho superior, a tela de TV DEVE continuar aberta e visível'
   );
 
-  // Critério 6: Clique explícito em "Início" na barra lateral continua abrindo Início
-  const inicioSidebarBtn = container.querySelector('button[data-sidebar-nav-id="inicio"]') as HTMLButtonElement;
-  assert(inicioSidebarBtn, 'Botão Início na barra lateral deve existir');
+  // Critério 6: Clique explícito em "Início" no cabeçalho superior continua abrindo Início
+  const inicioHeaderBtn = container.querySelector('button[data-header-nav-id="inicio"]') as HTMLButtonElement;
+  assert(inicioHeaderBtn, 'Botão Início no cabeçalho superior deve existir');
   await act(async () => {
-    inicioSidebarBtn.click();
+    inicioHeaderBtn.click();
   });
   assert(
     container.querySelector('[data-scroll-top-anchor="true"]') !== null,
-    'Critério 6: Clique explícito em "Início" na barra lateral deve abrir a tela Início'
+    'Critério 6: Clique explícito em "Início" no cabeçalho superior deve abrir a tela Início'
   );
 
   // =========================================================================
@@ -4080,12 +4143,12 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
   assertSameElement(
     document.activeElement,
-    container.querySelector('button[data-sidebar-nav-id="live"]'),
-    '3º Escape após abrir canal pela Home foca o botão "TV ao Vivo" na barra lateral'
+    container.querySelector('button[data-header-nav-id="live"]'),
+    '3º Escape após abrir canal pela Home foca o botão "TV ao Vivo" no cabeçalho superior'
   );
   assert(
     container.querySelector('button[data-live-category-id="2"]') !== null,
-    '3º Escape mantém a tela de TV ao Vivo aberta enquanto o foco está no botão lateral'
+    '3º Escape mantém a tela de TV ao Vivo aberta enquanto o foco está no botão do cabeçalho'
   );
 
   await act(async () => {
@@ -11528,10 +11591,17 @@ async function runPerformanceAndVirtualizationTests() {
     );
 
     // 12.16.3: Saída da conta ("Sair") retorna ao Login e remove credenciais sem recarregar a Home
+    const routeAccountTrigger = routeTestContainer.querySelector<HTMLButtonElement>(
+      'button[data-header-account-trigger="true"]'
+    );
+    assert(routeAccountTrigger !== null, '[12.16.3] Botão da conta deve estar disponível no cabeçalho da Home');
+    await act(async () => {
+      routeAccountTrigger!.click();
+    });
     const logoutBtn = Array.from(routeTestContainer.querySelectorAll('button')).find((b) =>
       b.textContent?.includes('Sair')
     ) as HTMLButtonElement | undefined;
-    assert(logoutBtn !== undefined, '[12.16.3] Botão "Sair" deve estar disponível na Home');
+    assert(logoutBtn !== undefined, '[12.16.3] Botão "Sair" deve estar disponível no menu da conta da Home');
 
     await act(async () => {
       logoutBtn!.click();
@@ -16351,12 +16421,12 @@ async function runPerformanceAndVirtualizationTests() {
 
       // (4) Navegar para TV ao Vivo e abrir uma categoria de canais DEPOIS que a Home já aceitou interação
       controlledNowMs = 36500;
-      const liveSidebarBtn = p31Container.querySelector(
-        'button[data-sidebar-nav-id="live"]'
+      const liveHeaderNavBtn = p31Container.querySelector(
+        'button[data-header-nav-id="live"]'
       ) as HTMLButtonElement | null;
-      assert(liveSidebarBtn !== null, '[12.20.11] Botão "TV ao Vivo" na barra lateral da Home real deve existir');
+      assert(liveHeaderNavBtn !== null, '[12.20.11] Botão "TV ao Vivo" no cabeçalho superior da Home real deve existir');
       await act(async () => {
-        liveSidebarBtn!.click();
+        liveHeaderNavBtn!.click();
         await new Promise((r) => setTimeout(r, 30));
       });
 
@@ -20724,6 +20794,667 @@ if (args[0] === 'add' && args[1] === 'android') {
           });
           if (liveEpgContainer.parentNode) {
             document.body.removeChild(liveEpgContainer);
+          }
+        }
+      }
+
+      // =====================================================================
+      // 12.24: Etapa 1 da Nova Interface — Barra Superior Compartilhada (TopHeader),
+      // Busca sob Demanda (Lupa), Menu da Conta Ancorado e Encaminhamento Único de Foco
+      // =====================================================================
+      {
+        const {
+          computeTopHeaderLayoutMetrics,
+          TOP_HEADER_SECTIONS,
+        } = await import('../src/components/TopHeader');
+        const {
+          NavigationProvider: Stage1NavProvider,
+          setNavMode: setStage1NavMode,
+        } = await import('../src/navigation');
+        const { confirmDisplayPreferences } = await import('../src/platform/tvEnvironment');
+        const { Home: RealHomeApp } = await import('../src/pages/Home');
+        const { MemoryRouter } = await import('react-router-dom');
+
+        // 1. Verificar métricas de layout do cabeçalho superior nos 3 cenários exigidos:
+        //    - 1580 × 760 px (Desktop padrão 100%)
+        //    - 961 × 541 px no modo TV em 90%
+        //    - 390 × 844 px em retrato (2 fileiras com rolagem horizontal na faixa de seções)
+        const desktop1580 = computeTopHeaderLayoutMetrics({
+          viewportWidth: 1580,
+          viewportHeight: 760,
+          uiScale: 1,
+          displayMode: 'default',
+          activeSection: 'inicio',
+        });
+        assert.strictEqual(desktop1580.rowsCount, 1, '[12.24] Em 1580×760, o cabeçalho deve ter 1 linha');
+        assert.strictEqual(
+          desktop1580.headerHeightPx,
+          76,
+          `[12.24] Em 1580×760 (100%), a altura de referência do cabeçalho deve ser 76px, obteve ${desktop1580.headerHeightPx}px`
+        );
+        assert.strictEqual(
+          desktop1580.hasHorizontalPageOverflow,
+          false,
+          '[12.24] Em 1580×760, não deve haver overflow horizontal de página'
+        );
+        assert(
+          Math.abs(desktop1580.navStripRect.centerX - 1580 / 2) <= 2,
+          `[12.24] Em 1580×760, a faixa central das 5 seções deve estar centralizada na tela (centerX=${desktop1580.navStripRect.centerX})`
+        );
+        assert(
+          desktop1580.logoRect.right < desktop1580.navStripRect.left &&
+            desktop1580.navStripRect.right < desktop1580.actionsRect.left,
+          '[12.24] Em 1580×760, Logo (esquerda), Seções (centro) e Lupa+Conta (direita) não devem se sobrepor'
+        );
+
+        const tv961 = computeTopHeaderLayoutMetrics({
+          viewportWidth: 961,
+          viewportHeight: 541,
+          uiScale: 0.9,
+          displayMode: 'tv',
+          activeSection: 'live',
+        });
+        assert.strictEqual(tv961.rowsCount, 1, '[12.24] Em 961×541 (TV 90%), o cabeçalho deve ter 1 linha');
+        assert.strictEqual(
+          tv961.headerHeightPx,
+          68,
+          `[12.24] Em 961×541 (TV 90%), o cabeçalho deve respeitar a escala de TV (68px), obteve ${tv961.headerHeightPx}px`
+        );
+        assert.strictEqual(
+          tv961.hasHorizontalPageOverflow,
+          false,
+          '[12.24] Em 961×541 (TV 90%), não deve haver overflow horizontal de página'
+        );
+        assert(
+          Math.abs(tv961.navStripRect.centerX - 961 / 2) <= 2,
+          '[12.24] Em 961×541 (TV 90%), o conjunto de seções deve continuar centralizado'
+        );
+
+        const portrait390Inicio = computeTopHeaderLayoutMetrics({
+          viewportWidth: 390,
+          viewportHeight: 844,
+          uiScale: 1,
+          displayMode: 'default',
+          activeSection: 'inicio',
+          focusedSection: 'inicio',
+        });
+        const portrait390Favorites = computeTopHeaderLayoutMetrics({
+          viewportWidth: 390,
+          viewportHeight: 844,
+          uiScale: 1,
+          displayMode: 'default',
+          activeSection: 'inicio',
+          focusedSection: 'favorites',
+        });
+        assert.strictEqual(
+          portrait390Inicio.rowsCount,
+          2,
+          '[12.24] Em 390×844 (retrato), o cabeçalho único deve organizar-se em 2 linhas'
+        );
+        assert(
+          portrait390Inicio.logoRect.bottom <= portrait390Inicio.navStripRect.top &&
+            portrait390Inicio.actionsRect.bottom <= portrait390Inicio.navStripRect.top,
+          '[12.24] Em 390×844, a 1ª linha (Logo, Lupa e Conta) deve ficar acima da 2ª linha (5 seções)'
+        );
+        assert(
+          portrait390Inicio.navStripRect.scrollWidth > portrait390Inicio.navStripRect.clientWidth,
+          '[12.24] Em 390×844, a faixa das 5 seções deve habilitar rolagem horizontal contida na própria faixa'
+        );
+        assert.strictEqual(
+          portrait390Inicio.hasHorizontalPageOverflow,
+          false,
+          '[12.24] Em 390×844, a rolagem da faixa não deve gerar overflow horizontal na página'
+        );
+        assert.strictEqual(
+          portrait390Inicio.sectionButtons.find((b) => b.id === 'inicio')?.isVisibleInStrip,
+          true,
+          '[12.24] Em 390×844 com Início ativo/focado, Início deve estar visível na faixa'
+        );
+        assert(
+          portrait390Favorites.navStripRect.scrollLeft > 0 &&
+            portrait390Favorites.sectionButtons.find((b) => b.id === 'favorites')?.isVisibleInStrip === true,
+          '[12.24] Em 390×844 ao focar Favoritos no final da faixa, a faixa deve rolar horizontalmente mantendo Favoritos visível'
+        );
+
+        // 2. Testar fluxos reais no DOM com Home + TopHeader:
+        //    - único <header> montado em todas as seções autenticadas
+        //    - 0 consultas extras ao provedor ao abrir/fechar busca ou menu da conta
+        //    - lupa -> digitação -> Voltar (limpa searchQuery, restaura conteúdo e devolve foco à lupa)
+        //    - conta -> navegação vertical (Conta / Configurações / Sair com divisor) -> Voltar devolve foco ao botão da conta
+        //    - conta -> Conta (foca Informações da Conta em ConfigView) e conta -> Configurações (foca Ajustar apresentação)
+        //    - encaminhamento único de foco quando a categoria já está pronta E quando carrega depois (assíncrono),
+        //      além de descarte da pendência se o usuário trocar de seção ou mover o foco antes disso
+        const stage1Container = document.createElement('div');
+        document.body.appendChild(stage1Container);
+        const stage1Root = createRoot(stage1Container);
+
+        let providerQueryCount = 0;
+        let delayedSeriesCategoriesResolver: ((cats: any[]) => void) | null = null;
+        let useDelayedSeriesCategories = false;
+
+        (XtreamService as any).authenticate = async () => {
+          providerQueryCount++;
+          return {
+            user_info: {
+              username: 'stage1_user',
+              status: 'Active',
+              exp_date: '1893456000',
+              active_cons: '1',
+              max_connections: '3',
+              allowed_output_formats: ['m3u8', 'ts'],
+            },
+            server_info: { url: 'http://stage1.local', port: '8080' },
+          };
+        };
+        (XtreamService as any).getLiveCategories = async () => {
+          providerQueryCount++;
+          return [{ category_id: 'live_cat_1', category_name: 'Canais Abertos' }];
+        };
+        (XtreamService as any).getVodCategories = async () => {
+          providerQueryCount++;
+          return [
+            { category_id: 'vod_cat_1', category_name: 'Lançamentos' },
+            { category_id: 'vod_cat_2', category_name: 'Ficção' },
+          ];
+        };
+        (XtreamService as any).getSeriesCategories = async () => {
+          providerQueryCount++;
+          if (useDelayedSeriesCategories) {
+            return new Promise<any[]>((resolve) => {
+              delayedSeriesCategoriesResolver = resolve;
+            });
+          }
+          return [{ category_id: 'ser_cat_1', category_name: 'Séries Populares' }];
+        };
+        (XtreamService as any).getLiveStreams = async () => {
+          providerQueryCount++;
+          return [
+            {
+              stream_id: 701,
+              name: 'Canal Stage1 HD',
+              category_id: 'live_cat_1',
+              stream_icon: '',
+            },
+          ];
+        };
+        (XtreamService as any).getVodStreams = async () => {
+          providerQueryCount++;
+          return [
+            {
+              stream_id: 801,
+              name: 'Filme Alpha Exclusivo',
+              category_id: 'vod_cat_1',
+              stream_icon: '',
+              rating: '8.5',
+            },
+            {
+              stream_id: 802,
+              name: 'Filme Beta Aventura',
+              category_id: 'vod_cat_1',
+              stream_icon: '',
+              rating: '7.9',
+            },
+          ];
+        };
+        (XtreamService as any).getSeries = async () => {
+          providerQueryCount++;
+          return [
+            {
+              series_id: 901,
+              name: 'Série Omega',
+              category_id: 'ser_cat_1',
+              cover: '',
+              rating: '9.0',
+            },
+          ];
+        };
+
+        const stage1Creds = {
+          serverUrl: 'http://stage1.local:8080',
+          username: 'stage1_user',
+          password: 'stage1_pass',
+          playlistName: 'Lista Stage1',
+          allowed_output_formats: ['m3u8', 'ts'],
+        };
+        windowInstance.localStorage.setItem(
+          'northcode_tv_credentials',
+          JSON.stringify(stage1Creds)
+        );
+        confirmDisplayPreferences('default', 85);
+
+        const prevInnerWStage1 = windowInstance.innerWidth;
+        const prevInnerHStage1 = windowInstance.innerHeight;
+
+        try {
+          (windowInstance as any).innerWidth = 1580;
+          (windowInstance as any).innerHeight = 760;
+
+          await act(async () => {
+            stage1Root.render(
+              React.createElement(
+                MemoryRouter,
+                { initialEntries: ['/home'] },
+                React.createElement(
+                  Stage1NavProvider,
+                  null,
+                  React.createElement(RealHomeApp)
+                )
+              )
+            );
+            await new Promise((r) => setTimeout(r, 80));
+          });
+
+          setStage1NavMode('remote');
+
+          // Verificar remoção completa da sidebar antiga e menu móvel antigo, e presença de um único <header>
+          assert.strictEqual(
+            stage1Container.querySelectorAll('header').length,
+            1,
+            '[12.24] Deve existir exatamente 1 elemento <header> montado'
+          );
+          assert.strictEqual(
+            stage1Container.querySelector('aside[data-nav-zone="sidebar"]'),
+            null,
+            '[12.24] A barra lateral global antiga (aside[data-nav-zone="sidebar"]) não deve existir'
+          );
+          assert.strictEqual(
+            stage1Container.querySelector('button[data-mobile-menu-trigger]'),
+            null,
+            '[12.24] O gatilho do menu móvel antigo não deve existir'
+          );
+
+          // Verificar os 5 botões de seção na ordem correta e cápsula ativa em Início
+          const headerNavBtns = Array.from(
+            stage1Container.querySelectorAll<HTMLButtonElement>(
+              'header[data-nav-zone="header"] button[data-header-nav-id]'
+            )
+          );
+          assert.deepStrictEqual(
+            headerNavBtns.map((b) => b.getAttribute('data-header-nav-id')),
+            TOP_HEADER_SECTIONS.map((s) => s.id),
+            '[12.24] O cabeçalho deve exibir exatamente Início, TV ao Vivo, Filmes, Séries e Favoritos'
+          );
+          assert.strictEqual(
+            headerNavBtns[0].getAttribute('data-header-nav-active'),
+            'true',
+            '[12.24] Início deve iniciar com data-header-nav-active="true"'
+          );
+          assert(
+            headerNavBtns[0].className.includes('nc-top-header-pill-active'),
+            '[12.24] A seção ativa deve receber a classe da cápsula escura (.nc-top-header-pill-active)'
+          );
+
+          const queriesAfterInitialLoad = providerQueryCount;
+
+          // Fluxo: Lupa -> digitação -> filtragem -> Voltar (limpa searchQuery, restaura conteúdo e devolve foco à lupa)
+          const lupaBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
+          assert(lupaBtn !== null, '[12.24] Botão da lupa deve existir no cabeçalho');
+
+          await act(async () => {
+            lupaBtn.focus();
+            lupaBtn.click();
+          });
+
+          const openedSearchInput = stage1Container.querySelector<HTMLInputElement>(
+            'input[data-header-search-input="true"]'
+          )!;
+          assert(openedSearchInput !== null, '[12.24] Input de busca deve abrir ao clicar na lupa');
+          assertSameElement(
+            document.activeElement,
+            openedSearchInput,
+            '[12.24] Foco deve ir para o input de busca ao abrir a lupa'
+          );
+
+          assert(
+            stage1Container.textContent?.includes('Filme Alpha Exclusivo') &&
+              stage1Container.textContent?.includes('Filme Beta Aventura'),
+            '[12.24] Antes de filtrar, ambos os filmes devem estar visíveis na seção'
+          );
+
+          // Digitar termo de busca e aguardar debounce (500ms)
+          await act(async () => {
+            const prevVal = openedSearchInput.value;
+            openedSearchInput.value = 'Alpha Exclusivo';
+            (openedSearchInput as any)._valueTracker?.setValue(prevVal);
+            openedSearchInput.dispatchEvent(
+              new (windowInstance as any).Event('input', { bubbles: true })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+
+          assert(
+            stage1Container.textContent?.includes('Filme Alpha Exclusivo') &&
+              !stage1Container.textContent?.includes('Filme Beta Aventura'),
+            '[12.24] Digitar na busca sob demanda deve filtrar o conteúdo da seção'
+          );
+
+          // Pressionar Escape para fechar a busca, limpar searchQuery, restaurar conteúdo e devolver foco à lupa
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+
+          assert.strictEqual(
+            stage1Container.querySelector('input[data-header-search-input="true"]'),
+            null,
+            '[12.24] Escape deve fechar o campo de busca'
+          );
+          assert(
+            stage1Container.textContent?.includes('Filme Alpha Exclusivo') &&
+              stage1Container.textContent?.includes('Filme Beta Aventura'),
+            '[12.24] Fechar a busca deve limpar searchQuery e restaurar o conteúdo normal da seção'
+          );
+          assertSameElement(
+            document.activeElement,
+            stage1Container.querySelector('button[data-header-search-trigger="true"]'),
+            '[12.24] Fechar a busca deve devolver o foco ao botão da lupa'
+          );
+          assert.strictEqual(
+            providerQueryCount,
+            queriesAfterInitialLoad,
+            '[12.24] Abrir, digitar e fechar a busca não deve adicionar consultas extras ao provedor'
+          );
+
+          // Fluxo: Menu da Conta -> navegação por setas (Conta -> Configurações -> Sair) -> Escape devolve foco ao botão da conta
+          const accountTriggerBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-account-trigger="true"]'
+          )!;
+          assert(accountTriggerBtn !== null, '[12.24] Botão da conta deve existir no cabeçalho');
+
+          await act(async () => {
+            accountTriggerBtn.focus();
+            accountTriggerBtn.click();
+          });
+
+          const accountMenu = stage1Container.querySelector<HTMLElement>(
+            '[data-header-account-menu="true"]'
+          )!;
+          assert(accountMenu !== null, '[12.24] Painel flutuante do menu da conta deve abrir');
+          assert(
+            accountMenu.querySelector('[role="separator"]') !== null,
+            '[12.24] Menu da conta deve conter divisor horizontal antes de Sair'
+          );
+
+          const menuAccountBtn = accountMenu.querySelector<HTMLButtonElement>(
+            'button[data-account-action="account"]'
+          )!;
+          const menuConfigBtn = accountMenu.querySelector<HTMLButtonElement>(
+            'button[data-account-action="config"]'
+          )!;
+          const menuLogoutBtn = accountMenu.querySelector<HTMLButtonElement>(
+            'button[data-account-action="logout"]'
+          )!;
+          assert(
+            menuAccountBtn && menuConfigBtn && menuLogoutBtn,
+            '[12.24] Menu da conta deve oferecer Conta, Configurações e Sair'
+          );
+          assertSameElement(
+            document.activeElement,
+            menuAccountBtn,
+            '[12.24] Ao abrir o menu da conta, o 1º item (Conta) deve receber foco'
+          );
+
+          // Navegar por ArrowDown / ArrowUp dentro do menu da conta
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowDown',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assertSameElement(
+            document.activeElement,
+            menuConfigBtn,
+            '[12.24] ArrowDown no menu da conta deve focar Configurações'
+          );
+
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowDown',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assertSameElement(
+            document.activeElement,
+            menuLogoutBtn,
+            '[12.24] 2º ArrowDown no menu da conta deve focar Sair'
+          );
+
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowUp',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assertSameElement(
+            document.activeElement,
+            menuConfigBtn,
+            '[12.24] ArrowUp a partir de Sair deve voltar para Configurações'
+          );
+
+          // Fechar o menu da conta com Escape e verificar retorno do foco ao botão da conta e 0 consultas extras
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 10));
+          });
+          assert.strictEqual(
+            stage1Container.querySelector('[data-header-account-menu="true"]'),
+            null,
+            '[12.24] Escape deve fechar o menu da conta'
+          );
+          assertSameElement(
+            document.activeElement,
+            accountTriggerBtn,
+            '[12.24] Fechar o menu da conta com Escape deve devolver o foco ao botão da conta'
+          );
+          assert.strictEqual(
+            providerQueryCount,
+            queriesAfterInitialLoad,
+            '[12.24] Abrir, navegar e fechar o menu da conta não deve disparar consultas ao provedor'
+          );
+
+          // Testar Conta -> Configurações (abre ConfigView focando Ajustar apresentação e mantendo único <header>)
+          await act(async () => {
+            accountTriggerBtn.click();
+          });
+          await act(async () => {
+            stage1Container
+              .querySelector<HTMLButtonElement>('button[data-account-action="config"]')!
+              .click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+          assert.strictEqual(
+            stage1Container.querySelectorAll('header').length,
+            1,
+            '[12.24] Na tela de Configurações, deve continuar existindo um único <header> compartilhado'
+          );
+          assertSameElement(
+            document.activeElement,
+            stage1Container.querySelector('[data-config-primary="true"]'),
+            '[12.24] Selecionar Configurações no menu da conta deve focar Ajustar apresentação em ConfigView'
+          );
+
+          // Testar Conta -> Conta (foca a região Informações da Conta em ConfigView)
+          await act(async () => {
+            accountTriggerBtn.click();
+          });
+          await act(async () => {
+            stage1Container
+              .querySelector<HTMLButtonElement>('button[data-account-action="account"]')!
+              .click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+          assertSameElement(
+            document.activeElement,
+            stage1Container.querySelector('[data-config-account-focus="true"]'),
+            '[12.24] Selecionar Conta no menu da conta deve focar a seção Informações da Conta'
+          );
+
+          // Testar clique na Logo para retornar ao Início
+          const logoBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-logo="true"]'
+          )!;
+          await act(async () => {
+            logoBtn.click();
+          });
+          assert(
+            stage1Container.querySelector('[data-scroll-top-anchor="true"]') !== null,
+            '[12.24] Clicar na Logo deve retornar à seção Início'
+          );
+
+          // Testar encaminhamento único de foco quando o destino carrega depois (assíncrono)
+          // e descarte da pendência se o usuário mover o foco antes disso:
+          // Cenário A: Categorias de Séries atrasadas, usuário move o foco para Favoritos antes de carregarem -> pendência descartada!
+          await act(async () => {
+            stage1Root.render(React.createElement('div', null));
+          });
+          useDelayedSeriesCategories = true;
+          delayedSeriesCategoriesResolver = null;
+
+          await act(async () => {
+            stage1Root.render(
+              React.createElement(
+                MemoryRouter,
+                { initialEntries: ['/home'] },
+                React.createElement(
+                  Stage1NavProvider,
+                  null,
+                  React.createElement(RealHomeApp)
+                )
+              )
+            );
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          // Ativar "Séries" enquanto seriesCategories ainda está pendente (spinner visível, 0 botões de categoria)
+          const seriesBtnDelayed = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="series"]'
+          )!;
+          const favBtnDelayed = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="favorites"]'
+          )!;
+          await act(async () => {
+            seriesBtnDelayed.focus();
+            seriesBtnDelayed.click();
+          });
+          assert.strictEqual(
+            stage1Container.querySelectorAll('[data-nav-zone="categories"] button[data-category-id]').length,
+            0,
+            '[12.24] Enquanto seriesCategories está pendente, os botões de categoria ainda não estão montados'
+          );
+
+          // Usuário move o foco manualmente para o botão Favoritos no cabeçalho antes das categorias chegarem
+          await act(async () => {
+            favBtnDelayed.focus();
+          });
+          assertSameElement(document.activeElement, favBtnDelayed, '[12.24] Usuário moveu o foco manualmente para Favoritos');
+
+          // Agora as categorias de Séries chegam: o foco NÃO deve ser roubado de Favoritos!
+          await act(async () => {
+            delayedSeriesCategoriesResolver?.([
+              { category_id: 'ser_cat_delayed', category_name: 'Séries Atrasadas' },
+            ]);
+            await new Promise((r) => setTimeout(r, 40));
+          });
+          assertSameElement(
+            document.activeElement,
+            favBtnDelayed,
+            '[12.24] Se o usuário moveu o foco antes do carregamento tardio das categorias, a pendência de foco deve ser descartada'
+          );
+
+          // Cenário B: Categorias atrasadas, usuário aguarda sem mover o foco -> foco aplicado assim que as categorias chegam!
+          await act(async () => {
+            stage1Root.render(React.createElement('div', null));
+          });
+          delayedSeriesCategoriesResolver = null;
+
+          await act(async () => {
+            stage1Root.render(
+              React.createElement(
+                MemoryRouter,
+                { initialEntries: ['/home'] },
+                React.createElement(
+                  Stage1NavProvider,
+                  null,
+                  React.createElement(RealHomeApp)
+                )
+              )
+            );
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          const seriesBtnDelayed2 = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="series"]'
+          )!;
+          await act(async () => {
+            seriesBtnDelayed2.focus();
+            seriesBtnDelayed2.click();
+          });
+          assertSameElement(
+            document.activeElement,
+            seriesBtnDelayed2,
+            '[12.24] Enquanto aguarda categorias de Séries, o foco permanece no botão Séries'
+          );
+
+          await act(async () => {
+            delayedSeriesCategoriesResolver?.([
+              { category_id: 'ser_cat_arrived', category_name: 'Séries Carregadas Depois' },
+            ]);
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          const arrivedSeriesCatBtn = stage1Container.querySelector<HTMLButtonElement>(
+            '[data-nav-zone="categories"] button[data-category-selected="true"], [data-nav-zone="categories"] button[data-category-id]'
+          )!;
+          assert(arrivedSeriesCatBtn !== null, '[12.24] Botões de categoria de Séries montados após resolução assíncrona');
+          assertSameElement(
+            document.activeElement,
+            arrivedSeriesCatBtn,
+            '[12.24] Quando o destino carrega depois e o usuário não moveu o foco, o foco deve ser encaminhado automaticamente uma única vez'
+          );
+
+          console.log(
+            `📊 [Métricas 12.24 — Etapa 1 da Nova Interface (TopHeader, Busca sob Demanda e Menu da Conta)]\n` +
+              `   • 1580×760 (Desktop 100%): ${desktop1580.rowsCount} linha (${desktop1580.headerHeightPx}px), centro=${desktop1580.navStripRect.centerX}px, overflow=0\n` +
+              `   • 961×541 (TV 90%): ${tv961.rowsCount} linha (${tv961.headerHeightPx}px), centro=${tv961.navStripRect.centerX}px, overflow=0\n` +
+              `   • 390×844 (Retrato): ${portrait390Inicio.rowsCount} linhas no mesmo <header>, scrollWidth faixa=${portrait390Inicio.navStripRect.scrollWidth}px (clientWidth=${portrait390Inicio.navStripRect.clientWidth}px), Favoritos visível após scrollLeft=${portrait390Favorites.navStripRect.scrollLeft}px, overflow página=0\n` +
+              `   • Fluxos validados: único <header>, 0 consultas extras ao abrir menus, lupa -> digitação -> Voltar, conta -> Conta/Configurações/Sair, encaminhamento único de foco (imediato, tardio e cancelado se foco mudar)`
+          );
+        } finally {
+          useDelayedSeriesCategories = false;
+          (windowInstance as any).innerWidth = prevInnerWStage1;
+          (windowInstance as any).innerHeight = prevInnerHStage1;
+          await act(async () => {
+            stage1Root.unmount();
+          });
+          if (stage1Container.parentNode) {
+            document.body.removeChild(stage1Container);
           }
         }
       }

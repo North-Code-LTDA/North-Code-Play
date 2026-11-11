@@ -40,7 +40,15 @@ import {
   formatCatalogDiagnosticsReport,
 } from '../utils/catalogDiagnostics';
 
-export const ConfigView = React.memo(function ConfigView() {
+export interface ConfigViewProps {
+  focusTarget?: 'presentation' | 'account';
+  focusRequestId?: number;
+}
+
+export const ConfigView = React.memo(function ConfigView({
+  focusTarget = 'presentation',
+  focusRequestId = 0,
+}: ConfigViewProps = {}) {
   const { credentials } = useXtreamCredentials();
   const [accountInfo, setAccountInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -136,24 +144,36 @@ export const ConfigView = React.memo(function ConfigView() {
     };
   }, []);
 
-  // Transfer focus once on mount when entering ConfigView via keyboard/remote
+  // Transfer focus on mount or when focusRequestId/focusTarget changes from the header Account menu
   useEffect(() => {
-    if (hasInitialFocusedRef.current) return;
-    hasInitialFocusedRef.current = true;
-
-    if (getNavMode() !== 'remote') return;
-
     const root = containerRef.current;
     if (!root) return;
 
+    if (focusTarget === 'account' && !loading) {
+      const accountEl = root.querySelector<HTMLElement>('[data-config-account-focus="true"]');
+      if (accountEl) {
+        focusElementSafely(accountEl);
+        hasInitialFocusedRef.current = true;
+        return;
+      }
+    }
+
+    if (hasInitialFocusedRef.current && focusRequestId === 0) return;
+    hasInitialFocusedRef.current = true;
+
+    if (focusTarget !== 'account' && getNavMode() !== 'remote' && focusRequestId === 0) return;
+
     const target =
+      (focusTarget === 'account'
+        ? root.querySelector<HTMLElement>('[data-config-account-focus="true"]')
+        : null) ||
       root.querySelector<HTMLElement>('[data-config-primary="true"]') ||
       root.querySelector<HTMLElement>('button');
 
     if (target) {
       focusElementSafely(target);
     }
-  }, []);
+  }, [focusTarget, focusRequestId, loading]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -494,7 +514,16 @@ export const ConfigView = React.memo(function ConfigView() {
               <p>{error}</p>
             </div>
           ) : (
-            <div className="space-y-5">
+            <div
+              tabIndex={0}
+              role="region"
+              aria-label="Informações da Conta"
+              data-nav-item="true"
+              data-scroll-block="true"
+              data-config-section="account"
+              data-config-account-focus="true"
+              className="space-y-5 rounded-xl p-1 -m-1 focus:outline-none"
+            >
               <h3 className="nc-heading-section font-semibold text-white mb-2">Informações da Conta</h3>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

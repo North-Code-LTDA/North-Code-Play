@@ -1019,6 +1019,23 @@ function pickPreferredZoneEntry(
     if (autofocusItem) return autofocusItem;
   }
 
+  if (targetZone === 'header') {
+    const searchInput = zoneItems.find(
+      (c) => c.getAttribute('data-header-search-input') === 'true'
+    );
+    if (searchInput) return searchInput;
+
+    const activeHeaderNav = zoneItems.find(
+      (c) => c.getAttribute('data-header-nav-active') === 'true'
+    );
+    if (activeHeaderNav) return activeHeaderNav;
+
+    const activeAccountBtn = zoneItems.find(
+      (c) => c.getAttribute('data-header-account-active') === 'true'
+    );
+    if (activeAccountBtn) return activeAccountBtn;
+  }
+
   if (targetZone === 'sidebar') {
     const activeSidebar = zoneItems.find(
       (c) => c.getAttribute('data-sidebar-active') === 'true'
@@ -1239,34 +1256,68 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       return activeEl;
     }
 
-    const blocks = buildZoneBlocks(sameZoneCandidates, ctx);
-    const bIdx = blocks.findIndex((b) => b.items.includes(activeEl));
+    if (currentZone === 'header') {
+      const isTwoRowHeader =
+        typeof window !== 'undefined' &&
+        typeof window.innerWidth === 'number' &&
+        window.innerWidth > 0 &&
+        window.innerWidth < 768;
 
-    if (bIdx !== -1) {
-      const currentBlock = blocks[bIdx];
-
-      // 1. If inside a grid block, first try moving vertically within the grid
-      if (currentBlock.type === 'grid') {
-        const nextInGrid = findNextInGridBlock(
-          activeEl,
-          currentBlock.items,
-          direction,
-          hasRealGeometry,
-          ctx
+      if (isTwoRowHeader) {
+        const inNavStrip = Boolean(activeEl.closest('[data-header-nav-strip="true"]'));
+        const stripItems = sameZoneCandidates.filter((c) =>
+          Boolean(c.closest('[data-header-nav-strip="true"]'))
         );
-        if (nextInGrid) {
-          focusElementSafely(nextInGrid, direction);
-          return nextInGrid;
+        const topRowItems = sameZoneCandidates.filter(
+          (c) => !c.closest('[data-header-nav-strip="true"]')
+        );
+
+        if (direction === 'down' && !inNavStrip && stripItems.length > 0) {
+          const targetInStrip =
+            stripItems.find((c) => c.getAttribute('data-header-nav-active') === 'true') ||
+            stripItems[0];
+          focusElementSafely(targetInStrip, direction);
+          return targetInStrip;
+        }
+
+        if (direction === 'up' && inNavStrip && topRowItems.length > 0) {
+          const targetTop =
+            topRowItems.find((c) => c.getAttribute('data-header-search-input') === 'true') ||
+            topRowItems[0];
+          focusElementSafely(targetTop, direction);
+          return targetTop;
         }
       }
+    } else {
+      const blocks = buildZoneBlocks(sameZoneCandidates, ctx);
+      const bIdx = blocks.findIndex((b) => b.items.includes(activeEl));
 
-      // 2. Move to the adjacent block within the SAME zone
-      const targetBlockIdx = direction === 'down' ? bIdx + 1 : bIdx - 1;
-      if (targetBlockIdx >= 0 && targetBlockIdx < blocks.length) {
-        const targetBlock = blocks[targetBlockIdx];
-        const nextEl = pickBestItemInBlock(activeEl, targetBlock, hasRealGeometry, ctx);
-        focusElementSafely(nextEl, direction);
-        return nextEl;
+      if (bIdx !== -1) {
+        const currentBlock = blocks[bIdx];
+
+        // 1. If inside a grid block, first try moving vertically within the grid
+        if (currentBlock.type === 'grid') {
+          const nextInGrid = findNextInGridBlock(
+            activeEl,
+            currentBlock.items,
+            direction,
+            hasRealGeometry,
+            ctx
+          );
+          if (nextInGrid) {
+            focusElementSafely(nextInGrid, direction);
+            return nextInGrid;
+          }
+        }
+
+        // 2. Move to the adjacent block within the SAME zone
+        const targetBlockIdx = direction === 'down' ? bIdx + 1 : bIdx - 1;
+        if (targetBlockIdx >= 0 && targetBlockIdx < blocks.length) {
+          const targetBlock = blocks[targetBlockIdx];
+          const nextEl = pickBestItemInBlock(activeEl, targetBlock, hasRealGeometry, ctx);
+          focusElementSafely(nextEl, direction);
+          return nextEl;
+        }
       }
     }
 
@@ -1303,6 +1354,13 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
           focusElementSafely(nextEl, direction);
           return nextEl;
         }
+        if (activeEl.hasAttribute('data-header-nav-id')) {
+          const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
+          if (categoriesTarget) {
+            focusElementSafely(categoriesTarget, direction);
+            return categoriesTarget;
+          }
+        }
         const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
         if (contentTarget) {
           focusElementSafely(contentTarget, direction);
@@ -1323,6 +1381,36 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
   // HORIZONTAL NAVIGATION ('left' | 'right')
   // ---------------------------------------------------------------------------
   if (direction === 'left' || direction === 'right') {
+    // 0. Inside the top header bar
+    if (currentZone === 'header') {
+      const isTwoRowHeader =
+        typeof window !== 'undefined' &&
+        typeof window.innerWidth === 'number' &&
+        window.innerWidth > 0 &&
+        window.innerWidth < 768;
+
+      const headerRowPool = isTwoRowHeader
+        ? activeEl.closest('[data-header-nav-strip="true"]')
+          ? sameZoneCandidates.filter((c) => Boolean(c.closest('[data-header-nav-strip="true"]')))
+          : sameZoneCandidates.filter((c) => !c.closest('[data-header-nav-strip="true"]'))
+        : sameZoneCandidates;
+
+      const hIdx = headerRowPool.indexOf(activeEl);
+      if (hIdx !== -1) {
+        if (direction === 'right' && hIdx < headerRowPool.length - 1) {
+          const nextHeaderEl = headerRowPool[hIdx + 1];
+          focusElementSafely(nextHeaderEl, direction);
+          return nextHeaderEl;
+        }
+        if (direction === 'left' && hIdx > 0) {
+          const prevHeaderEl = headerRowPool[hIdx - 1];
+          focusElementSafely(prevHeaderEl, direction);
+          return prevHeaderEl;
+        }
+      }
+      return activeEl;
+    }
+
     // 1. Inside an explicit horizontal row (data-nav-row / data-nav-group)
     if (currentRow) {
       const rowController = virtualControllers.get(currentRow);
@@ -1507,7 +1595,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
     }
 
     if (direction === 'left') {
-      if (currentZone === 'content' || currentZone === 'header') {
+      if (currentZone === 'content') {
         const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
         if (categoriesTarget) {
           focusElementSafely(categoriesTarget, direction);
