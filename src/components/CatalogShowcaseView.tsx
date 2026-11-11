@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import { flushSync } from 'react-dom';
 import {
   Play,
   Film,
@@ -14,7 +15,7 @@ import {
   Check,
 } from 'lucide-react';
 import { XtreamCredentials } from '../types';
-import { HeroBanner } from './HeroBanner';
+import { HeroBanner, fetchOrReuseHeroDetails } from './HeroBanner';
 import { HorizontalRow } from './HorizontalRow';
 import { MovieDetails } from './MovieDetails';
 import { SeriesDetails } from './SeriesDetails';
@@ -43,6 +44,8 @@ import {
   isElementFocusable,
   pushFocusMemory,
   restoreVirtualItemByKey,
+  registerShowcaseRowController,
+  unregisterShowcaseRowController,
 } from '../navigation';
 
 function isSeriesItem(item: any): boolean {
@@ -118,6 +121,253 @@ const VIRTUAL_CATEGORIES = [
   { category_id: 'nc_fav', category_name: 'Favoritos', isVirtual: true },
 ] as const;
 
+const SHOWCASE_ROW_WINDOW_SIZE = 8;
+const SHOWCASE_ROW_STRIDE_PX = 320;
+const SEARCH_IMAGE_ACTIVE_BUDGET = 24;
+
+interface ShowcaseRowDescriptor {
+  key: string;
+  title: string;
+  type: 'vod' | 'series' | 'live';
+  kind: 'fixed' | 'vod_category' | 'series_category';
+  fixedItems?: any[];
+  categoryId?: string;
+  virtualize?: boolean;
+  isContinueRow?: boolean;
+}
+
+interface VirtualizedInicioSearchSectionProps {
+  domain: 'live' | 'vod' | 'series';
+  title: string;
+  items: any[];
+  credentials: XtreamCredentials | null;
+  scrollContainerRef: React.RefObject<HTMLElement | null>;
+  resetKey: string;
+  maxWindowItems: number;
+  fallbackOffsetTopPx: number;
+  onLiveClick: (stream: any, el?: HTMLElement | null) => void;
+  onMediaClick: (item: any, el?: HTMLElement | null) => void;
+}
+
+const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSearchSection({
+  domain,
+  title,
+  items,
+  credentials,
+  scrollContainerRef,
+  resetKey,
+  maxWindowItems,
+  fallbackOffsetTopPx,
+  onLiveClick,
+  onMediaClick,
+}: VirtualizedInicioSearchSectionProps) {
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const [focusedVirtualIdx, setFocusedVirtualIdx] = useState<number | null>(null);
+
+  const {
+    startIndex,
+    endIndex,
+    topSpacerPx,
+    bottomSpacerPx,
+    columns,
+    virtualContainerCallbackRef,
+  } = useVirtualWindow({
+    totalCount: items.length,
+    mode: 'grid',
+    scrollContainerRef,
+    virtualContainerRef: gridRef,
+    resetKey,
+    maxWindowItems,
+    fallbackOffsetTopPx,
+  });
+
+  useEffect(() => {
+    setFocusedVirtualIdx(null);
+  }, [resetKey]);
+
+  const activeImageRange = useMemo(() => {
+    const windowLen = Math.max(0, endIndex - startIndex);
+    if (windowLen <= SEARCH_IMAGE_ACTIVE_BUDGET) {
+      return { min: startIndex, max: endIndex };
+    }
+    if (
+      focusedVirtualIdx !== null &&
+      focusedVirtualIdx >= startIndex &&
+      focusedVirtualIdx < endIndex
+    ) {
+      const half = Math.floor(SEARCH_IMAGE_ACTIVE_BUDGET / 2);
+      const min = Math.max(
+        startIndex,
+        Math.min(endIndex - SEARCH_IMAGE_ACTIVE_BUDGET, focusedVirtualIdx - half)
+      );
+      return { min, max: Math.min(endIndex, min + SEARCH_IMAGE_ACTIVE_BUDGET) };
+    }
+    if (startIndex === 0) {
+      return { min: 0, max: Math.min(endIndex, SEARCH_IMAGE_ACTIVE_BUDGET) };
+    }
+    if (endIndex >= items.length) {
+      return {
+        min: Math.max(startIndex, endIndex - SEARCH_IMAGE_ACTIVE_BUDGET),
+        max: endIndex,
+      };
+    }
+    const leadOffset = Math.min(
+      Math.max(0, windowLen - SEARCH_IMAGE_ACTIVE_BUDGET),
+      Math.max(columns, columns * 2)
+    );
+    const min = startIndex + leadOffset;
+    return { min, max: Math.min(endIndex, min + SEARCH_IMAGE_ACTIVE_BUDGET) };
+  }, [startIndex, endIndex, focusedVirtualIdx, items.length, columns]);
+
+  if (items.length === 0) return null;
+
+  return (
+    <div data-search-domain={domain}>
+      <h3 className="nc-subsection-title font-semibold text-white mb-4 flex items-center gap-2">
+        {domain === 'live' ? (
+          <Radio className="w-5 h-5 text-red-500 shrink-0" />
+        ) : domain === 'vod' ? (
+          <Film className="w-5 h-5 text-nc-primary shrink-0" />
+        ) : (
+          <Tv className="w-5 h-5 text-blue-500 shrink-0" />
+        )}
+        <span>
+          {title} ({items.length})
+        </span>
+      </h3>
+
+      {topSpacerPx > 0 && (
+        <div
+          data-virtual-spacer="top"
+          aria-hidden="true"
+          style={{ height: `${topSpacerPx}px` }}
+        />
+      )}
+
+      <div
+        ref={virtualContainerCallbackRef}
+        data-nav-grid="true"
+        data-virtual-container="true"
+        className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"
+      >
+        {items.slice(startIndex, endIndex).map((entry: any, localIdx: number) => {
+          const virtualIndex = startIndex + localIdx;
+          const rawId =
+            domain === 'series'
+              ? entry.series_id ?? entry.stream_id ?? entry.id ?? virtualIndex
+              : entry.stream_id ?? entry.id ?? virtualIndex;
+          const itemKey = `${domain}_${rawId}_${virtualIndex}`;
+          const itemTitle =
+            entry.name ||
+            entry.title ||
+            (domain === 'live' ? 'Canal ao vivo' : domain === 'vod' ? 'Filme' : 'Série');
+          const isImageActive =
+            (virtualIndex >= activeImageRange.min && virtualIndex < activeImageRange.max) ||
+            focusedVirtualIdx === virtualIndex;
+
+          if (domain === 'live') {
+            return (
+              <div
+                key={itemKey}
+                tabIndex={0}
+                role="button"
+                aria-label={itemTitle}
+                data-nav-item="true"
+                data-virtual-index={virtualIndex}
+                data-virtual-key={String(rawId)}
+                onFocus={() => setFocusedVirtualIdx(virtualIndex)}
+                onClick={(e) => onLiveClick(entry, e.currentTarget)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onLiveClick(entry, e.currentTarget);
+                  }
+                }}
+                className="group relative aspect-video bg-nc-bg-card rounded-xl overflow-hidden border border-nc-border hover:border-nc-primary/50 transition-all cursor-pointer flex flex-col justify-between p-3"
+              >
+                <div className="flex-1 flex items-center justify-center overflow-hidden p-2">
+                  <MediaImage
+                    src={entry.stream_icon}
+                    serverUrl={credentials?.serverUrl}
+                    alt={itemTitle}
+                    itemId={rawId}
+                    itemName={itemTitle}
+                    fallbackType="live"
+                    active={isImageActive}
+                    className="max-h-full max-w-full object-contain group-hover:scale-110 transition-transform"
+                  />
+                </div>
+                <div className="mt-2 text-center">
+                  <h4 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
+                    {itemTitle}
+                  </h4>
+                </div>
+              </div>
+            );
+          }
+
+          const coverSrc =
+            domain === 'series'
+              ? entry.cover || entry.stream_icon
+              : entry.stream_icon || entry.cover;
+          const payload = domain === 'series' ? { ...entry, stream_type: 'series' } : entry;
+
+          return (
+            <div
+              key={itemKey}
+              tabIndex={0}
+              role="button"
+              aria-label={itemTitle}
+              data-nav-item="true"
+              data-virtual-index={virtualIndex}
+              data-virtual-key={String(rawId)}
+              onFocus={() => setFocusedVirtualIdx(virtualIndex)}
+              onClick={(e) => {
+                const el = e.currentTarget as HTMLElement;
+                pushFocusMemory(el);
+                onMediaClick(payload, el);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  const el = e.currentTarget as HTMLElement;
+                  pushFocusMemory(el);
+                  onMediaClick(payload, el);
+                }
+              }}
+              className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden border border-nc-border hover:border-nc-primary/50 transition-all cursor-pointer flex flex-col justify-end"
+            >
+              <MediaImage
+                src={coverSrc}
+                serverUrl={credentials?.serverUrl}
+                alt={itemTitle}
+                itemId={rawId}
+                itemName={itemTitle}
+                active={isImageActive}
+                className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
+              <div className="relative z-10 p-3">
+                <h4 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
+                  {itemTitle}
+                </h4>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {bottomSpacerPx > 0 && (
+        <div
+          data-virtual-spacer="bottom"
+          aria-hidden="true"
+          style={{ height: `${bottomSpacerPx}px` }}
+        />
+      )}
+    </div>
+  );
+});
+
 export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   section,
   credentials,
@@ -165,8 +415,15 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [isCategoriesMenuOpen, setIsCategoriesMenuOpen] = useState(false);
 
+  // Vertical window state for Showcase rows
+  const [rowWindowStart, setRowWindowStart] = useState(0);
+  const rowWindowStartRef = useRef(0);
+  rowWindowStartRef.current = rowWindowStart;
+  const isProgrammaticRowShiftRef = useRef(false);
+
   const mainContainerRef = useRef<HTMLElement | null>(null);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
+  const showcaseRowsContainerRef = useRef<HTMLDivElement | null>(null);
   const categoriesTriggerRef = useRef<HTMLButtonElement | null>(null);
   const categoriesMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -177,12 +434,17 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   const lastShowcaseOriginRef = useRef<{
     rowContainer: HTMLElement | null;
     rowScrollLeft: number;
+    homeRowIndex: number | null;
+    rowCardIndex: number | null;
     virtualKey: string | null;
     virtualIndex: number | null;
     cardElement: HTMLElement | null;
   } | null>(null);
 
-  // Keep latest values in refs for stable callbacks passed to memoized HeroBanner / HorizontalRow
+  // Keep latest values in refs for stable callbacks and async metadata guards
+  const isMountedRef = useRef(true);
+  const activeSectionRef = useRef(section);
+  activeSectionRef.current = section;
   const credentialsRef = useRef(credentials);
   credentialsRef.current = credentials;
   const onPlayRef = useRef(onPlay);
@@ -191,6 +453,29 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   onSelectLiveChannelRef.current = onSelectLiveChannel;
   const historyRecordsRef = useRef(historyRecords);
   historyRecordsRef.current = historyRecords;
+  const heroPlaySessionRef = useRef(0);
+  const heroPlayInFlightRef = useRef(false);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      heroPlaySessionRef.current += 1;
+      heroPlayInFlightRef.current = false;
+    };
+  }, []);
+
+  // Invalidate any pending async HeroBanner play resolution if section or account changes
+  useEffect(() => {
+    heroPlaySessionRef.current += 1;
+    heroPlayInFlightRef.current = false;
+  }, [section, credentials?.serverUrl, credentials?.username]);
+
+  // Reset vertical showcase row window when switching sections
+  useEffect(() => {
+    rowWindowStartRef.current = 0;
+    setRowWindowStart(0);
+  }, [section]);
 
   useEffect(() => {
     if (playError) {
@@ -390,47 +675,39 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     return pool.length > 0 ? pool.slice(0, 24) : EMPTY_ARRAY;
   }, [section, allLiveStreams, liveStreams]);
 
-  // Dynamic category rows for showcase
-  const dynamicMovieRows = useMemo(() => {
+  // Lightweight non-empty category descriptors (O(1) membership check via in-memory index, NO upfront sorting)
+  const nonEmptyVodCategoryDescriptors = useMemo(() => {
     if (section === 'series' || allVodStreams.length === 0 || vodCategories.length === 0) {
       return EMPTY_ARRAY;
     }
-    const maxRows = section === 'movies' ? 8 : 6;
-    const rows: Array<{ id: string; title: string; items: any[] }> = [];
+    const descriptors: Array<{ catId: string; categoryName: string }> = [];
     for (const cat of vodCategories) {
-      if (rows.length >= maxRows) break;
       const catId = String(cat.category_id);
-      const rawInCat = vodIndex.getByCategory(catId);
-      if (rawInCat.length >= 4) {
-        rows.push({
-          id: `vod_cat_${catId}`,
-          title: cat.category_name,
-          items: vodIndex.getSortedByCategory(catId).slice(0, 24),
+      if (vodIndex.getByCategory(catId).length > 0) {
+        descriptors.push({
+          catId,
+          categoryName: String(cat.category_name || ''),
         });
       }
     }
-    return rows;
+    return descriptors;
   }, [section, allVodStreams.length, vodCategories, vodIndex]);
 
-  const dynamicSeriesRows = useMemo(() => {
+  const nonEmptySeriesCategoryDescriptors = useMemo(() => {
     if (section === 'movies' || allSeriesStreams.length === 0 || seriesCategories.length === 0) {
       return EMPTY_ARRAY;
     }
-    const maxRows = section === 'series' ? 8 : 6;
-    const rows: Array<{ id: string; title: string; items: any[] }> = [];
+    const descriptors: Array<{ catId: string; categoryName: string }> = [];
     for (const cat of seriesCategories) {
-      if (rows.length >= maxRows) break;
       const catId = String(cat.category_id);
-      const rawInCat = seriesIndex.getByCategory(catId);
-      if (rawInCat.length >= 4) {
-        rows.push({
-          id: `series_cat_${catId}`,
-          title: cat.category_name,
-          items: seriesIndex.getSortedByCategory(catId).slice(0, 24),
+      if (seriesIndex.getByCategory(catId).length > 0) {
+        descriptors.push({
+          catId,
+          categoryName: String(cat.category_name || ''),
         });
       }
     }
-    return rows;
+    return descriptors;
   }, [section, allSeriesStreams.length, seriesCategories, seriesIndex]);
 
   // HeroBanner items by domain
@@ -470,6 +747,289 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     []
   );
 
+  // Lightweight showcase row descriptors (all non-empty categories preserved in provider order; interleaved in 'inicio')
+  const showcaseRowDescriptors = useMemo<ShowcaseRowDescriptor[]>(() => {
+    const list: ShowcaseRowDescriptor[] = [];
+
+    if (continueWatchingItems.length > 0) {
+      list.push({
+        key: 'continue_watching',
+        title: 'Continuar Assistindo',
+        kind: 'fixed',
+        fixedItems: continueWatchingItems,
+        type: section === 'series' ? 'series' : 'vod',
+        virtualize: true,
+        isContinueRow: true,
+      });
+    }
+
+    if (section === 'inicio') {
+      if (liveHighlights.length > 0) {
+        list.push({
+          key: 'live_highlights',
+          title: 'Canais Ao Vivo',
+          kind: 'fixed',
+          fixedItems: liveHighlights,
+          type: 'live',
+        });
+      }
+      if (featuredMovies.length > 0) {
+        list.push({
+          key: 'featured_movies',
+          title: 'Filmes em Destaque',
+          kind: 'fixed',
+          fixedItems: featuredMovies,
+          type: 'vod',
+        });
+      }
+      if (featuredSeries.length > 0) {
+        list.push({
+          key: 'featured_series',
+          title: 'Séries em Destaque',
+          kind: 'fixed',
+          fixedItems: featuredSeries,
+          type: 'series',
+        });
+      }
+
+      const maxCatLen = Math.max(
+        nonEmptyVodCategoryDescriptors.length,
+        nonEmptySeriesCategoryDescriptors.length
+      );
+      for (let i = 0; i < maxCatLen; i++) {
+        if (i < nonEmptyVodCategoryDescriptors.length) {
+          const vodCat = nonEmptyVodCategoryDescriptors[i];
+          list.push({
+            key: `vod_cat_${vodCat.catId}`,
+            title: `Filmes · ${vodCat.categoryName}`,
+            type: 'vod',
+            kind: 'vod_category',
+            categoryId: vodCat.catId,
+          });
+        }
+        if (i < nonEmptySeriesCategoryDescriptors.length) {
+          const serCat = nonEmptySeriesCategoryDescriptors[i];
+          list.push({
+            key: `series_cat_${serCat.catId}`,
+            title: `Séries · ${serCat.categoryName}`,
+            type: 'series',
+            kind: 'series_category',
+            categoryId: serCat.catId,
+          });
+        }
+      }
+    } else if (section === 'movies') {
+      if (domainFavoriteItems.length > 0) {
+        list.push({
+          key: 'favorite_movies',
+          title: 'Filmes Favoritos',
+          kind: 'fixed',
+          fixedItems: domainFavoriteItems,
+          type: 'vod',
+          virtualize: true,
+        });
+      }
+      if (featuredMovies.length > 0) {
+        list.push({
+          key: 'featured_movies',
+          title: 'Filmes em Destaque',
+          kind: 'fixed',
+          fixedItems: featuredMovies,
+          type: 'vod',
+        });
+      }
+      for (const vodCat of nonEmptyVodCategoryDescriptors) {
+        list.push({
+          key: `vod_cat_${vodCat.catId}`,
+          title: vodCat.categoryName,
+          type: 'vod',
+          kind: 'vod_category',
+          categoryId: vodCat.catId,
+        });
+      }
+    } else if (section === 'series') {
+      if (domainFavoriteItems.length > 0) {
+        list.push({
+          key: 'favorite_series',
+          title: 'Séries Favoritas',
+          kind: 'fixed',
+          fixedItems: domainFavoriteItems,
+          type: 'series',
+          virtualize: true,
+        });
+      }
+      if (featuredSeries.length > 0) {
+        list.push({
+          key: 'featured_series',
+          title: 'Séries em Destaque',
+          kind: 'fixed',
+          fixedItems: featuredSeries,
+          type: 'series',
+        });
+      }
+      for (const serCat of nonEmptySeriesCategoryDescriptors) {
+        list.push({
+          key: `series_cat_${serCat.catId}`,
+          title: serCat.categoryName,
+          type: 'series',
+          kind: 'series_category',
+          categoryId: serCat.catId,
+        });
+      }
+    }
+
+    return list;
+  }, [
+    section,
+    continueWatchingItems,
+    liveHighlights,
+    featuredMovies,
+    featuredSeries,
+    domainFavoriteItems,
+    nonEmptyVodCategoryDescriptors,
+    nonEmptySeriesCategoryDescriptors,
+  ]);
+
+  const dynamicCategoryRowCount =
+    section === 'inicio'
+      ? nonEmptyVodCategoryDescriptors.length + nonEmptySeriesCategoryDescriptors.length
+      : section === 'movies'
+        ? nonEmptyVodCategoryDescriptors.length
+        : nonEmptySeriesCategoryDescriptors.length;
+
+  const totalShowcaseRows = showcaseRowDescriptors.length;
+  const shouldVirtualizeShowcaseRows =
+    dynamicCategoryRowCount > 7 || totalShowcaseRows > 11;
+  const maxRowWindowStart = shouldVirtualizeShowcaseRows
+    ? Math.max(0, totalShowcaseRows - SHOWCASE_ROW_WINDOW_SIZE)
+    : 0;
+  const effectiveRowStart = shouldVirtualizeShowcaseRows
+    ? Math.max(0, Math.min(rowWindowStart, maxRowWindowStart))
+    : 0;
+  const effectiveRowEnd = shouldVirtualizeShowcaseRows
+    ? Math.min(totalShowcaseRows, effectiveRowStart + SHOWCASE_ROW_WINDOW_SIZE)
+    : totalShowcaseRows;
+
+  const topShowcaseSpacerPx = shouldVirtualizeShowcaseRows
+    ? effectiveRowStart * SHOWCASE_ROW_STRIDE_PX
+    : 0;
+  const bottomShowcaseSpacerPx = shouldVirtualizeShowcaseRows
+    ? Math.max(0, totalShowcaseRows - effectiveRowEnd) * SHOWCASE_ROW_STRIDE_PX
+    : 0;
+
+  // Prepare and sort category preview items ONLY for rows inside the currently mounted window
+  const mountedShowcaseRows = useMemo(() => {
+    const slice = showcaseRowDescriptors.slice(effectiveRowStart, effectiveRowEnd);
+    return slice.map((desc, offset) => {
+      const rowIndex = effectiveRowStart + offset;
+      let items: any[] = desc.fixedItems || EMPTY_ARRAY;
+      if (desc.kind === 'vod_category' && desc.categoryId) {
+        items = vodIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
+      } else if (desc.kind === 'series_category' && desc.categoryId) {
+        items = seriesIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
+      }
+      return {
+        ...desc,
+        rowIndex,
+        items,
+      };
+    });
+  }, [
+    showcaseRowDescriptors,
+    effectiveRowStart,
+    effectiveRowEnd,
+    vodIndex,
+    seriesIndex,
+  ]);
+
+  // Synchronously shift vertical showcase row window when navigating by D-Pad or restoring details origin
+  const ensureShowcaseRowMounted = useCallback(
+    (targetRowIndex: number, preserveRowIndex?: number): boolean => {
+      if (!shouldVirtualizeShowcaseRows || totalShowcaseRows <= SHOWCASE_ROW_WINDOW_SIZE) {
+        return false;
+      }
+      const clampedTarget = Math.max(
+        0,
+        Math.min(totalShowcaseRows - 1, Math.floor(targetRowIndex))
+      );
+      const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
+      const curEnd = Math.min(totalShowcaseRows, curStart + SHOWCASE_ROW_WINDOW_SIZE);
+
+      const hasTopMargin = curStart === 0 || clampedTarget >= curStart + 1;
+      const hasBottomMargin =
+        curEnd >= totalShowcaseRows || clampedTarget < curEnd - 1;
+
+      if (
+        clampedTarget >= curStart &&
+        clampedTarget < curEnd &&
+        hasTopMargin &&
+        hasBottomMargin
+      ) {
+        return false;
+      }
+
+      let desiredStart = Math.max(
+        0,
+        Math.min(
+          maxRowWindowStart,
+          clampedTarget - Math.floor(SHOWCASE_ROW_WINDOW_SIZE / 2)
+        )
+      );
+
+      if (
+        typeof preserveRowIndex === 'number' &&
+        preserveRowIndex >= 0 &&
+        preserveRowIndex < totalShowcaseRows &&
+        Math.abs(clampedTarget - preserveRowIndex) < SHOWCASE_ROW_WINDOW_SIZE
+      ) {
+        if (desiredStart > preserveRowIndex) {
+          desiredStart = preserveRowIndex;
+        } else if (desiredStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < preserveRowIndex) {
+          desiredStart = preserveRowIndex - SHOWCASE_ROW_WINDOW_SIZE + 1;
+        }
+        if (desiredStart > clampedTarget) {
+          desiredStart = clampedTarget;
+        } else if (desiredStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < clampedTarget) {
+          desiredStart = clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 1;
+        }
+        desiredStart = Math.max(0, Math.min(maxRowWindowStart, desiredStart));
+      }
+
+      if (desiredStart === curStart) {
+        return false;
+      }
+
+      isProgrammaticRowShiftRef.current = true;
+      rowWindowStartRef.current = desiredStart;
+      try {
+        flushSync(() => {
+          setRowWindowStart(desiredStart);
+        });
+      } catch {
+        setRowWindowStart(desiredStart);
+      } finally {
+        isProgrammaticRowShiftRef.current = false;
+      }
+      return true;
+    },
+    [shouldVirtualizeShowcaseRows, totalShowcaseRows, maxRowWindowStart]
+  );
+
+  // Register showcase row controller for D-Pad ArrowDown/ArrowUp across unmounted showcase rows
+  useLayoutEffect(() => {
+    const containerEl = showcaseRowsContainerRef.current;
+    if (!containerEl || totalShowcaseRows === 0) return;
+
+    registerShowcaseRowController(containerEl, {
+      totalRows: totalShowcaseRows,
+      ensureRowMounted: ensureShowcaseRowMounted,
+    });
+
+    return () => {
+      unregisterShowcaseRowController(containerEl);
+    };
+  }, [totalShowcaseRows, ensureShowcaseRowMounted]);
+
   // Capture origin before opening MovieDetails / SeriesDetails
   const captureOriginBeforeDetails = useCallback((item?: any, explicitCardEl?: HTMLElement | null) => {
     if (mainContainerRef.current) {
@@ -492,15 +1052,25 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         ? document.activeElement
         : null);
     const rowEl = activeEl ? activeEl.closest<HTMLElement>('[data-nav-row="true"]') : null;
+    const homeRowWrapper = activeEl ? activeEl.closest<HTMLElement>('[data-home-row-index]') : null;
+    const parsedHomeRowIdx = homeRowWrapper?.hasAttribute('data-home-row-index')
+      ? parseInt(homeRowWrapper.getAttribute('data-home-row-index') || '-1', 10)
+      : -1;
     const cardEl = activeEl
       ? activeEl.closest<HTMLElement>('[data-nav-item="true"]') || activeEl
       : null;
+    const parsedCardIdx = cardEl?.hasAttribute('data-row-card-index')
+      ? parseInt(cardEl.getAttribute('data-row-card-index') || '-1', 10)
+      : -1;
 
     lastShowcaseOriginRef.current = {
       rowContainer: rowEl,
       rowScrollLeft: rowEl ? rowEl.scrollLeft : 0,
+      homeRowIndex: !isNaN(parsedHomeRowIdx) && parsedHomeRowIdx >= 0 ? parsedHomeRowIdx : null,
+      rowCardIndex: !isNaN(parsedCardIdx) && parsedCardIdx >= 0 ? parsedCardIdx : null,
       virtualKey:
         cardEl?.getAttribute('data-virtual-key') ||
+        cardEl?.getAttribute('data-row-item-key') ||
         (item?.rowKey ? String(item.rowKey) : null),
       virtualIndex: cardEl?.hasAttribute('data-virtual-index')
         ? parseInt(cardEl.getAttribute('data-virtual-index') || '-1', 10)
@@ -515,18 +1085,32 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     const gridKey = lastOpenedGridKeyRef.current;
 
     const applyRestore = () => {
-      if (mainContainerRef.current && savedScroll !== null) {
-        mainContainerRef.current.scrollTop = savedScroll;
+      if (
+        originSnapshot &&
+        originSnapshot.homeRowIndex !== null &&
+        originSnapshot.homeRowIndex >= 0
+      ) {
+        ensureShowcaseRowMounted(originSnapshot.homeRowIndex, originSnapshot.homeRowIndex);
       }
 
-      // If currently in virtualized grid mode, restore virtual grid card
-      if (gridContainerRef.current && gridKey) {
+      if (mainContainerRef.current && savedScroll !== null) {
+        isProgrammaticRowShiftRef.current = true;
+        try {
+          mainContainerRef.current.scrollTop = savedScroll;
+        } finally {
+          isProgrammaticRowShiftRef.current = false;
+        }
+      }
+
+      // If currently in virtualized grid mode (or Início search grid), restore virtual grid card
+      const activeGridRoot = gridContainerRef.current || mainContainerRef.current;
+      if (activeGridRoot && gridKey) {
         const safeKey =
           typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
             ? CSS.escape(gridKey)
             : gridKey.replace(/"/g, '\\"');
-        const gridEl = gridContainerRef.current.querySelector<HTMLElement>(
-          `[data-virtual-key="${safeKey}"]`
+        const gridEl = activeGridRoot.querySelector<HTMLElement>(
+          `[data-nav-grid="true"] [data-virtual-key="${safeKey}"]`
         );
         if (gridEl && gridEl.isConnected) {
           focusElementSafely(gridEl);
@@ -538,12 +1122,28 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       }
 
       if (!originSnapshot) return false;
-      const { rowContainer, rowScrollLeft, virtualKey, cardElement } = originSnapshot;
+      const {
+        rowContainer,
+        rowScrollLeft,
+        homeRowIndex,
+        rowCardIndex,
+        virtualKey,
+        cardElement,
+      } = originSnapshot;
 
-      if (rowContainer && rowContainer.isConnected) {
-        rowContainer.scrollLeft = rowScrollLeft;
-        if (rowContainer.getAttribute('data-virtual-container') === 'true' && virtualKey) {
-          const restoredEl = restoreVirtualItemByKey(rowContainer, virtualKey, rowScrollLeft);
+      const resolvedRowEl =
+        rowContainer && rowContainer.isConnected
+          ? rowContainer
+          : homeRowIndex !== null && mainContainerRef.current
+            ? mainContainerRef.current.querySelector<HTMLElement>(
+                `[data-home-row-index="${homeRowIndex}"] [data-nav-row="true"]`
+              )
+            : null;
+
+      if (resolvedRowEl && resolvedRowEl.isConnected) {
+        resolvedRowEl.scrollLeft = rowScrollLeft;
+        if (resolvedRowEl.getAttribute('data-virtual-container') === 'true' && virtualKey) {
+          const restoredEl = restoreVirtualItemByKey(resolvedRowEl, virtualKey, rowScrollLeft);
           if (restoredEl) {
             if (mainContainerRef.current && savedScroll !== null) {
               mainContainerRef.current.scrollTop = savedScroll;
@@ -552,17 +1152,27 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           }
         }
 
-        if (cardElement && cardElement.isConnected) {
+        const resolvedCardEl =
+          cardElement && cardElement.isConnected
+            ? cardElement
+            : (rowCardIndex !== null
+                ? resolvedRowEl.querySelector<HTMLElement>(
+                    `[data-row-card-index="${rowCardIndex}"]`
+                  )
+                : null) ||
+              resolvedRowEl.querySelector<HTMLElement>('[data-nav-item="true"]');
+
+        if (resolvedCardEl && resolvedCardEl.isConnected) {
           try {
-            cardElement.focus({ preventScroll: true });
+            resolvedCardEl.focus({ preventScroll: true });
           } catch {
-            cardElement.focus();
+            resolvedCardEl.focus();
           }
           if (mainContainerRef.current && savedScroll !== null) {
             mainContainerRef.current.scrollTop = savedScroll;
           }
-          rowContainer.scrollLeft = rowScrollLeft;
-          return document.activeElement === cardElement;
+          resolvedRowEl.scrollLeft = rowScrollLeft;
+          return document.activeElement === resolvedCardEl;
         }
       }
 
@@ -582,7 +1192,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         applyRestore();
       }, 0);
     }
-  }, []);
+  }, [ensureShowcaseRowMounted]);
 
   const handleCloseMovieDetails = useCallback(() => {
     setSelectedMovie(null);
@@ -610,7 +1220,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
 
   // Direct Play / Resume from HeroBanner ("Assistir" or "Continuar")
   const handleHeroPlay = useCallback(
-    (item: any, detailsResponse?: any) => {
+    (item: any, detailsResponse?: any): void | Promise<void> => {
       if (!item) return;
       const creds = credentialsRef.current;
       const playFn = onPlayRef.current;
@@ -625,70 +1235,134 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
             (r.positionSec ?? 0) > 30
         );
 
-        const episodesMap = detailsResponse?.episodes || item?.episodes;
-        if (latestEpisodeRecord && creds?.serverUrl && creds?.username && creds?.password) {
-          let epExt = 'mp4';
-          let epTitle = item.name || item.title || 'Episódio';
-          if (episodesMap && typeof episodesMap === 'object') {
-            for (const seasonKey of Object.keys(episodesMap)) {
-              const seasonList = episodesMap[seasonKey];
-              if (Array.isArray(seasonList)) {
-                const foundEp = seasonList.find(
-                  (ep: any) => String(ep.id ?? ep.stream_id) === String(latestEpisodeRecord.id)
-                );
-                if (foundEp) {
-                  epExt = foundEp.container_extension || 'mp4';
-                  const epNum = String(foundEp.episode_num || 1).padStart(2, '0');
-                  const sNum = String(seasonKey).padStart(2, '0');
-                  epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${foundEp.title || `Episódio ${foundEp.episode_num}`}`;
-                  break;
+        const executeConfirmedSeriesPlay = (resolvedDetails: any) => {
+          const episodesMap = resolvedDetails?.episodes || item?.episodes;
+
+          if (latestEpisodeRecord) {
+            if (
+              episodesMap &&
+              typeof episodesMap === 'object' &&
+              creds?.serverUrl &&
+              creds?.username &&
+              creds?.password
+            ) {
+              let foundEp: any = null;
+              let foundSeasonKey = '1';
+              for (const seasonKey of Object.keys(episodesMap)) {
+                const seasonList = episodesMap[seasonKey];
+                if (Array.isArray(seasonList)) {
+                  const match = seasonList.find(
+                    (ep: any) =>
+                      String(ep.id ?? ep.stream_id) === String(latestEpisodeRecord.id)
+                  );
+                  if (match) {
+                    foundEp = match;
+                    foundSeasonKey = seasonKey;
+                    break;
+                  }
+                }
+              }
+
+              if (foundEp) {
+                const confirmedExt =
+                  String(foundEp.container_extension || '')
+                    .trim()
+                    .replace(/^\./, '') || 'mp4';
+                const epNum = String(foundEp.episode_num || 1).padStart(2, '0');
+                const sNum = String(foundSeasonKey).padStart(2, '0');
+                const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${foundEp.title || `Episódio ${foundEp.episode_num || 1}`}`;
+                const directUrl = buildDirectMediaUrl(creds, {
+                  type: 'series',
+                  streamId: latestEpisodeRecord.id,
+                  containerExtension: confirmedExt,
+                });
+                if (directUrl) {
+                  playFn(
+                    directUrl,
+                    epTitle,
+                    latestEpisodeRecord.positionSec,
+                    latestEpisodeRecord.id,
+                    'episode'
+                  );
+                  return;
+                }
+              }
+            }
+
+            // Se não for possível confirmar o episódio salvo nos metadados, encaminhar para os detalhes
+            // sem iniciar outro episódio e sem chutar extensão
+            handleSelectItem(item);
+            return;
+          }
+
+          if (episodesMap && typeof episodesMap === 'object' && creds?.serverUrl) {
+            const seasons = Object.keys(episodesMap);
+            if (seasons.length > 0) {
+              const firstSeasonList = episodesMap[seasons[0]];
+              if (Array.isArray(firstSeasonList) && firstSeasonList.length > 0) {
+                const firstEp = firstSeasonList[0];
+                const epId = firstEp.id ?? firstEp.stream_id;
+                const epExt =
+                  String(firstEp.container_extension || '')
+                    .trim()
+                    .replace(/^\./, '') || 'mp4';
+                const directUrl = buildDirectMediaUrl(creds, {
+                  type: 'series',
+                  streamId: epId,
+                  containerExtension: epExt,
+                });
+                if (directUrl) {
+                  const sNum = String(seasons[0]).padStart(2, '0');
+                  const epNum = String(firstEp.episode_num || 1).padStart(2, '0');
+                  const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${firstEp.title || 'Episódio 1'}`;
+                  playFn(directUrl, epTitle, 0, epId, 'episode');
+                  return;
                 }
               }
             }
           }
-          const directUrl = buildDirectMediaUrl(creds, {
-            type: 'series',
-            streamId: latestEpisodeRecord.id,
-            containerExtension: epExt,
-          });
-          if (directUrl) {
-            playFn(
-              directUrl,
-              epTitle,
-              latestEpisodeRecord.positionSec,
-              latestEpisodeRecord.id,
-              'episode'
-            );
-            return;
-          }
+
+          handleSelectItem(item);
+        };
+
+        const existingEpisodesMap = detailsResponse?.episodes || item?.episodes;
+        if (existingEpisodesMap && typeof existingEpisodesMap === 'object') {
+          executeConfirmedSeriesPlay(detailsResponse);
+          return;
         }
 
-        if (episodesMap && typeof episodesMap === 'object' && creds?.serverUrl) {
-          const seasons = Object.keys(episodesMap);
-          if (seasons.length > 0) {
-            const firstSeasonList = episodesMap[seasons[0]];
-            if (Array.isArray(firstSeasonList) && firstSeasonList.length > 0) {
-              const firstEp = firstSeasonList[0];
-              const epId = firstEp.id ?? firstEp.stream_id;
-              const epExt = firstEp.container_extension || 'mp4';
-              const directUrl = buildDirectMediaUrl(creds, {
-                type: 'series',
-                streamId: epId,
-                containerExtension: epExt,
-              });
-              if (directUrl) {
-                const sNum = String(seasons[0]).padStart(2, '0');
-                const epNum = String(firstEp.episode_num || 1).padStart(2, '0');
-                const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${firstEp.title || 'Episódio 1'}`;
-                playFn(directUrl, epTitle, 0, epId, 'episode');
-                return;
-              }
+        if (!creds?.serverUrl || !creds?.username || !creds?.password) {
+          handleSelectItem(item);
+          return;
+        }
+
+        if (heroPlayInFlightRef.current) {
+          return;
+        }
+
+        const sessionAtClick = heroPlaySessionRef.current;
+        const sectionAtClick = activeSectionRef.current;
+        const serverAtClick = creds.serverUrl;
+        const userAtClick = creds.username;
+        heroPlayInFlightRef.current = true;
+
+        return (async () => {
+          try {
+            const fetchedDetails = await fetchOrReuseHeroDetails(creds, item);
+            if (
+              !isMountedRef.current ||
+              heroPlaySessionRef.current !== sessionAtClick ||
+              activeSectionRef.current !== sectionAtClick ||
+              credentialsRef.current?.serverUrl !== serverAtClick ||
+              credentialsRef.current?.username !== userAtClick
+            ) {
+              return;
             }
+            executeConfirmedSeriesPlay(fetchedDetails);
+          } finally {
+            heroPlayInFlightRef.current = false;
           }
-        }
-
-        handleSelectItem(item);
-        return;
+        })();
       }
 
       // Movie direct play / resume
@@ -993,6 +1667,83 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       !selectedSeries
   );
 
+  // Sync vertical showcase row window on scroll (touch, mouse wheel, or programmatic scrollTop)
+  useEffect(() => {
+    const mainEl = mainContainerRef.current;
+    if (
+      !mainEl ||
+      isGridMode ||
+      (section === 'inicio' && hasSearch) ||
+      !shouldVirtualizeShowcaseRows
+    ) {
+      return;
+    }
+
+    const computeRowStartFromScroll = (scrollTop: number): number => {
+      const heroOffset = heroItems.length > 0 ? 420 : 40;
+      const relativeTop = Math.max(0, scrollTop - heroOffset);
+      const approxFirstRow = Math.floor(relativeTop / SHOWCASE_ROW_STRIDE_PX);
+      const desired = Math.max(0, approxFirstRow - 1);
+      return Math.max(0, Math.min(maxRowWindowStart, desired));
+    };
+
+    const handleShowcaseScroll = () => {
+      if (isProgrammaticRowShiftRef.current) return;
+      let nextStart = computeRowStartFromScroll(mainEl.scrollTop || 0);
+
+      // If focus is currently on a showcase row and scroll delta is within the window span,
+      // keep the focused row inside the mounted window so D-Pad scroll adjustments never unmount activeElement.
+      const activeEl =
+        typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      const focusedRowWrapper = activeEl?.closest<HTMLElement>('[data-home-row-index]');
+      if (focusedRowWrapper && mainEl.contains(focusedRowWrapper)) {
+        const focusedRowIdx = parseInt(
+          focusedRowWrapper.getAttribute('data-home-row-index') || '-1',
+          10
+        );
+        if (
+          !isNaN(focusedRowIdx) &&
+          focusedRowIdx >= 0 &&
+          Math.abs(nextStart - focusedRowIdx) < SHOWCASE_ROW_WINDOW_SIZE
+        ) {
+          if (nextStart > focusedRowIdx) {
+            nextStart = focusedRowIdx;
+          } else if (nextStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < focusedRowIdx) {
+            nextStart = Math.min(
+              maxRowWindowStart,
+              focusedRowIdx - SHOWCASE_ROW_WINDOW_SIZE + 1
+            );
+          }
+        }
+      }
+
+      if (nextStart !== rowWindowStartRef.current) {
+        rowWindowStartRef.current = nextStart;
+        try {
+          flushSync(() => {
+            setRowWindowStart(nextStart);
+          });
+        } catch {
+          setRowWindowStart(nextStart);
+        }
+      }
+    };
+
+    mainEl.addEventListener('scroll', handleShowcaseScroll, { passive: true });
+    return () => {
+      mainEl.removeEventListener('scroll', handleShowcaseScroll);
+    };
+  }, [
+    isGridMode,
+    section,
+    hasSearch,
+    shouldVirtualizeShowcaseRows,
+    heroItems.length,
+    maxRowWindowStart,
+  ]);
+
   // Keyboard navigation inside Categories menu
   const handleCategoriesMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -1119,142 +1870,40 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     seriesStreams,
   ]);
 
-  // Compute showcase rows list with stable 0..N-1 rowIndex values
-  const showcaseRows = useMemo(() => {
-    const list: Array<{
-      key: string;
-      title: string;
-      items: any[];
-      type: 'vod' | 'series' | 'live';
-      virtualize?: boolean;
-      isContinueRow?: boolean;
-    }> = [];
-
-    if (continueWatchingItems.length > 0) {
-      list.push({
-        key: 'continue_watching',
-        title: 'Continuar Assistindo',
-        items: continueWatchingItems,
-        type: section === 'series' ? 'series' : 'vod',
-        virtualize: true,
-        isContinueRow: true,
-      });
+  const inicioSearchWindowMetrics = useMemo(() => {
+    if (!inicioSearchResults) {
+      return {
+        perSectionMaxWindow: 48,
+        liveOffsetTopPx: 88,
+        vodOffsetTopPx: 88,
+        seriesOffsetTopPx: 88,
+      };
     }
+    const nonEmptyDomains =
+      (inicioSearchResults.live.length > 0 ? 1 : 0) +
+      (inicioSearchResults.vod.length > 0 ? 1 : 0) +
+      (inicioSearchResults.series.length > 0 ? 1 : 0);
+    const perSectionMaxWindow =
+      nonEmptyDomains <= 1 ? 60 : nonEmptyDomains === 2 ? 36 : 24;
 
-    if (section === 'inicio') {
-      if (liveHighlights.length > 0) {
-        list.push({
-          key: 'live_highlights',
-          title: 'Canais Ao Vivo',
-          items: liveHighlights,
-          type: 'live',
-        });
-      }
-      if (featuredMovies.length > 0) {
-        list.push({
-          key: 'featured_movies',
-          title: 'Filmes em Destaque',
-          items: featuredMovies,
-          type: 'vod',
-        });
-      }
-      if (featuredSeries.length > 0) {
-        list.push({
-          key: 'featured_series',
-          title: 'Séries em Destaque',
-          items: featuredSeries,
-          type: 'series',
-        });
-      }
-      for (const row of dynamicMovieRows) {
-        if (row.items.length > 0) {
-          list.push({
-            key: row.id,
-            title: row.title,
-            items: row.items,
-            type: 'vod',
-          });
-        }
-      }
-      for (const row of dynamicSeriesRows) {
-        if (row.items.length > 0) {
-          list.push({
-            key: row.id,
-            title: row.title,
-            items: row.items,
-            type: 'series',
-          });
-        }
-      }
-    } else if (section === 'movies') {
-      if (domainFavoriteItems.length > 0) {
-        list.push({
-          key: 'favorite_movies',
-          title: 'Filmes Favoritos',
-          items: domainFavoriteItems,
-          type: 'vod',
-          virtualize: true,
-        });
-      }
-      if (featuredMovies.length > 0) {
-        list.push({
-          key: 'featured_movies',
-          title: 'Filmes em Destaque',
-          items: featuredMovies,
-          type: 'vod',
-        });
-      }
-      for (const row of dynamicMovieRows) {
-        if (row.items.length > 0) {
-          list.push({
-            key: row.id,
-            title: row.title,
-            items: row.items,
-            type: 'vod',
-          });
-        }
-      }
-    } else if (section === 'series') {
-      if (domainFavoriteItems.length > 0) {
-        list.push({
-          key: 'favorite_series',
-          title: 'Séries Favoritas',
-          items: domainFavoriteItems,
-          type: 'series',
-          virtualize: true,
-        });
-      }
-      if (featuredSeries.length > 0) {
-        list.push({
-          key: 'featured_series',
-          title: 'Séries em Destaque',
-          items: featuredSeries,
-          type: 'series',
-        });
-      }
-      for (const row of dynamicSeriesRows) {
-        if (row.items.length > 0) {
-          list.push({
-            key: row.id,
-            title: row.title,
-            items: row.items,
-            type: 'series',
-          });
-        }
-      }
-    }
+    const estCols = 6;
+    const estRowHeight = 260;
+    const liveHeight =
+      inicioSearchResults.live.length > 0
+        ? 64 + Math.ceil(inicioSearchResults.live.length / estCols) * estRowHeight
+        : 0;
+    const vodHeight =
+      inicioSearchResults.vod.length > 0
+        ? 64 + Math.ceil(inicioSearchResults.vod.length / estCols) * estRowHeight
+        : 0;
 
-    return list;
-  }, [
-    section,
-    continueWatchingItems,
-    liveHighlights,
-    featuredMovies,
-    featuredSeries,
-    domainFavoriteItems,
-    dynamicMovieRows,
-    dynamicSeriesRows,
-  ]);
+    return {
+      perSectionMaxWindow,
+      liveOffsetTopPx: 88,
+      vodOffsetTopPx: 88 + liveHeight,
+      seriesOffsetTopPx: 88 + liveHeight + vodHeight,
+    };
+  }, [inicioSearchResults]);
 
   const sectionTitle = section === 'movies' ? 'Filmes' : section === 'series' ? 'Séries' : 'Início';
 
@@ -1480,7 +2129,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           </div>
         )}
 
-        {/* CASE 1: On-demand Search in 'Início' (multi-domain results) */}
+        {/* CASE 1: On-demand Search in 'Início' (virtualized multi-domain results) */}
         {section === 'inicio' && hasSearch && inicioSearchResults ? (
           <div className="px-4 sm:px-6 md:px-10 py-6 space-y-10 pb-20">
             <h2 className="nc-section-title font-bold text-white flex items-center gap-2">
@@ -1501,145 +2150,48 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               )}
 
             {inicioSearchResults.live.length > 0 && (
-              <div>
-                <h3 className="nc-subsection-title font-semibold text-white mb-4 flex items-center gap-2">
-                  <Radio className="w-5 h-5 text-red-500 shrink-0" />
-                  <span>Canais Ao Vivo ({inicioSearchResults.live.length})</span>
-                </h3>
-                <div
-                  data-nav-grid="true"
-                  className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"
-                >
-                  {inicioSearchResults.live.map((stream: any, idx: number) => (
-                    <div
-                      key={stream.stream_id || stream.id || `live_${idx}`}
-                      tabIndex={0}
-                      role="button"
-                      aria-label={stream.name || stream.title || 'Canal ao vivo'}
-                      data-nav-item="true"
-                      onClick={() => handleLiveChannelClick(stream)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleLiveChannelClick(stream);
-                        }
-                      }}
-                      className="group relative aspect-video bg-nc-bg-card rounded-xl overflow-hidden border border-nc-border hover:border-nc-primary/50 transition-all cursor-pointer flex flex-col justify-between p-3"
-                    >
-                      <div className="flex-1 flex items-center justify-center overflow-hidden p-2">
-                        <MediaImage
-                          src={stream.stream_icon}
-                          serverUrl={credentials?.serverUrl}
-                          alt={stream.name}
-                          itemId={stream.stream_id || stream.id}
-                          itemName={stream.name}
-                          fallbackType="live"
-                          className="max-h-full max-w-full object-contain group-hover:scale-110 transition-transform"
-                        />
-                      </div>
-                      <div className="mt-2 text-center">
-                        <h4 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
-                          {stream.name}
-                        </h4>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <VirtualizedInicioSearchSection
+                domain="live"
+                title="Canais Ao Vivo"
+                items={inicioSearchResults.live}
+                credentials={credentials}
+                scrollContainerRef={mainContainerRef}
+                resetKey={`inicio_search_live_${normalizedQuery}`}
+                maxWindowItems={inicioSearchWindowMetrics.perSectionMaxWindow}
+                fallbackOffsetTopPx={inicioSearchWindowMetrics.liveOffsetTopPx}
+                onLiveClick={handleLiveChannelClick}
+                onMediaClick={handleSelectItem}
+              />
             )}
 
             {inicioSearchResults.vod.length > 0 && (
-              <div>
-                <h3 className="nc-subsection-title font-semibold text-white mb-4 flex items-center gap-2">
-                  <Film className="w-5 h-5 text-nc-primary shrink-0" />
-                  <span>Filmes ({inicioSearchResults.vod.length})</span>
-                </h3>
-                <div
-                  data-nav-grid="true"
-                  className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"
-                >
-                  {inicioSearchResults.vod.map((movie: any, idx: number) => (
-                    <div
-                      key={movie.stream_id || movie.id || `vod_${idx}`}
-                      tabIndex={0}
-                      role="button"
-                      aria-label={movie.name || movie.title || 'Filme'}
-                      data-nav-item="true"
-                      onClick={(e) => handleSelectItem(movie, e.currentTarget)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleSelectItem(movie, e.currentTarget);
-                        }
-                      }}
-                      className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden border border-nc-border hover:border-nc-primary/50 transition-all cursor-pointer flex flex-col justify-end"
-                    >
-                      <MediaImage
-                        src={movie.stream_icon || movie.cover}
-                        serverUrl={credentials?.serverUrl}
-                        alt={movie.name}
-                        itemId={movie.stream_id || movie.id}
-                        itemName={movie.name}
-                        className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
-                      <div className="relative z-10 p-3">
-                        <h4 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
-                          {movie.name}
-                        </h4>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <VirtualizedInicioSearchSection
+                domain="vod"
+                title="Filmes"
+                items={inicioSearchResults.vod}
+                credentials={credentials}
+                scrollContainerRef={mainContainerRef}
+                resetKey={`inicio_search_vod_${normalizedQuery}`}
+                maxWindowItems={inicioSearchWindowMetrics.perSectionMaxWindow}
+                fallbackOffsetTopPx={inicioSearchWindowMetrics.vodOffsetTopPx}
+                onLiveClick={handleLiveChannelClick}
+                onMediaClick={handleSelectItem}
+              />
             )}
 
             {inicioSearchResults.series.length > 0 && (
-              <div>
-                <h3 className="nc-subsection-title font-semibold text-white mb-4 flex items-center gap-2">
-                  <Tv className="w-5 h-5 text-blue-500 shrink-0" />
-                  <span>Séries ({inicioSearchResults.series.length})</span>
-                </h3>
-                <div
-                  data-nav-grid="true"
-                  className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"
-                >
-                  {inicioSearchResults.series.map((s: any, idx: number) => (
-                    <div
-                      key={s.series_id || s.stream_id || s.id || `series_${idx}`}
-                      tabIndex={0}
-                      role="button"
-                      aria-label={s.name || s.title || 'Série'}
-                      data-nav-item="true"
-                      onClick={(e) =>
-                        handleSelectItem({ ...s, stream_type: 'series' }, e.currentTarget)
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleSelectItem({ ...s, stream_type: 'series' }, e.currentTarget);
-                        }
-                      }}
-                      className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden border border-nc-border hover:border-nc-primary/50 transition-all cursor-pointer flex flex-col justify-end"
-                    >
-                      <MediaImage
-                        src={s.cover || s.stream_icon}
-                        serverUrl={credentials?.serverUrl}
-                        alt={s.name}
-                        itemId={s.series_id || s.stream_id || s.id}
-                        itemName={s.name}
-                        className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
-                      <div className="relative z-10 p-3">
-                        <h4 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
-                          {s.name}
-                        </h4>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <VirtualizedInicioSearchSection
+                domain="series"
+                title="Séries"
+                items={inicioSearchResults.series}
+                credentials={credentials}
+                scrollContainerRef={mainContainerRef}
+                resetKey={`inicio_search_series_${normalizedQuery}`}
+                maxWindowItems={inicioSearchWindowMetrics.perSectionMaxWindow}
+                fallbackOffsetTopPx={inicioSearchWindowMetrics.seriesOffsetTopPx}
+                onLiveClick={handleLiveChannelClick}
+                onMediaClick={handleSelectItem}
+              />
             )}
           </div>
         ) : isGridMode ? (
@@ -1800,12 +2352,12 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               )}
             </div>
 
-            {isCatalogLoading && showcaseRows.length === 0 ? (
+            {isCatalogLoading && totalShowcaseRows === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 text-nc-text-secondary">
                 <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
                 <p>Carregando catálogo...</p>
               </div>
-            ) : showcaseRows.length === 0 ? (
+            ) : totalShowcaseRows === 0 ? (
               <div className="text-center py-20 text-nc-text-secondary px-6">
                 {section === 'movies' ? (
                   <Film className="w-12 h-12 mx-auto mb-3 opacity-20" />
@@ -1817,19 +2369,42 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                 <p>Nenhum título disponível no momento.</p>
               </div>
             ) : (
-              <div className="mt-2 sm:mt-4 px-4 sm:px-6 md:px-10 relative z-20 space-y-6">
-                {showcaseRows.map((row, idx) => (
-                  <div key={row.key} data-scroll-block="true">
+              <div
+                ref={showcaseRowsContainerRef}
+                data-showcase-rows-container="true"
+                data-showcase-total-rows={totalShowcaseRows}
+                className="mt-2 sm:mt-4 px-4 sm:px-6 md:px-10 relative z-20 space-y-6"
+              >
+                {topShowcaseSpacerPx > 0 && (
+                  <div
+                    data-showcase-row-spacer="top"
+                    aria-hidden="true"
+                    style={{ height: `${topShowcaseSpacerPx}px` }}
+                  />
+                )}
+                {mountedShowcaseRows.map((row) => (
+                  <div
+                    key={row.key}
+                    data-scroll-block="true"
+                    data-showcase-row-key={row.key}
+                  >
                     <HorizontalRow
                       title={row.title}
                       items={row.items}
                       type={row.type}
-                      rowIndex={idx}
+                      rowIndex={row.rowIndex}
                       virtualize={row.virtualize}
                       onItemClick={row.type === 'live' ? handleLiveChannelClick : handleSelectItem}
                     />
                   </div>
                 ))}
+                {bottomShowcaseSpacerPx > 0 && (
+                  <div
+                    data-showcase-row-spacer="bottom"
+                    aria-hidden="true"
+                    style={{ height: `${bottomShowcaseSpacerPx}px` }}
+                  />
+                )}
               </div>
             )}
           </div>

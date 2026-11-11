@@ -19,6 +19,8 @@ export {
   clearFocusMemory,
   registerVirtualContainer,
   unregisterVirtualContainer,
+  registerShowcaseRowController,
+  unregisterShowcaseRowController,
   getActiveVirtualContainerCount,
   hasRegisteredVirtualContainer,
   hasPendingFocusRestore,
@@ -32,6 +34,7 @@ export type {
   NavMode,
   SpatialDirection,
   VirtualContainerController,
+  ShowcaseRowController,
   SpatialNavPerfStats,
 } from './spatialNav';
 

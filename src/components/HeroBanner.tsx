@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useEffect } from 'react';
-import { Play, Info } from 'lucide-react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { Play, Info, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamCredentials } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
@@ -8,9 +8,54 @@ import { normalizeImageSource } from '../utils/mediaUtils';
 import { getValidYear } from '../utils/catalogRanking';
 import { computeHeroItemsFromList } from '../utils/catalogIndex';
 
+const inFlightHeroDetailsMap = new Map<string, Promise<any>>();
+
+/**
+ * Starts or reuses an in-flight getVodInfo / getSeriesInfo request for a HeroBanner item,
+ * preventing duplicate requests when the user clicks "Continuar" / "Assistir" before
+ * initial HeroBanner metadata arrives.
+ */
+export function fetchOrReuseHeroDetails(credentials: any, item: any): Promise<any> {
+  if (!credentials?.serverUrl || !credentials?.username || !item) {
+    return Promise.resolve(null);
+  }
+  const isMovie =
+    item.stream_type === 'movie' || Boolean(item.stream_id && !item.series_id);
+  const targetId = isMovie
+    ? item.stream_id
+    : item.series_id ?? item.stream_id ?? item.id;
+  if (targetId === undefined || targetId === null || targetId === '') {
+    return Promise.resolve(null);
+  }
+
+  const key = `${credentials.serverUrl}|${credentials.username}|${isMovie ? 'vod' : 'series'}|${targetId}`;
+  const existing = inFlightHeroDetailsMap.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const promise = (
+    isMovie
+      ? XtreamService.getVodInfo(credentials, targetId)
+      : XtreamService.getSeriesInfo(credentials, targetId)
+  )
+    .catch((error) => {
+      console.warn('Failed to fetch details for hero item:', error);
+      return null;
+    })
+    .finally(() => {
+      if (inFlightHeroDetailsMap.get(key) === promise) {
+        inFlightHeroDetailsMap.delete(key);
+      }
+    });
+
+  inFlightHeroDetailsMap.set(key, promise);
+  return promise;
+}
+
 export interface HeroBannerProps {
   items: any[];
-  onPlay: (item: any, detailsResponse?: any) => void;
+  onPlay: (item: any, detailsResponse?: any) => void | Promise<void>;
   onInfo: (item: any) => void;
   isPaused?: boolean;
   canContinueItem?: (item: any) => boolean;
@@ -26,6 +71,16 @@ export const HeroBanner = React.memo(function HeroBanner({
   const [currentIndex, setCurrentIndex] = useState(0);
   const { credentials } = useXtreamCredentials();
   const [activeDetailsResponse, setActiveDetailsResponse] = useState<any>(null);
+  const [isPlayPending, setIsPlayPending] = useState(false);
+  const playPendingRef = useRef(false);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const heroItems = useMemo(() => {
     return computeHeroItemsFromList(items);
@@ -36,49 +91,34 @@ export const HeroBanner = React.memo(function HeroBanner({
   }, [heroItems]);
 
   useEffect(() => {
-    if (heroItems.length <= 1 || isPaused) return;
+    if (heroItems.length <= 1 || isPaused || isPlayPending) return;
     const timer = setInterval(() => {
       setCurrentIndex((prev) => (prev + 1) % heroItems.length);
     }, 8000);
     return () => clearInterval(timer);
-  }, [heroItems.length, isPaused]);
+  }, [heroItems.length, isPaused, isPlayPending]);
 
   const currentItem = heroItems[currentIndex];
 
   useEffect(() => {
+    playPendingRef.current = false;
+    setIsPlayPending(false);
+  }, [currentItem, credentials]);
+
+  useEffect(() => {
     if (!currentItem || !credentials || isPaused) return;
 
-    let isMounted = true;
+    let isCurrent = true;
     setActiveDetailsResponse(null);
 
-    const fetchDetails = async () => {
-      try {
-        const isMovie =
-          currentItem.stream_type === 'movie' ||
-          (currentItem.stream_id && !currentItem.series_id);
-        if (isMovie) {
-          const res = await XtreamService.getVodInfo(credentials, currentItem.stream_id);
-          if (isMounted && res) {
-            setActiveDetailsResponse(res);
-          }
-        } else {
-          const res = await XtreamService.getSeriesInfo(
-            credentials,
-            currentItem.series_id || currentItem.stream_id || currentItem.id
-          );
-          if (isMounted && res) {
-            setActiveDetailsResponse(res);
-          }
-        }
-      } catch (error) {
-        console.warn('Failed to fetch details for hero item:', error);
+    fetchOrReuseHeroDetails(credentials, currentItem).then((res) => {
+      if (isCurrent && res) {
+        setActiveDetailsResponse(res);
       }
-    };
-
-    fetchDetails();
+    });
 
     return () => {
-      isMounted = false;
+      isCurrent = false;
     };
   }, [currentItem, credentials, isPaused]);
 
@@ -233,11 +273,36 @@ export const HeroBanner = React.memo(function HeroBanner({
               type="button"
               data-hero-action="play"
               data-hero-resume={canContinue ? 'true' : 'false'}
-              onClick={() => onPlay(currentItem, activeDetailsResponse)}
+              data-hero-loading={isPlayPending ? 'true' : 'false'}
+              aria-busy={isPlayPending ? 'true' : 'false'}
+              onClick={() => {
+                if (playPendingRef.current) return;
+                const maybePromise = onPlay(currentItem, activeDetailsResponse);
+                if (maybePromise && typeof (maybePromise as Promise<void>).then === 'function') {
+                  playPendingRef.current = true;
+                  setIsPlayPending(true);
+                  Promise.resolve(maybePromise).finally(() => {
+                    playPendingRef.current = false;
+                    if (isMountedRef.current) {
+                      setIsPlayPending(false);
+                    }
+                  });
+                }
+              }}
               className="flex-1 sm:flex-none items-center justify-center flex gap-2.5 bg-white hover:bg-white/90 text-black px-5 sm:px-7 py-2.5 sm:py-3 rounded-full font-bold transition-all active:scale-95 shadow-lg"
             >
-              <Play className="w-5 h-5 fill-black shrink-0" />
+              {isPlayPending ? (
+                <Loader2
+                  data-hero-spinner="true"
+                  className="w-5 h-5 animate-spin text-black shrink-0"
+                />
+              ) : (
+                <Play className="w-5 h-5 fill-black shrink-0" />
+              )}
               <span>{canContinue ? 'Continuar' : 'Assistir'}</span>
+              {isPlayPending && (
+                <span className="text-xs font-semibold opacity-75">Carregando...</span>
+              )}
             </button>
             <button
               type="button"

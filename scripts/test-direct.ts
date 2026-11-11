@@ -2928,6 +2928,7 @@ async function runDpadNavigationAndBackPolicyTests() {
       { stream_id: 201, name: 'Filme Ação 1', category_id: '10', stream_icon: 'http://server.tv:8080/poster1.jpg', rating: '8.5', added: '1700000100' },
       { stream_id: 202, name: 'Filme Ação 2', category_id: '10', stream_icon: 'http://server.tv:8080/poster2.jpg', rating: '8.2', added: '1700000090' },
       { stream_id: 203, name: 'Filme Comédia 1', category_id: '11', stream_icon: 'http://server.tv:8080/poster3.jpg', rating: '7.9', added: '1700000080' },
+      { stream_id: 204, name: 'Filme Comédia 2', category_id: '11', stream_icon: 'http://server.tv:8080/poster4.jpg', rating: '7.5', added: '1700000070' },
     ];
     if (catId) return all.filter((s) => s.category_id === String(catId));
     return all;
@@ -7634,7 +7635,9 @@ async function runPerformanceAndVirtualizationTests() {
       stream_id: 800000 + idx,
       name: `Filme Limite ${idx + 1} (2024)`,
       category_id: '101',
+      year: '2024',
       rating: '8.0',
+      added: String(1710000000 - idx),
       stream_icon: `http://img.test/lim_${idx}.jpg`,
     }));
 
@@ -7686,6 +7689,11 @@ async function runPerformanceAndVirtualizationTests() {
     assert(
       lastItemByScroll !== null,
       `[6.A] Em grade com ${countScenario} itens, o último item (índice ${countScenario - 1}) DEVE ser montado ao rolar até o fim`
+    );
+    assert.strictEqual(
+      lastItemByScroll.getAttribute('data-virtual-key'),
+      String(800000 + countScenario - 1),
+      `[6.A] O último item montado em ${countScenario} itens deve preservar o ID exato (${800000 + countScenario - 1})`
     );
     assert.strictEqual(
       lastItemByScroll.getAttribute('aria-label'),
@@ -22108,10 +22116,14 @@ if (args[0] === 'add' && args[1] === 'android') {
                 cancelable: true,
               })
             );
-            await new Promise((r) => setTimeout(r, 60));
           });
+          await waitForCondition(
+            () => document.querySelector('[data-player-container="true"]') === null,
+            1200,
+            '[12.25] Saída completa do VideoPlayer do DOM antes de testar Categorias'
+          );
 
-          // 3. Testar "Categorias" e "Ver todos" em Filmes: acessar categoria sem fileira na vitrine inicial ("Documentários Raros") e "Ver todos"
+          // 3. Testar "Categorias" e "Ver todos" em Filmes: acessar categoria ("Documentários Raros") e "Ver todos"
           await act(async () => {
             moviesCatTrigger.focus();
             moviesCatTrigger.click();
@@ -22146,7 +22158,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.25] Fechar o menu Categorias com Escape deve devolver o foco ao botão Categorias'
           );
 
-          // Reabrir Categorias e escolher "Documentários Raros" (categoria que não tinha fileira na vitrine inicial)
+          // Reabrir Categorias e escolher "Documentários Raros"
           await act(async () => {
             moviesCatTrigger.click();
           });
@@ -22155,7 +22167,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           )!;
           assert(
             nicheCatBtn !== null,
-            '[12.25] Menu Categorias deve listar todas as categorias do domínio, inclusive as sem fileira na vitrine inicial'
+            '[12.25] Menu Categorias deve listar todas as categorias do domínio'
           );
           await act(async () => {
             nicheCatBtn.click();
@@ -22168,7 +22180,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           );
           assert(
             stage1Container.textContent?.includes('Documentário Secreto Fora da Vitrine'),
-            '[12.25] A grade filtrada deve exibir o filme da categoria que não tinha fileira na vitrine inicial'
+            '[12.25] A grade filtrada deve exibir o filme da categoria selecionada'
           );
 
           // 4. Com a categoria "Ação e Aventura" selecionada, usar a busca sob demanda para encontrar um filme FORA da categoria selecionada ("Documentário Secreto Fora da Vitrine") e depois fechar a busca com Escape restaurando o filtro anterior!
@@ -22221,10 +22233,13 @@ if (args[0] === 'add' && args[1] === 'android') {
           await act(async () => {
             await new Promise((r) => setTimeout(r, 550));
           });
+          const mountedLupaBtnAfterSearch = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
           assertSameElement(
             document.activeElement,
-            s2LupaBtn,
-            '[12.25] Fechar a busca deve devolver o foco à lupa'
+            mountedLupaBtnAfterSearch,
+            '[12.25] Fechar a busca deve devolver o foco à lupa montada'
           );
           assert(
             stage1Container.querySelector('[data-nav-grid="true"]') !== null &&
@@ -22352,8 +22367,12 @@ if (args[0] === 'add' && args[1] === 'android') {
                 cancelable: true,
               })
             );
-            await new Promise((r) => setTimeout(r, 60));
           });
+          await waitForCondition(
+            () => document.querySelector('[data-player-container="true"]') === null,
+            1200,
+            '[12.25] Saída completa do VideoPlayer de Séries do DOM'
+          );
 
           assert.strictEqual(
             stage2ProviderQueries,
@@ -22361,12 +22380,564 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.25] Alternar entre Início, Filmes e Séries, abrir Categorias, filtrar "Ver todos" e usar a busca não deve disparar consultas extras de catálogo completo'
           );
 
+          // ===================================================================
+          // 6. Validação complementar da Etapa 2:
+          //    (a) Mais categorias do que os limites anteriores (12 de Filmes e 9 de Séries), incluindo categoria com apenas 1 título, intercalação no Início, janela vertical limitada sem ordenar todas na abertura e alcance até a última fileira por rolagem e D-Pad + retorno de detalhes;
+          //    (b) Busca no Início com 2.500 resultados mantendo janela limitada de cartões e imagens sob demanda;
+          //    (c) Retomada de episódio .mkv com metadados atrasados (getSeriesInfo) reutilizando a consulta em andamento e abrindo uma única vez na posição salva.
+          // ===================================================================
+          const stage2ManyCreds = {
+            serverUrl: 'http://stage2-many.local:8080',
+            username: 'stage2_many_user',
+            password: 'stage2_many_pass',
+          };
+          windowInstance.localStorage.setItem(
+            CREDENTIALS_KEY,
+            JSON.stringify(stage2ManyCreds)
+          );
+          recordPlaybackPosition(stage2ManyCreds, {
+            id: 'ep_9001_mkv',
+            type: 'episode',
+            parentSeriesId: '9001',
+            positionSec: 275,
+          });
+
+          // 12 categorias de Filmes (a 12ª tem apenas 1 título) e 9 categorias de Séries (a 9ª tem apenas 1 título)
+          const manyVodCategories = Array.from({ length: 12 }, (_, i) => ({
+            category_id: `m_cat_${i + 1}`,
+            category_name: i === 11 ? 'Cinema Experimental Único' : `Cat Filme ${i + 1}`,
+          }));
+          const manySeriesCategories = Array.from({ length: 9 }, (_, i) => ({
+            category_id: `s_cat_${i + 1}`,
+            category_name: i === 8 ? 'Minissérie Exclusiva Única' : `Cat Série ${i + 1}`,
+          }));
+
+          const manyLiveStreams = Array.from({ length: 500 }, (_, i) => ({
+            stream_id: 50000 + i,
+            name: `Canal BuscaMassiva ${i + 1}`,
+            category_id: 'live_s2_1',
+            stream_icon: `http://stage2-many.local:8080/live_${i}.png`,
+          }));
+          const manyVodStreams: any[] = [];
+          for (let c = 0; c < 12; c++) {
+            const countInCat = c === 11 ? 1 : 5;
+            for (let j = 0; j < countInCat; j++) {
+              const idNum = 60000 + c * 100 + j;
+              manyVodStreams.push({
+                stream_id: idNum,
+                name:
+                  c === 11
+                    ? 'Filme Único na Última Categoria'
+                    : `Filme Cat ${c + 1} Item ${j + 1}`,
+                category_id: `m_cat_${c + 1}`,
+                year: '2025',
+                rating: '8.5',
+                stream_icon: `http://stage2-many.local:8080/vod_${idNum}.jpg`,
+                container_extension: 'mp4',
+              });
+            }
+          }
+          // Adicionar itens para completar 1.000 filmes contendo "BuscaMassiva"
+          for (let k = 0; k < 1000; k++) {
+            manyVodStreams.push({
+              stream_id: 70000 + k,
+              name: `Filme BuscaMassiva ${k + 1} (2024)`,
+              category_id: 'm_cat_1',
+              year: '2024',
+              rating: '8.0',
+              stream_icon: `http://stage2-many.local:8080/vod_bm_${k}.jpg`,
+              container_extension: 'mp4',
+            });
+          }
+
+          const manySeriesStreams: any[] = [
+            {
+              series_id: 9001,
+              name: 'Série Destaque MKV 2026',
+              category_id: 's_cat_1',
+              year: '2026',
+              rating: '9.9',
+              last_modified: '1720000099',
+              cover: 'http://stage2-many.local:8080/ser_9001.jpg',
+            },
+          ];
+          for (let c = 0; c < 9; c++) {
+            const countInCat = c === 8 ? 1 : 5;
+            for (let j = 0; j < countInCat; j++) {
+              const idNum = 91000 + c * 100 + j;
+              manySeriesStreams.push({
+                series_id: idNum,
+                name:
+                  c === 8
+                    ? 'Série Única no Fim do Catálogo'
+                    : `Série Cat ${c + 1} Item ${j + 1}`,
+                category_id: `s_cat_${c + 1}`,
+                year: '2025',
+                rating: '8.4',
+                cover: `http://stage2-many.local:8080/ser_${idNum}.jpg`,
+              });
+            }
+          }
+          for (let k = 0; k < 1000; k++) {
+            manySeriesStreams.push({
+              series_id: 95000 + k,
+              name: `Série BuscaMassiva ${k + 1} (2024)`,
+              category_id: 's_cat_1',
+              year: '2024',
+              rating: '8.0',
+              cover: `http://stage2-many.local:8080/ser_bm_${k}.jpg`,
+            });
+          }
+
+          let manyCatalogQueries = 0;
+          let delayedSeriesInfoCalls = 0;
+          (XtreamService as any).getLiveCategories = async () => {
+            manyCatalogQueries++;
+            return [{ category_id: 'live_s2_1', category_name: 'Canais' }];
+          };
+          (XtreamService as any).getVodCategories = async () => {
+            manyCatalogQueries++;
+            return manyVodCategories;
+          };
+          (XtreamService as any).getSeriesCategories = async () => {
+            manyCatalogQueries++;
+            return manySeriesCategories;
+          };
+          (XtreamService as any).getLiveStreams = async () => {
+            manyCatalogQueries++;
+            return manyLiveStreams;
+          };
+          (XtreamService as any).getVodStreams = async () => {
+            manyCatalogQueries++;
+            return manyVodStreams;
+          };
+          (XtreamService as any).getSeries = async () => {
+            manyCatalogQueries++;
+            return manySeriesStreams;
+          };
+          (XtreamService as any).getSeriesInfo = async (_creds: any, serId: any) => {
+            delayedSeriesInfoCalls++;
+            await new Promise((r) => setTimeout(r, 120));
+            return {
+              info: {
+                name: `Série ${serId}`,
+                plot: `Sinopse atrasada da série ${serId}`,
+                genre: 'Drama',
+                releasedate: '2026',
+                backdrop_path: [],
+              },
+              episodes: {
+                '1': [
+                  {
+                    id: 'ep_9001_1',
+                    episode_num: 1,
+                    title: 'Piloto MP4',
+                    container_extension: 'mp4',
+                  },
+                  {
+                    id: 'ep_9001_mkv',
+                    episode_num: 2,
+                    title: 'Episódio Retomado MKV',
+                    container_extension: 'mkv',
+                  },
+                ],
+              },
+            };
+          };
+
+          resetCatalogRankingPerfStats();
+
+          await act(async () => {
+            stage1Root.render(React.createElement('div', null));
+          });
+          await act(async () => {
+            stage1Root.render(
+              React.createElement(
+                MemoryRouter,
+                { initialEntries: ['/home'] },
+                React.createElement(
+                  Stage1NavProvider,
+                  null,
+                  React.createElement(RealHomeApp)
+                )
+              )
+            );
+            await new Promise((r) => setTimeout(r, 80));
+          });
+
+          const initialManyQueries = manyCatalogQueries;
+          assert.strictEqual(
+            initialManyQueries,
+            6,
+            '[12.25-Stage2] Carga inicial deve executar exatamente 6 consultas ao provedor'
+          );
+
+          // (a.1) Verificar janela inicial de fileiras no Início (4 fixas + 12 Filmes + 9 Séries = 25 fileiras totais, mas apenas 8 montadas!)
+          const inicioRowsContainer = stage1Container.querySelector<HTMLElement>(
+            '[data-showcase-rows-container="true"]'
+          )!;
+          assert.strictEqual(
+            inicioRowsContainer.getAttribute('data-showcase-total-rows'),
+            '25',
+            '[12.25-Stage2] Início deve ter 25 fileiras no total (4 fixas + 12 categorias de Filmes + 9 de Séries)'
+          );
+          const inicioInitialMountedRows = stage1Container.querySelectorAll('[data-home-row-index]').length;
+          const inicioInitialMountedImgs = stage1Container.querySelectorAll('img[src]').length;
+          const statsAfterInicioOpen = getCatalogRankingPerfStats();
+          assert.strictEqual(
+            inicioInitialMountedRows,
+            8,
+            `[12.25-Stage2] Início deve montar apenas uma janela limitada de 8 fileiras na abertura (montou ${inicioInitialMountedRows} de 25)`
+          );
+          assert(
+            statsAfterInicioOpen.sortCalls <= 6,
+            `[12.25-Stage2] Abertura do Início NÃO deve ordenar todas as 21 categorias de uma vez (sortCalls=${statsAfterInicioOpen.sortCalls})`
+          );
+
+          // Verificar intercalação no Início com rótulo de tipo: Filmes · Cat Filme 1, Séries · Cat Série 1, Filmes · Cat Filme 2, Séries · Cat Série 2
+          const inicioInitialRowTitles = Array.from(
+            inicioRowsContainer.querySelectorAll('h2')
+          ).map((h) => h.textContent?.trim() || '');
+          assert.deepStrictEqual(
+            inicioInitialRowTitles.slice(4, 8),
+            [
+              'Filmes · Cat Filme 1',
+              'Séries · Cat Série 1',
+              'Filmes · Cat Filme 2',
+              'Séries · Cat Série 2',
+            ],
+            `[12.25-Stage2] Início deve intercalar categorias com rótulo de tipo (obteve: ${inicioInitialRowTitles.slice(4, 8).join(' | ')})`
+          );
+
+          // Rolar até o fim do Início -> verificar que após acabarem as 9 categorias de Séries, continuam as categorias restantes de Filmes (10, 11 e 12 com 1 título)
+          const inicioScrollMain = stage1Container.querySelector<HTMLElement>(
+            'main[data-scroll-container="true"]'
+          )!;
+          await act(async () => {
+            inicioScrollMain.scrollTop = 12000;
+            inicioScrollMain.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+            await new Promise((r) => setTimeout(r, 30));
+          });
+          const inicioEndMountedRows = stage1Container.querySelectorAll('[data-home-row-index]').length;
+          const inicioEndMountedImgs = stage1Container.querySelectorAll('img[src]').length;
+          const inicioEndRowTitles = Array.from(
+            inicioRowsContainer.querySelectorAll('h2')
+          ).map((h) => h.textContent?.trim() || '');
+          assert.strictEqual(
+            inicioEndMountedRows,
+            8,
+            `[12.25-Stage2] Ao chegar ao fim do Início, a janela deve permanecer limitada a 8 fileiras montadas (montou ${inicioEndMountedRows})`
+          );
+          assert.deepStrictEqual(
+            inicioEndRowTitles.slice(-4),
+            [
+              'Séries · Minissérie Exclusiva Única',
+              'Filmes · Cat Filme 10',
+              'Filmes · Cat Filme 11',
+              'Filmes · Cinema Experimental Único',
+            ],
+            `[12.25-Stage2] Quando Séries termina na 9ª categoria, o Início deve continuar com as categorias 10, 11 e 12 de Filmes (obteve: ${inicioEndRowTitles.slice(-4).join(' | ')})`
+          );
+
+          // (b) Busca no Início com 2.500 resultados ("BuscaMassiva": 500 canais + 1.000 filmes + 1.000 séries)
+          const manySearchBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
+          await act(async () => {
+            manySearchBtn.focus();
+            manySearchBtn.click();
+          });
+          const manySearchInput = stage1Container.querySelector<HTMLInputElement>(
+            'input[data-header-search-input="true"]'
+          )!;
+          await act(async () => {
+            typeInRealInput(manySearchInput, 'BuscaMassiva');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+
+          const mountedSearchCards = stage1Container.querySelectorAll(
+            '[data-nav-grid="true"] [data-nav-item="true"]'
+          ).length;
+          const mountedSearchImgs = stage1Container.querySelectorAll('img[src]').length;
+          assert(
+            mountedSearchCards > 0 && mountedSearchCards <= 96,
+            `[12.25-Stage2] Busca no Início com 2.500 resultados deve manter janela limitada <= 96 cartões montados (montou ${mountedSearchCards} de 2.500)`
+          );
+          assert(
+            mountedSearchImgs <= 80,
+            `[12.25-Stage2] Busca no Início com 2.500 resultados deve carregar capas sob demanda (img[src]=${mountedSearchImgs} de 2.500)`
+          );
+          assert(
+            stage1Container.textContent?.includes('Canais Ao Vivo (500)') &&
+              stage1Container.textContent?.includes('Filmes (1000)') &&
+              stage1Container.textContent?.includes('Séries (1000)'),
+            '[12.25-Stage2] Busca no Início deve manter os resultados separados em canais, filmes e séries'
+          );
+
+          // Rolar até o fim dos resultados de busca no Início para confirmar alcance do último resultado (Série BuscaMassiva 1000)
+          await act(async () => {
+            inicioScrollMain.scrollTop = 200000;
+            inicioScrollMain.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+            await new Promise((r) => setTimeout(r, 30));
+          });
+          const lastSeriesSearchCard = stage1Container.querySelector(
+            '[data-search-domain="series"] [data-virtual-index="999"]'
+          );
+          assert(
+            lastSeriesSearchCard !== null &&
+              lastSeriesSearchCard.getAttribute('aria-label') === 'Série BuscaMassiva 1000 (2024)',
+            '[12.25-Stage2] Último resultado da busca de 2.500 itens no Início deve ser alcançável'
+          );
+
+          // Fechar a busca e confirmar restauração da vitrine e foco na lupa montada
+          await act(async () => {
+            manySearchInput.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+          const mountedLupaAfter2500 = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
+          assertSameElement(
+            document.activeElement,
+            mountedLupaAfter2500,
+            '[12.25-Stage2] Ao fechar a busca de 2.500 itens no Início, o foco deve voltar à lupa montada'
+          );
+
+          // (a.2) Navegar para Filmes: 13 fileiras totais (Filmes em Destaque + 12 categorias), rótulo SEM prefixo ("Cat Filme 1"), percorrer por D-Pad ArrowDown até a última fileira ("Cinema Experimental Único" com 1 título) e preservar foco/rolagem ao voltar de detalhes
+          const manyMoviesNavBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="movies"]'
+          )!;
+          await act(async () => {
+            manyMoviesNavBtn.focus();
+            manyMoviesNavBtn.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          const moviesRowsContainer = stage1Container.querySelector<HTMLElement>(
+            '[data-showcase-rows-container="true"]'
+          )!;
+          assert.strictEqual(
+            moviesRowsContainer.getAttribute('data-showcase-total-rows'),
+            '13',
+            '[12.25-Stage2] Filmes deve ter 13 fileiras (1 Destaque + 12 categorias)'
+          );
+          const moviesInitialMountedRows = stage1Container.querySelectorAll('[data-home-row-index]').length;
+          const moviesInitialMountedImgs = stage1Container.querySelectorAll('img[src]').length;
+          assert.strictEqual(
+            moviesInitialMountedRows,
+            8,
+            `[12.25-Stage2] Filmes deve montar inicialmente 8 fileiras de 13 (montou ${moviesInitialMountedRows})`
+          );
+
+          const moviesFirstCatHeading = stage1Container
+            .querySelector('[data-home-row-index="1"] h2')
+            ?.textContent?.trim();
+          assert.strictEqual(
+            moviesFirstCatHeading,
+            'Cat Filme 1',
+            '[12.25-Stage2] Em Filmes, a fileira de categoria deve mostrar apenas o nome da categoria (sem prefixo Filmes ·)'
+          );
+
+          // Focar o 1º cartão da fileira 0 e descer com D-Pad (ArrowDown) 12 vezes até a fileira 12 ("Cinema Experimental Único", com apenas 1 título)
+          const moviesRow0FirstCard = stage1Container.querySelector<HTMLElement>(
+            '[data-home-row-index="0"] [data-nav-item="true"]'
+          )!;
+          await act(async () => {
+            moviesRow0FirstCard.focus();
+          });
+          for (let step = 1; step <= 12; step++) {
+            await act(async () => {
+              moveSpatialFocus('down');
+            });
+            const activeRowEl = (document.activeElement as HTMLElement | null)?.closest(
+              '[data-home-row-index]'
+            );
+            assert.strictEqual(
+              activeRowEl?.getAttribute('data-home-row-index'),
+              String(step),
+              `[12.25-Stage2] ArrowDown no D-Pad deve alcançar a fileira ${step} mesmo quando ela ainda não estava montada`
+            );
+          }
+
+          const moviesEndMountedRows = stage1Container.querySelectorAll('[data-home-row-index]').length;
+          const moviesEndMountedImgs = stage1Container.querySelectorAll('img[src]').length;
+          assert.strictEqual(
+            moviesEndMountedRows,
+            8,
+            `[12.25-Stage2] Ao alcançar a última fileira de Filmes por D-Pad, a janela deve continuar limitada a 8 fileiras (montou ${moviesEndMountedRows})`
+          );
+
+          const lastMovieCatRow = stage1Container.querySelector<HTMLElement>(
+            '[data-home-row-index="12"]'
+          )!;
+          assert(
+            lastMovieCatRow.querySelector('h2')?.textContent?.trim() ===
+              'Cinema Experimental Único',
+            '[12.25-Stage2] A última fileira de Filmes deve ser "Cinema Experimental Único"'
+          );
+          const singleTitleCard = lastMovieCatRow.querySelector<HTMLElement>(
+            '[data-nav-item="true"]'
+          )!;
+          assert.strictEqual(
+            singleTitleCard.getAttribute('aria-label'),
+            'Filme Único na Última Categoria',
+            '[12.25-Stage2] Categoria com apenas 1 título deve montar e exibir seu cartão na vitrine'
+          );
+          assertSameElement(
+            document.activeElement,
+            singleTitleCard,
+            '[12.25-Stage2] D-Pad deve focar o cartão único da última categoria'
+          );
+
+          // Simular scrollTop na última categoria, abrir MovieDetails e voltar com Escape -> deve preservar foco e scrollTop na última fileira!
+          const moviesScrollMain = stage1Container.querySelector<HTMLElement>(
+            'main[data-scroll-container="true"]'
+          )!;
+          moviesScrollMain.scrollTop = 3600;
+          await act(async () => {
+            singleTitleCard.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+          assert(
+            document.querySelector('[data-focus-scope="modal"]') !== null,
+            '[12.25-Stage2] Clicar no cartão da última categoria deve abrir MovieDetails'
+          );
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 40));
+          });
+          assert.strictEqual(
+            moviesScrollMain.scrollTop,
+            3600,
+            '[12.25-Stage2] Voltar de MovieDetails deve preservar a rolagem (scrollTop=3600) na última categoria'
+          );
+          const restoredLastCatCard = stage1Container.querySelector<HTMLElement>(
+            '[data-home-row-index="12"] [data-nav-item="true"]'
+          )!;
+          assertSameElement(
+            document.activeElement,
+            restoredLastCatCard,
+            '[12.25-Stage2] Voltar de MovieDetails deve restaurar o foco no cartão da última categoria'
+          );
+
+          // (c) Navegar para Séries e clicar em "Continuar" ANTES de getSeriesInfo (120ms) terminar -> deve indicar carregamento, reaproveitar a consulta em andamento e abrir 1 única vez o episódio .mkv na posição 275s!
+          delayedSeriesInfoCalls = 0;
+          const manySeriesNavBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="series"]'
+          )!;
+          await act(async () => {
+            manySeriesNavBtn.focus();
+            manySeriesNavBtn.click();
+            await new Promise((r) => setTimeout(r, 20));
+          });
+
+          const delayedHeroPlayBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-hero-action="play"]'
+          )!;
+          assert.strictEqual(
+            delayedHeroPlayBtn.getAttribute('data-hero-resume'),
+            'true',
+            '[12.25-Stage2] Série 9001 com progresso salvo (275s) deve exibir Continuar no HeroBanner'
+          );
+          assert.strictEqual(
+            delayedSeriesInfoCalls,
+            1,
+            '[12.25-Stage2] Montagem do HeroBanner de Séries deve iniciar 1 consulta getSeriesInfo'
+          );
+
+          // Clicar duas vezes em Continuar ANTES dos 120ms de getSeriesInfo completarem
+          await act(async () => {
+            delayedHeroPlayBtn.focus();
+            delayedHeroPlayBtn.click();
+            delayedHeroPlayBtn.click();
+          });
+
+          assert.strictEqual(
+            delayedHeroPlayBtn.getAttribute('data-hero-loading'),
+            'true',
+            '[12.25-Stage2] Enquanto aguarda getSeriesInfo, o botão Continuar deve indicar carregamento (data-hero-loading="true")'
+          );
+          assert.strictEqual(
+            document.querySelector('[data-player-container="true"]'),
+            null,
+            '[12.25-Stage2] Reprodução NÃO deve iniciar com extensão chutada (.mp4) antes de os metadados chegarem'
+          );
+          assert.strictEqual(
+            delayedSeriesInfoCalls,
+            1,
+            '[12.25-Stage2] Clicar em Continuar enquanto aguarda metadados deve reaproveitar a consulta getSeriesInfo em andamento (sem duplicar)'
+          );
+
+          // Aguardar a chegada de getSeriesInfo
+          await waitForCondition(
+            () => document.querySelector('[data-player-container="true"]') !== null,
+            1000,
+            '[12.25-Stage2] Abertura do VideoPlayer após chegada dos metadados atrasados de getSeriesInfo'
+          );
+
+          const mkvPlayerEl = document.querySelector('[data-player-container="true"]')!;
+          const mkvVideoEl = mkvPlayerEl.querySelector('video') as HTMLVideoElement | null;
+          assert(
+            mkvPlayerEl.textContent?.includes('Episódio Retomado MKV'),
+            '[12.25-Stage2] VideoPlayer deve abrir o episódio salvo correto (Episódio Retomado MKV)'
+          );
+          const activeVideoSrc =
+            mkvVideoEl?.getAttribute('src') || mkvVideoEl?.src || '';
+          assert(
+            activeVideoSrc.endsWith('/ep_9001_mkv.mkv'),
+            `[12.25-Stage2] URL reproduzida deve usar o ID salvo e a extensão .mkv confirmada nos metadados (obteve: ${activeVideoSrc})`
+          );
+
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await waitForCondition(
+            () => document.querySelector('[data-player-container="true"]') === null,
+            1200,
+            '[12.25-Stage2] Fechamento do VideoPlayer após teste de retomada .mkv'
+          );
+
+          assert.strictEqual(
+            manyCatalogQueries,
+            initialManyQueries,
+            '[12.25-Stage2] Rolar vitrines com muitas categorias, pesquisar 2.500 itens e retomar episódio não deve disparar consultas extras de catálogo'
+          );
+
+          clearItemProgress(stage2ManyCreds, 'episode', 'ep_9001_mkv');
           clearItemProgress(stage2Creds, 'movie', '2001');
           clearItemProgress(stage2Creds, 'episode', 'ep_3001_2');
           setStoredFavorites(stage2FavKey, []);
 
           console.log(
-            '✅ [12.25] Etapa 2 validada com sucesso: vitrine compartilhada, isolamento de domínio, HeroBanner (horizontal vs vertical-cover sem esticar), Categorias + Ver todos na grade virtualizada, busca no domínio completo e Continuar retomando filme e episódio!'
+            `📊 [Métricas Vitrine Etapa 2]\n` +
+              `   • Início (25 fileiras totais = 4 fixas + 12 Filmes + 9 Séries): início -> ${inicioInitialMountedRows} fileiras montadas, ${inicioInitialMountedImgs} img[src] | fim -> ${inicioEndMountedRows} fileiras montadas, ${inicioEndMountedImgs} img[src]\n` +
+              `   • Filmes (13 fileiras totais = 1 fixa + 12 categorias, última c/ 1 título): início -> ${moviesInitialMountedRows} fileiras montadas, ${moviesInitialMountedImgs} img[src] | fim -> ${moviesEndMountedRows} fileiras montadas, ${moviesEndMountedImgs} img[src]\n` +
+              `   • Busca no Início (2.500 resultados): ${mountedSearchCards} cartões montados, ${mountedSearchImgs} img[src]`
+          );
+          console.log(
+            '✅ [12.25] Etapa 2 validada com sucesso: vitrine completa sem limites artificiais, intercalação no Início, janela vertical limitada, busca virtualizada no Início (2.500 resultados) e retomada segura de episódio .mkv com metadados atrasados!'
           );
         } finally {
           useDelayedSeriesCategories = false;

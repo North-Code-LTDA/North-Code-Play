@@ -18,6 +18,7 @@ export interface UseVirtualWindowOptions {
   isFrozen?: boolean;
   resetKey?: string;
   maxWindowItems?: number;
+  fallbackOffsetTopPx?: number;
 }
 
 export interface VirtualWindowResult {
@@ -51,12 +52,12 @@ export interface VirtualWindowDiagnostics {
   layoutMeasureCount: number;
 }
 
-const attachedScrollContainers = new Set<HTMLElement>();
+const attachedScrollContainerCounts = new Map<HTMLElement, number>();
 let layoutMeasureCount = 0;
 
 export function getVirtualWindowDiagnostics(): VirtualWindowDiagnostics {
   return {
-    activeScrollListeners: attachedScrollContainers.size,
+    activeScrollListeners: attachedScrollContainerCounts.size,
     activeVirtualContainers: getActiveVirtualContainerCount(),
     layoutMeasureCount,
   };
@@ -264,6 +265,7 @@ export function useVirtualWindow({
   isFrozen = false,
   resetKey = '',
   maxWindowItems,
+  fallbackOffsetTopPx,
 }: UseVirtualWindowOptions): VirtualWindowResult {
   const { effectiveMode: displayMode, effectiveTvScale: tvScale } = useDisplayPreferences();
   const effectiveWindowSize = maxWindowItems ?? (mode === 'grid' ? 96 : 80);
@@ -340,7 +342,9 @@ export function useVirtualWindow({
       : Math.max(36, Math.round(68 * scaleFactor));
 
   const rowHeightPx = Math.max(32, measuredRowHeightPx ?? fallbackRowHeightPx);
-  const listOffsetTop = measuredListOffsetTop ?? (mode === 'grid' ? 88 : 8);
+  const listOffsetTop =
+    measuredListOffsetTop ??
+    (typeof fallbackOffsetTopPx === 'number' ? fallbackOffsetTopPx : mode === 'grid' ? 88 : 8);
 
   // Align window size to a multiple of columns so every window starts/ends on complete grid rows
   const alignedWindowSize =
@@ -657,7 +661,10 @@ export function useVirtualWindow({
     };
 
     scrollEl.addEventListener('scroll', handleScroll, { passive: true });
-    attachedScrollContainers.add(scrollEl);
+    attachedScrollContainerCounts.set(
+      scrollEl,
+      (attachedScrollContainerCounts.get(scrollEl) ?? 0) + 1
+    );
 
     // Sync window immediately with the mounted container's current scrollTop
     if (!isFrozenRef.current) {
@@ -674,7 +681,12 @@ export function useVirtualWindow({
         rafId = null;
       }
       scrollEl.removeEventListener('scroll', handleScroll);
-      attachedScrollContainers.delete(scrollEl);
+      const nextCount = (attachedScrollContainerCounts.get(scrollEl) ?? 1) - 1;
+      if (nextCount <= 0) {
+        attachedScrollContainerCounts.delete(scrollEl);
+      } else {
+        attachedScrollContainerCounts.set(scrollEl, nextCount);
+      }
     };
   }, [scrollEl, computeStartForScrollTop, columns]);
 

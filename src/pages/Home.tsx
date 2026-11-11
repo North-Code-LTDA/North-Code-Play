@@ -98,10 +98,13 @@ function HomeContent({ credentials }: { credentials: any }) {
       window.innerWidth === 0 ||
       window.innerWidth >= 768;
 
+    const selector =
+      currentView === 'movies' || currentView === 'series'
+        ? '[data-nav-zone="categories"] button[data-categories-trigger="true"]'
+        : '[data-nav-zone="categories"] button[data-category-id], [data-nav-zone="categories"] button[data-live-category-id]';
+
     const categoryBtns: HTMLButtonElement[] = Array.from<HTMLButtonElement>(
-      viewRoot.querySelectorAll<HTMLButtonElement>(
-        '[data-nav-zone="categories"] button[data-category-id], [data-nav-zone="categories"] button[data-live-category-id]'
-      )
+      viewRoot.querySelectorAll<HTMLButtonElement>(selector)
     ).filter((btn: HTMLButtonElement) => {
       if (!isElementFocusable(btn)) return false;
       if (isDesktopViewport && btn.closest('.md\\:hidden')) return false;
@@ -159,7 +162,15 @@ function HomeContent({ credentials }: { credentials: any }) {
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ['data-category-selected', 'disabled', 'class'],
+        attributeFilter: [
+          'data-categories-trigger',
+          'data-category-selected',
+          'disabled',
+          'aria-disabled',
+          'hidden',
+          'inert',
+          'class',
+        ],
       });
     }
 

@@ -38,8 +38,29 @@ export function resetSpatialNavPerfStats(): void {
   spatialPerfStats.virtualWindowExpansions = 0;
 }
 
+export interface ShowcaseRowController {
+  totalRows: number;
+  ensureRowMounted: (targetRowIndex: number, preserveRowIndex?: number) => boolean;
+}
+
 const virtualControllers = new WeakMap<HTMLElement, VirtualContainerController>();
 const registeredVirtualContainers = new Set<HTMLElement>();
+const showcaseRowControllers = new WeakMap<HTMLElement, ShowcaseRowController>();
+
+export function registerShowcaseRowController(
+  container: HTMLElement | null,
+  controller: ShowcaseRowController
+): void {
+  if (!container) return;
+  showcaseRowControllers.set(container, controller);
+  invalidateCandidateCache();
+}
+
+export function unregisterShowcaseRowController(container: HTMLElement | null): void {
+  if (!container) return;
+  showcaseRowControllers.delete(container);
+  invalidateCandidateCache();
+}
 
 export function registerVirtualContainer(
   container: HTMLElement | null,
@@ -1119,6 +1140,50 @@ function ensureVirtualTargetMountedIfNeeded(
   direction: SpatialDirection
 ): void {
   if (!activeEl) return;
+
+  // 1. Vertical showcase row window expansion (reaching unmounted showcase rows with ArrowDown/ArrowUp)
+  if (direction === 'down' || direction === 'up') {
+    const homeRowEl = activeEl.closest<HTMLElement>('[data-home-row-index]');
+    if (homeRowEl) {
+      const currentRowIndex = parseInt(homeRowEl.getAttribute('data-home-row-index') || '-1', 10);
+      const rowsContainer = homeRowEl.closest<HTMLElement>('[data-showcase-rows-container="true"]');
+      if (rowsContainer && !isNaN(currentRowIndex) && currentRowIndex >= 0) {
+        const rowController = showcaseRowControllers.get(rowsContainer);
+        if (rowController && rowController.totalRows > 0) {
+          const targetRowIndex =
+            direction === 'down' ? currentRowIndex + 1 : currentRowIndex - 1;
+          if (targetRowIndex >= 0 && targetRowIndex < rowController.totalRows) {
+            const expanded = rowController.ensureRowMounted(targetRowIndex, currentRowIndex);
+            if (expanded) {
+              spatialPerfStats.virtualWindowExpansions++;
+              invalidateCandidateCache();
+            }
+          }
+        }
+      }
+    } else if (
+      direction === 'down' &&
+      (activeEl.closest('[data-hero-stage="true"]') ||
+        activeEl.closest('[data-showcase-categories-bar="true"]'))
+    ) {
+      const showcaseSection = activeEl.closest<HTMLElement>('[data-showcase-section]');
+      const rowsContainer = showcaseSection?.querySelector<HTMLElement>(
+        '[data-showcase-rows-container="true"]'
+      );
+      if (rowsContainer) {
+        const rowController = showcaseRowControllers.get(rowsContainer);
+        if (rowController && rowController.totalRows > 0) {
+          const expanded = rowController.ensureRowMounted(0, 0);
+          if (expanded) {
+            spatialPerfStats.virtualWindowExpansions++;
+            invalidateCandidateCache();
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Virtualized grid or horizontal row item window expansion
   const virtualItemEl = activeEl.closest<HTMLElement>('[data-virtual-index]');
   if (!virtualItemEl) return;
 
@@ -1191,6 +1256,34 @@ function ensureVirtualTargetMountedIfNeeded(
         if (expanded) {
           spatialPerfStats.virtualWindowExpansions++;
           invalidateCandidateCache();
+        }
+      }
+    }
+  } else if (!isHorizontalRow && (direction === 'down' || direction === 'up')) {
+    // Crossing vertical boundary between sibling virtualized grids in the same scroll container (e.g. Início search domains)
+    const scrollRoot = findScrollContainer(virtualContainer) || virtualContainer.parentElement;
+    if (scrollRoot) {
+      const siblingGrids = Array.from(
+        scrollRoot.querySelectorAll<HTMLElement>('[data-nav-grid="true"][data-virtual-container="true"]')
+      );
+      const gIdx = siblingGrids.indexOf(virtualContainer);
+      if (direction === 'down' && gIdx !== -1 && gIdx + 1 < siblingGrids.length) {
+        const nextController = virtualControllers.get(siblingGrids[gIdx + 1]);
+        if (nextController && nextController.totalCount > 0) {
+          const expanded = nextController.ensureIndexMounted(0);
+          if (expanded) {
+            spatialPerfStats.virtualWindowExpansions++;
+            invalidateCandidateCache();
+          }
+        }
+      } else if (direction === 'up' && gIdx > 0) {
+        const prevController = virtualControllers.get(siblingGrids[gIdx - 1]);
+        if (prevController && prevController.totalCount > 0) {
+          const expanded = prevController.ensureIndexMounted(prevController.totalCount - 1);
+          if (expanded) {
+            spatialPerfStats.virtualWindowExpansions++;
+            invalidateCandidateCache();
+          }
         }
       }
     }
