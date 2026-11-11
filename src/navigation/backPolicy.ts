@@ -14,8 +14,9 @@ export interface BackHandlerEntry {
  * - DETAILS_MODAL (80): MovieDetails, SeriesDetails
  * - ACCOUNT_MENU (76): TopHeader floating account dropdown menu
  * - HEADER_SEARCH (75): TopHeader on-demand search input
+ * - CATEGORY_MENU (74): CatalogShowcaseView categories dropdown/panel
  * - DRAWER_MENU (70): Mobile navigation drawer
- * - VIEW_INTERNAL (60): LiveTvView active channel / channel list -> categories, MoviesView/SeriesView content -> categories
+ * - VIEW_INTERNAL (60): LiveTvView active channel / channel list -> categories, MoviesView/SeriesView filtered grid -> showcase
  * - SECTION_TO_HOME (50): Internal section (live, movies, series, favorites, config) -> inicio
  */
 export const BACK_PRIORITY = {
@@ -24,6 +25,7 @@ export const BACK_PRIORITY = {
   DETAILS_MODAL: 80,
   ACCOUNT_MENU: 76,
   HEADER_SEARCH: 75,
+  CATEGORY_MENU: 74,
   DRAWER_MENU: 70,
   VIEW_INTERNAL: 60,
   SECTION_TO_HOME: 50,

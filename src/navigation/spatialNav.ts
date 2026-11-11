@@ -1250,10 +1250,12 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
   const currentGrid = getLogicalGrid(activeEl, ctx);
   const sameZoneCandidates = candidates.filter((c) => getLogicalZone(c, ctx) === currentZone);
 
-  // Account dropdown menu: explicit vertical list inside its own modal focus scope
-  const accountMenuScope = activeEl.closest<HTMLElement>('[data-header-account-menu="true"]');
-  if (accountMenuScope) {
-    const menuItems = candidates.filter((c) => accountMenuScope.contains(c));
+  // Account dropdown menu or Categories dropdown menu: explicit vertical list inside its own modal focus scope
+  const verticalMenuScope = activeEl.closest<HTMLElement>(
+    '[data-header-account-menu="true"], [data-categories-menu="true"]'
+  );
+  if (verticalMenuScope) {
+    const menuItems = candidates.filter((c) => verticalMenuScope.contains(c));
     const idx = menuItems.indexOf(activeEl);
     if (idx !== -1) {
       if (direction === 'down') {
@@ -1358,6 +1360,18 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
         return activeEl;
       }
 
+      if (currentZone === 'content') {
+        const showcaseCategoriesBtn = candidates.find(
+          (c) =>
+            getLogicalZone(c, ctx) === 'categories' &&
+            Boolean(c.closest('[data-showcase-categories-bar="true"]'))
+        );
+        if (showcaseCategoriesBtn) {
+          focusElementSafely(showcaseCategoriesBtn, direction);
+          return showcaseCategoriesBtn;
+        }
+      }
+
       if (currentZone === 'content' || currentZone === 'categories') {
         const headerTarget = pickPreferredZoneEntry(candidates, 'header', ctx);
         if (headerTarget) {
@@ -1370,6 +1384,17 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
     }
 
     if (direction === 'down') {
+      if (
+        currentZone === 'categories' &&
+        Boolean(activeEl.closest('[data-showcase-categories-bar="true"]'))
+      ) {
+        const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
+        if (contentTarget) {
+          focusElementSafely(contentTarget, direction);
+          return contentTarget;
+        }
+      }
+
       if (currentZone === 'header') {
         const contentCandidates = candidates.filter((c) => getLogicalZone(c, ctx) === 'content');
         const contentBlocks = buildZoneBlocks(contentCandidates, ctx);
@@ -1469,7 +1494,10 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
               return nextEl;
             }
           }
-          if (currentZone === 'categories') {
+          if (
+            currentZone === 'categories' &&
+            !activeEl.closest('[data-showcase-categories-bar="true"]')
+          ) {
             const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
             if (contentTarget) {
               focusElementSafely(contentTarget, direction);
@@ -1502,10 +1530,13 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
             return activeEl;
           }
 
-          // Only at logical index 0 may ArrowLeft leave the virtualized row for categories/sidebar
+          // Only at logical index 0 may ArrowLeft leave the virtualized row for sidebar/categories (when categories is a sidebar)
           if (currentZone === 'content') {
             const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
-            if (categoriesTarget) {
+            if (
+              categoriesTarget &&
+              !categoriesTarget.closest('[data-showcase-categories-bar="true"]')
+            ) {
               focusElementSafely(categoriesTarget, direction);
               return categoriesTarget;
             }
@@ -1534,7 +1565,10 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
           focusElementSafely(nextInRow, direction);
           return nextInRow;
         }
-        if (currentZone === 'categories') {
+        if (
+          currentZone === 'categories' &&
+          !activeEl.closest('[data-showcase-categories-bar="true"]')
+        ) {
           const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
           if (contentTarget) {
             focusElementSafely(contentTarget, direction);
@@ -1552,7 +1586,10 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
         }
         if (currentZone === 'content') {
           const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
-          if (categoriesTarget) {
+          if (
+            categoriesTarget &&
+            !categoriesTarget.closest('[data-showcase-categories-bar="true"]')
+          ) {
             focusElementSafely(categoriesTarget, direction);
             return categoriesTarget;
           }
@@ -1583,7 +1620,10 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
 
       if (direction === 'left') {
         const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
-        if (categoriesTarget) {
+        if (
+          categoriesTarget &&
+          !categoriesTarget.closest('[data-showcase-categories-bar="true"]')
+        ) {
           focusElementSafely(categoriesTarget, direction);
           return categoriesTarget;
         }
@@ -1614,7 +1654,10 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
           focusElementSafely(headerTarget, direction);
           return headerTarget;
         }
-      } else if (currentZone === 'categories') {
+      } else if (
+        currentZone === 'categories' &&
+        !activeEl.closest('[data-showcase-categories-bar="true"]')
+      ) {
         const contentTarget = pickPreferredZoneEntry(candidates, 'content', ctx);
         if (contentTarget) {
           focusElementSafely(contentTarget, direction);
@@ -1626,7 +1669,10 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
     if (direction === 'left') {
       if (currentZone === 'content') {
         const categoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
-        if (categoriesTarget) {
+        if (
+          categoriesTarget &&
+          !categoriesTarget.closest('[data-showcase-categories-bar="true"]')
+        ) {
           focusElementSafely(categoriesTarget, direction);
           return categoriesTarget;
         }

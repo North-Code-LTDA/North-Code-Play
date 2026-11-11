@@ -519,9 +519,21 @@ function HomeContent({ credentials }: { credentials: any }) {
           />
         );
       case 'movies':
-        return <MoviesView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
+        return (
+          <MoviesView
+            onPlay={handlePlay}
+            searchQuery={debouncedSearchQuery}
+            isPaused={isHeroPaused}
+          />
+        );
       case 'series':
-        return <SeriesView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
+        return (
+          <SeriesView
+            onPlay={handlePlay}
+            searchQuery={debouncedSearchQuery}
+            isPaused={isHeroPaused}
+          />
+        );
       case 'favorites':
         return <FavoritesView onPlay={handlePlay} searchQuery={debouncedSearchQuery} />;
       case 'config':

@@ -2322,9 +2322,9 @@ async function runPlayerBackAndScrollNavigationTests() {
   assert(moviesMain, 'Elemento main da lista de filmes deve estar presente');
 
   // Selecionar categoria Ação com cards de filmes
-  const acaoCatBtn = Array.from(container.querySelectorAll('aside button')).find(
-    (b) => b.textContent?.toUpperCase().includes('AÇÃO')
-  ) as any as HTMLButtonElement;
+  const acaoCatBtn = Array.from(
+    container.querySelectorAll('[data-categories-menu="true"] button[data-category-id]')
+  ).find((b) => b.textContent?.toUpperCase().includes('AÇÃO')) as any as HTMLButtonElement;
   assert(acaoCatBtn, 'Botão da categoria Ação');
   await act(async () => {
     acaoCatBtn.click();
@@ -2386,7 +2386,9 @@ async function runPlayerBackAndScrollNavigationTests() {
   );
 
   // 2.3 Repetir a seleção da mesma categoria NÃO deve zerar o scroll
-  const sameCatBtn = container.querySelector('aside button.bg-nc-primary') as any as HTMLButtonElement;
+  const sameCatBtn = container.querySelector(
+    '[data-categories-menu="true"] button[data-category-selected="true"]'
+  ) as any as HTMLButtonElement;
   assert(sameCatBtn, 'Botão da categoria atual de Filmes');
   await act(async () => {
     sameCatBtn.click();
@@ -2398,7 +2400,9 @@ async function runPlayerBackAndScrollNavigationTests() {
   );
 
   // 2.4 Selecionar OUTRA categoria zera o scroll
-  const otherCatBtn = container.querySelectorAll('aside button')[1] as any as HTMLButtonElement;
+  const otherCatBtn = container.querySelector(
+    '[data-categories-menu="true"] button[data-category-id="2"]'
+  ) as any as HTMLButtonElement;
   assert(otherCatBtn, 'Botão de outra categoria de Filmes');
   await act(async () => {
     otherCatBtn.click();
@@ -2463,9 +2467,9 @@ async function runPlayerBackAndScrollNavigationTests() {
   assert(seriesMain, 'Elemento main da lista de séries presente');
 
   // Selecionar categoria Comédia com cards de séries
-  const comediaCatBtn = Array.from(container.querySelectorAll('aside button')).find(
-    (b) => b.textContent?.toUpperCase().includes('COMÉDIA')
-  ) as any as HTMLButtonElement;
+  const comediaCatBtn = Array.from(
+    container.querySelectorAll('[data-categories-menu="true"] button[data-category-id]')
+  ).find((b) => b.textContent?.toUpperCase().includes('COMÉDIA')) as any as HTMLButtonElement;
   assert(comediaCatBtn, 'Botão da categoria Comédia');
   await act(async () => {
     comediaCatBtn.click();
@@ -2499,7 +2503,9 @@ async function runPlayerBackAndScrollNavigationTests() {
   );
 
   // 3.2 Seleção repetida da mesma categoria preserva
-  const sameSeriesCatBtn = container.querySelector('aside button.bg-nc-primary') as any as HTMLButtonElement;
+  const sameSeriesCatBtn = container.querySelector(
+    '[data-categories-menu="true"] button[data-category-selected="true"]'
+  ) as any as HTMLButtonElement;
   assert(sameSeriesCatBtn, 'Botão da categoria atual de Séries');
   await act(async () => {
     sameSeriesCatBtn.click();
@@ -2511,7 +2517,9 @@ async function runPlayerBackAndScrollNavigationTests() {
   );
 
   // 3.3 Transição Categoria A -> Categoria B zera scroll
-  const otherSeriesCatBtn = container.querySelectorAll('aside button')[1] as any as HTMLButtonElement;
+  const otherSeriesCatBtn = container.querySelector(
+    '[data-categories-menu="true"] button[data-category-id="20"]'
+  ) as any as HTMLButtonElement;
   assert(otherSeriesCatBtn, 'Botão de outra categoria de Séries');
   await act(async () => {
     otherSeriesCatBtn.click();
@@ -3185,7 +3193,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   );
 
   // =========================================================================
-  // CRITÉRIO 4: Filmes (MoviesView), encaminhamento único de foco para categoria, MovieDetails (sinopse longa + topo), VideoPlayer Escape único e Voltar da categoria para botão Filmes no cabeçalho mantendo seção aberta
+  // CRITÉRIO 4: Filmes (MoviesView), encaminhamento único de foco para o controle "Categorias" (sem abrir menu), MovieDetails (sinopse longa + topo), VideoPlayer Escape único e Voltar da grade filtrada -> vitrine -> botão Filmes no cabeçalho -> Início
   // =========================================================================
   const filmesNavBtn = container.querySelector('button[data-header-nav-id="movies"]') as HTMLButtonElement;
   assert(filmesNavBtn, 'Botão Filmes no cabeçalho superior (data-header-nav-id="movies") deve existir');
@@ -3200,24 +3208,40 @@ async function runDpadNavigationAndBackPolicyTests() {
   await waitForCondition(
     () =>
       Boolean(
-        container.textContent?.includes('Categorias de Filmes') &&
-          container.querySelector('[data-nav-zone="categories"] button[data-category-id]')
+        container.querySelector('[data-showcase-section="movies"]') &&
+          container.querySelector('[data-nav-zone="categories"] button[data-categories-trigger="true"]')
       ),
     1000,
-    'Montagem da seção Filmes (MoviesView) e botões de categoria'
+    'Montagem da seção Filmes (MoviesView) e controle Categorias'
   );
 
-  const initialMoviesCatBtn = container.querySelector(
-    '[data-nav-zone="categories"] button[data-category-selected="true"], [data-nav-zone="categories"] button[data-category-id]'
+  const initialMoviesCatTrigger = container.querySelector(
+    '[data-nav-zone="categories"] button[data-categories-trigger="true"]'
   ) as HTMLButtonElement;
   assertSameElement(
     document.activeElement,
-    initialMoviesCatBtn,
-    'Ativar Filmes no cabeçalho deve encaminhar o foco uma única vez para a categoria selecionada/primeira categoria habilitada'
+    initialMoviesCatTrigger,
+    'Ativar Filmes no cabeçalho deve encaminhar o foco uma única vez para o controle Categorias'
+  );
+  assert.strictEqual(
+    initialMoviesCatTrigger.getAttribute('aria-expanded'),
+    'false',
+    'Ativar Filmes no cabeçalho NÃO deve abrir o menu Categorias automaticamente'
   );
 
-  // Selecionar a categoria Ação por Enter e focar o card do filme
-  const catButtons = Array.from(container.querySelectorAll('[data-nav-zone="categories"] button[data-category-id]')) as HTMLButtonElement[];
+  // Abrir o menu Categorias e selecionar a categoria Ação por Enter
+  await act(async () => {
+    initialMoviesCatTrigger.click();
+  });
+  assert.strictEqual(
+    initialMoviesCatTrigger.getAttribute('aria-expanded'),
+    'true',
+    'Clicar no controle Categorias deve abrir o menu de categorias'
+  );
+
+  const catButtons = Array.from(
+    container.querySelectorAll('[data-categories-menu="true"] button[data-category-id]')
+  ) as HTMLButtonElement[];
   const acaoBtn = catButtons.find((b) => b.textContent?.toUpperCase().includes('AÇÃO'));
   assert(acaoBtn, 'Botão da categoria Ação em Filmes deve existir');
 
@@ -3229,16 +3253,16 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
 
   await waitForCondition(
-    () => container.querySelector('[data-nav-zone="content"] [data-nav-item="true"]') !== null,
+    () => container.querySelector('[data-nav-grid="true"] [data-nav-item="true"]') !== null,
     1000,
-    'Renderização dos cards de filmes da categoria Ação'
+    'Renderização dos cards de filmes da categoria Ação na grade virtualizada'
   );
 
   const moviesMain = container.querySelector('main[data-scroll-container="true"]') as HTMLElement;
   assert(moviesMain, 'MoviesView deve possuir <main data-scroll-container="true">');
   moviesMain.scrollTop = 340;
 
-  const movieCard = container.querySelector('[data-nav-zone="content"] [data-nav-item="true"]') as HTMLElement;
+  const movieCard = container.querySelector('[data-nav-grid="true"] [data-nav-item="true"]') as HTMLElement;
   assert(movieCard, 'Card de filme focável com data-nav-item="true" deve existir');
 
   await act(async () => {
@@ -3341,9 +3365,6 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Abertura do VideoPlayer modal a partir de MovieDetails'
   );
 
-  // Pressionar Escape 1 vez:
-  // 1) Fechamento lógico imediato: o comando Escape encerra activeVideo e devolve o foco imediatamente ao botão Assistir em MovieDetails, mantendo MovieDetails aberto.
-  // 2) Conclusão da saída animada (AnimatePresence exit={{ opacity: 0 }}): o elemento DOM do VideoPlayer é removido após os quadros de saída.
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -3412,29 +3433,26 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Fechar MovieDetails deve preservar a posição de rolagem (scrollTop) da grade de Filmes'
   );
 
-  // Passo 2 (Filmes): Com foco num card da grade, Escape foca a categoria selecionada sem sair da seção nem resetar scrollTop
+  // Passo 2 (Filmes): Com foco na grade filtrada (categoria Ação), Escape sai da listagem filtrada, volta à vitrine de Filmes e restaura o foco ao controle "Categorias"
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
+    await new Promise((r) => setTimeout(r, 20));
   });
 
   assert(
-    container.textContent?.includes('Categorias de Filmes'),
-    'Voltar a partir da grade de Filmes deve permanecer na seção Filmes'
+    container.querySelector('[data-showcase-section="movies"]') !== null &&
+      container.querySelector('[data-nav-grid="true"]') === null,
+    'Voltar a partir da listagem filtrada de Filmes deve retornar à vitrine de Filmes'
   );
   assertSameElement(
     document.activeElement,
-    acaoBtn,
-    'Voltar a partir da grade de Filmes deve mover o foco para o botão da categoria atualmente selecionada (Ação)'
-  );
-  assert.strictEqual(
-    moviesMain.scrollTop,
-    340,
-    'Voltar da grade para a categoria não deve resetar o scrollTop da grade de Filmes'
+    initialMoviesCatTrigger,
+    'Sair da listagem filtrada deve restaurar o foco ao controle "Categorias"'
   );
 
-  // Passo 3 (Critério 4 - Filmes): Com foco na lista de categorias de Filmes, o próximo Escape foca o botão "Filmes" no cabeçalho superior E mantém a seção de Filmes aberta, preservando categoria e scroll!
+  // Passo 3 (Critério 4 - Filmes): A partir da vitrine de Filmes, o próximo Escape foca o botão "Filmes" no cabeçalho superior E mantém a seção de Filmes aberta!
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -3445,21 +3463,11 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     filmesHeaderBtn,
-    'Critério 4: Voltar a partir das categorias de Filmes deve focar o botão "Filmes" no cabeçalho superior'
+    'Critério 4: Voltar a partir da vitrine de Filmes deve focar o botão "Filmes" no cabeçalho superior'
   );
   assert(
-    container.textContent?.includes('Categorias de Filmes'),
+    container.querySelector('[data-showcase-section="movies"]') !== null,
     'Critério 4: Ao focar o botão "Filmes" no cabeçalho superior, a seção de Filmes DEVE continuar aberta e montada'
-  );
-  assert.strictEqual(
-    acaoBtn.getAttribute('data-category-selected'),
-    'true',
-    'Critério 4: A categoria selecionada (Ação) em Filmes deve permanecer preservada'
-  );
-  assert.strictEqual(
-    moviesMain.scrollTop,
-    340,
-    'Critério 4: O scrollTop da lista de Filmes deve permanecer preservado (340)'
   );
 
   // Passo 4 (Ação separada seguinte): Com o foco JÁ no botão "Filmes" do cabeçalho, um novo Escape retorna ao Início
@@ -3469,13 +3477,13 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
   assert(
-    !container.textContent?.includes('Categorias de Filmes') &&
+    container.querySelector('[data-showcase-section="inicio"]') !== null &&
       container.querySelector('[data-scroll-top-anchor="true"]') !== null,
     'Ação seguinte de Voltar (quando o foco já estava no botão Filmes do cabeçalho) deve retornar ao Início'
   );
 
   // =========================================================================
-  // CRITÉRIO 5: Séries (SeriesView), encaminhamento único de foco para categoria, SeriesDetails (sinopse longa) e Voltar da categoria para botão Séries no cabeçalho mantendo seção aberta
+  // CRITÉRIO 5: Séries (SeriesView), encaminhamento único de foco para o controle "Categorias" (sem abrir menu), SeriesDetails (sinopse longa) e Voltar da grade filtrada -> vitrine -> botão Séries no cabeçalho -> Início
   // =========================================================================
   const seriesNavBtn = container.querySelector('button[data-header-nav-id="series"]') as HTMLButtonElement;
   assert(seriesNavBtn, 'Botão Séries no cabeçalho superior (data-header-nav-id="series") deve existir');
@@ -3490,23 +3498,34 @@ async function runDpadNavigationAndBackPolicyTests() {
   await waitForCondition(
     () =>
       Boolean(
-        container.textContent?.includes('Categorias de Séries') &&
-          container.querySelector('[data-nav-zone="categories"] button[data-category-id]')
+        container.querySelector('[data-showcase-section="series"]') &&
+          container.querySelector('[data-nav-zone="categories"] button[data-categories-trigger="true"]')
       ),
     1000,
-    'Montagem da seção Séries (SeriesView) e botões de categoria'
+    'Montagem da seção Séries (SeriesView) e controle Categorias'
   );
 
-  const initialSeriesCatBtn = container.querySelector(
-    '[data-nav-zone="categories"] button[data-category-selected="true"], [data-nav-zone="categories"] button[data-category-id]'
+  const initialSeriesCatTrigger = container.querySelector(
+    '[data-nav-zone="categories"] button[data-categories-trigger="true"]'
   ) as HTMLButtonElement;
   assertSameElement(
     document.activeElement,
-    initialSeriesCatBtn,
-    'Ativar Séries no cabeçalho deve encaminhar o foco uma única vez para a categoria selecionada/primeira categoria habilitada'
+    initialSeriesCatTrigger,
+    'Ativar Séries no cabeçalho deve encaminhar o foco uma única vez para o controle Categorias'
+  );
+  assert.strictEqual(
+    initialSeriesCatTrigger.getAttribute('aria-expanded'),
+    'false',
+    'Ativar Séries no cabeçalho NÃO deve abrir o menu Categorias automaticamente'
   );
 
-  const seriesCatBtns = Array.from(container.querySelectorAll('[data-nav-zone="categories"] button[data-category-id]')) as HTMLButtonElement[];
+  await act(async () => {
+    initialSeriesCatTrigger.click();
+  });
+
+  const seriesCatBtns = Array.from(
+    container.querySelectorAll('[data-categories-menu="true"] button[data-category-id]')
+  ) as HTMLButtonElement[];
   const dramaBtn = seriesCatBtns.find((b) => b.textContent?.toUpperCase().includes('DRAMA'));
   assert(dramaBtn, 'Botão da categoria Drama em Séries deve existir');
 
@@ -3518,16 +3537,16 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
 
   await waitForCondition(
-    () => container.querySelector('[data-nav-zone="content"] [data-nav-item="true"]') !== null,
+    () => container.querySelector('[data-nav-grid="true"] [data-nav-item="true"]') !== null,
     1000,
-    'Renderização dos cards de séries da categoria Drama'
+    'Renderização dos cards de séries da categoria Drama na grade virtualizada'
   );
 
   const seriesMain = container.querySelector('main[data-scroll-container="true"]') as HTMLElement;
   assert(seriesMain, 'SeriesView deve possuir <main data-scroll-container="true">');
   seriesMain.scrollTop = 290;
 
-  const seriesCard = container.querySelector('[data-nav-zone="content"] [data-nav-item="true"]') as HTMLElement;
+  const seriesCard = container.querySelector('[data-nav-grid="true"] [data-nav-item="true"]') as HTMLElement;
   assert(seriesCard, 'Card de série focável deve existir');
 
   await act(async () => {
@@ -3717,19 +3736,25 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Após conclusão da saída de SeriesDetails, o foco deve permanecer no card da série'
   );
 
-  // Passo 2 (Séries): Escape a partir do card volta para a categoria selecionada (Drama)
+  // Passo 2 (Séries): Escape a partir da listagem filtrada volta para a vitrine de Séries e restaura o foco ao controle "Categorias"
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
+    await new Promise((r) => setTimeout(r, 20));
   });
+  assert(
+    container.querySelector('[data-showcase-section="series"]') !== null &&
+      container.querySelector('[data-nav-grid="true"]') === null,
+    'Voltar a partir da listagem filtrada de Séries deve retornar à vitrine de Séries'
+  );
   assertSameElement(
     document.activeElement,
-    dramaBtn,
-    'Voltar a partir da grade de Séries deve focar a categoria selecionada (Drama)'
+    initialSeriesCatTrigger,
+    'Voltar a partir da grade filtrada de Séries deve restaurar o foco ao controle Categorias'
   );
 
-  // Passo 3 (Critério 5 - Séries): Escape a partir da categoria foca o botão "Séries" no cabeçalho superior E mantém a seção de Séries aberta, preservando categoria e scroll!
+  // Passo 3 (Critério 5 - Séries): Escape a partir da vitrine foca o botão "Séries" no cabeçalho superior E mantém a seção de Séries aberta!
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -3739,21 +3764,11 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     seriesHeaderBtn,
-    'Critério 5: Voltar a partir das categorias de Séries deve focar o botão "Séries" no cabeçalho superior'
+    'Critério 5: Voltar a partir da vitrine de Séries deve focar o botão "Séries" no cabeçalho superior'
   );
   assert(
-    container.textContent?.includes('Categorias de Séries'),
+    container.querySelector('[data-showcase-section="series"]') !== null,
     'Critério 5: Ao focar o botão "Séries" no cabeçalho superior, a seção de Séries DEVE continuar aberta e montada'
-  );
-  assert.strictEqual(
-    dramaBtn.getAttribute('data-category-selected'),
-    'true',
-    'Critério 5: A categoria selecionada (Drama) em Séries deve permanecer preservada'
-  );
-  assert.strictEqual(
-    seriesMain.scrollTop,
-    290,
-    'Critério 5: O scrollTop da lista de Séries deve permanecer preservado (290)'
   );
 
   // Passo 4 (Ação separada seguinte): Com o foco JÁ no botão "Séries" do cabeçalho, um novo Escape retorna ao Início
@@ -3763,7 +3778,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
   assert(
-    !container.textContent?.includes('Categorias de Séries') &&
+    container.querySelector('[data-showcase-section="inicio"]') !== null &&
       container.querySelector('[data-scroll-top-anchor="true"]') !== null,
     'Ação seguinte de Voltar (quando o foco já estava no botão Séries do cabeçalho) deve retornar ao Início'
   );
@@ -21101,7 +21116,7 @@ if (args[0] === 'add' && args[1] === 'android') {
               windowInstance.innerWidth >= 768;
             return Array.from<HTMLButtonElement>(
               root.querySelectorAll<HTMLButtonElement>(
-                '[data-nav-zone="categories"] button[data-category-id], [data-nav-zone="categories"] button[data-live-category-id]'
+                '[data-nav-zone="categories"] button[data-categories-trigger="true"], [data-nav-zone="categories"] button[data-category-id], [data-nav-zone="categories"] button[data-live-category-id]'
               )
             ).filter((btn: HTMLButtonElement) => {
               if (!isStage1Focusable(btn) || btn.disabled) return false;
@@ -21361,7 +21376,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.24] Abrir, navegar e fechar o menu da conta não deve disparar consultas ao provedor'
           );
 
-          // Fluxo 3 (Filmes): Encaminhamento de foco para categoria pronta + Busca sob demanda (lupa -> digitar -> Escape) + Menu da Conta (abrir -> setas -> Escape) mantendo Filmes ativo!
+          // Fluxo 3 (Filmes): Encaminhamento de foco para o controle Categorias (sem abrir menu) + Busca sob demanda (lupa -> digitar -> Escape) + Menu da Conta (abrir -> setas -> Escape) mantendo Filmes ativo!
           const moviesHeaderBtn = stage1Container.querySelector<HTMLButtonElement>(
             'button[data-header-nav-id="movies"]'
           )!;
@@ -21378,7 +21393,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           const readyMoviesCatBtns = getVisibleEnabledCategories(stage1Container);
           assert(
             readyMoviesCatBtns.length > 0,
-            '[12.24] Categorias visíveis e habilitadas de Filmes devem estar montadas'
+            '[12.24] Controle Categorias visível e habilitado de Filmes deve estar montado'
           );
           const expectedMoviesCatBtn =
             readyMoviesCatBtns.find((b) => b.getAttribute('data-category-selected') === 'true') ||
@@ -21386,18 +21401,13 @@ if (args[0] === 'add' && args[1] === 'android') {
           assertSameElement(
             document.activeElement,
             expectedMoviesCatBtn,
-            '[12.24] Ao ativar Filmes com categorias prontas, o foco deve ser encaminhado uma única vez para a categoria selecionada visível'
+            '[12.24] Ao ativar Filmes com categorias prontas, o foco deve ser encaminhado uma única vez para o controle Categorias'
           );
-
-          // Selecionar a categoria Lançamentos (vod_cat_1) para exibir os filmes da seção antes de testar a busca sob demanda
-          const vodCat1Btn = readyMoviesCatBtns.find(
-            (b) => b.getAttribute('data-category-id') === 'vod_cat_1'
-          )!;
-          assert(vodCat1Btn !== undefined, '[12.24] Categoria vod_cat_1 deve estar visível em Filmes');
-          await act(async () => {
-            vodCat1Btn.focus();
-            vodCat1Btn.click();
-          });
+          assert.strictEqual(
+            expectedMoviesCatBtn.getAttribute('aria-expanded'),
+            'false',
+            '[12.24] O controle Categorias NÃO deve abrir automaticamente ao receber foco da navegação'
+          );
 
           // Em Filmes: abrir a lupa, digitar um termo e pressionar Escape.
           // O 1º Voltar deve fechar apenas a busca, limpar o termo, restaurar o conteúdo de Filmes e devolver o foco à lupa, mantendo Filmes ativo!
@@ -21743,6 +21753,620 @@ if (args[0] === 'add' && args[1] === 'android') {
               `   • 961×541 (TV 90%, estimativa de referência): ${tv961.rowsCount} linha (${tv961.headerHeightPx}px), centro=${tv961.navStripRect.centerX}px, overflow=0\n` +
               `   • 390×844 (Retrato, estimativa de referência): ${portrait390Inicio.rowsCount} linhas no mesmo <header>, scrollWidth faixa=${portrait390Inicio.navStripRect.scrollWidth}px (clientWidth=${portrait390Inicio.navStripRect.clientWidth}px), Favoritos visível após scrollLeft=${portrait390Favorites.navStripRect.scrollLeft}px, overflow página=0\n` +
               `   • Fluxos validados: único <header>, 0 consultas extras ao abrir/fechar menus, lupa -> digitação real -> Voltar (no Início e em Filmes), conta -> Conta/Configurações/Sair por setas -> Voltar (no Início e em Filmes), encaminhamento único de foco (imediato, tardio e cancelado ao mover foco ou trocar seção)`
+          );
+
+          // =====================================================================
+          // 12.25. Validação da Etapa 2 — Estrutura de Catálogo Compartilhada por Início, Filmes e Séries
+          // =====================================================================
+          console.log(
+            '\n--- 12.25. Validação da Etapa 2: Vitrine Compartilhada (Início, Filmes, Séries), Categorias, Ver Todos, Busca e Continuar ---'
+          );
+
+          const { recordPlaybackPosition, clearItemProgress } = await import(
+            '../src/utils/playbackHistory'
+          );
+          const { setStoredFavorites, getFavoritesKey } = await import(
+            '../src/utils/accountUtils'
+          );
+          const { notifyAccountSubscribers } = await import('../src/hooks/useFavorites');
+
+          const stage2Creds = {
+            serverUrl: 'http://stage2.local:8080',
+            username: 'stage2_user',
+            password: 'stage2_pass',
+            playlistName: 'Lista Stage2',
+            allowed_output_formats: ['m3u8', 'ts'],
+          };
+          windowInstance.localStorage.setItem(
+            'northcode_tv_credentials',
+            JSON.stringify(stage2Creds)
+          );
+
+          // Configurar favoritos e histórico isolados para stage2Creds:
+          // - Filme 2001 ("Filme Horizonte 2026") com progresso salvo de 145s (> 30s) e favorito
+          // - Série 3001 ("Série Fronteira 2026") com progresso salvo no Episódio 2 ('ep_3001_2', 210s > 30s) e favorita
+          recordPlaybackPosition(stage2Creds, {
+            id: '2001',
+            type: 'movie',
+            positionSec: 145,
+          });
+          recordPlaybackPosition(stage2Creds, {
+            id: 'ep_3001_2',
+            type: 'episode',
+            parentSeriesId: '3001',
+            positionSec: 210,
+          });
+
+          const stage2FavKey = getFavoritesKey(stage2Creds.serverUrl, stage2Creds.username);
+          setStoredFavorites(stage2FavKey, [
+            {
+              id: '2001',
+              type: 'movie',
+              name: 'Filme Horizonte 2026',
+              cover: 'http://stage2.local:8080/vod_2001.jpg',
+              extraData: { rating: '9.4' },
+            },
+            {
+              id: '3001',
+              type: 'series',
+              name: 'Série Fronteira 2026',
+              cover: 'http://stage2.local:8080/series_3001.jpg',
+              extraData: { rating: '9.6' },
+            },
+          ]);
+          notifyAccountSubscribers(stage2FavKey);
+
+          let stage2ProviderQueries = 0;
+          (XtreamService as any).getLiveCategories = async () => {
+            stage2ProviderQueries++;
+            return [{ category_id: 'live_s2_1', category_name: 'Canais Abertos' }];
+          };
+          (XtreamService as any).getLiveStreams = async () => {
+            stage2ProviderQueries++;
+            return [
+              {
+                stream_id: 1001,
+                name: 'Canal Norte Ao Vivo HD',
+                category_id: 'live_s2_1',
+                stream_icon: 'http://stage2.local:8080/live_1001.png',
+              },
+            ];
+          };
+          (XtreamService as any).getVodCategories = async () => {
+            stage2ProviderQueries++;
+            return [
+              { category_id: 'vod_s2_main', category_name: 'Ação e Aventura' },
+              { category_id: 'vod_s2_niche', category_name: 'Documentários Raros' },
+            ];
+          };
+          // 5 filmes na categoria principal (>= 4 -> gera fileira na vitrine) + 1 filme exclusivo na categoria "Documentários Raros" (< 4 -> sem fileira na vitrine inicial, mas acessível via Categorias, Ver todos e Busca!)
+          (XtreamService as any).getVodStreams = async () => {
+            stage2ProviderQueries++;
+            return [
+              {
+                stream_id: 2001,
+                name: 'Filme Horizonte 2026',
+                category_id: 'vod_s2_main',
+                stream_icon: 'http://stage2.local:8080/vod_2001.jpg',
+                backdrop_path: ['http://stage2.local:8080/vod_2001_backdrop.jpg'],
+                rating: '9.4',
+                added: '1710000010',
+                container_extension: 'mp4',
+              },
+              {
+                stream_id: 2002,
+                name: 'Filme Tempestade Solar (2025)',
+                category_id: 'vod_s2_main',
+                stream_icon: 'http://stage2.local:8080/vod_2002.jpg',
+                rating: '8.7',
+                added: '1710000009',
+              },
+              {
+                stream_id: 2003,
+                name: 'Filme Código Urbano (2024)',
+                category_id: 'vod_s2_main',
+                stream_icon: 'http://stage2.local:8080/vod_2003.jpg',
+                rating: '8.3',
+                added: '1710000008',
+              },
+              {
+                stream_id: 2004,
+                name: 'Filme Vento Sul (2024)',
+                category_id: 'vod_s2_main',
+                stream_icon: 'http://stage2.local:8080/vod_2004.jpg',
+                rating: '8.1',
+                added: '1710000007',
+              },
+              {
+                stream_id: 2099,
+                name: 'Documentário Secreto Fora da Vitrine (2023)',
+                category_id: 'vod_s2_niche',
+                stream_icon: 'http://stage2.local:8080/vod_2099.jpg',
+                rating: '6.0',
+                added: '1600000000',
+              },
+            ];
+          };
+          (XtreamService as any).getSeriesCategories = async () => {
+            stage2ProviderQueries++;
+            return [
+              { category_id: 'ser_s2_main', category_name: 'Séries de Drama' },
+              { category_id: 'ser_s2_niche', category_name: 'Minisséries Históricas' },
+            ];
+          };
+          (XtreamService as any).getSeries = async () => {
+            stage2ProviderQueries++;
+            return [
+              {
+                series_id: 3001,
+                name: 'Série Fronteira 2026',
+                category_id: 'ser_s2_main',
+                cover: 'http://stage2.local:8080/series_3001.jpg',
+                rating: '9.6',
+                last_modified: '1710000020',
+              },
+              {
+                series_id: 3002,
+                name: 'Série Neblina do Norte (2025)',
+                category_id: 'ser_s2_main',
+                cover: 'http://stage2.local:8080/series_3002.jpg',
+                rating: '8.9',
+                last_modified: '1710000019',
+              },
+              {
+                series_id: 3003,
+                name: 'Série Crônicas da Serra (2024)',
+                category_id: 'ser_s2_main',
+                cover: 'http://stage2.local:8080/series_3003.jpg',
+                rating: '8.5',
+                last_modified: '1710000018',
+              },
+              {
+                series_id: 3004,
+                name: 'Série Maré Alta (2024)',
+                category_id: 'ser_s2_main',
+                cover: 'http://stage2.local:8080/series_3004.jpg',
+                rating: '8.2',
+                last_modified: '1710000017',
+              },
+              {
+                series_id: 3099,
+                name: 'Minissérie Arquivo Oculto (2022)',
+                category_id: 'ser_s2_niche',
+                cover: 'http://stage2.local:8080/series_3099.jpg',
+                rating: '6.1',
+                last_modified: '1600000000',
+              },
+            ];
+          };
+          (XtreamService as any).getVodInfo = async (_creds: any, vodId: any) => ({
+            info: {
+              plot: `Sinopse completa do filme ${vodId}`,
+              genre: 'Ação',
+              releasedate: '2026',
+              backdrop_path:
+                String(vodId) === '2001'
+                  ? ['http://stage2.local:8080/vod_2001_backdrop.jpg']
+                  : [],
+            },
+            movie_data: {
+              stream_id: Number(vodId),
+              container_extension: 'mp4',
+            },
+          });
+          (XtreamService as any).getSeriesInfo = async (_creds: any, serId: any) => ({
+            info: {
+              plot: `Sinopse completa da série ${serId}`,
+              genre: 'Drama',
+              releasedate: '2026',
+              backdrop_path: [],
+            },
+            episodes: {
+              '1': [
+                {
+                  id: `ep_${serId}_1`,
+                  episode_num: 1,
+                  title: 'A Chegada',
+                  container_extension: 'mp4',
+                },
+                {
+                  id: `ep_${serId}_2`,
+                  episode_num: 2,
+                  title: 'O Segredo',
+                  container_extension: 'mp4',
+                },
+              ],
+            },
+          });
+
+          await act(async () => {
+            stage1Root.render(React.createElement('div', null));
+          });
+          await act(async () => {
+            stage1Root.render(
+              React.createElement(
+                MemoryRouter,
+                { initialEntries: ['/home'] },
+                React.createElement(
+                  Stage1NavProvider,
+                  null,
+                  React.createElement(RealHomeApp)
+                )
+              )
+            );
+            await new Promise((r) => setTimeout(r, 80));
+          });
+
+          const initialQueriesS2 = stage2ProviderQueries;
+          assert.strictEqual(
+            initialQueriesS2,
+            6,
+            '[12.25] A carga inicial deve executar exatamente as 6 consultas iniciais do catálogo'
+          );
+
+          // 1. Verificar Início: vitrine mista com HeroBanner arredondado, Continuar Assistindo, Canais Ao Vivo, Filmes em Destaque, Séries em Destaque e fileiras dinâmicas
+          const inicioSectionEl = stage1Container.querySelector('[data-showcase-section="inicio"]');
+          assert(inicioSectionEl !== null, '[12.25] Seção Início deve renderizar na vitrine compartilhada');
+          const inicioHeroStage = stage1Container.querySelector('[data-hero-stage="true"]');
+          assert(inicioHeroStage !== null, '[12.25] HeroBanner com palco arredondado deve existir no Início');
+          assert(
+            stage1Container.querySelector('button[data-hero-action="play"]') !== null &&
+              stage1Container.querySelector('button[data-hero-action="info"]')?.textContent?.includes('Mais informações'),
+            '[12.25] HeroBanner deve exibir botão principal (Assistir/Continuar) e "Mais informações"'
+          );
+          assert(
+            stage1Container.textContent?.includes('Continuar Assistindo') &&
+              stage1Container.textContent?.includes('Canais Ao Vivo') &&
+              stage1Container.textContent?.includes('Filmes em Destaque') &&
+              stage1Container.textContent?.includes('Séries em Destaque'),
+            '[12.25] Início deve exibir Continuar Assistindo, Canais Ao Vivo, Filmes em Destaque e Séries em Destaque'
+          );
+
+          // 2. Navegar para Filmes: isolamento de domínio na vitrine + HeroBanner com imagem horizontal e botão "Continuar" retomando o filme!
+          const s2MoviesBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="movies"]'
+          )!;
+          await act(async () => {
+            s2MoviesBtn.focus();
+            s2MoviesBtn.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          assert(
+            stage1Container.querySelector('[data-showcase-section="movies"]') !== null,
+            '[12.25] Seção Filmes deve renderizar usando a vitrine compartilhada'
+          );
+          const moviesCatTrigger = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-categories-trigger="true"]'
+          )!;
+          assertSameElement(
+            document.activeElement,
+            moviesCatTrigger,
+            '[12.25] Ativar Filmes deve encaminhar o foco uma vez ao controle Categorias'
+          );
+          assert.strictEqual(
+            moviesCatTrigger.getAttribute('aria-expanded'),
+            'false',
+            '[12.25] Controle Categorias não deve abrir automaticamente ao entrar em Filmes'
+          );
+
+          // Verificar que Filmes exibe apenas conteúdo de filmes (Continuar Assistindo, Filmes Favoritos, Filmes em Destaque, Ação e Aventura) e NÃO exibe séries nem canais ao vivo
+          const visibleMoviesText = Array.from(
+            stage1Container.querySelectorAll('main h1, main h2, main h3')
+          )
+            .map((el) => el.textContent || '')
+            .join(' | ');
+          assert(
+            visibleMoviesText.includes('Continuar Assistindo') &&
+              visibleMoviesText.includes('Filmes Favoritos') &&
+              visibleMoviesText.includes('Filmes em Destaque') &&
+              visibleMoviesText.includes('Ação e Aventura'),
+            `[12.25] Vitrine de Filmes deve exibir Continuar Assistindo, Filmes Favoritos, Filmes em Destaque e Ação e Aventura (obteve: ${visibleMoviesText})`
+          );
+          assert(
+            !visibleMoviesText.includes('Séries em Destaque') &&
+              !visibleMoviesText.includes('Canais Ao Vivo') &&
+              !visibleMoviesText.includes('Série Fronteira 2026'),
+            '[12.25] Vitrine de Filmes NÃO deve misturar séries ou canais ao vivo'
+          );
+
+          // Verificar HeroBanner em Filmes: Filme 2001 tem backdrop_path horizontal e progresso salvo (145s > 30s) -> botão deve exibir "Continuar"
+          const moviesHeroStage = stage1Container.querySelector('[data-hero-stage="true"]')!;
+          assert.strictEqual(
+            moviesHeroStage.getAttribute('data-hero-image-mode'),
+            'horizontal-backdrop',
+            '[12.25] Quando backdrop_path horizontal está disponível, HeroBanner deve usar horizontal-backdrop'
+          );
+          const moviesHeroPlayBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-hero-action="play"]'
+          )!;
+          assert.strictEqual(
+            moviesHeroPlayBtn.getAttribute('data-hero-resume'),
+            'true',
+            '[12.25] Quando o filme em destaque possui progresso salvo (> 30s), o botão deve indicar retomada'
+          );
+          assert(
+            moviesHeroPlayBtn.textContent?.includes('Continuar'),
+            '[12.25] Botão principal do HeroBanner deve exibir "Continuar" para filme com progresso salvo'
+          );
+
+          // Clicar em "Continuar" no HeroBanner de Filmes -> abre VideoPlayer para o filme 2001 e fechar com Escape
+          await act(async () => {
+            moviesHeroPlayBtn.focus();
+            moviesHeroPlayBtn.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+          assert(
+            document.querySelector('[data-player-container="true"]') !== null,
+            '[12.25] Clicar em Continuar no HeroBanner de Filmes deve abrir o VideoPlayer'
+          );
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 60));
+          });
+
+          // 3. Testar "Categorias" e "Ver todos" em Filmes: acessar categoria sem fileira na vitrine inicial ("Documentários Raros") e "Ver todos"
+          await act(async () => {
+            moviesCatTrigger.focus();
+            moviesCatTrigger.click();
+          });
+          const moviesCatMenu = stage1Container.querySelector<HTMLElement>(
+            '[data-categories-menu="true"]'
+          )!;
+          assert.strictEqual(
+            moviesCatMenu.hidden,
+            false,
+            '[12.25] Clicar em Categorias deve abrir o menu de categorias'
+          );
+
+          // Fechar o menu Categorias com Escape deve manter Filmes aberto e devolver foco ao botão Categorias
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assert.strictEqual(
+            moviesCatMenu.hidden,
+            true,
+            '[12.25] Escape com o menu Categorias aberto deve fechar apenas o menu'
+          );
+          assertSameElement(
+            document.activeElement,
+            moviesCatTrigger,
+            '[12.25] Fechar o menu Categorias com Escape deve devolver o foco ao botão Categorias'
+          );
+
+          // Reabrir Categorias e escolher "Documentários Raros" (categoria que não tinha fileira na vitrine inicial)
+          await act(async () => {
+            moviesCatTrigger.click();
+          });
+          const nicheCatBtn = moviesCatMenu.querySelector<HTMLButtonElement>(
+            'button[data-category-id="vod_s2_niche"]'
+          )!;
+          assert(
+            nicheCatBtn !== null,
+            '[12.25] Menu Categorias deve listar todas as categorias do domínio, inclusive as sem fileira na vitrine inicial'
+          );
+          await act(async () => {
+            nicheCatBtn.click();
+            await new Promise((r) => setTimeout(r, 30));
+          });
+
+          assert(
+            stage1Container.querySelector('[data-nav-grid="true"][data-virtual-container="true"]') !== null,
+            '[12.25] Escolher uma categoria deve abrir a grade virtualizada'
+          );
+          assert(
+            stage1Container.textContent?.includes('Documentário Secreto Fora da Vitrine'),
+            '[12.25] A grade filtrada deve exibir o filme da categoria que não tinha fileira na vitrine inicial'
+          );
+
+          // 4. Com a categoria "Ação e Aventura" selecionada, usar a busca sob demanda para encontrar um filme FORA da categoria selecionada ("Documentário Secreto Fora da Vitrine") e depois fechar a busca com Escape restaurando o filtro anterior!
+          await act(async () => {
+            moviesCatTrigger.click();
+          });
+          await act(async () => {
+            moviesCatMenu
+              .querySelector<HTMLButtonElement>('button[data-category-id="vod_s2_main"]')!
+              .click();
+            await new Promise((r) => setTimeout(r, 30));
+          });
+          assert(
+            !stage1Container.textContent?.includes('Documentário Secreto Fora da Vitrine'),
+            '[12.25] Na categoria Ação e Aventura, o documentário de outra categoria não está listado'
+          );
+
+          const s2LupaBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
+          await act(async () => {
+            s2LupaBtn.focus();
+            s2LupaBtn.click();
+          });
+          const s2SearchInput = stage1Container.querySelector<HTMLInputElement>(
+            'input[data-header-search-input="true"]'
+          )!;
+          await act(async () => {
+            typeInRealInput(s2SearchInput, 'Secreto Fora da Vitrine');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+
+          assert(
+            stage1Container.textContent?.includes('Documentário Secreto Fora da Vitrine'),
+            '[12.25] Em Filmes, a busca sob demanda deve pesquisar em TODO o catálogo do domínio, mesmo fora da categoria selecionada'
+          );
+
+          // Fechar a busca com Escape -> deve restaurar o filtro anterior ("Ação e Aventura") e devolver o foco à lupa!
+          await act(async () => {
+            s2SearchInput.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+          assertSameElement(
+            document.activeElement,
+            s2LupaBtn,
+            '[12.25] Fechar a busca deve devolver o foco à lupa'
+          );
+          assert(
+            stage1Container.querySelector('[data-nav-grid="true"]') !== null &&
+              stage1Container.textContent?.includes('Filme Tempestade Solar'),
+            '[12.25] Fechar a busca deve restaurar o filtro de categoria anterior'
+          );
+
+          // Testar opção "Ver todos" no menu Categorias
+          await act(async () => {
+            moviesCatTrigger.click();
+          });
+          const verTodosBtn = moviesCatMenu.querySelector<HTMLButtonElement>(
+            'button[data-category-id="all"]'
+          )!;
+          assert(verTodosBtn !== null, '[12.25] Menu Categorias deve incluir a opção "Ver todos"');
+          await act(async () => {
+            verTodosBtn.click();
+            await new Promise((r) => setTimeout(r, 30));
+          });
+          const allMoviesCards = stage1Container.querySelectorAll(
+            '[data-nav-grid="true"] [data-nav-item="true"]'
+          );
+          assert.strictEqual(
+            allMoviesCards.length,
+            5,
+            '[12.25] "Ver todos" em Filmes deve exibir todos os 5 filmes do catálogo na grade virtualizada'
+          );
+
+          // Sair da listagem filtrada ("Ver todos") com Escape -> volta à vitrine de Filmes e foca o controle Categorias
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 20));
+          });
+          assert(
+            stage1Container.querySelector('[data-nav-grid="true"]') === null &&
+              stage1Container.querySelector('[data-hero-stage="true"]') !== null,
+            '[12.25] Escape na grade filtrada deve voltar à vitrine de Filmes'
+          );
+          assertSameElement(
+            document.activeElement,
+            moviesCatTrigger,
+            '[12.25] Sair da listagem filtrada deve restaurar o foco ao controle Categorias'
+          );
+
+          // 5. Navegar para Séries: verificar composição com capa vertical sem esticar (vertical-cover), fileiras exclusivas de séries e botão "Continuar" retomando o episódio salvo ('ep_3001_2' em 210s)!
+          const s2SeriesBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="series"]'
+          )!;
+          await act(async () => {
+            s2SeriesBtn.focus();
+            s2SeriesBtn.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          assert(
+            stage1Container.querySelector('[data-showcase-section="series"]') !== null,
+            '[12.25] Seção Séries deve renderizar usando a vitrine compartilhada'
+          );
+          const seriesHeroStage = stage1Container.querySelector('[data-hero-stage="true"]')!;
+          assert.strictEqual(
+            seriesHeroStage.getAttribute('data-hero-image-mode'),
+            'vertical-cover',
+            '[12.25] Quando a série possui apenas capa vertical (sem backdrop_path), HeroBanner deve usar vertical-cover sem esticar a capa'
+          );
+          const seriesHeroImg = seriesHeroStage.querySelector('img')!;
+          assert(
+            seriesHeroImg.className.includes('object-contain'),
+            '[12.25] No modo vertical-cover, a capa vertical no HeroBanner deve usar object-contain para não esticar'
+          );
+
+          const visibleSeriesText = Array.from(
+            stage1Container.querySelectorAll('main h1, main h2, main h3')
+          )
+            .map((el) => el.textContent || '')
+            .join(' | ');
+          assert(
+            visibleSeriesText.includes('Continuar Assistindo') &&
+              visibleSeriesText.includes('Séries Favoritas') &&
+              visibleSeriesText.includes('Séries em Destaque') &&
+              visibleSeriesText.includes('Séries de Drama'),
+            `[12.25] Vitrine de Séries deve exibir Continuar Assistindo, Séries Favoritas, Séries em Destaque e Séries de Drama (obteve: ${visibleSeriesText})`
+          );
+          assert(
+            !visibleSeriesText.includes('Filmes em Destaque') &&
+              !visibleSeriesText.includes('Filme Horizonte 2026'),
+            '[12.25] Vitrine de Séries NÃO deve misturar filmes ou canais ao vivo'
+          );
+
+          const seriesHeroPlayBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-hero-action="play"]'
+          )!;
+          assert.strictEqual(
+            seriesHeroPlayBtn.getAttribute('data-hero-resume'),
+            'true',
+            '[12.25] Série 3001 com episódio salvo (210s > 30s) deve habilitar retomada no HeroBanner'
+          );
+          assert(
+            seriesHeroPlayBtn.textContent?.includes('Continuar'),
+            '[12.25] HeroBanner em Séries deve exibir "Continuar" quando houver episódio com progresso salvo'
+          );
+
+          // Clicar em "Continuar" no HeroBanner de Séries -> deve abrir VideoPlayer retomando o episódio ep_3001_2!
+          await act(async () => {
+            seriesHeroPlayBtn.focus();
+            seriesHeroPlayBtn.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+          const activeEpisodePlayer = document.querySelector('[data-player-container="true"]');
+          assert(
+            activeEpisodePlayer !== null &&
+              activeEpisodePlayer.textContent?.includes('O Segredo'),
+            '[12.25] Clicar em "Continuar" no HeroBanner de Séries deve retomar o episódio exato com progresso salvo (S01E02 - O Segredo)'
+          );
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 60));
+          });
+
+          assert.strictEqual(
+            stage2ProviderQueries,
+            initialQueriesS2,
+            '[12.25] Alternar entre Início, Filmes e Séries, abrir Categorias, filtrar "Ver todos" e usar a busca não deve disparar consultas extras de catálogo completo'
+          );
+
+          clearItemProgress(stage2Creds, 'movie', '2001');
+          clearItemProgress(stage2Creds, 'episode', 'ep_3001_2');
+          setStoredFavorites(stage2FavKey, []);
+
+          console.log(
+            '✅ [12.25] Etapa 2 validada com sucesso: vitrine compartilhada, isolamento de domínio, HeroBanner (horizontal vs vertical-cover sem esticar), Categorias + Ver todos na grade virtualizada, busca no domínio completo e Continuar retomando filme e episódio!'
           );
         } finally {
           useDelayedSeriesCategories = false;

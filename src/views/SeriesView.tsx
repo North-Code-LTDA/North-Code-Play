@@ -1,22 +1,8 @@
-import React, { useState, useMemo, useRef, useCallback } from 'react';
-import { PlaySquare, Loader2, RefreshCw } from 'lucide-react';
-import { AnimatePresence } from 'motion/react';
-import { useXtreamCredentials, useXtreamSeries } from '../context/XtreamContext';
-import { useFavorites } from '../hooks/useFavorites';
-import { SeriesDetails } from '../components/SeriesDetails';
-import { MediaImage } from '../components/MediaImage';
-import { useAccountPlaybackHistory } from '../utils/playbackHistory';
-import { formatCategoryLabel } from '../utils/categoryLabel';
-import { getOrCreateSeriesIndex } from '../utils/catalogIndex';
-import { useVirtualWindow } from '../hooks/useVirtualWindow';
-import {
-  useBackHandler,
-  BACK_PRIORITY,
-  focusElementSafely,
-  isElementFocusable,
-} from '../navigation';
+import React from 'react';
+import { useXtreamSeries, useXtreamCredentials } from '../context/XtreamContext';
+import { CatalogShowcaseView } from '../components/CatalogShowcaseView';
 
-interface SeriesViewProps {
+export interface SeriesViewProps {
   onPlay: (
     url: string,
     title: string,
@@ -29,357 +15,45 @@ interface SeriesViewProps {
     onPrevious?: () => void
   ) => void;
   searchQuery?: string;
+  isPaused?: boolean;
 }
 
-export const SeriesView = React.memo(function SeriesView({ onPlay, searchQuery = '' }: SeriesViewProps) {
+export const SeriesView = React.memo(function SeriesView({
+  onPlay,
+  searchQuery = '',
+  isPaused = false,
+}: SeriesViewProps) {
   const { credentials } = useXtreamCredentials();
-  const { 
-    seriesCategories, seriesStreams, allSeriesStreams, fetchSeriesStreams, 
-    seriesError, seriesCategoriesError, seriesCategoriesStatus, 
-    seriesCatalogStatus, fetchSeriesCategories 
-  } = useXtreamSeries();
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>();
-  const [selectedSeries, setSelectedSeries] = useState<any | null>(null);
-  const handleCloseSeriesDetails = useCallback(() => setSelectedSeries(null), []);
-  const { favorites } = useFavorites();
-
-  const historyRecords = useAccountPlaybackHistory(credentials);
-  const seriesIndex = useMemo(() => getOrCreateSeriesIndex(allSeriesStreams), [allSeriesStreams]);
-
-  const viewRootRef = useRef<HTMLDivElement>(null);
-  const mainRef = useRef<HTMLElement>(null);
-  const gridRef = useRef<HTMLDivElement>(null);
-  const prevCategoryRef = useRef<string | undefined>(selectedCategoryId);
-  const prevSearchRef = useRef<string>(searchQuery);
-
-  // Back policy: when focus is inside the series content area (and no details/player modal is open),
-  // first Back focuses the currently selected category without changing category, scrollTop, or view.
-  useBackHandler(
-    'series-content-to-category',
-    BACK_PRIORITY.VIEW_INTERNAL,
-    () => {
-      if (selectedSeries) return false;
-      const activeEl = document.activeElement as HTMLElement | null;
-      if (!activeEl || !mainRef.current || !mainRef.current.contains(activeEl)) {
-        return false;
-      }
-      if (activeEl.closest('[data-nav-zone="categories"]')) {
-        return false;
-      }
-
-      const root = viewRootRef.current || document.body;
-      const categoryBtns = (
-        Array.from(
-          root.querySelectorAll('[data-nav-zone="categories"] button[data-category-id]')
-        ) as HTMLButtonElement[]
-      ).filter((btn) => isElementFocusable(btn));
-
-      const targetBtn =
-        categoryBtns.find((btn) => btn.getAttribute('data-category-id') === String(selectedCategoryId)) ||
-        categoryBtns[0];
-
-      if (targetBtn) {
-        focusElementSafely(targetBtn);
-        return true;
-      }
-      return false;
-    },
-    !selectedSeries
-  );
-
-  const handleSelectCategory = (catId: string) => {
-    if (catId === selectedCategoryId) return; // Do not reset scroll if same category is selected
-    setSelectedCategoryId(catId);
-    if (mainRef.current) {
-      mainRef.current.scrollTop = 0;
-    }
-  };
-
-  const favoriteSeries = useMemo(() => {
-    return favorites
-      .filter((f) => f.type === 'series')
-      .map((f) => seriesIndex.getById(f.id))
-      .filter(Boolean);
-  }, [favorites, seriesIndex]);
-
-  const continueWatching = useMemo(() => {
-    if (!allSeriesStreams || allSeriesStreams.length === 0) return [];
-    const episodeRecords = historyRecords.filter(
-      (r) => r.type === 'episode' && r.parentSeriesId && (r.positionSec ?? 0) > 30
-    );
-
-    const result: any[] = [];
-    const seenIds = new Set<string | number>();
-
-    for (const record of episodeRecords) {
-      if (!record.parentSeriesId) continue;
-      const item = seriesIndex.getById(record.parentSeriesId);
-      if (item) {
-        const itemId = item.series_id || item.id;
-        if (!seenIds.has(itemId)) {
-          seenIds.add(itemId);
-          result.push(item);
-        }
-      }
-    }
-
-    return result;
-  }, [historyRecords, allSeriesStreams.length, seriesIndex]);
-
-  const extendedCategories = useMemo(() => {
-    const virtualCats = [
-      { category_id: 'nc_recent', category_name: 'Assistidos Recentemente' },
-      { category_id: 'nc_fav', category_name: 'Séries Favoritas' }
-    ];
-    return [...virtualCats, ...seriesCategories];
-  }, [seriesCategories]);
-
-  // Default to first category
-  React.useEffect(() => {
-    if (extendedCategories.length > 0 && selectedCategoryId === undefined) {
-      setSelectedCategoryId(extendedCategories[0].category_id);
-    }
-  }, [extendedCategories, selectedCategoryId]);
-
-  // Fetch streams when category changes
-  React.useEffect(() => {
-    if (selectedCategoryId && selectedCategoryId !== 'nc_recent' && selectedCategoryId !== 'nc_fav') {
-      fetchSeriesStreams(selectedCategoryId);
-    }
-    if (selectedCategoryId !== prevCategoryRef.current) {
-      prevCategoryRef.current = selectedCategoryId;
-      if (mainRef.current) {
-        mainRef.current.scrollTop = 0;
-      }
-    }
-  }, [selectedCategoryId, fetchSeriesStreams]);
-
-  React.useEffect(() => {
-    if (searchQuery !== prevSearchRef.current) {
-      prevSearchRef.current = searchQuery;
-      if (mainRef.current) {
-        mainRef.current.scrollTop = 0;
-      }
-    }
-  }, [searchQuery]);
-
-  const filteredStreams = useMemo(() => {
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return allSeriesStreams.filter((item) => item.name?.toLowerCase().includes(q));
-    }
-    if (selectedCategoryId === 'nc_recent') return continueWatching;
-    if (selectedCategoryId === 'nc_fav') return favoriteSeries;
-
-    return seriesStreams;
-  }, [searchQuery, selectedCategoryId, continueWatching, favoriteSeries, seriesStreams, allSeriesStreams]);
-
   const {
-    startIndex,
-    endIndex,
-    topSpacerPx,
-    bottomSpacerPx,
-    scrollContainerCallbackRef,
-    virtualContainerCallbackRef,
-  } = useVirtualWindow({
-    totalCount: filteredStreams.length,
-    mode: 'grid',
-    scrollContainerRef: mainRef,
-    virtualContainerRef: gridRef,
-    isFrozen: Boolean(selectedSeries),
-    resetKey: `${selectedCategoryId ?? ''}__${searchQuery}`,
-    maxWindowItems: 96,
-  });
-
-  const displayedStreams = useMemo(
-    () => filteredStreams.slice(startIndex, endIndex),
-    [filteredStreams, startIndex, endIndex]
-  );
-
-  const handleSeriesClick = (series: any) => {
-    setSelectedSeries(series);
-  };
+    seriesCategories,
+    seriesStreams,
+    allSeriesStreams,
+    loadingSeries,
+    seriesError,
+    seriesCategoriesStatus,
+    seriesCatalogStatus,
+    seriesCategoriesError,
+    fetchSeriesCategories,
+    fetchSeriesStreams,
+  } = useXtreamSeries();
 
   return (
-    <div ref={viewRootRef} className="flex flex-1 overflow-hidden h-full">
-      {/* Sidebar - Categories */}
-      <aside data-nav-zone="categories" className="nc-tv-category-pane hidden md:flex w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/30 h-full shrink-0">
-        <div className="p-4 border-b border-nc-border/50">
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Categorias de Séries</h2>
-        </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
-          {seriesCategoriesError && seriesCategories.length === 0 && (
-            <div className="p-3 mb-2 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-2">
-              <p className="text-xs text-red-400">{seriesCategoriesError}</p>
-              <button
-                type="button"
-                onClick={() => fetchSeriesCategories()}
-                className="flex items-center gap-1.5 px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg text-xs font-medium transition-colors"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Tentar novamente
-              </button>
-            </div>
-          )}
-          {seriesCategoriesStatus === 'loading' && extendedCategories.length === 2 ? (
-             <div className="flex items-center justify-center py-10">
-               <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
-             </div>
-          ) : (
-            <>
-              {extendedCategories.map((cat) => (
-                <button
-                  key={cat.category_id}
-                  type="button"
-                  data-category-id={String(cat.category_id)}
-                  data-category-selected={selectedCategoryId === cat.category_id ? 'true' : 'false'}
-                  onClick={() => handleSelectCategory(cat.category_id)}
-                  className={`nc-tv-category-btn w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors line-clamp-2 whitespace-normal break-words leading-snug ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'text-nc-text-secondary hover:bg-nc-bg-input hover:text-white'}`}
-                >
-                  {formatCategoryLabel(cat.category_name, 'series')}
-                </button>
-              ))}
-            </>
-          )}
-        </div>
-      </aside>
-
-      {/* Main Content - Streams Grid */}
-      <main ref={scrollContainerCallbackRef} data-nav-zone="content" data-scroll-container="true" className="flex-1 overflow-y-auto h-full custom-scrollbar flex flex-col">
-        {/* Mobile Categories Navbar */}
-        <div data-nav-zone="categories" data-nav-row="true" className="md:hidden w-full overflow-x-auto snap-x flex gap-2 p-4 border-b border-nc-border/50 custom-scrollbar shrink-0">
-          {seriesCategoriesError && seriesCategories.length === 0 && (
-            <button
-              type="button"
-              onClick={() => fetchSeriesCategories()}
-              className="shrink-0 snap-center px-4 py-2 rounded-full text-sm bg-red-500/20 text-red-300 font-medium flex items-center gap-1.5"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Recarregar categorias
-            </button>
-          )}
-          {extendedCategories.map((cat) => (
-            <button
-              key={cat.category_id}
-              type="button"
-              data-category-id={String(cat.category_id)}
-              data-category-selected={selectedCategoryId === cat.category_id ? 'true' : 'false'}
-              onClick={() => handleSelectCategory(cat.category_id)}
-              className={`shrink-0 snap-center px-4 py-2 rounded-full text-sm transition-colors whitespace-nowrap ${selectedCategoryId === cat.category_id ? 'bg-nc-primary text-black font-medium' : 'bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary'}`}
-            >
-              {formatCategoryLabel(cat.category_name, 'series')}
-            </button>
-          ))}
-        </div>
-
-        <div className="nc-tv-content-pad p-6 flex-1">
-          {seriesError && (
-            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/50 text-red-500 rounded-xl flex items-center justify-between">
-              <span>{seriesError}</span>
-              <button
-                type="button"
-                onClick={() => fetchSeriesStreams(selectedCategoryId)}
-                className="ml-4 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-white rounded-lg text-xs font-medium transition-colors"
-              >
-                Tentar novamente
-              </button>
-            </div>
-          )}
-
-          <div className="mb-6">
-            <h1 className="text-2xl font-semibold text-white">
-              {selectedCategoryId 
-                 ? formatCategoryLabel(extendedCategories.find(c => c.category_id === selectedCategoryId)?.category_name, 'series') 
-                 : 'Carregando...'}
-            </h1>
-            <p className="text-nc-text-secondary text-sm mt-1">
-              {filteredStreams.length} séries encontradas
-            </p>
-          </div>
-
-          {seriesCatalogStatus === 'loading' && filteredStreams.length === 0 ? (
-             <div className="flex items-center justify-center h-64">
-               <Loader2 className="w-10 h-10 animate-spin text-nc-text-secondary" />
-             </div>
-          ) : seriesCatalogStatus === 'ready' && !seriesError && filteredStreams.length === 0 ? (
-             <div className="flex flex-col items-center justify-center h-64 text-nc-text-secondary">
-               <PlaySquare className="w-16 h-16 mb-4 opacity-20" />
-               <p>Nenhuma série encontrada nesta categoria.</p>
-             </div>
-          ) : (
-            <>
-              {topSpacerPx > 0 && (
-                <div
-                  aria-hidden="true"
-                  data-virtual-spacer="top"
-                  style={{ height: `${topSpacerPx}px` }}
-                />
-              )}
-              <div
-                ref={virtualContainerCallbackRef}
-                data-nav-grid="true"
-                data-virtual-container="true"
-                className="nc-tv-media-grid grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
-              >
-                {displayedStreams.map((stream, idx) => {
-                  const actualIndex = startIndex + idx;
-                  return (
-                    <div
-                      key={stream.series_id}
-                      tabIndex={0}
-                      role="button"
-                      data-nav-item="true"
-                      data-virtual-index={actualIndex}
-                      aria-label={stream.name}
-                      onClick={() => handleSeriesClick(stream)}
-                      className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden cursor-pointer border border-nc-border/50 hover:border-nc-primary/50 hover:scale-[1.03] active:scale-[0.98] transition-all"
-                    >
-                      <MediaImage
-                        src={stream.cover}
-                        serverUrl={credentials?.serverUrl}
-                        alt={stream.name}
-                        itemId={stream.series_id}
-                        itemName={stream.name}
-                        priority={actualIndex < 12}
-                        loading={actualIndex < 12 ? 'eager' : 'lazy'}
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                      />
-
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
-                        <p className="text-white font-medium text-sm line-clamp-2 leading-tight">
-                          {stream.name}
-                        </p>
-                        {stream.rating && stream.rating !== '0' && (
-                          <p className="text-xs text-yellow-500 mt-1">★ {stream.rating}</p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {bottomSpacerPx > 0 && (
-                <div
-                  aria-hidden="true"
-                  data-virtual-spacer="bottom"
-                  style={{ height: `${bottomSpacerPx}px` }}
-                />
-              )}
-            </>
-          )}
-        </div>
-      </main>
-
-      {/* Series Details Modal */}
-      <AnimatePresence>
-        {selectedSeries && (
-          <SeriesDetails
-            seriesId={selectedSeries.series_id || selectedSeries.id}
-            seriesName={selectedSeries.name || ""}
-            seriesCover={selectedSeries.cover || ""}
-            onClose={handleCloseSeriesDetails}
-            onPlay={onPlay}
-          />
-        )}
-      </AnimatePresence>
-    </div>
+    <CatalogShowcaseView
+      section="series"
+      credentials={credentials}
+      searchQuery={searchQuery}
+      isPaused={isPaused}
+      onPlay={onPlay}
+      seriesCategories={seriesCategories}
+      seriesStreams={seriesStreams}
+      allSeriesStreams={allSeriesStreams}
+      loadingSeries={loadingSeries}
+      seriesError={seriesError}
+      seriesCategoriesStatus={seriesCategoriesStatus}
+      seriesCatalogStatus={seriesCatalogStatus}
+      seriesCategoriesError={seriesCategoriesError}
+      fetchSeriesCategories={fetchSeriesCategories}
+      fetchSeriesStreams={fetchSeriesStreams}
+    />
   );
 });
