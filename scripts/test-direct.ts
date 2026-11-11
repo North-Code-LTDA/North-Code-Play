@@ -23230,14 +23230,43 @@ if (args[0] === 'add' && args[1] === 'android') {
           );
 
           // (c.3) Descarte de ação pendente ao trocar de seção antes de getSeriesInfo terminar
-          delayedSeriesExtMode = 'mkv';
           await act(async () => {
             manyMoviesNavBtn.click();
-            await new Promise((r) => setTimeout(r, 20));
           });
+          let releaseControlledSeriesInfo: (() => void) | null = null;
+          (XtreamService as any).getSeriesInfo = (_creds: any, serId: any) => {
+            delayedSeriesInfoCalls++;
+            return new Promise((resolve) => {
+              releaseControlledSeriesInfo = () =>
+                resolve({
+                  info: {
+                    name: `Série ${serId}`,
+                    plot: `Sinopse controlada da série ${serId}`,
+                    genre: 'Drama',
+                    releasedate: '2026',
+                    backdrop_path: [],
+                  },
+                  episodes: {
+                    '1': [
+                      {
+                        id: 'ep_9001_1',
+                        episode_num: 1,
+                        title: 'Piloto MP4',
+                        container_extension: 'mp4',
+                      },
+                      {
+                        id: 'ep_9001_mkv',
+                        episode_num: 2,
+                        title: 'Episódio Retomado MKV',
+                        container_extension: 'mkv',
+                      },
+                    ],
+                  },
+                });
+            });
+          };
           await act(async () => {
             manySeriesNavBtn.click();
-            await new Promise((r) => setTimeout(r, 15));
           });
           const cancelHeroPlayBtn = stage1Container.querySelector<HTMLButtonElement>(
             'button[data-hero-action="play"]'
@@ -23245,14 +23274,40 @@ if (args[0] === 'add' && args[1] === 'android') {
           await act(async () => {
             cancelHeroPlayBtn.click();
           });
-          // Trocar para Filmes antes de os 120ms de getSeriesInfo terminarem
+          assert.strictEqual(
+            typeof releaseControlledSeriesInfo === 'function',
+            true,
+            '[12.25-Stage2] Consulta controlada de getSeriesInfo deve estar pendente após clicar em Continuar'
+          );
+          assert.strictEqual(
+            cancelHeroPlayBtn.getAttribute('data-hero-loading'),
+            'true',
+            '[12.25-Stage2] Botão Continuar deve indicar carregamento com metadados pendentes'
+          );
+          // Trocar para Filmes em um act separado e confirmar que Filmes foi montado
           await act(async () => {
             manyMoviesNavBtn.click();
-            await new Promise((r) => setTimeout(r, 180));
           });
           assert.strictEqual(
-            document.querySelector('[data-player-container="true"]'),
-            null,
+            manyMoviesNavBtn.getAttribute('aria-current'),
+            'page',
+            '[12.25-Stage2] Seção Filmes deve estar ativa após a troca'
+          );
+          assert.strictEqual(
+            stage1Container
+              .querySelector('[data-showcase-rows-container="true"]')
+              ?.getAttribute('data-showcase-total-rows'),
+            '13',
+            '[12.25-Stage2] Vitrine de Filmes (13 fileiras) deve estar montada antes de liberar os metadados'
+          );
+          // Liberar os metadados em outro act e confirmar que o player não abriu
+          await act(async () => {
+            releaseControlledSeriesInfo?.();
+            await Promise.resolve();
+          });
+          assert.strictEqual(
+            document.querySelector('[data-player-container="true"]') !== null,
+            false,
             '[12.25-Stage2] Trocar de seção enquanto aguarda getSeriesInfo deve descartar a retomada pendente sem abrir o player'
           );
 

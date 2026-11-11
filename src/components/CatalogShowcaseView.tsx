@@ -476,6 +476,9 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   useEffect(() => {
     rowWindowStartRef.current = 0;
     setRowWindowStart(0);
+    preSearchScrollTopRef.current = null;
+    preSearchRowWindowStartRef.current = null;
+    wasSearchingRef.current = false;
   }, [section]);
 
   useEffect(() => {
@@ -898,14 +901,70 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         ? nonEmptyVodCategoryDescriptors.length
         : nonEmptySeriesCategoryDescriptors.length;
 
+  // Search state
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const hasSearch = normalizedQuery.length > 0;
+  const isGridMode = section !== 'inicio' && (activeCategoryId !== null || hasSearch);
+
   const totalShowcaseRows = showcaseRowDescriptors.length;
   const shouldVirtualizeShowcaseRows =
     dynamicCategoryRowCount > 7 || totalShowcaseRows > 11;
   const maxRowWindowStart = shouldVirtualizeShowcaseRows
     ? Math.max(0, totalShowcaseRows - SHOWCASE_ROW_WINDOW_SIZE)
     : 0;
+
+  const computeShowcaseRowStartFromScroll = useCallback(
+    (scrollTop: number): number => {
+      if (!shouldVirtualizeShowcaseRows) return 0;
+      const heroOffset = heroItems.length > 0 ? 420 : 40;
+      const relativeTop = Math.max(0, scrollTop - heroOffset);
+      const approxFirstRow = Math.floor(relativeTop / SHOWCASE_ROW_STRIDE_PX);
+      const desired = Math.max(0, approxFirstRow - 1);
+      return Math.max(0, Math.min(maxRowWindowStart, desired));
+    },
+    [shouldVirtualizeShowcaseRows, heroItems.length, maxRowWindowStart]
+  );
+
+  // Save scrollTop and rowWindowStart while the showcase is still mounted in the DOM,
+  // before replacing it with search results.
+  if (hasSearch && !wasSearchingRef.current) {
+    wasSearchingRef.current = true;
+    const isShowcaseCurrentlyMounted = Boolean(showcaseRowsContainerRef.current);
+    if (isShowcaseCurrentlyMounted && mainContainerRef.current) {
+      const liveScrollTop = mainContainerRef.current.scrollTop;
+      preSearchScrollTopRef.current = liveScrollTop;
+      const computedStartFromScroll =
+        shouldVirtualizeShowcaseRows && liveScrollTop > 0
+          ? computeShowcaseRowStartFromScroll(liveScrollTop)
+          : 0;
+      preSearchRowWindowStartRef.current =
+        rowWindowStartRef.current > 0 ? rowWindowStartRef.current : computedStartFromScroll;
+    } else {
+      if (mainContainerRef.current && preSearchScrollTopRef.current === null) {
+        preSearchScrollTopRef.current = mainContainerRef.current.scrollTop;
+      }
+      if (preSearchRowWindowStartRef.current === null) {
+        preSearchRowWindowStartRef.current = rowWindowStartRef.current;
+      }
+    }
+  }
+
+  // When closing search, restore the showcase row window first so the showcase mounts with the restored rows,
+  // and then restore scrollTop in useLayoutEffect once the showcase is mounted.
+  let activeRowWindowStart = rowWindowStart;
+  if (!hasSearch && wasSearchingRef.current && preSearchRowWindowStartRef.current !== null) {
+    activeRowWindowStart = Math.max(
+      0,
+      Math.min(preSearchRowWindowStartRef.current, maxRowWindowStart)
+    );
+    rowWindowStartRef.current = activeRowWindowStart;
+    if (rowWindowStart !== activeRowWindowStart) {
+      setRowWindowStart(activeRowWindowStart);
+    }
+  }
+
   const effectiveRowStart = shouldVirtualizeShowcaseRows
-    ? Math.max(0, Math.min(rowWindowStart, maxRowWindowStart))
+    ? Math.max(0, Math.min(activeRowWindowStart, maxRowWindowStart))
     : 0;
   const effectiveRowEnd = shouldVirtualizeShowcaseRows
     ? Math.min(totalShowcaseRows, effectiveRowStart + SHOWCASE_ROW_WINDOW_SIZE)
@@ -1319,7 +1378,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                   typeof foundEp.container_extension === 'string'
                     ? foundEp.container_extension.trim().replace(/^\.+/, '')
                     : '';
-                if (confirmedExt.length > 0) {
+                if (/^[a-z0-9]+$/i.test(confirmedExt)) {
                   const epNum = String(foundEp.episode_num || 1).padStart(2, '0');
                   const sNum = String(foundSeasonKey).padStart(2, '0');
                   const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${foundEp.title || `Episódio ${foundEp.episode_num || 1}`}`;
@@ -1490,20 +1549,18 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     );
   }, []);
 
-  // Search state
-  const normalizedQuery = searchQuery.trim().toLowerCase();
-  const hasSearch = normalizedQuery.length > 0;
-
-  // Preserve scrollTop and vertical showcase window across search open/close
-  useEffect(() => {
-    if (hasSearch && !wasSearchingRef.current) {
-      wasSearchingRef.current = true;
-      preSearchRowWindowStartRef.current = rowWindowStartRef.current;
+  // Reset scrollTop when entering search; when closing search, restore window first and then scrollTop
+  useLayoutEffect(() => {
+    if (hasSearch) {
       if (mainContainerRef.current) {
-        preSearchScrollTopRef.current = mainContainerRef.current.scrollTop;
-        mainContainerRef.current.scrollTop = 0;
+        isProgrammaticRowShiftRef.current = true;
+        try {
+          mainContainerRef.current.scrollTop = 0;
+        } finally {
+          isProgrammaticRowShiftRef.current = false;
+        }
       }
-    } else if (!hasSearch && wasSearchingRef.current) {
+    } else if (wasSearchingRef.current) {
       wasSearchingRef.current = false;
       const savedPreSearchRowStart = preSearchRowWindowStartRef.current;
       if (
@@ -1512,8 +1569,15 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       ) {
         isProgrammaticRowShiftRef.current = true;
         rowWindowStartRef.current = savedPreSearchRowStart;
-        setRowWindowStart(savedPreSearchRowStart);
-        isProgrammaticRowShiftRef.current = false;
+        try {
+          flushSync(() => {
+            setRowWindowStart(savedPreSearchRowStart);
+          });
+        } catch {
+          setRowWindowStart(savedPreSearchRowStart);
+        } finally {
+          isProgrammaticRowShiftRef.current = false;
+        }
       }
       const savedPreSearch = preSearchScrollTopRef.current;
       if (mainContainerRef.current && savedPreSearch !== null) {
@@ -1706,7 +1770,6 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   );
 
   // Back handler 2: Exit filtered grid back to Showcase (BACK_PRIORITY.VIEW_INTERNAL)
-  const isGridMode = section !== 'inicio' && (activeCategoryId !== null || hasSearch);
   useBackHandler(
     `showcase-filtered-grid-${section}`,
     BACK_PRIORITY.VIEW_INTERNAL,
@@ -1752,19 +1815,15 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       return;
     }
 
-    const computeRowStartFromScroll = (scrollTop: number): number => {
-      const heroOffset = heroItems.length > 0 ? 420 : 40;
-      const relativeTop = Math.max(0, scrollTop - heroOffset);
-      const approxFirstRow = Math.floor(relativeTop / SHOWCASE_ROW_STRIDE_PX);
-      const desired = Math.max(0, approxFirstRow - 1);
-      return Math.max(0, Math.min(maxRowWindowStart, desired));
-    };
-
     const handleShowcaseScroll = () => {
       if (isProgrammaticRowShiftRef.current) return;
-      let nextStart = computeRowStartFromScroll(mainEl.scrollTop || 0);
+      const currentScrollTop = mainEl.scrollTop || 0;
+      const heroOffset = heroItems.length > 0 ? 420 : 40;
+      const relativeTop = Math.max(0, currentScrollTop - heroOffset);
+      const approxFirstRow = Math.floor(relativeTop / SHOWCASE_ROW_STRIDE_PX);
+      let nextStart = computeShowcaseRowStartFromScroll(currentScrollTop);
 
-      // If focus is currently on a showcase row and scroll delta is within the window span,
+      // If focus is currently on a showcase row near the current scroll position,
       // keep the focused row inside the mounted window so D-Pad scroll adjustments never unmount activeElement.
       const activeEl =
         typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
@@ -1779,6 +1838,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         if (
           !isNaN(focusedRowIdx) &&
           focusedRowIdx >= 0 &&
+          Math.abs(approxFirstRow - focusedRowIdx) <= 2 &&
           Math.abs(nextStart - focusedRowIdx) < SHOWCASE_ROW_WINDOW_SIZE
         ) {
           if (nextStart > focusedRowIdx) {
@@ -1790,6 +1850,11 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
             );
           }
         }
+      }
+
+      if (!wasSearchingRef.current) {
+        preSearchScrollTopRef.current = currentScrollTop;
+        preSearchRowWindowStartRef.current = nextStart;
       }
 
       if (nextStart !== rowWindowStartRef.current) {
@@ -1815,6 +1880,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     shouldVirtualizeShowcaseRows,
     heroItems.length,
     maxRowWindowStart,
+    computeShowcaseRowStartFromScroll,
   ]);
 
   // Keyboard navigation inside Categories menu
