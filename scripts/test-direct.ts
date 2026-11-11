@@ -17,6 +17,7 @@ Object.defineProperty(globalThis, 'navigator', {
 });
 (globalThis as any).localStorage = windowInstance.localStorage;
 (globalThis as any).HTMLElement = windowInstance.HTMLElement;
+(globalThis as any).HTMLInputElement = (windowInstance as any).HTMLInputElement;
 (globalThis as any).Element = windowInstance.Element;
 (globalThis as any).Node = windowInstance.Node;
 (globalThis as any).HTMLMediaElement = windowInstance.HTMLMediaElement;
@@ -27,6 +28,7 @@ Object.defineProperty(globalThis, 'navigator', {
 (globalThis as any).MouseEvent = windowInstance.MouseEvent;
 (globalThis as any).PointerEvent = windowInstance.PointerEvent;
 (globalThis as any).StorageEvent = windowInstance.StorageEvent;
+(globalThis as any).MutationObserver = (windowInstance as any).MutationObserver;
 (globalThis as any).getComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
 
 // Implementação coerente de requestAnimationFrame / cancelAnimationFrame para motion/react e hooks de UI
@@ -211,11 +213,13 @@ if ((windowInstance as any).XMLHttpRequest) {
 import fs from 'fs';
 import path from 'path';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
-import axios from 'axios';
 import type { XtreamCredentials } from '../src/types';
 import type { FavoriteItem } from '../src/hooks/useFavorites';
+
+const { createRoot } = await import('react-dom/client');
+const { MemoryRouter } = await import('react-router-dom');
+const axiosModule = await import('axios');
+const axios = axiosModule.default;
 
 axios.defaults.adapter = async (config) => {
   blockedExternalNetworkCount++;
@@ -20929,6 +20933,7 @@ if (args[0] === 'add' && args[1] === 'android') {
         const stage1Root = createRoot(stage1Container);
 
         let providerQueryCount = 0;
+        let failNextSeriesCategories = false;
         let delayedSeriesCategoriesResolver: ((cats: any[]) => void) | null = null;
         let useDelayedSeriesCategories = false;
 
@@ -20959,6 +20964,10 @@ if (args[0] === 'add' && args[1] === 'android') {
         };
         (XtreamService as any).getSeriesCategories = async () => {
           providerQueryCount++;
+          if (failNextSeriesCategories) {
+            failNextSeriesCategories = false;
+            throw new Error('Falha temporária nas categorias de séries');
+          }
           if (useDelayedSeriesCategories) {
             return new Promise<any[]>((resolve) => {
               delayedSeriesCategoriesResolver = resolve;
@@ -21084,9 +21093,38 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.24] A seção ativa deve receber a classe da cápsula escura (.nc-top-header-pill-active)'
           );
 
+          const { isElementFocusable: isStage1Focusable } = await import('../src/navigation');
+          const getVisibleEnabledCategories = (root: HTMLElement): HTMLButtonElement[] => {
+            const isDesktopViewport =
+              typeof windowInstance.innerWidth !== 'number' ||
+              windowInstance.innerWidth === 0 ||
+              windowInstance.innerWidth >= 768;
+            return Array.from<HTMLButtonElement>(
+              root.querySelectorAll<HTMLButtonElement>(
+                '[data-nav-zone="categories"] button[data-category-id], [data-nav-zone="categories"] button[data-live-category-id]'
+              )
+            ).filter((btn: HTMLButtonElement) => {
+              if (!isStage1Focusable(btn) || btn.disabled) return false;
+              if (isDesktopViewport && btn.closest('.md\\:hidden')) return false;
+              if (!isDesktopViewport && btn.closest('.hidden.md\\:flex')) return false;
+              return true;
+            });
+          };
+
           const queriesAfterInitialLoad = providerQueryCount;
 
-          // Fluxo: Lupa -> digitação -> filtragem -> Voltar (limpa searchQuery, restaura conteúdo e devolve foco à lupa)
+          const typeInRealInput = (inputEl: HTMLInputElement, nextValue: string) => {
+            const protoSetter =
+              Object.getOwnPropertyDescriptor(Object.getPrototypeOf(inputEl), 'value')?.set ||
+              Object.getOwnPropertyDescriptor(
+                (windowInstance as any).HTMLInputElement.prototype,
+                'value'
+              )?.set;
+            protoSetter?.call(inputEl, nextValue);
+            inputEl.dispatchEvent(new (windowInstance as any).Event('input', { bubbles: true }));
+          };
+
+          // Fluxo 1 (Início): Lupa -> digitação real com evento input propagando -> filtragem -> Voltar (limpa searchQuery, restaura conteúdo e devolve foco à lupa)
           const lupaBtn = stage1Container.querySelector<HTMLButtonElement>(
             'button[data-header-search-trigger="true"]'
           )!;
@@ -21113,14 +21151,9 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.24] Antes de filtrar, ambos os filmes devem estar visíveis na seção'
           );
 
-          // Digitar termo de busca e aguardar debounce (500ms)
+          // Digitar termo de busca no campo real com evento input que propaga e aguardar debounce (500ms)
           await act(async () => {
-            const prevVal = openedSearchInput.value;
-            openedSearchInput.value = 'Alpha Exclusivo';
-            (openedSearchInput as any)._valueTracker?.setValue(prevVal);
-            openedSearchInput.dispatchEvent(
-              new (windowInstance as any).Event('input', { bubbles: true })
-            );
+            typeInRealInput(openedSearchInput, 'Alpha Exclusivo');
           });
           await act(async () => {
             await new Promise((r) => setTimeout(r, 550));
@@ -21134,7 +21167,7 @@ if (args[0] === 'add' && args[1] === 'android') {
 
           // Pressionar Escape para fechar a busca, limpar searchQuery, restaurar conteúdo e devolver foco à lupa
           await act(async () => {
-            windowInstance.dispatchEvent(
+            openedSearchInput.dispatchEvent(
               new (windowInstance as any).KeyboardEvent('keydown', {
                 key: 'Escape',
                 bubbles: true,
@@ -21167,7 +21200,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.24] Abrir, digitar e fechar a busca não deve adicionar consultas extras ao provedor'
           );
 
-          // Fluxo: Menu da Conta -> navegação por setas (Conta -> Configurações -> Sair) -> Escape devolve foco ao botão da conta
+          // Fluxo 2 (Início): Menu da Conta -> navegação por setas disparadas no item focado (Conta <-> Configurações <-> Sair e limites) -> Escape devolve foco ao botão da conta
           const accountTriggerBtn = stage1Container.querySelector<HTMLButtonElement>(
             'button[data-header-account-trigger="true"]'
           )!;
@@ -21206,9 +21239,25 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.24] Ao abrir o menu da conta, o 1º item (Conta) deve receber foco'
           );
 
-          // Navegar por ArrowDown / ArrowUp dentro do menu da conta
+          // Extremo superior: ArrowUp em Conta deve permanecer em Conta
           await act(async () => {
-            windowInstance.dispatchEvent(
+            (document.activeElement as HTMLElement).dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowUp',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assertSameElement(
+            document.activeElement,
+            menuAccountBtn,
+            '[12.24] ArrowUp no extremo superior (Conta) deve manter o foco em Conta'
+          );
+
+          // ArrowDown em Conta -> Configurações (sem executar ação)
+          await act(async () => {
+            (document.activeElement as HTMLElement).dispatchEvent(
               new (windowInstance as any).KeyboardEvent('keydown', {
                 key: 'ArrowDown',
                 bubbles: true,
@@ -21219,11 +21268,12 @@ if (args[0] === 'add' && args[1] === 'android') {
           assertSameElement(
             document.activeElement,
             menuConfigBtn,
-            '[12.24] ArrowDown no menu da conta deve focar Configurações'
+            '[12.24] ArrowDown no item focado do menu da conta deve focar Configurações'
           );
 
+          // ArrowDown em Configurações -> Sair (sem executar ação)
           await act(async () => {
-            windowInstance.dispatchEvent(
+            (document.activeElement as HTMLElement).dispatchEvent(
               new (windowInstance as any).KeyboardEvent('keydown', {
                 key: 'ArrowDown',
                 bubbles: true,
@@ -21234,11 +21284,28 @@ if (args[0] === 'add' && args[1] === 'android') {
           assertSameElement(
             document.activeElement,
             menuLogoutBtn,
-            '[12.24] 2º ArrowDown no menu da conta deve focar Sair'
+            '[12.24] 2º ArrowDown no item focado do menu da conta deve focar Sair'
           );
 
+          // Extremo inferior: ArrowDown em Sair deve permanecer em Sair
           await act(async () => {
-            windowInstance.dispatchEvent(
+            (document.activeElement as HTMLElement).dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowDown',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assertSameElement(
+            document.activeElement,
+            menuLogoutBtn,
+            '[12.24] ArrowDown no extremo inferior (Sair) deve manter o foco em Sair'
+          );
+
+          // ArrowUp em Sair -> Configurações
+          await act(async () => {
+            (document.activeElement as HTMLElement).dispatchEvent(
               new (windowInstance as any).KeyboardEvent('keydown', {
                 key: 'ArrowUp',
                 bubbles: true,
@@ -21252,16 +21319,31 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.24] ArrowUp a partir de Sair deve voltar para Configurações'
           );
 
+          // ArrowUp em Configurações -> Conta
+          await act(async () => {
+            (document.activeElement as HTMLElement).dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowUp',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assertSameElement(
+            document.activeElement,
+            menuAccountBtn,
+            '[12.24] ArrowUp a partir de Configurações deve voltar para Conta'
+          );
+
           // Fechar o menu da conta com Escape e verificar retorno do foco ao botão da conta e 0 consultas extras
           await act(async () => {
-            windowInstance.dispatchEvent(
+            (document.activeElement as HTMLElement).dispatchEvent(
               new (windowInstance as any).KeyboardEvent('keydown', {
                 key: 'Escape',
                 bubbles: true,
                 cancelable: true,
               })
             );
-            await new Promise((r) => setTimeout(r, 10));
           });
           assert.strictEqual(
             stage1Container.querySelector('[data-header-account-menu="true"]'),
@@ -21277,6 +21359,174 @@ if (args[0] === 'add' && args[1] === 'android') {
             providerQueryCount,
             queriesAfterInitialLoad,
             '[12.24] Abrir, navegar e fechar o menu da conta não deve disparar consultas ao provedor'
+          );
+
+          // Fluxo 3 (Filmes): Encaminhamento de foco para categoria pronta + Busca sob demanda (lupa -> digitar -> Escape) + Menu da Conta (abrir -> setas -> Escape) mantendo Filmes ativo!
+          const moviesHeaderBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="movies"]'
+          )!;
+          await act(async () => {
+            moviesHeaderBtn.focus();
+            moviesHeaderBtn.click();
+          });
+
+          assert.strictEqual(
+            moviesHeaderBtn.getAttribute('data-header-nav-active'),
+            'true',
+            '[12.24] Botão Filmes no cabeçalho deve ficar ativo ao entrar em Filmes'
+          );
+          const readyMoviesCatBtns = getVisibleEnabledCategories(stage1Container);
+          assert(
+            readyMoviesCatBtns.length > 0,
+            '[12.24] Categorias visíveis e habilitadas de Filmes devem estar montadas'
+          );
+          const expectedMoviesCatBtn =
+            readyMoviesCatBtns.find((b) => b.getAttribute('data-category-selected') === 'true') ||
+            readyMoviesCatBtns[0];
+          assertSameElement(
+            document.activeElement,
+            expectedMoviesCatBtn,
+            '[12.24] Ao ativar Filmes com categorias prontas, o foco deve ser encaminhado uma única vez para a categoria selecionada visível'
+          );
+
+          // Selecionar a categoria Lançamentos (vod_cat_1) para exibir os filmes da seção antes de testar a busca sob demanda
+          const vodCat1Btn = readyMoviesCatBtns.find(
+            (b) => b.getAttribute('data-category-id') === 'vod_cat_1'
+          )!;
+          assert(vodCat1Btn !== undefined, '[12.24] Categoria vod_cat_1 deve estar visível em Filmes');
+          await act(async () => {
+            vodCat1Btn.focus();
+            vodCat1Btn.click();
+          });
+
+          // Em Filmes: abrir a lupa, digitar um termo e pressionar Escape.
+          // O 1º Voltar deve fechar apenas a busca, limpar o termo, restaurar o conteúdo de Filmes e devolver o foco à lupa, mantendo Filmes ativo!
+          const moviesLupaBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
+          await act(async () => {
+            moviesLupaBtn.focus();
+            moviesLupaBtn.click();
+          });
+
+          const moviesSearchInput = stage1Container.querySelector<HTMLInputElement>(
+            'input[data-header-search-input="true"]'
+          )!;
+          assert(moviesSearchInput !== null, '[12.24] Lupa deve abrir o input de busca dentro de Filmes');
+          assertSameElement(
+            document.activeElement,
+            moviesSearchInput,
+            '[12.24] Foco deve ir para o input de busca em Filmes'
+          );
+          assert(
+            stage1Container.textContent?.includes('Filme Alpha Exclusivo') &&
+              stage1Container.textContent?.includes('Filme Beta Aventura'),
+            '[12.24] Antes de filtrar em Filmes, ambos os filmes devem estar listados'
+          );
+
+          await act(async () => {
+            typeInRealInput(moviesSearchInput, 'Alpha Exclusivo');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+
+          assert(
+            stage1Container.textContent?.includes('Filme Alpha Exclusivo') &&
+              !stage1Container.textContent?.includes('Filme Beta Aventura'),
+            '[12.24] Digitar na busca em Filmes deve filtrar os filmes exibidos'
+          );
+
+          await act(async () => {
+            moviesSearchInput.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 550));
+          });
+
+          assert.strictEqual(
+            stage1Container.querySelector('input[data-header-search-input="true"]'),
+            null,
+            '[12.24] Em Filmes, o 1º Escape com a busca aberta deve fechar apenas o campo de busca'
+          );
+          assert.strictEqual(
+            moviesHeaderBtn.getAttribute('data-header-nav-active'),
+            'true',
+            '[12.24] Em Filmes, fechar a busca com Escape deve manter a seção Filmes ativa (sem voltar ao Início)'
+          );
+          assert(
+            stage1Container.textContent?.includes('Filme Alpha Exclusivo') &&
+              stage1Container.textContent?.includes('Filme Beta Aventura'),
+            '[12.24] Em Filmes, fechar a busca com Escape deve limpar o termo e restaurar os filmes da seção'
+          );
+          assertSameElement(
+            document.activeElement,
+            stage1Container.querySelector('button[data-header-search-trigger="true"]'),
+            '[12.24] Em Filmes, fechar a busca com Escape deve devolver o foco ao botão da lupa'
+          );
+
+          // Ainda em Filmes: abrir o menu da conta, percorrer com setas e fechar com Escape mantendo Filmes ativo
+          await act(async () => {
+            accountTriggerBtn.focus();
+            accountTriggerBtn.click();
+          });
+          const moviesAccountMenu = stage1Container.querySelector<HTMLElement>(
+            '[data-header-account-menu="true"]'
+          )!;
+          assert(moviesAccountMenu !== null, '[12.24] Menu da conta deve abrir estando em Filmes');
+          const moviesMenuAccountBtn = moviesAccountMenu.querySelector<HTMLButtonElement>(
+            'button[data-account-action="account"]'
+          )!;
+          const moviesMenuConfigBtn = moviesAccountMenu.querySelector<HTMLButtonElement>(
+            'button[data-account-action="config"]'
+          )!;
+          assertSameElement(document.activeElement, moviesMenuAccountBtn, '[12.24] Foco inicial em Conta dentro de Filmes');
+
+          await act(async () => {
+            (document.activeElement as HTMLElement).dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowDown',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assertSameElement(document.activeElement, moviesMenuConfigBtn, '[12.24] ArrowDown move para Configurações em Filmes');
+
+          await act(async () => {
+            (document.activeElement as HTMLElement).dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assert.strictEqual(
+            stage1Container.querySelector('[data-header-account-menu="true"]'),
+            null,
+            '[12.24] Em Filmes, o 1º Escape com o menu da conta aberto deve fechar apenas o menu'
+          );
+          assert.strictEqual(
+            moviesHeaderBtn.getAttribute('data-header-nav-active'),
+            'true',
+            '[12.24] Em Filmes, fechar o menu da conta com Escape deve manter a seção Filmes ativa'
+          );
+          assertSameElement(
+            document.activeElement,
+            accountTriggerBtn,
+            '[12.24] Em Filmes, fechar o menu da conta com Escape deve devolver o foco ao botão da conta'
+          );
+          assert.strictEqual(
+            providerQueryCount,
+            queriesAfterInitialLoad,
+            '[12.24] Abrir e fechar busca e menu da conta em Filmes não deve disparar consultas extras ao provedor'
           );
 
           // Testar Conta -> Configurações (abre ConfigView focando Ajustar apresentação e mantendo único <header>)
@@ -21329,30 +21579,48 @@ if (args[0] === 'add' && args[1] === 'android') {
           );
 
           // Testar encaminhamento único de foco quando o destino carrega depois (assíncrono)
-          // e descarte da pendência se o usuário mover o foco antes disso:
-          // Cenário A: Categorias de Séries atrasadas, usuário move o foco para Favoritos antes de carregarem -> pendência descartada!
-          await act(async () => {
-            stage1Root.render(React.createElement('div', null));
-          });
-          useDelayedSeriesCategories = true;
-          delayedSeriesCategoriesResolver = null;
+          // e descarte da pendência se o usuário mover o foco OU trocar de seção antes disso:
+          const mountWithPendingSeriesCategories = async () => {
+            await act(async () => {
+              stage1Root.render(React.createElement('div', null));
+            });
+            failNextSeriesCategories = true;
+            useDelayedSeriesCategories = false;
+            delayedSeriesCategoriesResolver = null;
 
-          await act(async () => {
-            stage1Root.render(
-              React.createElement(
-                MemoryRouter,
-                { initialEntries: ['/home'] },
+            await act(async () => {
+              stage1Root.render(
                 React.createElement(
-                  Stage1NavProvider,
-                  null,
-                  React.createElement(RealHomeApp)
+                  MemoryRouter,
+                  { initialEntries: ['/home'] },
+                  React.createElement(
+                    Stage1NavProvider,
+                    null,
+                    React.createElement(RealHomeApp)
+                  )
                 )
-              )
-            );
-            await new Promise((r) => setTimeout(r, 40));
-          });
+              );
+              await new Promise((r) => setTimeout(r, 40));
+            });
 
-          // Ativar "Séries" enquanto seriesCategories ainda está pendente (spinner visível, 0 botões de categoria)
+            useDelayedSeriesCategories = true;
+            const retryBtn = stage1Container.querySelector<HTMLButtonElement>(
+              'button[data-transient-retry="true"]'
+            )!;
+            assert(
+              retryBtn !== null,
+              '[12.24] Botão de tentar novamente deve existir para iniciar recarregamento assíncrono de categorias'
+            );
+            await act(async () => {
+              retryBtn.click();
+              await new Promise((r) => setTimeout(r, 20));
+            });
+          };
+
+          // Cenário A: Categorias de Séries atrasadas, usuário move o foco para Favoritos antes de carregarem -> pendência descartada!
+          await mountWithPendingSeriesCategories();
+
+          // Ativar "Séries" enquanto seriesCategories ainda está pendente (0 categorias visíveis e habilitadas no desktop)
           const seriesBtnDelayed = stage1Container.querySelector<HTMLButtonElement>(
             'button[data-header-nav-id="series"]'
           )!;
@@ -21364,9 +21632,9 @@ if (args[0] === 'add' && args[1] === 'android') {
             seriesBtnDelayed.click();
           });
           assert.strictEqual(
-            stage1Container.querySelectorAll('[data-nav-zone="categories"] button[data-category-id]').length,
+            getVisibleEnabledCategories(stage1Container).length,
             0,
-            '[12.24] Enquanto seriesCategories está pendente, os botões de categoria ainda não estão montados'
+            '[12.24] Enquanto seriesCategories está pendente, não deve haver categorias visíveis e habilitadas no desktop'
           );
 
           // Usuário move o foco manualmente para o botão Favoritos no cabeçalho antes das categorias chegarem
@@ -21388,26 +21656,47 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.24] Se o usuário moveu o foco antes do carregamento tardio das categorias, a pendência de foco deve ser descartada'
           );
 
-          // Cenário B: Categorias atrasadas, usuário aguarda sem mover o foco -> foco aplicado assim que as categorias chegam!
-          await act(async () => {
-            stage1Root.render(React.createElement('div', null));
-          });
-          delayedSeriesCategoriesResolver = null;
+          // Cenário B: Categorias atrasadas, usuário troca de seção (para Favoritos) antes de carregarem -> pendência descartada!
+          await mountWithPendingSeriesCategories();
 
+          const seriesBtnSwitch = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="series"]'
+          )!;
+          const favBtnSwitch = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="favorites"]'
+          )!;
           await act(async () => {
-            stage1Root.render(
-              React.createElement(
-                MemoryRouter,
-                { initialEntries: ['/home'] },
-                React.createElement(
-                  Stage1NavProvider,
-                  null,
-                  React.createElement(RealHomeApp)
-                )
-              )
-            );
+            seriesBtnSwitch.focus();
+            seriesBtnSwitch.click();
+          });
+          assert.strictEqual(
+            getVisibleEnabledCategories(stage1Container).length,
+            0,
+            '[12.24] Enquanto seriesCategories está pendente no Cenário B, 0 categorias visíveis e habilitadas'
+          );
+          await act(async () => {
+            favBtnSwitch.focus();
+            favBtnSwitch.click();
+          });
+          await act(async () => {
+            delayedSeriesCategoriesResolver?.([
+              { category_id: 'ser_cat_switched', category_name: 'Séries Trocadas' },
+            ]);
             await new Promise((r) => setTimeout(r, 40));
           });
+          assert.strictEqual(
+            favBtnSwitch.getAttribute('data-header-nav-active'),
+            'true',
+            '[12.24] Se o usuário trocou de seção antes do carregamento tardio, a seção ativa e o foco devem permanecer na nova seção'
+          );
+          assertSameElement(
+            document.activeElement,
+            favBtnSwitch,
+            '[12.24] Trocar de seção descarta a pendência de foco da seção anterior'
+          );
+
+          // Cenário C: Categorias atrasadas, usuário aguarda sem mover o foco -> foco aplicado na categoria visível e habilitada assim que chega!
+          await mountWithPendingSeriesCategories();
 
           const seriesBtnDelayed2 = stage1Container.querySelector<HTMLButtonElement>(
             'button[data-header-nav-id="series"]'
@@ -21416,6 +21705,11 @@ if (args[0] === 'add' && args[1] === 'android') {
             seriesBtnDelayed2.focus();
             seriesBtnDelayed2.click();
           });
+          assert.strictEqual(
+            getVisibleEnabledCategories(stage1Container).length,
+            0,
+            '[12.24] Enquanto aguarda categorias de Séries, 0 categorias visíveis e habilitadas no desktop'
+          );
           assertSameElement(
             document.activeElement,
             seriesBtnDelayed2,
@@ -21429,22 +21723,26 @@ if (args[0] === 'add' && args[1] === 'android') {
             await new Promise((r) => setTimeout(r, 40));
           });
 
-          const arrivedSeriesCatBtn = stage1Container.querySelector<HTMLButtonElement>(
-            '[data-nav-zone="categories"] button[data-category-selected="true"], [data-nav-zone="categories"] button[data-category-id]'
-          )!;
-          assert(arrivedSeriesCatBtn !== null, '[12.24] Botões de categoria de Séries montados após resolução assíncrona');
+          const visibleArrivedCats = getVisibleEnabledCategories(stage1Container);
+          assert(
+            visibleArrivedCats.length > 0,
+            '[12.24] Categorias visíveis e habilitadas de Séries devem estar montadas após resolução assíncrona'
+          );
+          const arrivedSeriesCatBtn =
+            visibleArrivedCats.find((b) => b.getAttribute('data-category-selected') === 'true') ||
+            visibleArrivedCats[0];
           assertSameElement(
             document.activeElement,
             arrivedSeriesCatBtn,
-            '[12.24] Quando o destino carrega depois e o usuário não moveu o foco, o foco deve ser encaminhado automaticamente uma única vez'
+            '[12.24] Quando o destino carrega depois e o usuário não moveu o foco, o foco deve ser encaminhado automaticamente uma única vez para a categoria visível e habilitada'
           );
 
           console.log(
             `📊 [Métricas 12.24 — Etapa 1 da Nova Interface (TopHeader, Busca sob Demanda e Menu da Conta)]\n` +
-              `   • 1580×760 (Desktop 100%): ${desktop1580.rowsCount} linha (${desktop1580.headerHeightPx}px), centro=${desktop1580.navStripRect.centerX}px, overflow=0\n` +
-              `   • 961×541 (TV 90%): ${tv961.rowsCount} linha (${tv961.headerHeightPx}px), centro=${tv961.navStripRect.centerX}px, overflow=0\n` +
-              `   • 390×844 (Retrato): ${portrait390Inicio.rowsCount} linhas no mesmo <header>, scrollWidth faixa=${portrait390Inicio.navStripRect.scrollWidth}px (clientWidth=${portrait390Inicio.navStripRect.clientWidth}px), Favoritos visível após scrollLeft=${portrait390Favorites.navStripRect.scrollLeft}px, overflow página=0\n` +
-              `   • Fluxos validados: único <header>, 0 consultas extras ao abrir menus, lupa -> digitação -> Voltar, conta -> Conta/Configurações/Sair, encaminhamento único de foco (imediato, tardio e cancelado se foco mudar)`
+              `   • 1580×760 (Desktop 100%, estimativa de referência): ${desktop1580.rowsCount} linha (${desktop1580.headerHeightPx}px), centro=${desktop1580.navStripRect.centerX}px, overflow=0\n` +
+              `   • 961×541 (TV 90%, estimativa de referência): ${tv961.rowsCount} linha (${tv961.headerHeightPx}px), centro=${tv961.navStripRect.centerX}px, overflow=0\n` +
+              `   • 390×844 (Retrato, estimativa de referência): ${portrait390Inicio.rowsCount} linhas no mesmo <header>, scrollWidth faixa=${portrait390Inicio.navStripRect.scrollWidth}px (clientWidth=${portrait390Inicio.navStripRect.clientWidth}px), Favoritos visível após scrollLeft=${portrait390Favorites.navStripRect.scrollLeft}px, overflow página=0\n` +
+              `   • Fluxos validados: único <header>, 0 consultas extras ao abrir/fechar menus, lupa -> digitação real -> Voltar (no Início e em Filmes), conta -> Conta/Configurações/Sair por setas -> Voltar (no Início e em Filmes), encaminhamento único de foco (imediato, tardio e cancelado ao mover foco ou trocar seção)`
           );
         } finally {
           useDelayedSeriesCategories = false;

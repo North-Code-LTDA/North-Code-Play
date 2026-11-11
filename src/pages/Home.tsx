@@ -92,20 +92,31 @@ function HomeContent({ credentials }: { credentials: any }) {
     const viewRoot = mainViewAreaRef.current;
     if (!viewRoot) return false;
 
-    const categoryBtns = Array.from(
+    const isDesktopViewport =
+      typeof window === 'undefined' ||
+      typeof window.innerWidth !== 'number' ||
+      window.innerWidth === 0 ||
+      window.innerWidth >= 768;
+
+    const categoryBtns: HTMLButtonElement[] = Array.from<HTMLButtonElement>(
       viewRoot.querySelectorAll<HTMLButtonElement>(
         '[data-nav-zone="categories"] button[data-category-id], [data-nav-zone="categories"] button[data-live-category-id]'
       )
-    ).filter((btn) => isElementFocusable(btn));
+    ).filter((btn: HTMLButtonElement) => {
+      if (!isElementFocusable(btn)) return false;
+      if (isDesktopViewport && btn.closest('.md\\:hidden')) return false;
+      if (!isDesktopViewport && btn.closest('.hidden.md\\:flex')) return false;
+      return true;
+    });
 
     if (categoryBtns.length === 0) {
       return false;
     }
 
-    const selectedBtn = categoryBtns.find(
-      (btn) => btn.getAttribute('data-category-selected') === 'true'
+    const selectedBtn: HTMLButtonElement | undefined = categoryBtns.find(
+      (btn: HTMLButtonElement) => btn.getAttribute('data-category-selected') === 'true'
     );
-    const targetBtn = selectedBtn || categoryBtns[0];
+    const targetBtn: HTMLButtonElement = selectedBtn || categoryBtns[0];
 
     pendingSectionFocusRef.current = null;
     isApplyingSectionFocusRef.current = true;
@@ -131,14 +142,20 @@ function HomeContent({ credentials }: { credentials: any }) {
 
     const viewRoot = mainViewAreaRef.current;
     let observer: MutationObserver | null = null;
-    if (viewRoot && typeof MutationObserver !== 'undefined') {
-      observer = new MutationObserver(() => {
+    const ObserverCtor =
+      typeof MutationObserver !== 'undefined'
+        ? MutationObserver
+        : typeof window !== 'undefined'
+          ? (window as any).MutationObserver
+          : undefined;
+    if (viewRoot && ObserverCtor) {
+      observer = new ObserverCtor(() => {
         if (tryApplyPendingSectionFocus() && observer) {
           observer.disconnect();
           observer = null;
         }
       });
-      observer.observe(viewRoot, {
+      observer!.observe(viewRoot, {
         childList: true,
         subtree: true,
         attributes: true,

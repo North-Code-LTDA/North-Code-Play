@@ -409,7 +409,7 @@ export const TopHeader = React.memo(function TopHeader({
   // Back priority for Account Menu when open
   useBackHandler(
     'header-account-menu',
-    BACK_PRIORITY.HEADER_SEARCH,
+    BACK_PRIORITY.ACCOUNT_MENU,
     () => {
       if (!isAccountMenuOpen) return false;
       handleCloseAccountMenuAndRestoreFocus(true);
@@ -434,7 +434,7 @@ export const TopHeader = React.memo(function TopHeader({
     if (e.key === 'Tab') {
       const menu = accountMenuRef.current;
       if (!menu) return;
-      const items = Array.from(
+      const items: HTMLButtonElement[] = Array.from<HTMLButtonElement>(
         menu.querySelectorAll<HTMLButtonElement>('button[data-account-action]')
       );
       if (items.length === 0) return;
@@ -599,6 +599,7 @@ export const TopHeader = React.memo(function TopHeader({
                 aria-label="Opções da conta"
                 data-header-account-menu="true"
                 data-focus-scope="modal"
+                data-nav-zone="modal"
                 onKeyDown={handleAccountMenuKeyDown}
                 className="nc-top-header-account-menu absolute right-0 top-full mt-2 w-56 rounded-xl bg-[#181818]/98 border border-white/12 shadow-2xl py-2 z-50 backdrop-blur-xl flex flex-col"
               >

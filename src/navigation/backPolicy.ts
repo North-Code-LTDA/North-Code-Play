@@ -12,6 +12,8 @@ export interface BackHandlerEntry {
  * - SUB_MODAL (100): Player settings/diagnostics, resume playback modal, search edit mode, error modals
  * - FULLSCREEN_PLAYER (90): Embedded fullscreen preview or standalone VideoPlayer
  * - DETAILS_MODAL (80): MovieDetails, SeriesDetails
+ * - ACCOUNT_MENU (76): TopHeader floating account dropdown menu
+ * - HEADER_SEARCH (75): TopHeader on-demand search input
  * - DRAWER_MENU (70): Mobile navigation drawer
  * - VIEW_INTERNAL (60): LiveTvView active channel / channel list -> categories, MoviesView/SeriesView content -> categories
  * - SECTION_TO_HOME (50): Internal section (live, movies, series, favorites, config) -> inicio
@@ -20,6 +22,8 @@ export const BACK_PRIORITY = {
   SUB_MODAL: 100,
   FULLSCREEN_PLAYER: 90,
   DETAILS_MODAL: 80,
+  ACCOUNT_MENU: 76,
+  HEADER_SEARCH: 75,
   DRAWER_MENU: 70,
   VIEW_INTERNAL: 60,
   SECTION_TO_HOME: 50,

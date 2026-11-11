@@ -723,8 +723,11 @@ function getLogicalZone(el: HTMLElement, ctx?: NavPassContext): string {
   }
 
   let result = 'main';
+  const modalScope = el.closest<HTMLElement>('[data-focus-scope="modal"]');
   const zoneEl = el.closest<HTMLElement>('[data-nav-zone]');
-  if (zoneEl) {
+  if (modalScope && (!zoneEl || !modalScope.contains(zoneEl))) {
+    result = 'modal';
+  } else if (zoneEl) {
     const zone = zoneEl.getAttribute('data-nav-zone') || 'main';
     result = zone === 'episodes' ? 'main' : zone;
   } else if (el.closest('aside')) {
@@ -1246,6 +1249,32 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
   const currentRow = getLogicalRow(activeEl, ctx);
   const currentGrid = getLogicalGrid(activeEl, ctx);
   const sameZoneCandidates = candidates.filter((c) => getLogicalZone(c, ctx) === currentZone);
+
+  // Account dropdown menu: explicit vertical list inside its own modal focus scope
+  const accountMenuScope = activeEl.closest<HTMLElement>('[data-header-account-menu="true"]');
+  if (accountMenuScope) {
+    const menuItems = candidates.filter((c) => accountMenuScope.contains(c));
+    const idx = menuItems.indexOf(activeEl);
+    if (idx !== -1) {
+      if (direction === 'down') {
+        if (idx < menuItems.length - 1) {
+          const nextItem = menuItems[idx + 1];
+          focusElementSafely(nextItem, direction);
+          return nextItem;
+        }
+        return activeEl;
+      }
+      if (direction === 'up') {
+        if (idx > 0) {
+          const prevItem = menuItems[idx - 1];
+          focusElementSafely(prevItem, direction);
+          return prevItem;
+        }
+        return activeEl;
+      }
+    }
+    return activeEl;
+  }
 
   // ---------------------------------------------------------------------------
   // VERTICAL NAVIGATION ('up' | 'down')
