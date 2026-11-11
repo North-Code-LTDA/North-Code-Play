@@ -58,6 +58,62 @@ function extractReleaseYear(item: any): number | null {
   return year > 0 ? year : null;
 }
 
+function setElementScrollTopImmediate(el: HTMLElement, targetScrollTop: number): void {
+  const next = Math.max(0, targetScrollTop);
+  const prevBehavior = el.style?.scrollBehavior ?? '';
+  try {
+    if (el.style) {
+      el.style.scrollBehavior = 'auto';
+    }
+    if (typeof el.scrollTo === 'function') {
+      try {
+        el.scrollTo({ top: next, behavior: 'instant' as ScrollBehavior });
+      } catch {
+        el.scrollTo({ top: next, behavior: 'auto' });
+      }
+    }
+    el.scrollTop = next;
+  } catch {
+    el.scrollTop = next;
+  } finally {
+    if (el.style) {
+      if (prevBehavior) {
+        el.style.scrollBehavior = prevBehavior;
+      } else {
+        el.style.removeProperty('scroll-behavior');
+      }
+    }
+  }
+}
+
+function measureShowcaseRowVisualTop(
+  containerEl: HTMLElement | null,
+  mainEl: HTMLElement | null,
+  rowIndex: number
+): number | null {
+  if (!containerEl || !mainEl || rowIndex < 0) return null;
+  const rowWrapper = containerEl.querySelector<HTMLElement>(
+    `[data-home-row-index="${rowIndex}"]`
+  );
+  if (!rowWrapper) return null;
+  const targetEl =
+    rowWrapper.closest<HTMLElement>('[data-scroll-block="true"]') || rowWrapper;
+  const mainRect = mainEl.getBoundingClientRect();
+  const rowRect = targetEl.getBoundingClientRect();
+  if (
+    (rowRect.height > 0 || rowRect.top !== 0 || rowRect.bottom !== 0) &&
+    typeof rowRect.top === 'number' &&
+    typeof mainRect.top === 'number'
+  ) {
+    return rowRect.top - mainRect.top;
+  }
+  const offsetTop = (targetEl as any).offsetTop;
+  if (typeof offsetTop === 'number' && offsetTop > 0) {
+    return offsetTop - (mainEl.scrollTop || 0);
+  }
+  return null;
+}
+
 export type CatalogShowcaseSection = 'inicio' | 'movies' | 'series';
 
 export interface CatalogShowcaseViewProps {
@@ -419,6 +475,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   const rowWindowStartRef = useRef(0);
   rowWindowStartRef.current = rowWindowStart;
   const isProgrammaticRowShiftRef = useRef(false);
+  const isDpadShowcaseNavActiveRef = useRef(false);
 
   const mainContainerRef = useRef<HTMLElement | null>(null);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
@@ -476,6 +533,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   useEffect(() => {
     rowWindowStartRef.current = 0;
     setRowWindowStart(0);
+    isDpadShowcaseNavActiveRef.current = false;
     preSearchScrollTopRef.current = null;
     preSearchRowWindowStartRef.current = null;
     wasSearchingRef.current = false;
@@ -1003,9 +1061,95 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     seriesIndex,
   ]);
 
+  // Shift showcase row window while preserving the anchor row's visual position in the viewport
+  // via a single measured delta compensation pass.
+  const shiftShowcaseWindowWithAnchor = useCallback(
+    (desiredStart: number, preferredAnchorRowIndex?: number): boolean => {
+      const clampedDesired = Math.max(0, Math.min(maxRowWindowStart, desiredStart));
+      const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
+      if (clampedDesired === curStart) {
+        return false;
+      }
+      const curEnd = Math.min(totalShowcaseRows, curStart + SHOWCASE_ROW_WINDOW_SIZE);
+      const nextEnd = Math.min(totalShowcaseRows, clampedDesired + SHOWCASE_ROW_WINDOW_SIZE);
+      const overlapStart = Math.max(curStart, clampedDesired);
+      const overlapEnd = Math.min(curEnd, nextEnd);
+
+      let anchorRowIdx = -1;
+      if (overlapStart < overlapEnd) {
+        if (
+          typeof preferredAnchorRowIndex === 'number' &&
+          preferredAnchorRowIndex >= overlapStart &&
+          preferredAnchorRowIndex < overlapEnd
+        ) {
+          anchorRowIdx = preferredAnchorRowIndex;
+        } else {
+          const activeEl =
+            typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
+          const focusedRowWrapper = activeEl?.closest<HTMLElement>('[data-home-row-index]');
+          const parsedFocusedRow = focusedRowWrapper?.hasAttribute('data-home-row-index')
+            ? parseInt(focusedRowWrapper.getAttribute('data-home-row-index') || '-1', 10)
+            : -1;
+          if (
+            !isNaN(parsedFocusedRow) &&
+            parsedFocusedRow >= overlapStart &&
+            parsedFocusedRow < overlapEnd
+          ) {
+            anchorRowIdx = parsedFocusedRow;
+          } else {
+            anchorRowIdx = overlapStart;
+          }
+        }
+      }
+
+      const mainEl = mainContainerRef.current;
+      const rowsContainerEl = showcaseRowsContainerRef.current;
+      const visualTopBefore =
+        anchorRowIdx >= 0
+          ? measureShowcaseRowVisualTop(rowsContainerEl, mainEl, anchorRowIdx)
+          : null;
+
+      isProgrammaticRowShiftRef.current = true;
+      rowWindowStartRef.current = clampedDesired;
+      try {
+        try {
+          flushSync(() => {
+            setRowWindowStart(clampedDesired);
+          });
+        } catch {
+          setRowWindowStart(clampedDesired);
+        }
+
+        if (anchorRowIdx >= 0 && visualTopBefore !== null && mainContainerRef.current) {
+          const visualTopAfter = measureShowcaseRowVisualTop(
+            showcaseRowsContainerRef.current,
+            mainContainerRef.current,
+            anchorRowIdx
+          );
+          if (visualTopAfter !== null) {
+            const delta = visualTopAfter - visualTopBefore;
+            if (Math.abs(delta) > 0.5) {
+              setElementScrollTopImmediate(
+                mainContainerRef.current,
+                Math.max(0, (mainContainerRef.current.scrollTop || 0) + delta)
+              );
+            }
+          }
+        }
+      } finally {
+        isProgrammaticRowShiftRef.current = false;
+      }
+      return true;
+    },
+    [maxRowWindowStart, totalShowcaseRows]
+  );
+
   // Synchronously shift vertical showcase row window when navigating by D-Pad or restoring details origin
   const ensureShowcaseRowMounted = useCallback(
     (targetRowIndex: number, preserveRowIndex?: number): boolean => {
+      isDpadShowcaseNavActiveRef.current = true;
       if (!shouldVirtualizeShowcaseRows || totalShowcaseRows <= SHOWCASE_ROW_WINDOW_SIZE) {
         return false;
       }
@@ -1042,7 +1186,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         preserveRowIndex >= 0 &&
         preserveRowIndex < totalShowcaseRows &&
         Math.abs(clampedTarget - preserveRowIndex) < SHOWCASE_ROW_WINDOW_SIZE
-      ) {
+       ) {
         if (desiredStart > preserveRowIndex) {
           desiredStart = preserveRowIndex;
         } else if (desiredStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < preserveRowIndex) {
@@ -1056,24 +1200,21 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         desiredStart = Math.max(0, Math.min(maxRowWindowStart, desiredStart));
       }
 
-      if (desiredStart === curStart) {
-        return false;
-      }
+      const preferredAnchor =
+        typeof preserveRowIndex === 'number' &&
+        preserveRowIndex >= 0 &&
+        preserveRowIndex < totalShowcaseRows
+          ? preserveRowIndex
+          : clampedTarget;
 
-      isProgrammaticRowShiftRef.current = true;
-      rowWindowStartRef.current = desiredStart;
-      try {
-        flushSync(() => {
-          setRowWindowStart(desiredStart);
-        });
-      } catch {
-        setRowWindowStart(desiredStart);
-      } finally {
-        isProgrammaticRowShiftRef.current = false;
-      }
-      return true;
+      return shiftShowcaseWindowWithAnchor(desiredStart, preferredAnchor);
     },
-    [shouldVirtualizeShowcaseRows, totalShowcaseRows, maxRowWindowStart]
+    [
+      shouldVirtualizeShowcaseRows,
+      totalShowcaseRows,
+      maxRowWindowStart,
+      shiftShowcaseWindowWithAnchor,
+    ]
   );
 
   const latestShowcaseControllerRef = useRef<{
@@ -1806,7 +1947,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       !selectedSeries
   );
 
-  // Sync vertical showcase row window on scroll (touch, mouse wheel, or programmatic scrollTop)
+  // Sync vertical showcase row window on scroll (touch, mouse wheel, or scrollbar)
   useEffect(() => {
     const mainEl = mainContainerRef.current;
     if (
@@ -1815,11 +1956,33 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       (section === 'inicio' && hasSearch) ||
       !shouldVirtualizeShowcaseRows
     ) {
+      isDpadShowcaseNavActiveRef.current = false;
       return;
     }
 
+    const releaseDpadScrollControl = () => {
+      isDpadShowcaseNavActiveRef.current = false;
+    };
+
+    const onShowcaseKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const activeEl =
+          typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+        if (activeEl && mainEl.contains(activeEl)) {
+          isDpadShowcaseNavActiveRef.current = true;
+        }
+      }
+    };
+
     const handleShowcaseScroll = () => {
       if (isProgrammaticRowShiftRef.current) return;
+      // While D-Pad vertical navigation owns showcase row transitions, ignore scroll events
+      // (including intermediate scrollTop positions from unfinished scroll animations)
+      // so the focused row is never unmounted by an intermediate scroll event.
+      if (isDpadShowcaseNavActiveRef.current) return;
+
       const currentScrollTop = mainEl.scrollTop || 0;
       const heroOffset = heroItems.length > 0 ? 420 : 40;
       const relativeTop = Math.max(0, currentScrollTop - heroOffset);
@@ -1827,48 +1990,55 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       let nextStart = computeShowcaseRowStartFromScroll(currentScrollTop);
 
       // If focus is currently on a showcase row near the current scroll position,
-      // keep the focused row inside the mounted window so D-Pad scroll adjustments never unmount activeElement.
+      // keep the focused row inside the mounted window.
       const activeEl =
         typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
           ? document.activeElement
           : null;
       const focusedRowWrapper = activeEl?.closest<HTMLElement>('[data-home-row-index]');
+      let preferredAnchorRowIdx: number | undefined;
       if (focusedRowWrapper && mainEl.contains(focusedRowWrapper)) {
         const focusedRowIdx = parseInt(
           focusedRowWrapper.getAttribute('data-home-row-index') || '-1',
           10
         );
-        if (
-          !isNaN(focusedRowIdx) &&
-          focusedRowIdx >= 0 &&
-          Math.abs(approxFirstRow - focusedRowIdx) <= 2 &&
-          Math.abs(nextStart - focusedRowIdx) < SHOWCASE_ROW_WINDOW_SIZE
-        ) {
-          if (nextStart > focusedRowIdx) {
-            nextStart = focusedRowIdx;
-          } else if (nextStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < focusedRowIdx) {
-            nextStart = Math.min(
-              maxRowWindowStart,
-              focusedRowIdx - SHOWCASE_ROW_WINDOW_SIZE + 1
-            );
+        if (!isNaN(focusedRowIdx) && focusedRowIdx >= 0) {
+          preferredAnchorRowIdx = focusedRowIdx;
+          if (
+            Math.abs(approxFirstRow - focusedRowIdx) <= 2 &&
+            Math.abs(nextStart - focusedRowIdx) < SHOWCASE_ROW_WINDOW_SIZE
+          ) {
+            if (nextStart > focusedRowIdx) {
+              nextStart = focusedRowIdx;
+            } else if (nextStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < focusedRowIdx) {
+              nextStart = Math.min(
+                maxRowWindowStart,
+                focusedRowIdx - SHOWCASE_ROW_WINDOW_SIZE + 1
+              );
+            }
           }
         }
       }
 
       if (nextStart !== rowWindowStartRef.current) {
-        rowWindowStartRef.current = nextStart;
-        try {
-          flushSync(() => {
-            setRowWindowStart(nextStart);
-          });
-        } catch {
-          setRowWindowStart(nextStart);
-        }
+        shiftShowcaseWindowWithAnchor(nextStart, preferredAnchorRowIdx);
       }
     };
 
+    window.addEventListener('keydown', onShowcaseKeyDown, true);
+    mainEl.addEventListener('wheel', releaseDpadScrollControl, { passive: true });
+    mainEl.addEventListener('touchstart', releaseDpadScrollControl, { passive: true });
+    mainEl.addEventListener('touchmove', releaseDpadScrollControl, { passive: true });
+    mainEl.addEventListener('pointerdown', releaseDpadScrollControl, { passive: true });
+    mainEl.addEventListener('mousedown', releaseDpadScrollControl, { passive: true });
     mainEl.addEventListener('scroll', handleShowcaseScroll, { passive: true });
     return () => {
+      window.removeEventListener('keydown', onShowcaseKeyDown, true);
+      mainEl.removeEventListener('wheel', releaseDpadScrollControl);
+      mainEl.removeEventListener('touchstart', releaseDpadScrollControl);
+      mainEl.removeEventListener('touchmove', releaseDpadScrollControl);
+      mainEl.removeEventListener('pointerdown', releaseDpadScrollControl);
+      mainEl.removeEventListener('mousedown', releaseDpadScrollControl);
       mainEl.removeEventListener('scroll', handleShowcaseScroll);
     };
   }, [
@@ -1879,6 +2049,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     heroItems.length,
     maxRowWindowStart,
     computeShowcaseRowStartFromScroll,
+    shiftShowcaseWindowWithAnchor,
   ]);
 
   // Keyboard navigation inside Categories menu
@@ -2238,6 +2409,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         ref={mainContainerRef as React.RefObject<HTMLElement>}
         data-scroll-container="true"
         data-nav-zone="content"
+        style={{ overflowAnchor: 'none' }}
         className="flex-1 bg-nc-bg overflow-y-auto h-full"
       >
         {/* Domain Error Banner for Filmes / Séries */}
@@ -2509,14 +2681,16 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               <div
                 ref={showcaseRowsContainerCallbackRef}
                 data-showcase-rows-container="true"
+                data-showcase-virtualized={shouldVirtualizeShowcaseRows ? 'true' : 'false'}
                 data-showcase-total-rows={totalShowcaseRows}
+                style={{ overflowAnchor: 'none' }}
                 className="mt-2 sm:mt-4 px-4 sm:px-6 md:px-10 relative z-20 space-y-6"
               >
                 {topShowcaseSpacerPx > 0 && (
                   <div
                     data-showcase-row-spacer="top"
                     aria-hidden="true"
-                    style={{ height: `${topShowcaseSpacerPx}px` }}
+                    style={{ height: `${topShowcaseSpacerPx}px`, overflowAnchor: 'none' }}
                   />
                 )}
                 {mountedShowcaseRows.map((row) => (
@@ -2524,6 +2698,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                     key={row.key}
                     data-scroll-block="true"
                     data-showcase-row-key={row.key}
+                    style={{ overflowAnchor: 'none' }}
                   >
                     <HorizontalRow
                       title={row.title}
@@ -2539,7 +2714,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                   <div
                     data-showcase-row-spacer="bottom"
                     aria-hidden="true"
-                    style={{ height: `${bottomShowcaseSpacerPx}px` }}
+                    style={{ height: `${bottomShowcaseSpacerPx}px`, overflowAnchor: 'none' }}
                   />
                 )}
               </div>

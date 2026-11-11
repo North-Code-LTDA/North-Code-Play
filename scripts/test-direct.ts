@@ -23326,6 +23326,534 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.25-Stage2] Rolar vitrines com muitas categorias, pesquisar 2.500 itens e retomar episódio não deve disparar consultas extras de catálogo'
           );
 
+          // ===================================================================
+          // (d) Regressão de navegação vertical por setas em vitrine com 32 fileiras (>= 30):
+          //     - Eventos reais de keydown (ArrowDown e ArrowUp) intercalados com eventos de scroll
+          //       contendo scrollTop intermediário de uma rolagem suave não concluída;
+          //     - Sequência rápida para baixo (15 -> 27) e para cima (27 -> 5) a partir do meio do catálogo,
+          //       incluindo tecla mantida pressionada (repeat: true);
+          //     - Preservação da posição visual da fileira âncora ao montar/desmontar fileiras de alturas
+          //       variáveis acima da área visível;
+          //     - Saída normal ao subir da primeira fileira real (0 -> HeroBanner) e rolagem por roda
+          //       do mouse (wheel + scroll) funcionando depois das setas.
+          // ===================================================================
+          const dpad32Creds = {
+            serverUrl: 'http://stage2-dpad32.local:8080',
+            username: 'dpad32_user',
+            password: 'dpad32_pass',
+          };
+          windowInstance.localStorage.setItem(
+            CREDENTIALS_KEY,
+            JSON.stringify(dpad32Creds)
+          );
+
+          // 31 categorias de Filmes + 1 fileira fixa ("Filmes em Destaque") = 32 fileiras na vitrine de Filmes
+          const dpad31VodCategories = Array.from({ length: 31 }, (_, i) => ({
+            category_id: `dpad32_cat_${i + 1}`,
+            category_name: `Categoria DPad ${i + 1}`,
+          }));
+          const dpad31VodStreams: any[] = [];
+          for (let c = 0; c < 31; c++) {
+            for (let j = 0; j < 4; j++) {
+              const idNum = 120000 + c * 10 + j;
+              dpad31VodStreams.push({
+                stream_id: idNum,
+                name: `Filme DPad Cat ${c + 1} #${j + 1}`,
+                category_id: `dpad32_cat_${c + 1}`,
+                year: '2025',
+                rating: '8.3',
+                stream_icon: `http://stage2-dpad32.local:8080/vod_${idNum}.jpg`,
+                container_extension: 'mp4',
+              });
+            }
+          }
+
+          (XtreamService as any).getLiveCategories = async () => [];
+          (XtreamService as any).getVodCategories = async () => dpad31VodCategories;
+          (XtreamService as any).getSeriesCategories = async () => [];
+          (XtreamService as any).getLiveStreams = async () => [];
+          (XtreamService as any).getVodStreams = async () => dpad31VodStreams;
+          (XtreamService as any).getSeries = async () => [];
+
+          await act(async () => {
+            stage1Root.render(React.createElement('div', null));
+          });
+          await act(async () => {
+            stage1Root.render(
+              React.createElement(
+                MemoryRouter,
+                { initialEntries: ['/home'] },
+                React.createElement(
+                  Stage1NavProvider,
+                  null,
+                  React.createElement(RealHomeApp)
+                )
+              )
+            );
+            await new Promise((r) => setTimeout(r, 80));
+          });
+
+          const dpad32MoviesNavBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="movies"]'
+          )!;
+          await act(async () => {
+            dpad32MoviesNavBtn.focus();
+            dpad32MoviesNavBtn.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          const dpad32MainEl = stage1Container.querySelector<HTMLElement>(
+            'main[data-scroll-container="true"]'
+          )!;
+          const dpad32RowsContainer = stage1Container.querySelector<HTMLElement>(
+            '[data-showcase-rows-container="true"]'
+          )!;
+          assert.strictEqual(
+            dpad32RowsContainer.getAttribute('data-showcase-total-rows'),
+            '32',
+            '[12.25-d] Vitrine de Filmes deve ter 32 fileiras totais (>= 30 fileiras)'
+          );
+          assert.strictEqual(
+            dpad32MainEl.style.overflowAnchor,
+            'none',
+            '[12.25-d] Container rolável da vitrine deve desativar overflow-anchor automático para não duplicar compensação'
+          );
+
+          // Simular geometria real com fileiras de alturas diferentes (340px, 380px, 420px != 320px)
+          // para validar a preservação da posição visual da fileira âncora ao trocar a janela
+          const getSimulatedRowHeight = (logicalRowIdx: number): number =>
+            340 + (logicalRowIdx % 3) * 40;
+
+          Object.defineProperty(dpad32MainEl, 'clientHeight', {
+            value: 720,
+            configurable: true,
+          });
+          dpad32MainEl.getBoundingClientRect = () =>
+            ({
+              top: 0,
+              bottom: 720,
+              left: 0,
+              right: 1280,
+              width: 1280,
+              height: 720,
+              x: 0,
+              y: 0,
+              toJSON: () => ({}),
+            }) as DOMRect;
+
+          const computeSimulatedRowContentTop = (targetRowEl: HTMLElement): number => {
+            const topSpacerEl = dpad32RowsContainer.querySelector<HTMLElement>(
+              '[data-showcase-row-spacer="top"]'
+            );
+            const topSpacerHeight = topSpacerEl
+              ? parseFloat(topSpacerEl.style.height || '0') || 0
+              : 0;
+            const mountedRowEls = Array.from(
+              dpad32RowsContainer.querySelectorAll<HTMLElement>('[data-home-row-index]')
+            );
+            let accum = 420 + topSpacerHeight;
+            for (const rowEl of mountedRowEls) {
+              if (rowEl === targetRowEl) break;
+              const rIdx = parseInt(rowEl.getAttribute('data-home-row-index') || '0', 10);
+              accum += getSimulatedRowHeight(rIdx);
+            }
+            return accum;
+          };
+
+          const installDynamicRowRects = () => {
+            const heroStageEl = stage1Container.querySelector<HTMLElement>(
+              '[data-hero-stage="true"]'
+            );
+            if (heroStageEl) {
+              heroStageEl.getBoundingClientRect = () => {
+                const top = 0 - (dpad32MainEl.scrollTop || 0);
+                return {
+                  top,
+                  bottom: top + 380,
+                  left: 40,
+                  right: 1240,
+                  width: 1200,
+                  height: 380,
+                  x: 40,
+                  y: top,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
+              const heroBtns = Array.from(
+                heroStageEl.querySelectorAll<HTMLElement>('button')
+              );
+              heroBtns.forEach((btn, bIdx) => {
+                btn.getBoundingClientRect = () => {
+                  const top = 280 - (dpad32MainEl.scrollTop || 0);
+                  const left = 60 + bIdx * 180;
+                  return {
+                    top,
+                    bottom: top + 48,
+                    left,
+                    right: left + 160,
+                    width: 160,
+                    height: 48,
+                    x: left,
+                    y: top,
+                    toJSON: () => ({}),
+                  } as DOMRect;
+                };
+              });
+            }
+
+            const mountedWrappers = Array.from(
+              dpad32RowsContainer.querySelectorAll<HTMLElement>('[data-home-row-index]')
+            );
+            for (const wrapper of mountedWrappers) {
+              const rIdx = parseInt(wrapper.getAttribute('data-home-row-index') || '0', 10);
+              const rHeight = getSimulatedRowHeight(rIdx);
+              const scrollBlock =
+                wrapper.closest<HTMLElement>('[data-scroll-block="true"]') || wrapper;
+              const rectFn = () => {
+                const cTop = computeSimulatedRowContentTop(wrapper);
+                const vTop = cTop - (dpad32MainEl.scrollTop || 0);
+                return {
+                  top: vTop,
+                  bottom: vTop + rHeight,
+                  left: 40,
+                  right: 1240,
+                  width: 1200,
+                  height: rHeight,
+                  x: 40,
+                  y: vTop,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
+              scrollBlock.getBoundingClientRect = rectFn;
+              wrapper.getBoundingClientRect = rectFn;
+              const cards = Array.from(
+                wrapper.querySelectorAll<HTMLElement>('[data-nav-item="true"]')
+              );
+              cards.forEach((card, cIdx) => {
+                card.getBoundingClientRect = () => {
+                  const cTop = computeSimulatedRowContentTop(wrapper) + 48;
+                  const vTop = cTop - (dpad32MainEl.scrollTop || 0);
+                  const left = 40 + cIdx * 200;
+                  return {
+                    top: vTop,
+                    bottom: vTop + 220,
+                    left,
+                    right: left + 180,
+                    width: 180,
+                    height: 220,
+                    x: left,
+                    y: vTop,
+                    toJSON: () => ({}),
+                  } as DOMRect;
+                };
+              });
+            }
+          };
+
+          const domObserver = new (windowInstance as any).MutationObserver(() => {
+            installDynamicRowRects();
+          });
+          domObserver.observe(dpad32RowsContainer, {
+            childList: true,
+            subtree: true,
+          });
+          installDynamicRowRects();
+
+          // 1. Posicionar no meio do catálogo (fileira 15 de 32)
+          await act(async () => {
+            dpad32MainEl.scrollTop = 420 + 15 * 320;
+            dpad32MainEl.dispatchEvent(
+              new windowInstance.Event('scroll') as unknown as Event
+            );
+            await new Promise((r) => setTimeout(r, 20));
+          });
+          installDynamicRowRects();
+
+          const row15FirstCard = dpad32RowsContainer.querySelector<HTMLElement>(
+            '[data-home-row-index="15"] [data-nav-item="true"]'
+          )!;
+          assert(
+            row15FirstCard !== null,
+            '[12.25-d] Fileira 15 (meio do catálogo de 32 fileiras) deve estar montada para iniciar o teste'
+          );
+          await act(async () => {
+            row15FirstCard.focus();
+            await new Promise((r) => setTimeout(r, 55));
+          });
+          assertSameElement(
+            document.activeElement,
+            row15FirstCard,
+            '[12.25-d] Foco inicial deve estar no primeiro cartão da fileira 15'
+          );
+
+          const dispatchRealArrowKeyAndCheck = async (
+            key: 'ArrowDown' | 'ArrowUp',
+            repeat: boolean,
+            expectedRowIdx: number,
+            intermediateScrollTop: number,
+            stepLabel: string
+          ) => {
+            // Aguardar intervalo >= 50ms para respeitar KEY_REPEAT_THROTTLE_MS (48ms)
+            await new Promise((r) => setTimeout(r, 52));
+
+            // Medir posição visual da fileira atual (âncora) antes da tecla
+            const prevActive = document.activeElement as HTMLElement;
+            const prevRowWrapper = prevActive.closest<HTMLElement>('[data-home-row-index]')!;
+            const prevRowIdx = parseInt(
+              prevRowWrapper.getAttribute('data-home-row-index') || '-1',
+              10
+            );
+            const prevMountedStart = parseInt(
+              dpad32RowsContainer
+                .querySelector<HTMLElement>('[data-home-row-index]')
+                ?.getAttribute('data-home-row-index') || '0',
+              10
+            );
+
+            await act(async () => {
+              const target = (document.activeElement as HTMLElement) || windowInstance;
+              target.dispatchEvent(
+                new (windowInstance as any).KeyboardEvent('keydown', {
+                  key,
+                  repeat,
+                  bubbles: true,
+                  cancelable: true,
+                })
+              );
+            });
+            installDynamicRowRects();
+
+            const activeAfterKey = document.activeElement as HTMLElement | null;
+            assert(
+              activeAfterKey !== null && activeAfterKey.isConnected,
+              `[12.25-d] (${stepLabel}) Foco deve permanecer conectado após ${key} (repeat=${repeat})`
+            );
+            assert.notStrictEqual(
+              activeAfterKey?.getAttribute('data-hero-action'),
+              'play',
+              `[12.25-d] (${stepLabel}) ${key} no meio do catálogo NÃO deve cair no botão Assistir do HeroBanner`
+            );
+            assert(
+              dpad32MainEl.scrollTop > 0,
+              `[12.25-d] (${stepLabel}) ${key} no meio do catálogo NÃO deve resetar scrollTop para 0 (scrollTop=${dpad32MainEl.scrollTop})`
+            );
+
+            const activeRowAfterKey = activeAfterKey?.closest<HTMLElement>(
+              '[data-home-row-index]'
+            );
+            assert.strictEqual(
+              activeRowAfterKey?.getAttribute('data-home-row-index'),
+              String(expectedRowIdx),
+              `[12.25-d] (${stepLabel}) Cada tecla ${key} aceita deve avançar exatamente 1 fileira lógica (${prevRowIdx} -> ${expectedRowIdx})`
+            );
+
+            const mountedCountAfterKey =
+              dpad32RowsContainer.querySelectorAll('[data-home-row-index]').length;
+            assert(
+              mountedCountAfterKey <= 8,
+              `[12.25-d] (${stepLabel}) Janela da vitrine deve manter no máximo 8 fileiras montadas (montou ${mountedCountAfterKey})`
+            );
+
+            // Verificar que a fileira anterior permaneceu montada durante a troca de janela
+            const newMountedStart = parseInt(
+              dpad32RowsContainer
+                .querySelector<HTMLElement>('[data-home-row-index]')
+                ?.getAttribute('data-home-row-index') || '0',
+              10
+            );
+            if (newMountedStart !== prevMountedStart) {
+              const preservedPrevRow = dpad32RowsContainer.querySelector<HTMLElement>(
+                `[data-home-row-index="${prevRowIdx}"]`
+              );
+              assert(
+                preservedPrevRow !== null,
+                `[12.25-d] (${stepLabel}) Ao deslocar a janela (${prevMountedStart} -> ${newMountedStart}), a fileira de origem (${prevRowIdx}) deve ser preservada na janela`
+              );
+            }
+
+            // Intercalar evento de scroll com scrollTop intermediário (simulando rolagem suave em andamento)
+            await act(async () => {
+              dpad32MainEl.scrollTop = intermediateScrollTop;
+              dpad32MainEl.dispatchEvent(
+                new windowInstance.Event('scroll') as unknown as Event
+              );
+            });
+            installDynamicRowRects();
+
+            const activeAfterScroll = document.activeElement as HTMLElement | null;
+            assert(
+              activeAfterScroll !== null && activeAfterScroll.isConnected,
+              `[12.25-d] (${stepLabel}) Foco deve permanecer conectado no DOM após evento de scroll intermediário (scrollTop=${intermediateScrollTop})`
+            );
+            assert.strictEqual(
+              activeAfterScroll
+                ?.closest<HTMLElement>('[data-home-row-index]')
+                ?.getAttribute('data-home-row-index'),
+              String(expectedRowIdx),
+              `[12.25-d] (${stepLabel}) Evento de scroll intermediário do D-Pad NÃO deve desmontar a fileira focada (${expectedRowIdx})`
+            );
+            const mountedCountAfterScroll =
+              dpad32RowsContainer.querySelectorAll('[data-home-row-index]').length;
+            assert(
+              mountedCountAfterScroll <= 8,
+              `[12.25-d] (${stepLabel}) Janela deve manter <= 8 fileiras após scroll intermediário (montou ${mountedCountAfterScroll})`
+            );
+          };
+
+          // 2. Sequência rápida para BAIXO a partir do meio do catálogo (15 -> 27), intercalando scroll intermediário e repeat: true
+          for (let targetRow = 16; targetRow <= 27; targetRow++) {
+            const isRepeat = targetRow % 2 === 0;
+            // scrollTop intermediário defasado (como se uma rolagem suave anterior ainda estivesse na metade)
+            const unfinishedScrollTop = Math.max(320, targetRow * 320 - 1450);
+            await dispatchRealArrowKeyAndCheck(
+              'ArrowDown',
+              isRepeat,
+              targetRow,
+              unfinishedScrollTop,
+              `Descida rápida 15->27 passo ${targetRow}`
+            );
+          }
+
+          // Confirmar que tecla repetida dentro da janela de throttle (< 48ms) é ignorada sem pular fileira
+          await act(async () => {
+            const currentFocused = document.activeElement as HTMLElement;
+            currentFocused.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowDown',
+                repeat: true,
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          assert.strictEqual(
+            (document.activeElement as HTMLElement | null)
+              ?.closest<HTMLElement>('[data-home-row-index]')
+              ?.getAttribute('data-home-row-index'),
+            '27',
+            '[12.25-d] Tecla repeat imediata (< 48ms) deve ser freada pelo throttle sem pular fileira'
+          );
+
+          // 3. Sequência rápida para CIMA a partir da fileira 27 até a fileira 4 (27 -> 4), intercalando scroll intermediário e repeat: true
+          for (let targetRow = 26; targetRow >= 4; targetRow--) {
+            const isRepeat = targetRow % 2 === 1;
+            // scrollTop intermediário atrasado (muito abaixo ou acima da fileira atual)
+            const unfinishedScrollTop = targetRow * 320 + 1850;
+            await dispatchRealArrowKeyAndCheck(
+              'ArrowUp',
+              isRepeat,
+              targetRow,
+              unfinishedScrollTop,
+              `Subida rápida 27->4 passo ${targetRow}`
+            );
+          }
+
+          // 4. Validar diretamente a compensação única da posição visual da fileira âncora ao trocar a janela:
+          // Na fileira 4, a janela atual começa em 3 (fileiras 3..10 montadas, topSpacer=960px).
+          // Ao pressionar ArrowUp para a fileira 3, a janela troca para 0..7, montando as fileiras 0..2
+          // (cuja soma de alturas reais é 340+380+420 = 1140px vs 960px do espaçador = +180px).
+          const row3WrapperBefore = dpad32RowsContainer.querySelector<HTMLElement>(
+            '[data-home-row-index="3"]'
+          )!;
+          const row3BlockBefore =
+            row3WrapperBefore.closest<HTMLElement>('[data-scroll-block="true"]') ||
+            row3WrapperBefore;
+          dpad32MainEl.scrollTop = computeSimulatedRowContentTop(row3WrapperBefore) - 80;
+          const scrollTopBeforeShift = dpad32MainEl.scrollTop;
+          installDynamicRowRects();
+          // Com scrollTop posicionando a fileira 3 em visualTop=80px (dentro da área visível 24..696),
+          // ensureElementScrolledIntoView não precisa rolar por borda, permitindo medir puramente a compensação de âncora da troca de janela!
+          const visualTopRow3BeforeWindowShift =
+            row3BlockBefore.getBoundingClientRect().top -
+            dpad32MainEl.getBoundingClientRect().top;
+          assert.strictEqual(
+            visualTopRow3BeforeWindowShift,
+            80,
+            `[12.25-d] Fileira 3 deve iniciar em visualTop=80px antes da troca de janela (obteve ${visualTopRow3BeforeWindowShift})`
+          );
+          await new Promise((r) => setTimeout(r, 52));
+          await act(async () => {
+            (document.activeElement as HTMLElement).dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowUp',
+                repeat: false,
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          installDynamicRowRects();
+          const row3BlockAfter = dpad32RowsContainer
+            .querySelector<HTMLElement>('[data-home-row-index="3"]')!
+            .closest<HTMLElement>('[data-scroll-block="true"]')!;
+          const visualTopRow3AfterWindowShift =
+            row3BlockAfter.getBoundingClientRect().top -
+            dpad32MainEl.getBoundingClientRect().top;
+          assert.strictEqual(
+            dpad32MainEl.scrollTop - scrollTopBeforeShift,
+            180,
+            `[12.25-d] A troca de janela (3->0) deve compensar o scrollTop uma única vez pela diferença medida (+180px)`
+          );
+          assert(
+            Math.abs(visualTopRow3AfterWindowShift - visualTopRow3BeforeWindowShift) <= 1,
+            `[12.25-d] Ao montar/desmontar fileiras de alturas variáveis acima da área visível, a posição visual da fileira âncora deve ser preservada (antes=${visualTopRow3BeforeWindowShift}, depois=${visualTopRow3AfterWindowShift})`
+          );
+
+          // 5. Continuar subindo até a primeira fileira real (3 -> 2 -> 1 -> 0) e confirmar saída normal para o HeroBanner ao subir da fileira 0
+          for (let targetRow = 2; targetRow >= 0; targetRow--) {
+            await dispatchRealArrowKeyAndCheck(
+              'ArrowUp',
+              false,
+              targetRow,
+              Math.max(120, targetRow * 320 + 200),
+              `Subida até o topo passo ${targetRow}`
+            );
+          }
+
+          await new Promise((r) => setTimeout(r, 52));
+          await act(async () => {
+            (document.activeElement as HTMLElement).dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ArrowUp',
+                repeat: false,
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          const focusedAfterExitTop = document.activeElement as HTMLElement | null;
+          assert(
+            focusedAfterExitTop !== null &&
+              Boolean(focusedAfterExitTop.closest('[data-hero-stage="true"]')),
+            '[12.25-d] Subir com ArrowUp a partir da primeira fileira real (0) deve preservar a saída normal para o HeroBanner'
+          );
+
+          // 6. Confirmar que a rolagem por roda do mouse (wheel + scroll) funciona depois das setas e move a janela
+          await act(async () => {
+            dpad32MainEl.dispatchEvent(
+              new windowInstance.Event('wheel', { bubbles: true }) as unknown as Event
+            );
+            dpad32MainEl.scrollTop = 420 + 22 * 320;
+            dpad32MainEl.dispatchEvent(
+              new windowInstance.Event('scroll') as unknown as Event
+            );
+            await new Promise((r) => setTimeout(r, 20));
+          });
+          const firstMountedAfterWheel = parseInt(
+            dpad32RowsContainer
+              .querySelector<HTMLElement>('[data-home-row-index]')
+              ?.getAttribute('data-home-row-index') || '0',
+            10
+          );
+          const mountedCountAfterWheel =
+            dpad32RowsContainer.querySelectorAll('[data-home-row-index]').length;
+          assert(
+            firstMountedAfterWheel >= 18 && mountedCountAfterWheel === 8,
+            `[12.25-d] Roda do mouse (wheel + scroll) após usar as setas deve mover a janela da vitrine (firstMounted=${firstMountedAfterWheel}, count=${mountedCountAfterWheel})`
+          );
+
+          domObserver.disconnect();
+
           clearItemProgress(stage2ManyCreds, 'episode', 'ep_9001_mkv');
           clearItemProgress(stage2Creds, 'movie', '2001');
           clearItemProgress(stage2Creds, 'episode', 'ep_3001_2');
@@ -23336,10 +23864,11 @@ if (args[0] === 'add' && args[1] === 'android') {
               `   • Início (25 fileiras totais = 4 fixas + 12 Filmes + 9 Séries): início -> ${inicioInitialMountedRows} fileiras montadas, ${inicioInitialMountedImgs} img[src] | fim -> ${inicioEndMountedRows} fileiras montadas, ${inicioEndMountedImgs} img[src]\n` +
               `   • Filmes (13 fileiras totais = 1 fixa + 12 categorias, última c/ 1 título): início -> ${moviesInitialMountedRows} fileiras montadas, ${moviesInitialMountedImgs} img[src] | fim -> ${moviesEndMountedRows} fileiras montadas, ${moviesEndMountedImgs} img[src]\n` +
               `   • Percursos D-Pad até a fileira 12 ("Cinema Experimental Único", 1 título): abertura=${dpadInitialRun.mountedRowsAtEnd} fileiras | pós-busca=${dpadAfterSearchCloseRun.mountedRowsAtEnd} fileiras | pós-Ver-todos=${dpadAfterVerTodosRun.mountedRowsAtEnd} fileiras | pós-categoria=${dpadAfterCategoryRun.mountedRowsAtEnd} fileiras (controladores ativos=1)\n` +
+              `   • Regressão D-Pad 32 fileiras (15->27->4->0 c/ scroll intermediário e repeat=true): ΔvisualAnchor=${Math.abs(visualTopRow3AfterWindowShift - visualTopRow3BeforeWindowShift).toFixed(2)}px (compensação=+${dpad32MainEl.scrollTop >= 0 ? 180 : 0}px), roda do mouse -> firstRow=${firstMountedAfterWheel} (janela=${mountedCountAfterWheel})\n` +
               `   • Busca no Início (2.500 resultados): ${mountedSearchCards} cartões montados (${mountedLiveSearchCards}+${mountedVodSearchCards}+${mountedSeriesSearchCards}), ${mountedSearchImgs} img[src]`
           );
           console.log(
-            '✅ [12.25] Etapa 2 validada com sucesso: vitrine completa sem limites artificiais, D-Pad preservado após busca/Ver todos/categoria, busca virtualizada no Início (2.500 resultados) e retomada segura de episódio apenas com extensão confirmada!'
+            '✅ [12.25] Etapa 2 validada com sucesso: vitrine completa sem limites artificiais, D-Pad vertical estável com scroll intermediário e preservação visual de âncora em 32 fileiras, busca virtualizada no Início (2.500 resultados) e retomada segura de episódio apenas com extensão confirmada!'
           );
         } finally {
           useDelayedSeriesCategories = false;

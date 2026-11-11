@@ -363,6 +363,34 @@ function setElementScrollLeftImmediate(el: HTMLElement, targetScrollLeft: number
   }
 }
 
+function setElementScrollTopImmediate(el: HTMLElement, targetScrollTop: number): void {
+  const next = Math.max(0, targetScrollTop);
+  const prevBehavior = el.style?.scrollBehavior ?? '';
+  try {
+    if (el.style) {
+      el.style.scrollBehavior = 'auto';
+    }
+    if (typeof el.scrollTo === 'function') {
+      try {
+        el.scrollTo({ top: next, behavior: 'instant' as ScrollBehavior });
+      } catch {
+        el.scrollTo({ top: next, behavior: 'auto' });
+      }
+    }
+    el.scrollTop = next;
+  } catch {
+    el.scrollTop = next;
+  } finally {
+    if (el.style) {
+      if (prevBehavior) {
+        el.style.scrollBehavior = prevBehavior;
+      } else {
+        el.style.removeProperty('scroll-behavior');
+      }
+    }
+  }
+}
+
 export function findScrollContainer(el: HTMLElement | null): HTMLElement | null {
   let curr = el?.parentElement || null;
   while (curr && curr !== document.body && curr !== document.documentElement) {
@@ -473,22 +501,43 @@ export function ensureElementScrolledIntoView(
     const containerRect = scrollContainer.getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
     const topAnchor = el.closest<HTMLElement>('[data-scroll-top-anchor="true"]');
+    const homeRowWrapper = el.closest<HTMLElement>('[data-home-row-index]');
+    const showcaseRowsContainer = homeRowWrapper?.closest<HTMLElement>(
+      '[data-showcase-rows-container="true"]'
+    );
+    const isVirtualizedShowcase = Boolean(
+      showcaseRowsContainer &&
+        (showcaseRowsContainer.getAttribute('data-showcase-virtualized') === 'true' ||
+          showcaseRowControllers.has(showcaseRowsContainer))
+    );
+    const useImmediateVerticalScroll =
+      isVirtualizedShowcase && (direction === 'up' || direction === 'down');
+
+    const applyVerticalScrollTop = (nextTop: number) => {
+      const clampedTop = Math.max(0, nextTop);
+      if (useImmediateVerticalScroll) {
+        setElementScrollTopImmediate(scrollContainer, clampedTop);
+      } else {
+        scrollContainer.scrollTop = clampedTop;
+      }
+    };
 
     if (topAnchor && scrollContainer.contains(topAnchor)) {
       if (containerRect.height > 0 && elRect.height > 0) {
         const elBottomAtTopZero = elRect.bottom - containerRect.top + scrollContainer.scrollTop;
         if (elBottomAtTopZero <= containerRect.height - 12) {
-          scrollContainer.scrollTop = 0;
+          applyVerticalScrollTop(0);
           return;
         }
       } else {
-        scrollContainer.scrollTop = 0;
+        applyVerticalScrollTop(0);
         return;
       }
     }
 
     const blockCandidate =
       el.closest<HTMLElement>('[data-scroll-block="true"]') ||
+      homeRowWrapper ||
       el.closest<HTMLElement>('[data-nav-row="true"]') ||
       el;
     const targetBlock =
@@ -507,19 +556,16 @@ export function ensureElementScrolledIntoView(
     if (containerRect.height > 0 && blockRect.height > 0) {
       const padY = 24;
       if (blockRect.top < containerRect.top + padY) {
-        scrollContainer.scrollTop = Math.max(
-          0,
+        applyVerticalScrollTop(
           scrollContainer.scrollTop + (blockRect.top - containerRect.top) - padY
         );
       } else if (blockRect.bottom > containerRect.bottom - padY) {
         if (direction === 'up' || blockRect.height > containerRect.height - padY * 2) {
-          scrollContainer.scrollTop = Math.max(
-            0,
+          applyVerticalScrollTop(
             scrollContainer.scrollTop + (blockRect.top - containerRect.top) - padY
           );
         } else {
-          scrollContainer.scrollTop = Math.max(
-            0,
+          applyVerticalScrollTop(
             scrollContainer.scrollTop + (blockRect.bottom - containerRect.bottom) + padY
           );
         }
@@ -528,19 +574,26 @@ export function ensureElementScrolledIntoView(
     }
 
     // Fallback for simulated DOM environments where getBoundingClientRect() returns 0x0
+    const parsedHomeRowIdx = homeRowWrapper?.hasAttribute('data-home-row-index')
+      ? parseInt(homeRowWrapper.getAttribute('data-home-row-index') || '-1', 10)
+      : -1;
     if (direction === 'down') {
       const offsetTop = (targetBlock as any).offsetTop;
       if (typeof offsetTop === 'number' && offsetTop > 0) {
-        scrollContainer.scrollTop = offsetTop;
+        applyVerticalScrollTop(offsetTop);
       } else {
-        scrollContainer.scrollTop = (scrollContainer.scrollTop || 0) + 120;
+        applyVerticalScrollTop((scrollContainer.scrollTop || 0) + 120);
       }
     } else if (direction === 'up') {
       const offsetTop = (targetBlock as any).offsetTop;
       if (typeof offsetTop === 'number' && offsetTop > 0) {
-        scrollContainer.scrollTop = offsetTop;
+        applyVerticalScrollTop(offsetTop);
+      } else if (isVirtualizedShowcase && !isNaN(parsedHomeRowIdx) && parsedHomeRowIdx > 0) {
+        const prevTop = scrollContainer.scrollTop || 0;
+        const nextTop = prevTop > 120 ? prevTop - 120 : parsedHomeRowIdx * 120;
+        applyVerticalScrollTop(Math.max(120, nextTop));
       } else {
-        scrollContainer.scrollTop = Math.max(0, (scrollContainer.scrollTop || 0) - 120);
+        applyVerticalScrollTop(Math.max(0, (scrollContainer.scrollTop || 0) - 120));
       }
     }
     return;
@@ -1425,6 +1478,101 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
         }
       }
     } else {
+      // Virtualized / shared showcase rows: use logical neighbor row index (currentRowIndex ± 1)
+      // so arrow keys directly control the row transition, mount the destination preserving the current row
+      // until focus transfers, and never fall back to HeroBanner "Assistir", the header, or top reset
+      // when a logical neighbor row exists.
+      const homeRowEl = activeEl.closest<HTMLElement>('[data-home-row-index]');
+      const showcaseRowsContainer = homeRowEl?.closest<HTMLElement>(
+        '[data-showcase-rows-container="true"]'
+      );
+      if (homeRowEl && showcaseRowsContainer && currentZone === 'content') {
+        const currentRowIndex = parseInt(
+          homeRowEl.getAttribute('data-home-row-index') || '-1',
+          10
+        );
+        const rowController = showcaseRowControllers.get(showcaseRowsContainer);
+        const parsedTotalRows = parseInt(
+          showcaseRowsContainer.getAttribute('data-showcase-total-rows') || '0',
+          10
+        );
+        const totalRows =
+          rowController && rowController.totalRows > 0
+            ? rowController.totalRows
+            : parsedTotalRows > 0
+              ? parsedTotalRows
+              : 0;
+
+        if (!isNaN(currentRowIndex) && currentRowIndex >= 0 && totalRows > 0) {
+          const targetRowIndex =
+            direction === 'down' ? currentRowIndex + 1 : currentRowIndex - 1;
+
+          if (targetRowIndex >= 0 && targetRowIndex < totalRows) {
+            if (rowController) {
+              const expanded = rowController.ensureRowMounted(
+                targetRowIndex,
+                currentRowIndex
+              );
+              if (expanded) {
+                spatialPerfStats.virtualWindowExpansions++;
+                invalidateCandidateCache();
+              }
+            }
+
+            const targetRowWrapper =
+              showcaseRowsContainer.querySelector<HTMLElement>(
+                `[data-home-row-index="${targetRowIndex}"]`
+              );
+            const targetRowItems = targetRowWrapper
+              ? getFocusableElements(targetRowWrapper, ctx.ancestorCache)
+              : [];
+
+            if (targetRowItems.length > 0 && targetRowWrapper) {
+              const targetRowContainer =
+                targetRowWrapper.querySelector<HTMLElement>('[data-nav-row="true"]') ||
+                targetRowWrapper;
+              const targetBlock: ZoneBlock = {
+                type: 'row',
+                container: targetRowContainer,
+                items: targetRowItems,
+              };
+              const nextEl = pickBestItemInBlock(
+                activeEl,
+                targetBlock,
+                hasRealGeometry,
+                ctx
+              );
+              focusElementSafely(nextEl, direction);
+              return nextEl;
+            }
+
+            // Logical neighbor row exists, but its card is not ready yet:
+            // keep current focus; do NOT fall back to Assistir, header, or top reset.
+            if (activeEl.isConnected) {
+              return activeEl;
+            }
+            const currentRowWrapperAfter =
+              showcaseRowsContainer.querySelector<HTMLElement>(
+                `[data-home-row-index="${currentRowIndex}"]`
+              );
+            const recoveredInCurrentRow = currentRowWrapperAfter
+              ? getFocusableElements(currentRowWrapperAfter, ctx.ancestorCache)[0]
+              : null;
+            if (recoveredInCurrentRow) {
+              focusElementSafely(recoveredInCurrentRow, direction);
+              return recoveredInCurrentRow;
+            }
+            return activeEl;
+          }
+
+          if (direction === 'down' && targetRowIndex >= totalRows) {
+            return activeEl;
+          }
+          // When direction === 'up' and currentRowIndex === 0 (targetRowIndex === -1):
+          // fall through to normal upward exit from the first real row.
+        }
+      }
+
       const blocks = buildZoneBlocks(sameZoneCandidates, ctx);
       const bIdx = blocks.findIndex((b) => b.items.includes(activeEl));
 
