@@ -925,14 +925,15 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     [shouldVirtualizeShowcaseRows, heroItems.length, maxRowWindowStart]
   );
 
-  // Save scrollTop and rowWindowStart while the showcase is still mounted in the DOM,
-  // before replacing it with search results.
+  // Capture the current scrollTop before replacing the origin screen with search results,
+  // including when the search starts from "Ver todos" or a category grid.
+  // Save and restore the showcase row window ONLY when the search starts from the showcase.
   if (hasSearch && !wasSearchingRef.current) {
     wasSearchingRef.current = true;
-    const isShowcaseCurrentlyMounted = Boolean(showcaseRowsContainerRef.current);
-    if (isShowcaseCurrentlyMounted && mainContainerRef.current) {
-      const liveScrollTop = mainContainerRef.current.scrollTop;
-      preSearchScrollTopRef.current = liveScrollTop;
+    const liveScrollTop = mainContainerRef.current ? mainContainerRef.current.scrollTop : 0;
+    preSearchScrollTopRef.current = liveScrollTop;
+    const startedFromShowcase = section === 'inicio' || activeCategoryId === null;
+    if (startedFromShowcase) {
       const computedStartFromScroll =
         shouldVirtualizeShowcaseRows && liveScrollTop > 0
           ? computeShowcaseRowStartFromScroll(liveScrollTop)
@@ -940,19 +941,19 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       preSearchRowWindowStartRef.current =
         rowWindowStartRef.current > 0 ? rowWindowStartRef.current : computedStartFromScroll;
     } else {
-      if (mainContainerRef.current && preSearchScrollTopRef.current === null) {
-        preSearchScrollTopRef.current = mainContainerRef.current.scrollTop;
-      }
-      if (preSearchRowWindowStartRef.current === null) {
-        preSearchRowWindowStartRef.current = rowWindowStartRef.current;
-      }
+      preSearchRowWindowStartRef.current = null;
     }
   }
 
-  // When closing search, restore the showcase row window first so the showcase mounts with the restored rows,
-  // and then restore scrollTop in useLayoutEffect once the showcase is mounted.
+  // When closing search, restore the showcase row window first (only if search started from the showcase),
+  // and then restore scrollTop in useLayoutEffect once the origin screen is mounted.
   let activeRowWindowStart = rowWindowStart;
-  if (!hasSearch && wasSearchingRef.current && preSearchRowWindowStartRef.current !== null) {
+  if (
+    !hasSearch &&
+    wasSearchingRef.current &&
+    preSearchRowWindowStartRef.current !== null &&
+    (section === 'inicio' || activeCategoryId === null)
+  ) {
     activeRowWindowStart = Math.max(
       0,
       Math.min(preSearchRowWindowStartRef.current, maxRowWindowStart)
@@ -1549,7 +1550,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     );
   }, []);
 
-  // Reset scrollTop when entering search; when closing search, restore window first and then scrollTop
+  // Reset scrollTop when entering search; when closing search, restore scrollTop after the origin screen is mounted
   useLayoutEffect(() => {
     if (hasSearch) {
       if (mainContainerRef.current) {
@@ -1563,8 +1564,10 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     } else if (wasSearchingRef.current) {
       wasSearchingRef.current = false;
       const savedPreSearchRowStart = preSearchRowWindowStartRef.current;
+      preSearchRowWindowStartRef.current = null;
       if (
         savedPreSearchRowStart !== null &&
+        (section === 'inicio' || activeCategoryId === null) &&
         savedPreSearchRowStart !== rowWindowStartRef.current
       ) {
         isProgrammaticRowShiftRef.current = true;
@@ -1589,7 +1592,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         }
       }
     }
-  }, [hasSearch]);
+  }, [hasSearch, section, activeCategoryId]);
 
   // Domain categories for 'movies' / 'series'
   const realCategories = section === 'movies' ? vodCategories : seriesCategories;
@@ -1850,11 +1853,6 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
             );
           }
         }
-      }
-
-      if (!wasSearchingRef.current) {
-        preSearchScrollTopRef.current = currentScrollTop;
-        preSearchRowWindowStartRef.current = nextStart;
       }
 
       if (nextStart !== rowWindowStartRef.current) {

@@ -22527,34 +22527,39 @@ if (args[0] === 'add' && args[1] === 'android') {
             return manySeriesStreams;
           };
           let delayedSeriesExtMode: 'mkv' | 'missing' = 'mkv';
-          (XtreamService as any).getSeriesInfo = async (_creds: any, serId: any) => {
+          const pendingDelayedSeriesInfoPromises: Promise<any>[] = [];
+          (XtreamService as any).getSeriesInfo = (_creds: any, serId: any) => {
             delayedSeriesInfoCalls++;
-            await new Promise((r) => setTimeout(r, 120));
-            return {
-              info: {
-                name: `Série ${serId}`,
-                plot: `Sinopse atrasada da série ${serId}`,
-                genre: 'Drama',
-                releasedate: '2026',
-                backdrop_path: [],
-              },
-              episodes: {
-                '1': [
-                  {
-                    id: 'ep_9001_1',
-                    episode_num: 1,
-                    title: 'Piloto MP4',
-                    container_extension: 'mp4',
-                  },
-                  {
-                    id: 'ep_9001_mkv',
-                    episode_num: 2,
-                    title: 'Episódio Retomado MKV',
-                    container_extension: delayedSeriesExtMode === 'mkv' ? 'mkv' : '',
-                  },
-                ],
-              },
-            };
+            const pendingPromise = (async () => {
+              await new Promise((r) => setTimeout(r, 120));
+              return {
+                info: {
+                  name: `Série ${serId}`,
+                  plot: `Sinopse atrasada da série ${serId}`,
+                  genre: 'Drama',
+                  releasedate: '2026',
+                  backdrop_path: [],
+                },
+                episodes: {
+                  '1': [
+                    {
+                      id: 'ep_9001_1',
+                      episode_num: 1,
+                      title: 'Piloto MP4',
+                      container_extension: 'mp4',
+                    },
+                    {
+                      id: 'ep_9001_mkv',
+                      episode_num: 2,
+                      title: 'Episódio Retomado MKV',
+                      container_extension: delayedSeriesExtMode === 'mkv' ? 'mkv' : '',
+                    },
+                  ],
+                },
+              };
+            })();
+            pendingDelayedSeriesInfoPromises.push(pendingPromise);
+            return pendingPromise;
           };
 
           resetCatalogRankingPerfStats();
@@ -23232,6 +23237,10 @@ if (args[0] === 'add' && args[1] === 'android') {
           // (c.3) Descarte de ação pendente ao trocar de seção antes de getSeriesInfo terminar
           await act(async () => {
             manyMoviesNavBtn.click();
+          });
+          await act(async () => {
+            await Promise.allSettled(pendingDelayedSeriesInfoPromises.splice(0));
+            await Promise.resolve();
           });
           let releaseControlledSeriesInfo: (() => void) | null = null;
           (XtreamService as any).getSeriesInfo = (_creds: any, serId: any) => {
