@@ -242,12 +242,44 @@ function estimateShowcaseRowSlotHeight(
   viewportWidth: number
 ): number {
   const safeVw = viewportWidth > 0 ? viewportWidth : 1280;
+
+  let isTvMode = false;
+  let tvScale = 85;
+  if (typeof document !== 'undefined' && document.documentElement) {
+    isTvMode = document.documentElement.getAttribute('data-display-mode') === 'tv';
+    const inlineScale = parseFloat(
+      document.documentElement.style.getPropertyValue('--nc-ui-scale') || ''
+    );
+    if (Number.isFinite(inlineScale) && inlineScale > 0) {
+      tvScale = inlineScale * 100;
+    }
+  }
+
+  let cardHeightPx: number;
+  let headingFontSizePx: number;
+
+  if (isTvMode) {
+    const clampedScale = Math.max(0.5, Math.min(1.25, tvScale / 100));
+    const remPx = 16 * clampedScale;
+    const cardWidth = desc?.type === 'live' ? 15.5 * remPx : 9.25 * remPx;
+    cardHeightPx = desc?.type === 'live' ? cardWidth * (9 / 16) : cardWidth * 1.5;
+    headingFontSizePx = Math.min(1.5 * remPx, Math.max(1.125 * remPx, 0.98 * remPx + 0.0065 * safeVw));
+  } else {
+    cardHeightPx =
+      desc?.type === 'live'
+        ? safeVw >= 768
+          ? 162
+          : 144
+        : safeVw >= 768
+          ? 264
+          : 216;
+    headingFontSizePx = Math.min(24, Math.max(18, 15.68 + 0.0065 * safeVw));
+  }
+
   // Horizontal container padding on [data-showcase-rows-container="true"]:
   // px-4 (32px) below 640px, sm:px-6 (48px) at 640..767px, md:px-10 (80px) at >=768px
   const horizontalPaddingPx = safeVw >= 768 ? 80 : safeVw >= 640 ? 48 : 32;
   const availableTitleWidthPx = Math.max(140, safeVw - horizontalPaddingPx);
-  // .nc-heading-view: clamp(18px, calc(15.68px + 0.65vw), 24px), line-height: 1.25
-  const headingFontSizePx = Math.min(24, Math.max(18, 15.68 + 0.0065 * safeVw));
   const headingLineHeightPx = headingFontSizePx * 1.25;
   const lineCount = estimateTitleLineCount(
     desc?.title || '',
@@ -257,17 +289,6 @@ function estimateShowcaseRowSlotHeight(
   const titleHeightPx = Math.ceil(lineCount * headingLineHeightPx);
   const titleMarginBottomPx = 16; // mb-4 on <h2> in HorizontalRow
   const trackVerticalPaddingPx = 48; // pt-4 (16px) + pb-8 (32px) on carousel track in HorizontalRow
-  // Card height in HorizontalRow:
-  // live: w-64 h-36 (144px) / md:w-72 md:h-[162px] (162px)
-  // vod/series: w-36 h-54 (216px) / md:w-44 md:h-66 (264px)
-  const cardHeightPx =
-    desc?.type === 'live'
-      ? safeVw >= 768
-        ? 162
-        : 144
-      : safeVw >= 768
-        ? 264
-        : 216;
   const interRowSpacingPx = 24; // pb-6 (24px) on [data-scroll-block="true"]
   return (
     titleHeightPx +
@@ -3044,12 +3065,15 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                         <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">
                           {row.title}
                         </h2>
-                        <div className="relative w-full pb-8 pt-4" aria-hidden="true">
+                        <div
+                          className="flex flex-row overflow-hidden w-full gap-4 pb-8 pt-4 pointer-events-none select-none"
+                          aria-hidden="true"
+                        >
                           <div
-                            className={`w-full ${
+                            className={`shrink-0 rounded-xl invisible ${
                               row.type === 'live'
-                                ? 'h-36 md:h-[162px]'
-                                : 'h-[216px] md:h-[264px]'
+                                ? 'nc-tv-row-card-live w-64 md:w-72 aspect-video'
+                                : 'nc-tv-row-card-poster w-36 md:w-44 aspect-[2/3]'
                             }`}
                           />
                         </div>

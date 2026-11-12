@@ -1272,6 +1272,8 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                 data-row-card-index={idx}
                 data-virtual-index={virtualize ? idx : undefined}
                 data-row-item-key={itemKey}
+                data-showcase-card="true"
+                data-card-focused={focusedCardIndex === idx ? 'true' : 'false'}
                 aria-label={item.name}
                 onClick={(e) => {
                   const el = e.currentTarget as HTMLElement;
@@ -1287,13 +1289,16 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                 onBlur={() => setFocusedCardIndex((prev) => (prev === idx ? null : prev))}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                className={`shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
+                className={`nc-showcase-card shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
                   type === 'live'
                     ? 'nc-tv-row-card-live w-64 md:w-72 aspect-video'
                     : 'nc-tv-row-card-poster w-36 md:w-44 aspect-[2/3]'
                 }`}
               >
-                <div className="relative w-full h-full">
+                <div
+                  data-card-visual="true"
+                  className="nc-card-visual-layer relative w-full h-full will-change-transform"
+                >
                   <MediaImage
                     src={item.stream_icon || item.cover}
                     serverUrl={credentials?.serverUrl}

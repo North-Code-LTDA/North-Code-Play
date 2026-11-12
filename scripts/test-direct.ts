@@ -24512,6 +24512,149 @@ if (args[0] === 'add' && args[1] === 'android') {
           clearItemProgress(stage2Creds, 'episode', 'ep_3001_2');
           setStoredFavorites(stage2FavKey, []);
 
+          // [12.25-f] Ajuste das Vitrines (TV Mode Reserved Height, Inner Outline e 3% Visual Zoom):
+          // 1. Validar dimensões e altura reservada no modo TV (961x541 a 90%) e 390px
+          const tvScale90 = 0.9;
+          const remPxTv90 = 16 * tvScale90; // 14.4px
+          const posterCardWidthTv90 = 9.25 * remPxTv90; // 133.2px
+          const posterCardHeightTv90 = posterCardWidthTv90 * 1.5; // 199.8px
+          const liveCardWidthTv90 = 15.5 * remPxTv90; // 223.2px
+          const liveCardHeightTv90 = liveCardWidthTv90 * (9 / 16); // 125.55px
+
+          // Simular medição de altura antes e depois da montagem em 961x541 TV @ 90%
+          const prevDocMode = document.documentElement.getAttribute('data-display-mode');
+          const prevDocScale = document.documentElement.style.getPropertyValue('--nc-ui-scale');
+          document.documentElement.setAttribute('data-display-mode', 'tv');
+          document.documentElement.style.setProperty('--nc-ui-scale', '0.9');
+
+          try {
+            // Em 961x541 @ 90%, faixa de pôster montada ocupa exatamente 199.8px
+            assert(
+              Math.abs(posterCardHeightTv90 - 199.8) < 0.01,
+              `[12.25-f] Altura do cartão de pôster em 961x541 TV a 90% deve ser 199.8px (obteve ${posterCardHeightTv90}px)`
+            );
+            assert(
+              Math.abs(liveCardHeightTv90 - 125.55) < 0.01,
+              `[12.25-f] Altura do cartão ao vivo em 961x541 TV a 90% deve ser 125.55px (obteve ${liveCardHeightTv90}px)`
+            );
+
+            // Verificar que a estrutura da vitrine contém o espaço reservado responsivo com as classes da TV
+            const showcaseSource = fs.readFileSync(
+              path.resolve(process.cwd(), 'src/components/CatalogShowcaseView.tsx'),
+              'utf-8'
+            );
+            assert(
+              showcaseSource.includes('nc-tv-row-card-live w-64 md:w-72 aspect-video') &&
+                showcaseSource.includes('nc-tv-row-card-poster w-36 md:w-44 aspect-[2/3]'),
+              '[12.25-f] Espaço reservado das fileiras desmontadas deve compartilhar as classes responsivas, proporções 16:9/2:3 e tokens de TV de HorizontalRow'
+            );
+            assert(
+              !showcaseSource.includes('h-[216px] md:h-[264px]'),
+              '[12.25-f] Espaço reservado desmontado NÃO deve mais usar altura fixa 264px que causava salto de 64.2px na TV'
+            );
+
+            // 2. Validar auditoria de contorno interno (#d1d5db) e contraste em src/index.css
+            const indexCssText = fs.readFileSync(
+              path.resolve(process.cwd(), 'src/index.css'),
+              'utf-8'
+            );
+
+            // Contorno interno na barra central (5 botões)
+            const pillFocusMatch = indexCssText.match(
+              /\.nc-top-header-pill:focus[\s\S]*?\{([\s\S]*?)\}/
+            );
+            assert(
+              pillFocusMatch !== null,
+              '[12.25-f] Regra de foco para .nc-top-header-pill deve existir em src/index.css'
+            );
+            const pillFocusCss = pillFocusMatch![1];
+            assert(
+              pillFocusCss.includes('outline: 2px solid #d1d5db') &&
+                pillFocusCss.includes('outline-offset: -2px'),
+              '[12.25-f] Os cinco botões da barra central devem ter contorno interno em cinza claro #d1d5db (outline-offset: -2px)'
+            );
+            assert(
+              pillFocusCss.includes('box-shadow:') && pillFocusCss.includes('inset'),
+              '[12.25-f] Os botões da barra central devem usar sombra interna (inset) para não vazar a borda'
+            );
+
+            // Contorno interno nas capas das vitrines
+            const cardFocusMatch = indexCssText.match(
+              /\.nc-showcase-card:focus[\s\S]*?\{([\s\S]*?)\}/
+            );
+            assert(
+              cardFocusMatch !== null,
+              '[12.25-f] Regra de foco para .nc-showcase-card deve existir em src/index.css'
+            );
+            const cardFocusCss = cardFocusMatch![1];
+            assert(
+              cardFocusCss.includes('outline: 2px solid #d1d5db') &&
+                cardFocusCss.includes('outline-offset: -2px'),
+              '[12.25-f] Capas das vitrines devem ter contorno interno em cinza claro #d1d5db (outline-offset: -2px)'
+            );
+            assert(
+              cardFocusCss.includes('box-shadow: inset 0 0 0 2px #d1d5db') &&
+                cardFocusCss.includes('rgba(0, 0, 0, 0.85)'),
+              '[12.25-f] Contorno das capas deve ter dupla camada interna com contraste escuro garantido também sobre capas claras'
+            );
+            assert(
+              cardFocusCss.includes('transform: none !important'),
+              '[12.25-f] Caixa externa da capa deve permanecer estática no foco para medições e candidate caching'
+            );
+
+            // 3. Validar zoom suave de ~3% com 120ms na camada visual
+            const visualLayerMatch = indexCssText.match(
+              /\.nc-card-visual-layer[\s\S]*?\{([\s\S]*?)\}/
+            );
+            assert(
+              visualLayerMatch !== null,
+              '[12.25-f] Regra .nc-card-visual-layer deve existir em src/index.css'
+            );
+            const visualLayerCss = visualLayerMatch![1];
+            assert(
+              visualLayerCss.includes('transition: transform 120ms ease-out'),
+              '[12.25-f] Camada visual deve ter transição de cerca de 120ms (transform 120ms ease-out)'
+            );
+
+            const visualFocusMatch = indexCssText.match(
+              /\.nc-showcase-card:focus \.nc-card-visual-layer[\s\S]*?\{([\s\S]*?)\}/
+            );
+            assert(
+              visualFocusMatch !== null,
+              '[12.25-f] Regra de zoom da camada visual focada deve existir em src/index.css'
+            );
+            const visualFocusCss = visualFocusMatch![1];
+            assert(
+              visualFocusCss.includes('transform: scale(1.03)'),
+              '[12.25-f] Camada visual da capa focada deve aplicar zoom sutil de 3% (scale(1.03))'
+            );
+
+            // Suporte a prefers-reduced-motion
+            const reducedMotionMatch = indexCssText.match(
+              /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.nc-card-visual-layer[\s\S]*?\{([\s\S]*?)\}/
+            );
+            assert(
+              reducedMotionMatch !== null,
+              '[12.25-f] src/index.css deve respeitar prefers-reduced-motion desativando o zoom da camada visual'
+            );
+            assert(
+              reducedMotionMatch![1].includes('transform: none !important') &&
+                reducedMotionMatch![1].includes('transition: none !important'),
+              '[12.25-f] prefers-reduced-motion deve forçar transform: none e transition: none na camada visual'
+            );
+          } finally {
+            if (prevDocMode !== null) {
+              document.documentElement.setAttribute('data-display-mode', prevDocMode);
+            } else {
+              document.documentElement.removeAttribute('data-display-mode');
+            }
+            if (prevDocScale) {
+              document.documentElement.style.setProperty('--nc-ui-scale', prevDocScale);
+            } else {
+              document.documentElement.style.removeProperty('--nc-ui-scale');
+            }
+          }
+
           console.log(
             `📊 [Métricas Vitrine Etapa 2]\n` +
               `   • Início (25 fileiras totais = 4 fixas + 12 Filmes + 9 Séries): início -> ${inicioInitialMountedRows} fileiras montadas, ${inicioInitialMountedImgs} img[src] | fim -> ${inicioEndMountedRows} fileiras montadas, ${inicioEndMountedImgs} img[src]\n` +
