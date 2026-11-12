@@ -23899,6 +23899,9 @@ if (args[0] === 'add' && args[1] === 'android') {
           //   com títulos curtos (1 linha em 390px), médios (2 linhas em 390px) e longos (3 linhas em 390px),
           //   e a última categoria (fileira 31) com apenas 1 título.
           const buildTouchCategoryTitle = (domainLabel: string, idx: number): string => {
+            if (idx === 4) {
+              return `${domainLabel} Internacional ${idx}`; // Início: "Filmes · Ação Internacional 4" (29 chars)
+            }
             if (idx % 3 === 1) {
               return `${domainLabel} ${idx}`; // 1 linha em 390px
             }
@@ -24021,9 +24024,25 @@ if (args[0] === 'add' && args[1] === 'android') {
               toJSON: () => ({}),
             }) as DOMRect;
 
+          const getRowNaturalHeight390 = (rIdx: number): number => {
+            if (rIdx === 0) return 255; // Canais Ao Vivo (16:9)
+            if (rIdx === 1 || rIdx === 2) return 327; // "Filmes em Destaque", "Séries em Destaque" (1 linha)
+            if (rIdx === 9) return 350; // "Filmes · Ação Internacional 4" demanda 350px (2 linhas de título bold)
+            const catIdx = Math.floor((rIdx - 3) / 2) + 1;
+            if (catIdx % 3 === 1) return 327; // 1 linha
+            if (catIdx % 3 === 2) return 350; // 2 linhas
+            return 373; // 3 linhas
+          };
+
           const getMountedBlockRealHeight390 = (scrollBlock: HTMLElement): number => {
+            const innerWrapper = scrollBlock.querySelector<HTMLElement>('[data-home-row-index]');
+            const rIdx = innerWrapper
+              ? parseInt(innerWrapper.getAttribute('data-home-row-index') || '-1', 10)
+              : -1;
+            const naturalH = rIdx >= 0 ? getRowNaturalHeight390(rIdx) : 327;
             const minH = parseFloat(scrollBlock.style.minHeight || '0') || 0;
-            return minH > 0 ? minH : 311;
+            // No DOM real do navegador, minHeight impõe limite inferior, mas o conteúdo natural expande o bloco
+            return Math.max(naturalH, minH);
           };
 
           const computeTouchRowContentTop390 = (targetBlock: HTMLElement): number => {
@@ -24213,6 +24232,118 @@ if (args[0] === 'add' && args[1] === 'android') {
             return afterWindowStart;
           };
 
+          // ===================================================================
+          // [12.25-e Ampliado] Teste do Salto Visual na Primeira Montagem (Fileira 9 acima da viewport):
+          // Em 390px, avançar até o meio do catálogo (scrollTop=4100, onde a janela é 10..17 e a fileira 9
+          // NUNCA foi montada antes). Em seguida, rolar para cima (scrollTop=3900) fazendo a fileira 9
+          // montar PELA PRIMEIRA VEZ acima da área visível.
+          // No commit base: a fileira 9 ("Filmes · Ação Internacional 4") tinha 327px reservados no topSpacer
+          // e ocupa 350px naturais ao montar, provocando um salto visual de 23px nas fileiras visíveis (ΔvTop = 23px).
+          // Após a correção: a fileira 9 tem exatamente 350px reservados antes e depois de montar,
+          // garantindo deslocamento visual restrito ao gesto (ΔvTop <= 1px) e zero escritas programadas.
+          // ===================================================================
+          let firstMountJumpPx = 0;
+          const measuredDisplacementBefore = 23; // salto de 23px observado no commit base (350px natural - 327px reservado)
+
+          // 1. Avançar até scrollTop=4100 sem passar pelos intermediários da fileira 9
+          await act(async () => {
+            setBrowserDrivenScrollTop(4100);
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('scroll') as unknown as Event
+            );
+          });
+          installTouch390Rects();
+
+          const windowAt4100 = readCurrentWindowStart390();
+          assert.strictEqual(
+            windowAt4100,
+            10,
+            '[12.25-e] Ao avançar para scrollTop=4100, a janela montada deve iniciar na fileira 10'
+          );
+          assert.strictEqual(
+            touchRowsContainer.querySelector('[data-home-row-index="9"]'),
+            null,
+            '[12.25-e] A fileira 9 deve estar desmontada e nunca montada anteriormente em scrollTop=4100'
+          );
+
+          // Capturar a posição visual da fileira 11 (visível na viewport em 4100) antes da rolagem para cima
+          const row11BlockBefore = touchRowsContainer
+            .querySelector<HTMLElement>('[data-home-row-index="11"]')
+            ?.closest<HTMLElement>('[data-scroll-block="true"]');
+          assert(
+            row11BlockBefore !== null && row11BlockBefore !== undefined,
+            '[12.25-e] A fileira 11 deve estar montada na janela 10..17 em scrollTop=4100'
+          );
+          const vTopRow11Before = row11BlockBefore.getBoundingClientRect().top;
+
+          // 2. Rolar para cima de 4100 para 3900 (deltaScroll = -200px)
+          const targetScrollUp = 3900;
+          const deltaScrollUp = targetScrollUp - 4100; // -200px
+          await act(async () => {
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('touchmove', { bubbles: true }) as unknown as Event
+            );
+            setBrowserDrivenScrollTop(targetScrollUp);
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('scroll') as unknown as Event
+            );
+          });
+          installTouch390Rects();
+
+          const windowAt3900 = readCurrentWindowStart390();
+          assert.strictEqual(
+            windowAt3900,
+            9,
+            '[12.25-e] Ao rolar para cima para scrollTop=3900, a janela deve recuar para a fileira 9'
+          );
+          const row9BlockAfter = touchRowsContainer
+            .querySelector<HTMLElement>('[data-home-row-index="9"]')
+            ?.closest<HTMLElement>('[data-scroll-block="true"]');
+          assert(
+            row9BlockAfter !== null && row9BlockAfter !== undefined,
+            '[12.25-e] A fileira 9 deve ter sido montada PELA PRIMEIRA VEZ acima da área visível'
+          );
+          assert(
+            row9BlockAfter.getBoundingClientRect().bottom <= 0,
+            '[12.25-e] A fileira 9 montada pela primeira vez deve estar inteiramente ACIMA da área visível'
+          );
+
+          // Verificar a fileira 11 após a montagem da fileira 9
+          const row11BlockAfter = touchRowsContainer
+            .querySelector<HTMLElement>('[data-home-row-index="11"]')
+            ?.closest<HTMLElement>('[data-scroll-block="true"]');
+          assert(
+            row11BlockAfter !== null && row11BlockAfter !== undefined,
+            '[12.25-e] A fileira 11 deve permanecer montada após recuo da janela para 9'
+          );
+          const vTopRow11After = row11BlockAfter.getBoundingClientRect().top;
+          const expectedVTopRow11 = vTopRow11Before - deltaScrollUp; // vTopBefore + 200px
+          firstMountJumpPx = Math.abs(vTopRow11After - expectedVTopRow11);
+
+          assert(
+            firstMountJumpPx <= 1.0,
+            `[12.25-e] Primeira montagem da fileira 9 acima da viewport NÃO deve deslocar visualmente a fileira 11 além do gesto (esperado=${expectedVTopRow11}px, obteve=${vTopRow11After}px, salto=${firstMountJumpPx}px, base=${measuredDisplacementBefore}px)`
+          );
+          assert.strictEqual(
+            appScrollTopWriteCount,
+            0,
+            '[12.25-e] Durante avanço e rolagem para cima, o app NUNCA deve escrever em scrollTop'
+          );
+
+          // Retornar ao topo para dar início à sequência de toques existente
+          await act(async () => {
+            setBrowserDrivenScrollTop(0);
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('scroll') as unknown as Event
+            );
+          });
+          installTouch390Rects();
+          assert.strictEqual(
+            readCurrentWindowStart390(),
+            0,
+            '[12.25-e] Retorno ao topo antes do teste de toque deve restabelecer janela 0'
+          );
+
           // 1. Iniciar gesto de toque (touchstart) e deslizar cruzando os limiares das primeiras janelas (0 -> 1 -> 2 -> 3 -> 4),
           //    seguido de touchend e eventos de inércia + eventos de scroll repetidos no limiar que antes oscilava!
           await act(async () => {
@@ -24367,7 +24498,7 @@ if (args[0] === 'add' && args[1] === 'android') {
               `   • Filmes (13 fileiras totais = 1 fixa + 12 categorias, última c/ 1 título): início -> ${moviesInitialMountedRows} fileiras montadas, ${moviesInitialMountedImgs} img[src] | fim -> ${moviesEndMountedRows} fileiras montadas, ${moviesEndMountedImgs} img[src]\n` +
               `   • Percursos D-Pad até a fileira 12 ("Cinema Experimental Único", 1 título): abertura=${dpadInitialRun.mountedRowsAtEnd} fileiras | pós-busca=${dpadAfterSearchCloseRun.mountedRowsAtEnd} fileiras | pós-Ver-todos=${dpadAfterVerTodosRun.mountedRowsAtEnd} fileiras | pós-categoria=${dpadAfterCategoryRun.mountedRowsAtEnd} fileiras (controladores ativos=1)\n` +
               `   • Regressão D-Pad 32 fileiras (15->27->4->0 c/ scroll intermediário e repeat=true): ΔvisualAnchor=${Math.abs(visualTopRow3AfterWindowShift - visualTopRow3BeforeWindowShift).toFixed(2)}px (compensação=+180px), roda do mouse -> firstRow=${firstMountedAfterWheel} (janela=${mountedCountAfterWheel})\n` +
-              `   • Regressão Touch 390px (32 fileiras c/ alturas ${Array.from(initialDistinctHeights390).join('/')}px): escritas em scrollTop=${appScrollTopWriteCount}, salto visual máx=${maxVisualJumpDuringTouchPx.toFixed(2)}px, reversões na inércia=${windowReversalsInTail}\n` +
+              `   • Regressão Touch 390px (32 fileiras c/ alturas ${Array.from(initialDistinctHeights390).join('/')}px): 1ª montagem fileira 9 (350px natural vs 327px base) -> salto antes=${measuredDisplacementBefore.toFixed(2)}px, após=${firstMountJumpPx.toFixed(2)}px (<= 1px) | escritas em scrollTop=${appScrollTopWriteCount}, salto visual máx=${maxVisualJumpDuringTouchPx.toFixed(2)}px, reversões na inércia=${windowReversalsInTail}\n` +
               `   • Busca no Início (2.500 resultados): ${mountedSearchCards} cartões montados (${mountedLiveSearchCards}+${mountedVodSearchCards}+${mountedSeriesSearchCards}), ${mountedSearchImgs} img[src]`
           );
           console.log(

@@ -200,7 +200,9 @@ function estimateTitleLineCount(
   const trimmed = (title || '').trim();
   if (!trimmed) return 1;
   const safeWidth = Math.max(120, availableWidthPx);
-  const avgCharWidth = Math.max(8, fontSizePx * 0.56);
+  // .nc-heading-view uses font-weight: 700 (bold). In proportional Latin fonts,
+  // bold text averages ~0.68 * fontSizePx per character (including whitespace and accents).
+  const avgCharWidth = Math.max(8, fontSizePx * 0.68);
   const maxCharsPerLine = Math.max(8, Math.floor(safeWidth / avgCharWidth));
   const words = trimmed.split(/\s+/);
   let lines = 1;
