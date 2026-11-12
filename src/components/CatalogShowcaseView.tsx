@@ -92,12 +92,15 @@ function measureShowcaseRowVisualTop(
   rowIndex: number
 ): number | null {
   if (!containerEl || !mainEl || rowIndex < 0) return null;
-  const rowWrapper = containerEl.querySelector<HTMLElement>(
-    `[data-home-row-index="${rowIndex}"]`
-  );
-  if (!rowWrapper) return null;
   const targetEl =
-    rowWrapper.closest<HTMLElement>('[data-scroll-block="true"]') || rowWrapper;
+    containerEl.querySelector<HTMLElement>(
+      `[data-scroll-block="true"][data-showcase-row-index="${rowIndex}"]`
+    ) ||
+    containerEl
+      .querySelector<HTMLElement>(`[data-home-row-index="${rowIndex}"]`)
+      ?.closest<HTMLElement>('[data-scroll-block="true"]') ||
+    containerEl.querySelector<HTMLElement>(`[data-home-row-index="${rowIndex}"]`);
+  if (!targetEl) return null;
   const mainRect = mainEl.getBoundingClientRect();
   const rowRect = targetEl.getBoundingClientRect();
   if (
@@ -1137,15 +1140,12 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       ? parseFloat(topSpacerEl.style.height || '0') || 0
       : 0;
 
-    const mountedWrappers = rowsContainerEl.querySelectorAll<HTMLElement>(
-      '[data-home-row-index]'
+    const allBlocks = rowsContainerEl.querySelectorAll<HTMLElement>(
+      '[data-scroll-block="true"]'
     );
 
-    if (mountedWrappers.length > 0) {
-      const firstWrapper = mountedWrappers[0];
-      const firstBlock =
-        firstWrapper.closest<HTMLElement>('[data-scroll-block="true"]') ||
-        firstWrapper;
+    if (allBlocks.length > 0) {
+      const firstBlock = allBlocks[0];
       const firstRect = firstBlock.getBoundingClientRect();
       if (firstRect.height > 0 && typeof firstRect.top === 'number') {
         const inferredStart = Math.round(
@@ -1184,15 +1184,15 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       }
     }
 
-    for (let i = 0; i < mountedWrappers.length; i++) {
-      const wrapper = mountedWrappers[i];
+    for (let i = 0; i < allBlocks.length; i++) {
+      const scrollBlock = allBlocks[i];
       const rIdx = parseInt(
-        wrapper.getAttribute('data-home-row-index') || '-1',
+        scrollBlock.getAttribute('data-showcase-row-index') ||
+          scrollBlock.querySelector('[data-home-row-index]')?.getAttribute('data-home-row-index') ||
+          String(i),
         10
       );
       if (isNaN(rIdx) || rIdx < 0) continue;
-      const scrollBlock =
-        wrapper.closest<HTMLElement>('[data-scroll-block="true"]') || wrapper;
       const rect = scrollBlock.getBoundingClientRect();
       const rawHeight = rect.height > 0 ? rect.height : scrollBlock.offsetHeight;
       if (typeof rawHeight === 'number' && rawHeight > 0) {
@@ -1349,20 +1349,24 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       )
     : 0;
 
-  // Prepare and sort category preview items ONLY for rows inside the currently mounted window
-  const mountedShowcaseRows = useMemo(() => {
-    const slice = showcaseRowDescriptors.slice(effectiveRowStart, effectiveRowEnd);
-    return slice.map((desc, offset) => {
-      const rowIndex = effectiveRowStart + offset;
-      let items: any[] = desc.fixedItems || EMPTY_ARRAY;
-      if (desc.kind === 'vod_category' && desc.categoryId) {
-        items = vodIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
-      } else if (desc.kind === 'series_category' && desc.categoryId) {
-        items = seriesIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
+  // Prepare descriptors for all rows in the showcase. Items and cards are loaded ONLY for rows inside the active window.
+  const showcaseRowsData = useMemo(() => {
+    return showcaseRowDescriptors.map((desc, rowIndex) => {
+      const isMounted = rowIndex >= effectiveRowStart && rowIndex < effectiveRowEnd;
+      let items: any[] = EMPTY_ARRAY;
+      if (isMounted) {
+        if (desc.fixedItems) {
+          items = desc.fixedItems;
+        } else if (desc.kind === 'vod_category' && desc.categoryId) {
+          items = vodIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
+        } else if (desc.kind === 'series_category' && desc.categoryId) {
+          items = seriesIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
+        }
       }
       return {
         ...desc,
         rowIndex,
+        isMounted,
         items,
         reservedHeightPx: getRowSlotHeight(rowIndex),
       };
@@ -1509,32 +1513,24 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         return false;
       }
 
-      let desiredStart = Math.max(
-        0,
-        Math.min(
-          maxRowWindowStart,
-          clampedTarget - Math.floor(SHOWCASE_ROW_WINDOW_SIZE / 2)
-        )
-      );
-
+      let desiredStart: number;
       if (
         typeof preserveRowIndex === 'number' &&
         preserveRowIndex >= 0 &&
-        preserveRowIndex < totalShowcaseRows &&
-        Math.abs(clampedTarget - preserveRowIndex) < SHOWCASE_ROW_WINDOW_SIZE
+        preserveRowIndex < totalShowcaseRows
       ) {
-        if (desiredStart > preserveRowIndex) {
-          desiredStart = preserveRowIndex;
-        } else if (desiredStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < preserveRowIndex) {
-          desiredStart = preserveRowIndex - SHOWCASE_ROW_WINDOW_SIZE + 1;
+        if (clampedTarget < preserveRowIndex) {
+          // Navigating UP: keep preserveRowIndex in window and give top margin (snap to 0 when near top)
+          desiredStart = clampedTarget <= 3 ? 0 : clampedTarget - 1;
+        } else {
+          // Navigating DOWN: keep preserveRowIndex in window and give bottom margin
+          desiredStart = clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 2;
         }
-        if (desiredStart > clampedTarget) {
-          desiredStart = clampedTarget;
-        } else if (desiredStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < clampedTarget) {
-          desiredStart = clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 1;
-        }
-        desiredStart = Math.max(0, Math.min(maxRowWindowStart, desiredStart));
+      } else {
+        desiredStart = clampedTarget - Math.floor(SHOWCASE_ROW_WINDOW_SIZE / 2);
       }
+
+      desiredStart = Math.max(0, Math.min(maxRowWindowStart, desiredStart));
 
       const preferredAnchor =
         typeof preserveRowIndex === 'number' &&
@@ -3015,41 +3011,57 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                 style={{ overflowAnchor: 'none' }}
                 className="mt-2 sm:mt-4 px-4 sm:px-6 md:px-10 relative z-20"
               >
-                {topShowcaseSpacerPx > 0 && (
-                  <div
-                    data-showcase-row-spacer="top"
-                    aria-hidden="true"
-                    style={{ height: `${topShowcaseSpacerPx}px`, overflowAnchor: 'none' }}
-                  />
-                )}
-                {mountedShowcaseRows.map((row) => (
+                <div
+                  data-showcase-row-spacer="top"
+                  aria-hidden="true"
+                  style={{ height: '0px', overflowAnchor: 'none' }}
+                />
+                {showcaseRowsData.map((row) => (
                   <div
                     key={row.key}
                     data-scroll-block="true"
                     data-showcase-row-key={row.key}
+                    data-showcase-row-index={row.rowIndex}
                     className="pb-6"
                     style={{
-                      minHeight: `${row.reservedHeightPx}px`,
                       overflowAnchor: 'none',
                     }}
                   >
-                    <HorizontalRow
-                      title={row.title}
-                      items={row.items}
-                      type={row.type}
-                      rowIndex={row.rowIndex}
-                      virtualize={row.virtualize}
-                      onItemClick={row.type === 'live' ? handleLiveChannelClick : handleSelectItem}
-                    />
+                    {row.isMounted ? (
+                      <HorizontalRow
+                        title={row.title}
+                        items={row.items}
+                        type={row.type}
+                        rowIndex={row.rowIndex}
+                        virtualize={row.virtualize}
+                        onItemClick={row.type === 'live' ? handleLiveChannelClick : handleSelectItem}
+                      />
+                    ) : (
+                      <div
+                        className="w-full group"
+                        data-showcase-unmounted-row={row.rowIndex}
+                      >
+                        <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">
+                          {row.title}
+                        </h2>
+                        <div className="relative w-full pb-8 pt-4" aria-hidden="true">
+                          <div
+                            className={`w-full ${
+                              row.type === 'live'
+                                ? 'h-36 md:h-[162px]'
+                                : 'h-[216px] md:h-[264px]'
+                            }`}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
-                {bottomShowcaseSpacerPx > 0 && (
-                  <div
-                    data-showcase-row-spacer="bottom"
-                    aria-hidden="true"
-                    style={{ height: `${bottomShowcaseSpacerPx}px`, overflowAnchor: 'none' }}
-                  />
-                )}
+                <div
+                  data-showcase-row-spacer="bottom"
+                  aria-hidden="true"
+                  style={{ height: '0px', overflowAnchor: 'none' }}
+                />
               </div>
             )}
           </div>

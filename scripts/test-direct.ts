@@ -23445,6 +23445,22 @@ if (args[0] === 'add' && args[1] === 'android') {
             }) as DOMRect;
 
           const computeSimulatedRowContentTop = (targetRowEl: HTMLElement): number => {
+            const allBlocks = Array.from(
+              dpad32RowsContainer.querySelectorAll<HTMLElement>('[data-scroll-block="true"]')
+            );
+            if (allBlocks.length > 8) {
+              const targetBlock = targetRowEl.closest<HTMLElement>('[data-scroll-block="true"]') || targetRowEl;
+              let accum = 420;
+              for (const blk of allBlocks) {
+                if (blk === targetBlock) break;
+                const idxAttr = blk.getAttribute('data-showcase-row-index');
+                const rIdx = idxAttr ? parseInt(idxAttr, 10) : 0;
+                const isMounted = blk.querySelector('[data-home-row-index]') !== null;
+                const rHeight = isMounted ? getSimulatedRowHeight(rIdx) : (340 + (rIdx % 3) * 40);
+                accum += rHeight;
+              }
+              return accum;
+            }
             const topSpacerEl = dpad32RowsContainer.querySelector<HTMLElement>(
               '[data-showcase-row-spacer="top"]'
             );
@@ -23504,16 +23520,21 @@ if (args[0] === 'add' && args[1] === 'android') {
               });
             }
 
-            const mountedWrappers = Array.from(
-              dpad32RowsContainer.querySelectorAll<HTMLElement>('[data-home-row-index]')
+            const allBlocks = Array.from(
+              dpad32RowsContainer.querySelectorAll<HTMLElement>('[data-scroll-block="true"]')
             );
-            for (const wrapper of mountedWrappers) {
-              const rIdx = parseInt(wrapper.getAttribute('data-home-row-index') || '0', 10);
-              const rHeight = getSimulatedRowHeight(rIdx);
-              const scrollBlock =
-                wrapper.closest<HTMLElement>('[data-scroll-block="true"]') || wrapper;
+            for (const scrollBlock of allBlocks) {
+              const idxAttr = scrollBlock.getAttribute('data-showcase-row-index');
+              const wrapper = scrollBlock.querySelector<HTMLElement>('[data-home-row-index]');
+              const rIdx = idxAttr
+                ? parseInt(idxAttr, 10)
+                : wrapper
+                  ? parseInt(wrapper.getAttribute('data-home-row-index') || '0', 10)
+                  : 0;
+              const isMounted = wrapper !== null;
+              const rHeight = isMounted ? getSimulatedRowHeight(rIdx) : (340 + (rIdx % 3) * 40);
               const rectFn = () => {
-                const cTop = computeSimulatedRowContentTop(wrapper);
+                const cTop = computeSimulatedRowContentTop(scrollBlock);
                 const vTop = cTop - (dpad32MainEl.scrollTop || 0);
                 return {
                   top: vTop,
@@ -23528,28 +23549,30 @@ if (args[0] === 'add' && args[1] === 'android') {
                 } as DOMRect;
               };
               scrollBlock.getBoundingClientRect = rectFn;
-              wrapper.getBoundingClientRect = rectFn;
-              const cards = Array.from(
-                wrapper.querySelectorAll<HTMLElement>('[data-nav-item="true"]')
-              );
-              cards.forEach((card, cIdx) => {
-                card.getBoundingClientRect = () => {
-                  const cTop = computeSimulatedRowContentTop(wrapper) + 48;
-                  const vTop = cTop - (dpad32MainEl.scrollTop || 0);
-                  const left = 40 + cIdx * 200;
-                  return {
-                    top: vTop,
-                    bottom: vTop + 220,
-                    left,
-                    right: left + 180,
-                    width: 180,
-                    height: 220,
-                    x: left,
-                    y: vTop,
-                    toJSON: () => ({}),
-                  } as DOMRect;
-                };
-              });
+              if (wrapper) {
+                wrapper.getBoundingClientRect = rectFn;
+                const cards = Array.from(
+                  wrapper.querySelectorAll<HTMLElement>('[data-nav-item="true"]')
+                );
+                cards.forEach((card, cIdx) => {
+                  card.getBoundingClientRect = () => {
+                    const cTop = computeSimulatedRowContentTop(scrollBlock) + 48;
+                    const vTop = cTop - (dpad32MainEl.scrollTop || 0);
+                    const left = 40 + cIdx * 200;
+                    return {
+                      top: vTop,
+                      bottom: vTop + 220,
+                      left,
+                      right: left + 180,
+                      width: 180,
+                      height: 220,
+                      x: left,
+                      y: vTop,
+                      toJSON: () => ({}),
+                    } as DOMRect;
+                  };
+                });
+              }
             }
           };
 
@@ -23900,7 +23923,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           //   e a última categoria (fileira 31) com apenas 1 título.
           const buildTouchCategoryTitle = (domainLabel: string, idx: number): string => {
             if (idx === 4) {
-              return `${domainLabel} Internacional ${idx}`; // Início: "Filmes · Ação Internacional 4" (29 chars)
+              return 'WWWWWW WWWWW WWWWW'; // Início: "Filmes · WWWWWW WWWWW WWWWW" (~389px na Inter 700 para 358px úteis)
             }
             if (idx % 3 === 1) {
               return `${domainLabel} ${idx}`; // 1 linha em 390px
@@ -24004,8 +24027,8 @@ if (args[0] === 'add' && args[1] === 'android') {
 
           // Configurar geometria realista de 390x844 (iPhone):
           // HeroBanner h-[36vh]=304px + mb-4 (16px) + container mt-2 (8px) = 328px até a fileira 0.
-          // Cada fileira montada tem minHeight definido pelo próprio componente em style.minHeight
-          // (239px na fileira 0 Ao Vivo 16:9, e 311px / 333px / 356px nas fileiras 2:3 conforme 1, 2 ou 3 linhas de título).
+          // Cada fileira possui altura real ditada pela sua geometria no viewport de 390px
+          // (255px na fileira 0 Ao Vivo 16:9, e 327px / 350px / 373px nas fileiras 2:3 conforme 1, 2 ou 3 linhas de título).
           const HERO_START_OFFSET_390 = 328;
           Object.defineProperty(touchMainEl, 'clientHeight', {
             value: 844,
@@ -24027,7 +24050,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           const getRowNaturalHeight390 = (rIdx: number): number => {
             if (rIdx === 0) return 255; // Canais Ao Vivo (16:9)
             if (rIdx === 1 || rIdx === 2) return 327; // "Filmes em Destaque", "Séries em Destaque" (1 linha)
-            if (rIdx === 9) return 350; // "Filmes · Ação Internacional 4" demanda 350px (2 linhas de título bold)
+            if (rIdx === 9) return 350; // "Filmes · WWWWWW WWWWW WWWWW" demanda 350px (2 linhas de título bold)
             const catIdx = Math.floor((rIdx - 3) / 2) + 1;
             if (catIdx % 3 === 1) return 327; // 1 linha
             if (catIdx % 3 === 2) return 350; // 2 linhas
@@ -24038,11 +24061,8 @@ if (args[0] === 'add' && args[1] === 'android') {
             const innerWrapper = scrollBlock.querySelector<HTMLElement>('[data-home-row-index]');
             const rIdx = innerWrapper
               ? parseInt(innerWrapper.getAttribute('data-home-row-index') || '-1', 10)
-              : -1;
-            const naturalH = rIdx >= 0 ? getRowNaturalHeight390(rIdx) : 327;
-            const minH = parseFloat(scrollBlock.style.minHeight || '0') || 0;
-            // No DOM real do navegador, minHeight impõe limite inferior, mas o conteúdo natural expande o bloco
-            return Math.max(naturalH, minH);
+              : parseInt(scrollBlock.getAttribute('data-showcase-row-index') || '-1', 10);
+            return rIdx >= 0 ? getRowNaturalHeight390(rIdx) : 327;
           };
 
           const computeTouchRowContentTop390 = (targetBlock: HTMLElement): number => {
