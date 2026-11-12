@@ -23419,10 +23419,13 @@ if (args[0] === 'add' && args[1] === 'android') {
             '[12.25-d] Container rolável da vitrine deve desativar overflow-anchor automático para não duplicar compensação'
           );
 
-          // Simular geometria real com fileiras de alturas diferentes (340px, 380px, 420px != 320px)
+          // Simular geometria real com fileiras de alturas diferentes (340px, 380px, 420px, e +60px ao remontar 0..2)
           // para validar a preservação da posição visual da fileira âncora ao trocar a janela
+          let row0To2RemountExtraPx = 0;
           const getSimulatedRowHeight = (logicalRowIdx: number): number =>
-            340 + (logicalRowIdx % 3) * 40;
+            340 +
+            (logicalRowIdx % 3) * 40 +
+            (logicalRowIdx < 3 ? row0To2RemountExtraPx : 0);
 
           Object.defineProperty(dpad32MainEl, 'clientHeight', {
             value: 720,
@@ -23561,7 +23564,7 @@ if (args[0] === 'add' && args[1] === 'android') {
 
           // 1. Posicionar no meio do catálogo (fileira 15 de 32)
           await act(async () => {
-            dpad32MainEl.scrollTop = 420 + 15 * 320;
+            dpad32MainEl.scrollTop = 420 + 15 * 380;
             dpad32MainEl.dispatchEvent(
               new windowInstance.Event('scroll') as unknown as Event
             );
@@ -23772,6 +23775,8 @@ if (args[0] === 'add' && args[1] === 'android') {
             `[12.25-d] Fileira 3 deve iniciar em visualTop=80px antes da troca de janela (obteve ${visualTopRow3BeforeWindowShift})`
           );
           await new Promise((r) => setTimeout(r, 52));
+          // Simular que as fileiras 0..2 expandem (+60px cada: 340+380+420 = 1140px vs 960px do topSpacer) ao remontar
+          row0To2RemountExtraPx = 60;
           await act(async () => {
             (document.activeElement as HTMLElement).dispatchEvent(
               new (windowInstance as any).KeyboardEvent('keydown', {
@@ -23798,6 +23803,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             Math.abs(visualTopRow3AfterWindowShift - visualTopRow3BeforeWindowShift) <= 1,
             `[12.25-d] Ao montar/desmontar fileiras de alturas variáveis acima da área visível, a posição visual da fileira âncora deve ser preservada (antes=${visualTopRow3BeforeWindowShift}, depois=${visualTopRow3AfterWindowShift})`
           );
+          row0To2RemountExtraPx = 0;
 
           // 5. Continuar subindo até a primeira fileira real (3 -> 2 -> 1 -> 0) e confirmar saída normal para o HeroBanner ao subir da fileira 0
           for (let targetRow = 2; targetRow >= 0; targetRow--) {
@@ -23833,7 +23839,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             dpad32MainEl.dispatchEvent(
               new windowInstance.Event('wheel', { bubbles: true }) as unknown as Event
             );
-            dpad32MainEl.scrollTop = 420 + 22 * 320;
+            dpad32MainEl.scrollTop = 420 + 22 * 380;
             dpad32MainEl.dispatchEvent(
               new windowInstance.Event('scroll') as unknown as Event
             );
@@ -23854,6 +23860,502 @@ if (args[0] === 'add' && args[1] === 'android') {
 
           domObserver.disconnect();
 
+          // ===================================================================
+          // (e) Regressão focada de rolagem por toque em tela de 390 px (iPhone)
+          //     com o componente real (Início), 32 fileiras (>= 30) e alturas variadas:
+          //     - Fileira Ao Vivo 16:9 (239px), fileiras 2:3 com título de 1 linha (311px),
+          //       2 linhas quebradas (333px) e 3 linhas quebradas (356px);
+          //     - Transição de janela que antes oscilava, com eventos de scroll durante
+          //       o toque (touchstart / touchmove) e após soltar o dedo (touchend + inércia);
+          //     - Verifica que o app NUNCA escreve em scrollTop nem chama scrollTo na rolagem manual;
+          //     - Verifica que eventos repetidos de scroll na mesma posição ou micro-oscilações de
+          //       inércia após soltar o dedo NÃO alternam a janela;
+          //     - Verifica estabilidade visual (ΔvisualTop = 0px) quando fileiras entram/saem da janela;
+          //     - Verifica que um gesto rápido cruzando várias categorias alcança a última categoria
+          //       (fileira 31, com 1 único título) e retorna ao topo sem perder a área visível.
+          // ===================================================================
+          const prevInnerHStage1 = (windowInstance as any).innerHeight;
+          await act(async () => {
+            (windowInstance as any).innerWidth = 390;
+            (windowInstance as any).innerHeight = 844;
+            windowInstance.dispatchEvent(
+              new windowInstance.Event('resize') as any
+            );
+          });
+
+          const touch390Creds = {
+            serverUrl: 'http://stage2-touch390.local:8080',
+            username: 'touch390_user',
+            password: 'touch390_pass',
+          };
+          windowInstance.localStorage.setItem(
+            CREDENTIALS_KEY,
+            JSON.stringify(touch390Creds)
+          );
+
+          // 32 fileiras no Início:
+          // - 3 fixas: Canais Ao Vivo (16:9), Filmes em Destaque (2:3), Séries em Destaque (2:3)
+          // - 15 categorias de Filmes + 14 categorias de Séries = 29 categorias intercaladas (total = 32 fileiras)
+          //   com títulos curtos (1 linha em 390px), médios (2 linhas em 390px) e longos (3 linhas em 390px),
+          //   e a última categoria (fileira 31) com apenas 1 título.
+          const buildTouchCategoryTitle = (domainLabel: string, idx: number): string => {
+            if (idx % 3 === 1) {
+              return `${domainLabel} ${idx}`; // 1 linha em 390px
+            }
+            if (idx % 3 === 2) {
+              return `${domainLabel} Especiais de Cinema Internacional ${idx}`; // 2 linhas em 390px
+            }
+            return `${domainLabel} Antologia Histórica Restaurada em Alta Definição Especial ${idx}`; // 3 linhas em 390px
+          };
+
+          const touchVodCategories = Array.from({ length: 15 }, (_, i) => ({
+            category_id: `t390_vod_cat_${i + 1}`,
+            category_name:
+              i === 14
+                ? 'Última Categoria Touch 390 Com Único Filme'
+                : buildTouchCategoryTitle('Ação', i + 1),
+          }));
+          const touchSeriesCategories = Array.from({ length: 14 }, (_, i) => ({
+            category_id: `t390_ser_cat_${i + 1}`,
+            category_name: buildTouchCategoryTitle('Drama', i + 1),
+          }));
+
+          const touchLiveStreams = Array.from({ length: 6 }, (_, i) => ({
+            stream_id: 390000 + i,
+            name: `Canal Touch 390 #${i + 1}`,
+            category_id: 't390_live_1',
+            stream_icon: `http://stage2-touch390.local:8080/live_${i}.png`,
+          }));
+          const touchVodStreams: any[] = [];
+          for (let c = 0; c < 15; c++) {
+            const itemCount = c === 14 ? 1 : 4;
+            for (let j = 0; j < itemCount; j++) {
+              const idNum = 391000 + c * 10 + j;
+              touchVodStreams.push({
+                stream_id: idNum,
+                name:
+                  c === 14
+                    ? 'Título Único no Fim do Touch 390'
+                    : `Filme Touch ${c + 1} #${j + 1}`,
+                category_id: `t390_vod_cat_${c + 1}`,
+                year: '2025',
+                rating: '8.6',
+                stream_icon: `http://stage2-touch390.local:8080/vod_${idNum}.jpg`,
+                container_extension: 'mp4',
+              });
+            }
+          }
+          const touchSeriesStreams: any[] = [];
+          for (let c = 0; c < 14; c++) {
+            for (let j = 0; j < 4; j++) {
+              const idNum = 395000 + c * 10 + j;
+              touchSeriesStreams.push({
+                series_id: idNum,
+                name: `Série Touch ${c + 1} #${j + 1}`,
+                category_id: `t390_ser_cat_${c + 1}`,
+                year: '2025',
+                rating: '8.5',
+                cover: `http://stage2-touch390.local:8080/ser_${idNum}.jpg`,
+              });
+            }
+          }
+
+          (XtreamService as any).getLiveCategories = async () => [
+            { category_id: 't390_live_1', category_name: 'Canais Touch' },
+          ];
+          (XtreamService as any).getVodCategories = async () => touchVodCategories;
+          (XtreamService as any).getSeriesCategories = async () => touchSeriesCategories;
+          (XtreamService as any).getLiveStreams = async () => touchLiveStreams;
+          (XtreamService as any).getVodStreams = async () => touchVodStreams;
+          (XtreamService as any).getSeries = async () => touchSeriesStreams;
+
+          await act(async () => {
+            stage1Root.render(React.createElement('div', null));
+          });
+          await act(async () => {
+            stage1Root.render(
+              React.createElement(
+                MemoryRouter,
+                { initialEntries: ['/home'] },
+                React.createElement(
+                  Stage1NavProvider,
+                  null,
+                  React.createElement(RealHomeApp)
+                )
+              )
+            );
+            await new Promise((r) => setTimeout(r, 80));
+          });
+
+          const touchMainEl = stage1Container.querySelector<HTMLElement>(
+            'main[data-scroll-container="true"]'
+          )!;
+          const touchRowsContainer = stage1Container.querySelector<HTMLElement>(
+            '[data-showcase-rows-container="true"]'
+          )!;
+          assert.strictEqual(
+            touchRowsContainer.getAttribute('data-showcase-total-rows'),
+            '32',
+            '[12.25-e] Vitrine do Início em 390px deve ter 32 fileiras totais (3 fixas + 15 Filmes + 14 Séries)'
+          );
+
+          // Configurar geometria realista de 390x844 (iPhone):
+          // HeroBanner h-[36vh]=304px + mb-4 (16px) + container mt-2 (8px) = 328px até a fileira 0.
+          // Cada fileira montada tem minHeight definido pelo próprio componente em style.minHeight
+          // (239px na fileira 0 Ao Vivo 16:9, e 311px / 333px / 356px nas fileiras 2:3 conforme 1, 2 ou 3 linhas de título).
+          const HERO_START_OFFSET_390 = 328;
+          Object.defineProperty(touchMainEl, 'clientHeight', {
+            value: 844,
+            configurable: true,
+          });
+          touchMainEl.getBoundingClientRect = () =>
+            ({
+              top: 0,
+              bottom: 844,
+              left: 0,
+              right: 390,
+              width: 390,
+              height: 844,
+              x: 0,
+              y: 0,
+              toJSON: () => ({}),
+            }) as DOMRect;
+
+          const getMountedBlockRealHeight390 = (scrollBlock: HTMLElement): number => {
+            const minH = parseFloat(scrollBlock.style.minHeight || '0') || 0;
+            return minH > 0 ? minH : 311;
+          };
+
+          const computeTouchRowContentTop390 = (targetBlock: HTMLElement): number => {
+            const topSpacerEl = touchRowsContainer.querySelector<HTMLElement>(
+              '[data-showcase-row-spacer="top"]'
+            );
+            const topSpacerHeight = topSpacerEl
+              ? parseFloat(topSpacerEl.style.height || '0') || 0
+              : 0;
+            const blocks = Array.from(
+              touchRowsContainer.querySelectorAll<HTMLElement>('[data-scroll-block="true"]')
+            );
+            let accum = HERO_START_OFFSET_390 + topSpacerHeight;
+            for (const blk of blocks) {
+              if (blk === targetBlock) break;
+              accum += getMountedBlockRealHeight390(blk);
+            }
+            return accum;
+          };
+
+          const installTouch390Rects = () => {
+            const heroStageEl = stage1Container.querySelector<HTMLElement>(
+              '[data-hero-stage="true"]'
+            );
+            if (heroStageEl) {
+              heroStageEl.getBoundingClientRect = () => {
+                const top = 0 - (touchMainEl.scrollTop || 0);
+                return {
+                  top,
+                  bottom: top + 304,
+                  left: 0,
+                  right: 390,
+                  width: 390,
+                  height: 304,
+                  x: 0,
+                  y: top,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
+            }
+
+            const blocks = Array.from(
+              touchRowsContainer.querySelectorAll<HTMLElement>('[data-scroll-block="true"]')
+            );
+            for (const blk of blocks) {
+              const rectFn = () => {
+                const h = getMountedBlockRealHeight390(blk);
+                const cTop = computeTouchRowContentTop390(blk);
+                const vTop = cTop - (touchMainEl.scrollTop || 0);
+                return {
+                  top: vTop,
+                  bottom: vTop + h,
+                  left: 16,
+                  right: 374,
+                  width: 358,
+                  height: h,
+                  x: 16,
+                  y: vTop,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
+              blk.getBoundingClientRect = rectFn;
+              const innerWrapper = blk.querySelector<HTMLElement>('[data-home-row-index]');
+              if (innerWrapper) {
+                innerWrapper.getBoundingClientRect = rectFn;
+              }
+            }
+          };
+
+          const touchDomObserver = new (windowInstance as any).MutationObserver(() => {
+            installTouch390Rects();
+          });
+          touchDomObserver.observe(touchRowsContainer, {
+            childList: true,
+            subtree: true,
+          });
+          installTouch390Rects();
+
+          // Confirmar que as fileiras montadas possuem alturas variadas reais em 390px (16:9 vs 1, 2 e 3 linhas de título)
+          const initialDistinctHeights390 = new Set(
+            Array.from(
+              touchRowsContainer.querySelectorAll<HTMLElement>('[data-scroll-block="true"]')
+            ).map((blk) => getMountedBlockRealHeight390(blk))
+          );
+          assert(
+            initialDistinctHeights390.size >= 3,
+            `[12.25-e] Vitrine em 390px deve refletir pelo menos 3 alturas distintas entre 16:9 e títulos de 1..3 linhas (obteve: ${Array.from(initialDistinctHeights390).join(', ')}px)`
+          );
+
+          // Espionar qualquer tentativa do aplicativo de escrever em scrollTop ou chamar scrollTo durante a rolagem manual
+          let internalTouchScrollTop = touchMainEl.scrollTop || 0;
+          let isTestDrivingTouchScroll = false;
+          let appScrollTopWriteCount = 0;
+
+          Object.defineProperty(touchMainEl, 'scrollTop', {
+            get: () => internalTouchScrollTop,
+            set: (val: number) => {
+              const numericVal = Number(val) || 0;
+              if (!isTestDrivingTouchScroll) {
+                appScrollTopWriteCount++;
+              }
+              internalTouchScrollTop = numericVal;
+            },
+            configurable: true,
+          });
+          const origTouchMainScrollTo = touchMainEl.scrollTo;
+          touchMainEl.scrollTo = ((..._args: any[]) => {
+            if (!isTestDrivingTouchScroll) {
+              appScrollTopWriteCount++;
+            }
+          }) as any;
+
+          const setBrowserDrivenScrollTop = (nextScrollTop: number) => {
+            isTestDrivingTouchScroll = true;
+            try {
+              touchMainEl.scrollTop = nextScrollTop;
+            } finally {
+              isTestDrivingTouchScroll = false;
+            }
+          };
+
+          const readCurrentWindowStart390 = (): number => {
+            const firstRow = touchRowsContainer.querySelector<HTMLElement>(
+              '[data-home-row-index]'
+            );
+            return firstRow
+              ? parseInt(firstRow.getAttribute('data-home-row-index') || '0', 10)
+              : 0;
+          };
+
+          const snapshotVisibleRowsVisualTops390 = (): Map<number, number> => {
+            const map = new Map<number, number>();
+            const wrappers = Array.from(
+              touchRowsContainer.querySelectorAll<HTMLElement>('[data-home-row-index]')
+            );
+            for (const w of wrappers) {
+              const rIdx = parseInt(w.getAttribute('data-home-row-index') || '-1', 10);
+              const blk = w.closest<HTMLElement>('[data-scroll-block="true"]') || w;
+              const vTop = blk.getBoundingClientRect().top;
+              map.set(rIdx, vTop);
+            }
+            return map;
+          };
+
+          let maxVisualJumpDuringTouchPx = 0;
+          const stepBrowserTouchScroll390 = async (
+            nextScrollTop: number,
+            phase: 'touchmove' | 'inertia'
+          ) => {
+            const prevScroll = touchMainEl.scrollTop;
+            const prevWindowStart = readCurrentWindowStart390();
+            const prevVisualTops = snapshotVisibleRowsVisualTops390();
+            const deltaScroll = nextScrollTop - prevScroll;
+
+            await act(async () => {
+              if (phase === 'touchmove') {
+                touchMainEl.dispatchEvent(
+                  new windowInstance.Event('touchmove', { bubbles: true }) as unknown as Event
+                );
+              }
+              setBrowserDrivenScrollTop(nextScrollTop);
+              touchMainEl.dispatchEvent(
+                new windowInstance.Event('scroll') as unknown as Event
+              );
+            });
+            installTouch390Rects();
+
+            const afterWindowStart = readCurrentWindowStart390();
+            const afterVisualTops = snapshotVisibleRowsVisualTops390();
+            if (afterWindowStart !== prevWindowStart) {
+              // Para todas as fileiras que permaneceram montadas na interseção das duas janelas,
+              // a posição visual só deve variar exatamente por -deltaScroll (ou seja, Δgeometria = 0px)
+              for (const [rIdx, afterTop] of afterVisualTops.entries()) {
+                if (prevVisualTops.has(rIdx)) {
+                  const expectedTop = prevVisualTops.get(rIdx)! - deltaScroll;
+                  const jumpPx = Math.abs(afterTop - expectedTop);
+                  if (jumpPx > maxVisualJumpDuringTouchPx) {
+                    maxVisualJumpDuringTouchPx = jumpPx;
+                  }
+                  assert(
+                    jumpPx <= 0.5,
+                    `[12.25-e] Troca de janela (${prevWindowStart} -> ${afterWindowStart}) em scrollTop=${nextScrollTop} NÃO deve deslocar visualmente a fileira ${rIdx} (esperado=${expectedTop}px, obteve=${afterTop}px, salto=${jumpPx}px)`
+                  );
+                }
+              }
+            }
+            return afterWindowStart;
+          };
+
+          // 1. Iniciar gesto de toque (touchstart) e deslizar cruzando os limiares das primeiras janelas (0 -> 1 -> 2 -> 3 -> 4),
+          //    seguido de touchend e eventos de inércia + eventos de scroll repetidos no limiar que antes oscilava!
+          await act(async () => {
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('touchstart', { bubbles: true }) as unknown as Event
+            );
+          });
+
+          const recordedWindowStartsOnSwipe1: number[] = [];
+          const swipe1ScrollSteps = [
+            200, 480, 620, 890, 910, 925, 1180, 1245, 1255, 1560, 1590, 1890,
+          ];
+          for (const pos of swipe1ScrollSteps) {
+            const winStart = await stepBrowserTouchScroll390(pos, 'touchmove');
+            recordedWindowStartsOnSwipe1.push(winStart);
+          }
+
+          // Soltar o dedo (touchend) e simular eventos de scroll na inércia + eventos repetidos na mesma posição
+          // + micro-oscilação de desaceleração no limiar da janela
+          await act(async () => {
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('touchend', { bubbles: true }) as unknown as Event
+            );
+          });
+
+          const windowBeforeInertia = readCurrentWindowStart390();
+          assert(
+            windowBeforeInertia >= 3,
+            `[12.25-e] Gesto de toque deve avançar a janela da vitrine (windowStart=${windowBeforeInertia})`
+          );
+
+          // Disparar 4 eventos de scroll seguidos na MESMA posição (como ocorre no iOS Safari/Chrome durante touchend/inércia)
+          for (let rep = 0; rep < 4; rep++) {
+            const winStart = await stepBrowserTouchScroll390(1890, 'inertia');
+            assert.strictEqual(
+              winStart,
+              windowBeforeInertia,
+              `[12.25-e] Eventos repetidos de scroll na mesma posição (1890px, rep=${rep + 1}) NÃO devem alternar a janela`
+            );
+          }
+
+          // Simular inércia desacelerando até parar e leve recuo de 12px dentro da banda de histerese
+          const inertiaTailSteps = [1915, 1930, 1935, 1928, 1923, 1923, 1923];
+          const inertiaWindows: number[] = [];
+          for (const pos of inertiaTailSteps) {
+            const w = await stepBrowserTouchScroll390(pos, 'inertia');
+            inertiaWindows.push(w);
+          }
+          // Verificar que a janela não alternou para frente e para trás na desaceleração
+          let windowReversalsInTail = 0;
+          for (let i = 2; i < inertiaWindows.length; i++) {
+            const d1 = inertiaWindows[i - 1] - inertiaWindows[i - 2];
+            const d2 = inertiaWindows[i] - inertiaWindows[i - 1];
+            if (d1 !== 0 && d2 !== 0 && Math.sign(d1) !== Math.sign(d2)) {
+              windowReversalsInTail++;
+            }
+          }
+          assert.strictEqual(
+            windowReversalsInTail,
+            0,
+            `[12.25-e] Desaceleração da inércia após soltar o dedo NÃO deve causar oscilação entre duas janelas (sequência=${inertiaWindows.join('->')})`
+          );
+
+          // 2. Gesto rápido por toque cruzando várias categorias até a última categoria (fileira 31 de 32)
+          await act(async () => {
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('touchstart', { bubbles: true }) as unknown as Event
+            );
+          });
+          const fastFlickDownSteps = [2800, 4200, 5800, 7400, 9100, 10600];
+          for (const pos of fastFlickDownSteps) {
+            await stepBrowserTouchScroll390(pos, 'touchmove');
+            const mountedNow =
+              touchRowsContainer.querySelectorAll('[data-home-row-index]').length;
+            assert.strictEqual(
+              mountedNow,
+              8,
+              `[12.25-e] Durante gesto rápido em scrollTop=${pos}, a vitrine deve manter exatamente 8 fileiras montadas`
+            );
+          }
+          await act(async () => {
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('touchend', { bubbles: true }) as unknown as Event
+            );
+          });
+
+          const lastRow31El = touchRowsContainer.querySelector<HTMLElement>(
+            '[data-home-row-index="31"]'
+          );
+          assert(
+            lastRow31El !== null,
+            '[12.25-e] Gesto rápido até o fim da vitrine em 390px deve montar a última categoria (fileira 31)'
+          );
+          assert.strictEqual(
+            lastRow31El?.querySelector('h2')?.textContent?.trim(),
+            'Filmes · Última Categoria Touch 390 Com Único Filme',
+            '[12.25-e] A última fileira montada em 390px deve ser a última categoria com rótulo Filmes ·'
+          );
+          const lastRow31SingleCard = lastRow31El?.querySelector<HTMLElement>(
+            '[data-nav-item="true"]'
+          );
+          assert.strictEqual(
+            lastRow31SingleCard?.getAttribute('aria-label'),
+            'Título Único no Fim do Touch 390',
+            '[12.25-e] Última categoria com apenas 1 título deve exibir seu cartão ao final da rolagem por toque'
+          );
+
+          // 3. Deslizar de volta até o topo (scrollTop = 0) e confirmar retorno à janela 0..7 sem saltos nem perda da área visível
+          await act(async () => {
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('touchstart', { bubbles: true }) as unknown as Event
+            );
+          });
+          const fastFlickUpSteps = [8200, 5400, 2900, 1100, 350, 0];
+          for (const pos of fastFlickUpSteps) {
+            await stepBrowserTouchScroll390(pos, 'touchmove');
+          }
+          await act(async () => {
+            touchMainEl.dispatchEvent(
+              new windowInstance.Event('touchend', { bubbles: true }) as unknown as Event
+            );
+          });
+
+          assert.strictEqual(
+            readCurrentWindowStart390(),
+            0,
+            '[12.25-e] Rolar de volta até o topo por toque deve restaurar a janela inicial (rowWindowStart=0)'
+          );
+          assert(
+            touchRowsContainer.querySelector('[data-home-row-index="0"]') !== null &&
+              stage1Container.querySelector('[data-hero-stage="true"]') !== null,
+            '[12.25-e] Ao retornar ao topo por toque, a fileira 0 e o HeroBanner devem estar visíveis e montados'
+          );
+          assert.strictEqual(
+            appScrollTopWriteCount,
+            0,
+            `[12.25-e] A rolagem manual por toque/inércia NUNCA deve escrever em scrollTop nem chamar scrollTo (escritas detectadas=${appScrollTopWriteCount})`
+          );
+
+          touchDomObserver.disconnect();
+          touchMainEl.scrollTo = origTouchMainScrollTo;
+          (windowInstance as any).innerHeight = prevInnerHStage1;
+
           clearItemProgress(stage2ManyCreds, 'episode', 'ep_9001_mkv');
           clearItemProgress(stage2Creds, 'movie', '2001');
           clearItemProgress(stage2Creds, 'episode', 'ep_3001_2');
@@ -23864,11 +24366,12 @@ if (args[0] === 'add' && args[1] === 'android') {
               `   • Início (25 fileiras totais = 4 fixas + 12 Filmes + 9 Séries): início -> ${inicioInitialMountedRows} fileiras montadas, ${inicioInitialMountedImgs} img[src] | fim -> ${inicioEndMountedRows} fileiras montadas, ${inicioEndMountedImgs} img[src]\n` +
               `   • Filmes (13 fileiras totais = 1 fixa + 12 categorias, última c/ 1 título): início -> ${moviesInitialMountedRows} fileiras montadas, ${moviesInitialMountedImgs} img[src] | fim -> ${moviesEndMountedRows} fileiras montadas, ${moviesEndMountedImgs} img[src]\n` +
               `   • Percursos D-Pad até a fileira 12 ("Cinema Experimental Único", 1 título): abertura=${dpadInitialRun.mountedRowsAtEnd} fileiras | pós-busca=${dpadAfterSearchCloseRun.mountedRowsAtEnd} fileiras | pós-Ver-todos=${dpadAfterVerTodosRun.mountedRowsAtEnd} fileiras | pós-categoria=${dpadAfterCategoryRun.mountedRowsAtEnd} fileiras (controladores ativos=1)\n` +
-              `   • Regressão D-Pad 32 fileiras (15->27->4->0 c/ scroll intermediário e repeat=true): ΔvisualAnchor=${Math.abs(visualTopRow3AfterWindowShift - visualTopRow3BeforeWindowShift).toFixed(2)}px (compensação=+${dpad32MainEl.scrollTop >= 0 ? 180 : 0}px), roda do mouse -> firstRow=${firstMountedAfterWheel} (janela=${mountedCountAfterWheel})\n` +
+              `   • Regressão D-Pad 32 fileiras (15->27->4->0 c/ scroll intermediário e repeat=true): ΔvisualAnchor=${Math.abs(visualTopRow3AfterWindowShift - visualTopRow3BeforeWindowShift).toFixed(2)}px (compensação=+180px), roda do mouse -> firstRow=${firstMountedAfterWheel} (janela=${mountedCountAfterWheel})\n` +
+              `   • Regressão Touch 390px (32 fileiras c/ alturas ${Array.from(initialDistinctHeights390).join('/')}px): escritas em scrollTop=${appScrollTopWriteCount}, salto visual máx=${maxVisualJumpDuringTouchPx.toFixed(2)}px, reversões na inércia=${windowReversalsInTail}\n` +
               `   • Busca no Início (2.500 resultados): ${mountedSearchCards} cartões montados (${mountedLiveSearchCards}+${mountedVodSearchCards}+${mountedSeriesSearchCards}), ${mountedSearchImgs} img[src]`
           );
           console.log(
-            '✅ [12.25] Etapa 2 validada com sucesso: vitrine completa sem limites artificiais, D-Pad vertical estável com scroll intermediário e preservação visual de âncora em 32 fileiras, busca virtualizada no Início (2.500 resultados) e retomada segura de episódio apenas com extensão confirmada!'
+            '✅ [12.25] Etapa 2 validada com sucesso: vitrine completa sem limites artificiais, rolagem por toque em 390px sem oscilação e sem escrita em scrollTop, D-Pad vertical estável em 32 fileiras, busca virtualizada no Início (2.500 resultados) e retomada segura de episódio apenas com extensão confirmada!'
           );
         } finally {
           useDelayedSeriesCategories = false;

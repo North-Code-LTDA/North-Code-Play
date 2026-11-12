@@ -178,7 +178,7 @@ const VIRTUAL_CATEGORIES = [
 ] as const;
 
 const SHOWCASE_ROW_WINDOW_SIZE = 8;
-const SHOWCASE_ROW_STRIDE_PX = 320;
+const SHOWCASE_SCROLL_HYSTERESIS_PX = 24;
 const SEARCH_IMAGE_ACTIVE_BUDGET = 24;
 
 interface ShowcaseRowDescriptor {
@@ -190,6 +190,104 @@ interface ShowcaseRowDescriptor {
   categoryId?: string;
   virtualize?: boolean;
   isContinueRow?: boolean;
+}
+
+function estimateTitleLineCount(
+  title: string,
+  availableWidthPx: number,
+  fontSizePx: number
+): number {
+  const trimmed = (title || '').trim();
+  if (!trimmed) return 1;
+  const safeWidth = Math.max(120, availableWidthPx);
+  const avgCharWidth = Math.max(8, fontSizePx * 0.56);
+  const maxCharsPerLine = Math.max(8, Math.floor(safeWidth / avgCharWidth));
+  const words = trimmed.split(/\s+/);
+  let lines = 1;
+  let currentLineChars = 0;
+
+  for (const word of words) {
+    const wordLen = word.length;
+    if (currentLineChars === 0) {
+      if (wordLen <= maxCharsPerLine) {
+        currentLineChars = wordLen;
+      } else {
+        const extraLines = Math.ceil(wordLen / maxCharsPerLine) - 1;
+        lines += extraLines;
+        currentLineChars = wordLen % maxCharsPerLine || maxCharsPerLine;
+      }
+    } else if (currentLineChars + 1 + wordLen <= maxCharsPerLine) {
+      currentLineChars += 1 + wordLen;
+    } else {
+      lines += 1;
+      if (wordLen <= maxCharsPerLine) {
+        currentLineChars = wordLen;
+      } else {
+        const extraLines = Math.ceil(wordLen / maxCharsPerLine) - 1;
+        lines += extraLines;
+        currentLineChars = wordLen % maxCharsPerLine || maxCharsPerLine;
+      }
+    }
+  }
+  return Math.max(1, lines);
+}
+
+function estimateShowcaseRowSlotHeight(
+  desc: ShowcaseRowDescriptor | undefined,
+  viewportWidth: number
+): number {
+  const safeVw = viewportWidth > 0 ? viewportWidth : 1280;
+  // Horizontal container padding on [data-showcase-rows-container="true"]:
+  // px-4 (32px) below 640px, sm:px-6 (48px) at 640..767px, md:px-10 (80px) at >=768px
+  const horizontalPaddingPx = safeVw >= 768 ? 80 : safeVw >= 640 ? 48 : 32;
+  const availableTitleWidthPx = Math.max(140, safeVw - horizontalPaddingPx);
+  // .nc-heading-view: clamp(18px, calc(15.68px + 0.65vw), 24px), line-height: 1.25
+  const headingFontSizePx = Math.min(24, Math.max(18, 15.68 + 0.0065 * safeVw));
+  const headingLineHeightPx = headingFontSizePx * 1.25;
+  const lineCount = estimateTitleLineCount(
+    desc?.title || '',
+    availableTitleWidthPx,
+    headingFontSizePx
+  );
+  const titleHeightPx = Math.ceil(lineCount * headingLineHeightPx);
+  const titleMarginBottomPx = 16; // mb-4 on <h2> in HorizontalRow
+  const trackVerticalPaddingPx = 48; // pt-4 (16px) + pb-8 (32px) on carousel track in HorizontalRow
+  // Card height in HorizontalRow:
+  // live: w-64 h-36 (144px) / md:w-72 md:h-[162px] (162px)
+  // vod/series: w-36 h-54 (216px) / md:w-44 md:h-66 (264px)
+  const cardHeightPx =
+    desc?.type === 'live'
+      ? safeVw >= 768
+        ? 162
+        : 144
+      : safeVw >= 768
+        ? 264
+        : 216;
+  const interRowSpacingPx = 24; // pb-6 (24px) on [data-scroll-block="true"]
+  return (
+    titleHeightPx +
+    titleMarginBottomPx +
+    trackVerticalPaddingPx +
+    cardHeightPx +
+    interRowSpacingPx
+  );
+}
+
+function estimateShowcaseRowsStartOffset(
+  hasHero: boolean,
+  viewportWidth: number,
+  viewportHeight: number
+): number {
+  const safeVw = viewportWidth > 0 ? viewportWidth : 1280;
+  const safeVh = viewportHeight > 0 ? viewportHeight : 720;
+  const containerMarginTopPx = safeVw >= 640 ? 16 : 8; // mt-2 (8px) / sm:mt-4 (16px)
+  if (!hasHero) {
+    return containerMarginTopPx;
+  }
+  // HeroBanner: h-[36vh] min-h-[240px] max-h-[380px] mb-4 (16px)
+  const heroHeightPx = Math.min(380, Math.max(240, Math.round(safeVh * 0.36)));
+  const heroMarginBottomPx = 16;
+  return heroHeightPx + heroMarginBottomPx + containerMarginTopPx;
 }
 
 interface VirtualizedInicioSearchSectionProps {
@@ -476,6 +574,41 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   rowWindowStartRef.current = rowWindowStart;
   const isProgrammaticRowShiftRef = useRef(false);
   const isDpadShowcaseNavActiveRef = useRef(false);
+  const lastManualScrollTopRef = useRef<number | null>(null);
+  const measuredRowHeightsRef = useRef<Map<number, number>>(new Map());
+  const measuredRowsStartOffsetRef = useRef<number | null>(null);
+
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>(() => ({
+    width: typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 1280,
+    height: typeof window !== 'undefined' && window.innerHeight > 0 ? window.innerHeight : 720,
+  }));
+  const liveViewportWidth =
+    typeof window !== 'undefined' && window.innerWidth > 0
+      ? window.innerWidth
+      : viewportSize.width;
+  const liveViewportHeight =
+    typeof window !== 'undefined' && window.innerHeight > 0
+      ? window.innerHeight
+      : viewportSize.height;
+  const lastMeasuredViewportWidthRef = useRef<number>(liveViewportWidth);
+  if (lastMeasuredViewportWidthRef.current !== liveViewportWidth) {
+    lastMeasuredViewportWidthRef.current = liveViewportWidth;
+    measuredRowHeightsRef.current.clear();
+    measuredRowsStartOffsetRef.current = null;
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => {
+      const nextW = window.innerWidth > 0 ? window.innerWidth : 1280;
+      const nextH = window.innerHeight > 0 ? window.innerHeight : 720;
+      setViewportSize((prev) =>
+        prev.width === nextW && prev.height === nextH ? prev : { width: nextW, height: nextH }
+      );
+    };
+    window.addEventListener('resize', handleResize, { passive: true });
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const mainContainerRef = useRef<HTMLElement | null>(null);
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
@@ -534,6 +667,9 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     rowWindowStartRef.current = 0;
     setRowWindowStart(0);
     isDpadShowcaseNavActiveRef.current = false;
+    lastManualScrollTopRef.current = null;
+    measuredRowHeightsRef.current.clear();
+    measuredRowsStartOffsetRef.current = null;
     preSearchScrollTopRef.current = null;
     preSearchRowWindowStartRef.current = null;
     wasSearchingRef.current = false;
@@ -971,16 +1107,180 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     ? Math.max(0, totalShowcaseRows - SHOWCASE_ROW_WINDOW_SIZE)
     : 0;
 
-  const computeShowcaseRowStartFromScroll = useCallback(
-    (scrollTop: number): number => {
-      if (!shouldVirtualizeShowcaseRows) return 0;
-      const heroOffset = heroItems.length > 0 ? 420 : 40;
-      const relativeTop = Math.max(0, scrollTop - heroOffset);
-      const approxFirstRow = Math.floor(relativeTop / SHOWCASE_ROW_STRIDE_PX);
-      const desired = Math.max(0, approxFirstRow - 1);
-      return Math.max(0, Math.min(maxRowWindowStart, desired));
+  const getRowSlotHeight = useCallback(
+    (rowIndex: number): number => {
+      const measured = measuredRowHeightsRef.current.get(rowIndex);
+      if (typeof measured === 'number' && measured > 0) {
+        return measured;
+      }
+      return estimateShowcaseRowSlotHeight(
+        showcaseRowDescriptors[rowIndex],
+        liveViewportWidth
+      );
     },
-    [shouldVirtualizeShowcaseRows, heroItems.length, maxRowWindowStart]
+    [showcaseRowDescriptors, liveViewportWidth]
+  );
+
+  const measureMountedShowcaseGeometry = useCallback((): void => {
+    const mainEl = mainContainerRef.current;
+    const rowsContainerEl = showcaseRowsContainerRef.current;
+    if (!mainEl || !rowsContainerEl) return;
+
+    const mainRect = mainEl.getBoundingClientRect();
+    const scrollTop = mainEl.scrollTop || 0;
+    const topSpacerEl = rowsContainerEl.querySelector<HTMLElement>(
+      '[data-showcase-row-spacer="top"]'
+    );
+    const currentTopSpacerPx = topSpacerEl
+      ? parseFloat(topSpacerEl.style.height || '0') || 0
+      : 0;
+
+    const mountedWrappers = rowsContainerEl.querySelectorAll<HTMLElement>(
+      '[data-home-row-index]'
+    );
+
+    if (mountedWrappers.length > 0) {
+      const firstWrapper = mountedWrappers[0];
+      const firstBlock =
+        firstWrapper.closest<HTMLElement>('[data-scroll-block="true"]') ||
+        firstWrapper;
+      const firstRect = firstBlock.getBoundingClientRect();
+      if (firstRect.height > 0 && typeof firstRect.top === 'number') {
+        const inferredStart = Math.round(
+          firstRect.top - mainRect.top + scrollTop - currentTopSpacerPx
+        );
+        if (inferredStart >= 0) {
+          measuredRowsStartOffsetRef.current = inferredStart;
+        }
+      }
+    }
+
+    if (measuredRowsStartOffsetRef.current === null) {
+      const containerRect = rowsContainerEl.getBoundingClientRect();
+      if (containerRect.height > 0 && typeof containerRect.top === 'number') {
+        const offsetFromContainer = Math.round(
+          containerRect.top - mainRect.top + scrollTop
+        );
+        if (offsetFromContainer >= 0) {
+          measuredRowsStartOffsetRef.current = offsetFromContainer;
+        }
+      } else {
+        const heroEl = mainEl.querySelector<HTMLElement>(
+          '[data-hero-stage="true"]'
+        );
+        if (heroEl) {
+          const heroRect = heroEl.getBoundingClientRect();
+          if (heroRect.height > 0) {
+            const marginPlusGap = liveViewportWidth >= 640 ? 32 : 24;
+            measuredRowsStartOffsetRef.current = Math.round(
+              Math.max(0, heroRect.top - mainRect.top + scrollTop) +
+                heroRect.height +
+                marginPlusGap
+            );
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < mountedWrappers.length; i++) {
+      const wrapper = mountedWrappers[i];
+      const rIdx = parseInt(
+        wrapper.getAttribute('data-home-row-index') || '-1',
+        10
+      );
+      if (isNaN(rIdx) || rIdx < 0) continue;
+      const scrollBlock =
+        wrapper.closest<HTMLElement>('[data-scroll-block="true"]') || wrapper;
+      const rect = scrollBlock.getBoundingClientRect();
+      const rawHeight = rect.height > 0 ? rect.height : scrollBlock.offsetHeight;
+      if (typeof rawHeight === 'number' && rawHeight > 0) {
+        measuredRowHeightsRef.current.set(rIdx, Math.round(rawHeight));
+      }
+    }
+  }, [liveViewportWidth]);
+
+  const computeShowcaseRowStartFromScroll = useCallback(
+    (scrollTop: number, currentWindowStart?: number): number => {
+      if (!shouldVirtualizeShowcaseRows || totalShowcaseRows <= SHOWCASE_ROW_WINDOW_SIZE) {
+        return 0;
+      }
+      const rowsStartOffsetPx =
+        measuredRowsStartOffsetRef.current ??
+        estimateShowcaseRowsStartOffset(
+          heroItems.length > 0,
+          liveViewportWidth,
+          liveViewportHeight
+        );
+      const relativeTop = Math.max(0, scrollTop - rowsStartOffsetPx);
+
+      const offsets = new Array<number>(totalShowcaseRows + 1);
+      offsets[0] = 0;
+      for (let i = 0; i < totalShowcaseRows; i++) {
+        offsets[i + 1] = offsets[i] + getRowSlotHeight(i);
+      }
+
+      const findRowAtOffset = (targetOffset: number): number => {
+        if (targetOffset <= 0) return 0;
+        let low = 0;
+        let high = totalShowcaseRows - 1;
+        while (low <= high) {
+          const mid = (low + high) >> 1;
+          if (offsets[mid + 1] <= targetOffset) {
+            low = mid + 1;
+          } else if (offsets[mid] > targetOffset) {
+            high = mid - 1;
+          } else {
+            return mid;
+          }
+        }
+        return Math.max(0, Math.min(totalShowcaseRows - 1, low));
+      };
+
+      const firstVisibleRow = findRowAtOffset(relativeTop);
+      const rawDesired = Math.max(
+        0,
+        Math.min(maxRowWindowStart, firstVisibleRow - 1)
+      );
+
+      if (typeof currentWindowStart !== 'number') {
+        return rawDesired;
+      }
+
+      const clampedCurrent = Math.max(
+        0,
+        Math.min(maxRowWindowStart, currentWindowStart)
+      );
+      if (rawDesired === clampedCurrent) {
+        return clampedCurrent;
+      }
+
+      if (rawDesired > clampedCurrent) {
+        const downRow = findRowAtOffset(
+          Math.max(0, relativeTop - SHOWCASE_SCROLL_HYSTERESIS_PX)
+        );
+        const downDesired = Math.max(
+          0,
+          Math.min(maxRowWindowStart, downRow - 1)
+        );
+        return Math.max(clampedCurrent, downDesired);
+      }
+
+      if (scrollTop <= 0) {
+        return 0;
+      }
+      const upRow = findRowAtOffset(relativeTop + SHOWCASE_SCROLL_HYSTERESIS_PX);
+      const upDesired = Math.max(0, Math.min(maxRowWindowStart, upRow - 1));
+      return Math.min(clampedCurrent, upDesired);
+    },
+    [
+      shouldVirtualizeShowcaseRows,
+      totalShowcaseRows,
+      heroItems.length,
+      liveViewportWidth,
+      liveViewportHeight,
+      getRowSlotHeight,
+      maxRowWindowStart,
+    ]
   );
 
   // Capture the current scrollTop before replacing the origin screen with search results,
@@ -1029,11 +1329,22 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     ? Math.min(totalShowcaseRows, effectiveRowStart + SHOWCASE_ROW_WINDOW_SIZE)
     : totalShowcaseRows;
 
+  // Compute cumulative row offsets using the same geometry for mounted rows and reserved spacers
+  const showcaseRowOffsets = new Array<number>(totalShowcaseRows + 1);
+  showcaseRowOffsets[0] = 0;
+  for (let i = 0; i < totalShowcaseRows; i++) {
+    showcaseRowOffsets[i + 1] = showcaseRowOffsets[i] + getRowSlotHeight(i);
+  }
+
   const topShowcaseSpacerPx = shouldVirtualizeShowcaseRows
-    ? effectiveRowStart * SHOWCASE_ROW_STRIDE_PX
+    ? showcaseRowOffsets[effectiveRowStart] || 0
     : 0;
   const bottomShowcaseSpacerPx = shouldVirtualizeShowcaseRows
-    ? Math.max(0, totalShowcaseRows - effectiveRowEnd) * SHOWCASE_ROW_STRIDE_PX
+    ? Math.max(
+        0,
+        (showcaseRowOffsets[totalShowcaseRows] || 0) -
+          (showcaseRowOffsets[effectiveRowEnd] || 0)
+      )
     : 0;
 
   // Prepare and sort category preview items ONLY for rows inside the currently mounted window
@@ -1051,6 +1362,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         ...desc,
         rowIndex,
         items,
+        reservedHeightPx: getRowSlotHeight(rowIndex),
       };
     });
   }, [
@@ -1059,10 +1371,28 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     effectiveRowEnd,
     vodIndex,
     seriesIndex,
+    getRowSlotHeight,
   ]);
 
-  // Shift showcase row window while preserving the anchor row's visual position in the viewport
-  // via a single measured delta compensation pass.
+  // Keep DOM measurements of mounted showcase rows and HeroBanner offset up to date
+  useLayoutEffect(() => {
+    if (isGridMode || (section === 'inicio' && hasSearch) || totalShowcaseRows === 0) {
+      return;
+    }
+    measureMountedShowcaseGeometry();
+  }, [
+    isGridMode,
+    section,
+    hasSearch,
+    totalShowcaseRows,
+    effectiveRowStart,
+    effectiveRowEnd,
+    liveViewportWidth,
+    measureMountedShowcaseGeometry,
+  ]);
+
+  // Shift showcase row window for D-Pad / programmatic restore while preserving the anchor row's
+  // visual position in the viewport via a single measured delta compensation pass.
   const shiftShowcaseWindowWithAnchor = useCallback(
     (desiredStart: number, preferredAnchorRowIndex?: number): boolean => {
       const clampedDesired = Math.max(0, Math.min(maxRowWindowStart, desiredStart));
@@ -1070,6 +1400,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       if (clampedDesired === curStart) {
         return false;
       }
+      measureMountedShowcaseGeometry();
+
       const curEnd = Math.min(totalShowcaseRows, curStart + SHOWCASE_ROW_WINDOW_SIZE);
       const nextEnd = Math.min(totalShowcaseRows, clampedDesired + SHOWCASE_ROW_WINDOW_SIZE);
       const overlapStart = Math.max(curStart, clampedDesired);
@@ -1122,6 +1454,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           setRowWindowStart(clampedDesired);
         }
 
+        measureMountedShowcaseGeometry();
+
         if (anchorRowIdx >= 0 && visualTopBefore !== null && mainContainerRef.current) {
           const visualTopAfter = measureShowcaseRowVisualTop(
             showcaseRowsContainerRef.current,
@@ -1143,7 +1477,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       }
       return true;
     },
-    [maxRowWindowStart, totalShowcaseRows]
+    [maxRowWindowStart, totalShowcaseRows, measureMountedShowcaseGeometry]
   );
 
   // Synchronously shift vertical showcase row window when navigating by D-Pad or restoring details origin
@@ -1186,7 +1520,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         preserveRowIndex >= 0 &&
         preserveRowIndex < totalShowcaseRows &&
         Math.abs(clampedTarget - preserveRowIndex) < SHOWCASE_ROW_WINDOW_SIZE
-       ) {
+      ) {
         if (desiredStart > preserveRowIndex) {
           desiredStart = preserveRowIndex;
         } else if (desiredStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < preserveRowIndex) {
@@ -1947,7 +2281,9 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       !selectedSeries
   );
 
-  // Sync vertical showcase row window on scroll (touch, mouse wheel, or scrollbar)
+  // Sync vertical showcase row window on manual scroll (touch, mouse wheel, or scrollbar).
+  // Manual scroll leaves scrollTop under browser control during touch gestures and inertia:
+  // it NEVER writes to scrollTop, calls scrollTo/scrollIntoView, or moves focus.
   useEffect(() => {
     const mainEl = mainContainerRef.current;
     if (
@@ -1957,6 +2293,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       !shouldVirtualizeShowcaseRows
     ) {
       isDpadShowcaseNavActiveRef.current = false;
+      lastManualScrollTopRef.current = null;
       return;
     }
 
@@ -1983,45 +2320,36 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       // so the focused row is never unmounted by an intermediate scroll event.
       if (isDpadShowcaseNavActiveRef.current) return;
 
-      const currentScrollTop = mainEl.scrollTop || 0;
-      const heroOffset = heroItems.length > 0 ? 420 : 40;
-      const relativeTop = Math.max(0, currentScrollTop - heroOffset);
-      const approxFirstRow = Math.floor(relativeTop / SHOWCASE_ROW_STRIDE_PX);
-      let nextStart = computeShowcaseRowStartFromScroll(currentScrollTop);
+      measureMountedShowcaseGeometry();
 
-      // If focus is currently on a showcase row near the current scroll position,
-      // keep the focused row inside the mounted window.
-      const activeEl =
-        typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : null;
-      const focusedRowWrapper = activeEl?.closest<HTMLElement>('[data-home-row-index]');
-      let preferredAnchorRowIdx: number | undefined;
-      if (focusedRowWrapper && mainEl.contains(focusedRowWrapper)) {
-        const focusedRowIdx = parseInt(
-          focusedRowWrapper.getAttribute('data-home-row-index') || '-1',
-          10
-        );
-        if (!isNaN(focusedRowIdx) && focusedRowIdx >= 0) {
-          preferredAnchorRowIdx = focusedRowIdx;
-          if (
-            Math.abs(approxFirstRow - focusedRowIdx) <= 2 &&
-            Math.abs(nextStart - focusedRowIdx) < SHOWCASE_ROW_WINDOW_SIZE
-          ) {
-            if (nextStart > focusedRowIdx) {
-              nextStart = focusedRowIdx;
-            } else if (nextStart + SHOWCASE_ROW_WINDOW_SIZE - 1 < focusedRowIdx) {
-              nextStart = Math.min(
-                maxRowWindowStart,
-                focusedRowIdx - SHOWCASE_ROW_WINDOW_SIZE + 1
-              );
-            }
-          }
+      const currentScrollTop = Math.max(0, mainEl.scrollTop || 0);
+      const prevScrollTop = lastManualScrollTopRef.current;
+      if (prevScrollTop !== null && Math.abs(currentScrollTop - prevScrollTop) < 0.5) {
+        return;
+      }
+      lastManualScrollTopRef.current = currentScrollTop;
+
+      const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
+      let nextStart = computeShowcaseRowStartFromScroll(currentScrollTop, curStart);
+
+      if (prevScrollTop !== null) {
+        if (currentScrollTop > prevScrollTop && nextStart < curStart) {
+          nextStart = curStart;
+        } else if (currentScrollTop < prevScrollTop && nextStart > curStart) {
+          nextStart = curStart;
         }
       }
 
-      if (nextStart !== rowWindowStartRef.current) {
-        shiftShowcaseWindowWithAnchor(nextStart, preferredAnchorRowIdx);
+      if (nextStart !== curStart) {
+        rowWindowStartRef.current = nextStart;
+        try {
+          flushSync(() => {
+            setRowWindowStart(nextStart);
+          });
+        } catch {
+          setRowWindowStart(nextStart);
+        }
+        measureMountedShowcaseGeometry();
       }
     };
 
@@ -2046,10 +2374,9 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     section,
     hasSearch,
     shouldVirtualizeShowcaseRows,
-    heroItems.length,
     maxRowWindowStart,
     computeShowcaseRowStartFromScroll,
-    shiftShowcaseWindowWithAnchor,
+    measureMountedShowcaseGeometry,
   ]);
 
   // Keyboard navigation inside Categories menu
@@ -2684,7 +3011,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                 data-showcase-virtualized={shouldVirtualizeShowcaseRows ? 'true' : 'false'}
                 data-showcase-total-rows={totalShowcaseRows}
                 style={{ overflowAnchor: 'none' }}
-                className="mt-2 sm:mt-4 px-4 sm:px-6 md:px-10 relative z-20 space-y-6"
+                className="mt-2 sm:mt-4 px-4 sm:px-6 md:px-10 relative z-20"
               >
                 {topShowcaseSpacerPx > 0 && (
                   <div
@@ -2698,7 +3025,11 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                     key={row.key}
                     data-scroll-block="true"
                     data-showcase-row-key={row.key}
-                    style={{ overflowAnchor: 'none' }}
+                    className="pb-6"
+                    style={{
+                      minHeight: `${row.reservedHeightPx}px`,
+                      overflowAnchor: 'none',
+                    }}
                   >
                     <HorizontalRow
                       title={row.title}
