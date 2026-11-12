@@ -1241,7 +1241,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
           ref={rowRef}
           data-nav-row="true"
           data-virtual-container={virtualize ? 'true' : undefined}
-          className="flex flex-row overflow-x-auto overflow-y-hidden scroll-smooth w-full gap-4 pb-8 pt-4 scrollbar-hide"
+          className="flex flex-row overflow-x-auto overflow-y-hidden scroll-smooth w-full gap-4 px-2 pb-8 pt-4 scrollbar-hide"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
           {leftSpacerPx > 0 && (
@@ -1287,9 +1287,8 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                 }}
                 onFocus={() => setFocusedCardIndex(idx)}
                 onBlur={() => setFocusedCardIndex((prev) => (prev === idx ? null : prev))}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                className={`nc-showcase-card shrink-0 snap-start select-none group cursor-pointer overflow-hidden rounded-xl bg-nc-bg-card border border-transparent hover:border-nc-primary/50 transition-all ${
+                whileTap={{ scale: 0.97 }}
+                className={`nc-showcase-card relative z-0 hover:z-20 focus:z-20 focus-visible:z-20 shrink-0 snap-start select-none group cursor-pointer overflow-visible rounded-xl ${
                   type === 'live'
                     ? 'nc-tv-row-card-live w-64 md:w-72 aspect-video'
                     : 'nc-tv-row-card-poster w-36 md:w-44 aspect-[2/3]'
@@ -1297,7 +1296,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
               >
                 <div
                   data-card-visual="true"
-                  className="nc-card-visual-layer relative w-full h-full will-change-transform"
+                  className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card"
                 >
                   <MediaImage
                     src={item.stream_icon || item.cover}
@@ -1309,7 +1308,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                     priority={false}
                     loading="lazy"
                     decoding="async"
-                    className={`w-full h-full transition-transform duration-300 group-hover:scale-105 ${
+                    className={`w-full h-full ${
                       type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'
                     }`}
                   />

@@ -425,8 +425,10 @@ export function useVirtualWindow({
             if (secondRowTop !== null && firstRowCount >= 1) {
               nextCols = firstRowCount;
               nextRowStride = Math.max(48, Math.round(secondRowTop - firstRect.top));
-            } else if (firstRowCount >= 1 && items.length > firstRowCount) {
-              nextCols = firstRowCount;
+            } else if (firstRowCount >= 1) {
+              if (items.length > firstRowCount) {
+                nextCols = firstRowCount;
+              }
               nextRowStride = Math.max(48, Math.round(firstRect.height + 16 * currentScaleFactor));
             }
           }
@@ -480,7 +482,14 @@ export function useVirtualWindow({
             nextCols = computeBreakpointGridColumns(widthForBreakpoints);
           }
           if (nextRowStride === null) {
-            nextRowStride = Math.max(180, Math.round(260 * currentScaleFactor));
+            const firstItemEl = virtualEl?.querySelector<HTMLElement>('[data-nav-item="true"]');
+            const isAspectVideo = Boolean(
+              firstItemEl &&
+                typeof firstItemEl.className === 'string' &&
+                firstItemEl.className.includes('aspect-video')
+            );
+            const fallbackBaseStride = isAspectVideo ? 160 : 260;
+            nextRowStride = Math.max(120, Math.round(fallbackBaseStride * currentScaleFactor));
           }
         }
       }
@@ -633,9 +642,46 @@ export function useVirtualWindow({
     if (!scrollEl) return;
 
     let rafId: number | null = null;
+
+    const releaseDpadScrollControl = () => {
+      (scrollEl as any).__ncDpadNavActive = false;
+    };
+
+    const shouldSuppressDpadScrollEvent = (): boolean => {
+      if (!(scrollEl as any).__ncDpadNavActive) return false;
+      const currentScrollTop = Math.max(0, scrollEl.scrollTop || 0);
+      const lastTargetTop =
+        typeof (scrollEl as any).__ncDpadTargetTop === 'number'
+          ? (scrollEl as any).__ncDpadTargetTop
+          : currentScrollTop;
+      const maxDpadDelta = Math.max(1200, rowHeightPx * 5);
+
+      // If scrollTop was explicitly reset to 0 from a deep position or jumped far beyond the D-Pad step range,
+      // release D-Pad control so programmatic/manual deep scrolls update the window immediately.
+      if (
+        (currentScrollTop === 0 && lastTargetTop > rowHeightPx * 2) ||
+        Math.abs(currentScrollTop - lastTargetTop) > maxDpadDelta
+      ) {
+        (scrollEl as any).__ncDpadNavActive = false;
+        return false;
+      }
+
+      const activeEl =
+        typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      if (activeEl && scrollEl.contains(activeEl)) {
+        return true;
+      }
+
+      (scrollEl as any).__ncDpadNavActive = false;
+      return false;
+    };
+
     const updateFromScroll = () => {
       rafId = null;
       if (isFrozenRef.current) return;
+      if (shouldSuppressDpadScrollEvent()) return;
       const nextStart = computeStartForScrollTop(scrollEl.scrollTop || 0);
       if (nextStart !== windowStartRef.current) {
         windowStartRef.current = nextStart;
@@ -645,6 +691,13 @@ export function useVirtualWindow({
 
     const handleScroll = () => {
       if (isFrozenRef.current) return;
+      if (shouldSuppressDpadScrollEvent()) {
+        if (rafId !== null && typeof cancelAnimationFrame === 'function') {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        return;
+      }
       const nextStart = computeStartForScrollTop(scrollEl.scrollTop || 0);
       if (nextStart === windowStartRef.current) return;
       // Update immediately when jumping >= 2 rows, or via rAF for small incremental scrolls
@@ -660,6 +713,11 @@ export function useVirtualWindow({
       }
     };
 
+    scrollEl.addEventListener('wheel', releaseDpadScrollControl, { passive: true });
+    scrollEl.addEventListener('touchstart', releaseDpadScrollControl, { passive: true });
+    scrollEl.addEventListener('touchmove', releaseDpadScrollControl, { passive: true });
+    scrollEl.addEventListener('pointerdown', releaseDpadScrollControl, { passive: true });
+    scrollEl.addEventListener('mousedown', releaseDpadScrollControl, { passive: true });
     scrollEl.addEventListener('scroll', handleScroll, { passive: true });
     attachedScrollContainerCounts.set(
       scrollEl,
@@ -667,7 +725,7 @@ export function useVirtualWindow({
     );
 
     // Sync window immediately with the mounted container's current scrollTop
-    if (!isFrozenRef.current) {
+    if (!isFrozenRef.current && !(scrollEl as any).__ncDpadNavActive) {
       const syncedStart = computeStartForScrollTop(scrollEl.scrollTop || 0);
       if (syncedStart !== windowStartRef.current) {
         windowStartRef.current = syncedStart;
@@ -680,6 +738,11 @@ export function useVirtualWindow({
         cancelAnimationFrame(rafId);
         rafId = null;
       }
+      scrollEl.removeEventListener('wheel', releaseDpadScrollControl);
+      scrollEl.removeEventListener('touchstart', releaseDpadScrollControl);
+      scrollEl.removeEventListener('touchmove', releaseDpadScrollControl);
+      scrollEl.removeEventListener('pointerdown', releaseDpadScrollControl);
+      scrollEl.removeEventListener('mousedown', releaseDpadScrollControl);
       scrollEl.removeEventListener('scroll', handleScroll);
       const nextCount = (attachedScrollContainerCounts.get(scrollEl) ?? 1) - 1;
       if (nextCount <= 0) {
@@ -688,13 +751,18 @@ export function useVirtualWindow({
         attachedScrollContainerCounts.set(scrollEl, nextCount);
       }
     };
-  }, [scrollEl, computeStartForScrollTop, columns]);
+  }, [scrollEl, computeStartForScrollTop, columns, rowHeightPx]);
 
   // Synchronous window shift for D-pad navigation (called by spatialNav before querying candidates)
   const ensureIndexMounted = useCallback(
     (targetIndex: number, preserveIndex?: number): boolean => {
       if (totalCount <= 0) return false;
       const clampedTarget = Math.max(0, Math.min(totalCount - 1, Math.floor(targetIndex)));
+      const activeScrollEl = scrollContainerRef.current || scrollEl;
+      if (activeScrollEl) {
+        (activeScrollEl as any).__ncDpadNavActive = true;
+        (activeScrollEl as any).__ncDpadTargetTop = activeScrollEl.scrollTop || 0;
+      }
 
       const curBounds = computeVirtualWindowBounds({
         totalCount,
@@ -720,11 +788,40 @@ export function useVirtualWindow({
 
       const curStart = curBounds.startIndex;
       const curEnd = curBounds.endIndex;
-      const margin = columns * 2;
+      const windowRows = curBounds.windowRows;
+      const margin = windowRows <= 6 ? columns : columns * 2;
 
       const isComfortablyAfterStart = curStart === 0 || clampedTarget >= curStart + margin;
       const isComfortablyBeforeEnd =
         curStart >= curBounds.maxStartIndex || clampedTarget < curEnd - margin;
+
+      const targetRow = Math.floor(clampedTarget / columns);
+
+      const syncHeadlessScrollForTarget = () => {
+        if (!activeScrollEl) return;
+        const scrollRect = activeScrollEl.getBoundingClientRect();
+        if (scrollRect.height > 0) return;
+        const approxTargetTop =
+          mode === 'list'
+            ? listOffsetTop +
+              computeListCumulativeOffset(
+                0,
+                clampedTarget,
+                rowHeightPx,
+                measuredItemHeightsRef.current
+              )
+            : listOffsetTop + targetRow * rowHeightPx;
+        const viewHeight = activeScrollEl.clientHeight || 720;
+        if (approxTargetTop > activeScrollEl.scrollTop + viewHeight - rowHeightPx) {
+          const nextTop = Math.max(0, approxTargetTop - viewHeight + rowHeightPx * 2);
+          activeScrollEl.scrollTop = nextTop;
+          (activeScrollEl as any).__ncDpadTargetTop = nextTop;
+        } else if (approxTargetTop < activeScrollEl.scrollTop) {
+          const nextTop = Math.max(0, approxTargetTop - rowHeightPx);
+          activeScrollEl.scrollTop = nextTop;
+          (activeScrollEl as any).__ncDpadTargetTop = nextTop;
+        }
+      };
 
       if (
         clampedTarget >= curStart &&
@@ -732,11 +829,12 @@ export function useVirtualWindow({
         isComfortablyAfterStart &&
         isComfortablyBeforeEnd
       ) {
+        if (typeof preserveIndex === 'number') {
+          syncHeadlessScrollForTarget();
+        }
         return false;
       }
 
-      const targetRow = Math.floor(clampedTarget / columns);
-      const windowRows = curBounds.windowRows;
       let desiredStartRow = Math.max(
         0,
         Math.min(curBounds.maxStartRow, targetRow - Math.floor(windowRows / 2))
@@ -772,7 +870,29 @@ export function useVirtualWindow({
       });
       const nextStart = nextBounds.startIndex;
 
-      if (nextStart === curStart) return false;
+      if (nextStart === curStart) {
+        if (typeof preserveIndex === 'number') {
+          syncHeadlessScrollForTarget();
+        }
+        return false;
+      }
+
+      // Measure anchor visual top before shifting the window so any spacer discrepancy can be compensated without a jump
+      const anchorIndex =
+        typeof preserveIndex === 'number' &&
+        preserveIndex >= Math.max(curStart, nextStart) &&
+        preserveIndex < Math.min(curEnd, nextBounds.endIndex)
+          ? preserveIndex
+          : clampedTarget >= Math.max(curStart, nextStart) &&
+              clampedTarget < Math.min(curEnd, nextBounds.endIndex)
+            ? clampedTarget
+            : -1;
+      const anchorElBefore =
+        anchorIndex >= 0 && virtualEl
+          ? virtualEl.querySelector<HTMLElement>(`[data-virtual-index="${anchorIndex}"]`)
+          : null;
+      const anchorRectBefore = anchorElBefore ? anchorElBefore.getBoundingClientRect() : null;
+      const hasRealAnchorBefore = Boolean(anchorRectBefore && anchorRectBefore.height > 0);
 
       windowStartRef.current = nextStart;
       try {
@@ -783,19 +903,25 @@ export function useVirtualWindow({
         setWindowStart(nextStart);
       }
 
-      // Sync scrollTop so the container scroll position tracks the newly mounted D-pad target
-      const activeScrollEl = scrollContainerRef.current || scrollEl;
+      remeasureLayout();
+
       if (activeScrollEl) {
-        const approxTargetTop =
-          mode === 'list'
-            ? listOffsetTop +
-              computeListCumulativeOffset(0, clampedTarget, rowHeightPx, measuredItemHeightsRef.current)
-            : listOffsetTop + targetRow * rowHeightPx;
-        const viewHeight = activeScrollEl.clientHeight || 720;
-        if (approxTargetTop > activeScrollEl.scrollTop + viewHeight - rowHeightPx) {
-          activeScrollEl.scrollTop = Math.max(0, approxTargetTop - viewHeight + rowHeightPx * 2);
-        } else if (approxTargetTop < activeScrollEl.scrollTop) {
-          activeScrollEl.scrollTop = Math.max(0, approxTargetTop - listOffsetTop);
+        const scrollRect = activeScrollEl.getBoundingClientRect();
+        if (scrollRect.height > 0 && hasRealAnchorBefore && anchorRectBefore && virtualEl) {
+          const anchorElAfter = virtualEl.querySelector<HTMLElement>(
+            `[data-virtual-index="${anchorIndex}"]`
+          );
+          const anchorRectAfter = anchorElAfter ? anchorElAfter.getBoundingClientRect() : null;
+          if (anchorRectAfter && anchorRectAfter.height > 0) {
+            const delta = anchorRectAfter.top - anchorRectBefore.top;
+            if (Math.abs(delta) > 0.5) {
+              const nextTop = Math.max(0, (activeScrollEl.scrollTop || 0) + delta);
+              activeScrollEl.scrollTop = nextTop;
+              (activeScrollEl as any).__ncDpadTargetTop = nextTop;
+            }
+          }
+        } else if (scrollRect.height <= 0) {
+          syncHeadlessScrollForTarget();
         }
       }
 
@@ -810,6 +936,8 @@ export function useVirtualWindow({
       mode,
       scrollContainerRef,
       scrollEl,
+      virtualEl,
+      remeasureLayout,
     ]
   );
 

@@ -325,6 +325,7 @@ interface VirtualizedInicioSearchSectionProps {
   resetKey: string;
   maxWindowItems: number;
   fallbackOffsetTopPx: number;
+  isFrozen?: boolean;
   onLiveClick: (stream: any, el?: HTMLElement | null) => void;
   onMediaClick: (item: any, el?: HTMLElement | null) => void;
 }
@@ -338,6 +339,7 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
   resetKey,
   maxWindowItems,
   fallbackOffsetTopPx,
+  isFrozen = false,
   onLiveClick,
   onMediaClick,
 }: VirtualizedInicioSearchSectionProps) {
@@ -356,6 +358,7 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
     mode: 'grid',
     scrollContainerRef,
     virtualContainerRef: gridRef,
+    isFrozen,
     resetKey,
     maxWindowItems,
     fallbackOffsetTopPx,
@@ -428,6 +431,7 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
         ref={virtualContainerCallbackRef}
         data-nav-grid="true"
         data-virtual-container="true"
+        data-virtual-total={items.length}
         className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4"
       >
         {items.slice(startIndex, endIndex).map((entry: any, localIdx: number) => {
@@ -453,9 +457,14 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
                 role="button"
                 aria-label={itemTitle}
                 data-nav-item="true"
+                data-showcase-card="true"
+                data-card-focused={focusedVirtualIdx === virtualIndex ? 'true' : 'false'}
                 data-virtual-index={virtualIndex}
                 data-virtual-key={String(rawId)}
                 onFocus={() => setFocusedVirtualIdx(virtualIndex)}
+                onBlur={() =>
+                  setFocusedVirtualIdx((prev) => (prev === virtualIndex ? null : prev))
+                }
                 onClick={(e) => onLiveClick(entry, e.currentTarget)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
@@ -463,23 +472,28 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
                     onLiveClick(entry, e.currentTarget);
                   }
                 }}
-                className="group relative aspect-video bg-nc-bg-card rounded-xl overflow-hidden border border-nc-border hover:border-nc-primary/50 transition-all cursor-pointer flex flex-col justify-between p-3"
+                className="nc-showcase-card relative z-0 hover:z-20 focus:z-20 focus-visible:z-20 group aspect-video rounded-xl overflow-visible cursor-pointer select-none"
               >
-                <div className="flex-1 flex items-center justify-center overflow-hidden p-2">
-                  <MediaImage
-                    src={entry.stream_icon}
-                    serverUrl={credentials?.serverUrl}
-                    alt={itemTitle}
-                    itemId={rawId}
-                    itemName={itemTitle}
-                    active={isImageActive}
-                    className="max-h-full max-w-full object-contain group-hover:scale-110 transition-transform"
-                  />
-                </div>
-                <div className="mt-2 text-center">
-                  <h4 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
-                    {itemTitle}
-                  </h4>
+                <div
+                  data-card-visual="true"
+                  className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card border border-nc-border flex flex-col justify-between p-3"
+                >
+                  <div className="flex-1 flex items-center justify-center overflow-hidden p-2">
+                    <MediaImage
+                      src={entry.stream_icon}
+                      serverUrl={credentials?.serverUrl}
+                      alt={itemTitle}
+                      itemId={rawId}
+                      itemName={itemTitle}
+                      active={isImageActive}
+                      className="max-h-full max-w-full object-contain"
+                    />
+                  </div>
+                  <div className="mt-2 text-center">
+                    <h4 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
+                      {itemTitle}
+                    </h4>
+                  </div>
                 </div>
               </div>
             );
@@ -498,9 +512,14 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
               role="button"
               aria-label={itemTitle}
               data-nav-item="true"
+              data-showcase-card="true"
+              data-card-focused={focusedVirtualIdx === virtualIndex ? 'true' : 'false'}
               data-virtual-index={virtualIndex}
               data-virtual-key={String(rawId)}
               onFocus={() => setFocusedVirtualIdx(virtualIndex)}
+              onBlur={() =>
+                setFocusedVirtualIdx((prev) => (prev === virtualIndex ? null : prev))
+              }
               onClick={(e) => {
                 const el = e.currentTarget as HTMLElement;
                 pushFocusMemory(el);
@@ -514,22 +533,27 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
                   onMediaClick(payload, el);
                 }
               }}
-              className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden border border-nc-border hover:border-nc-primary/50 transition-all cursor-pointer flex flex-col justify-end"
+              className="nc-showcase-card relative z-0 hover:z-20 focus:z-20 focus-visible:z-20 group aspect-[2/3] rounded-xl overflow-visible cursor-pointer select-none"
             >
-              <MediaImage
-                src={coverSrc}
-                serverUrl={credentials?.serverUrl}
-                alt={itemTitle}
-                itemId={rawId}
-                itemName={itemTitle}
-                active={isImageActive}
-                className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
-              <div className="relative z-10 p-3">
-                <h4 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
-                  {itemTitle}
-                </h4>
+              <div
+                data-card-visual="true"
+                className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card border border-nc-border flex flex-col justify-end"
+              >
+                <MediaImage
+                  src={coverSrc}
+                  serverUrl={credentials?.serverUrl}
+                  alt={itemTitle}
+                  itemId={rawId}
+                  itemName={itemTitle}
+                  active={isImageActive}
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
+                <div className="relative z-10 p-3">
+                  <h4 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
+                    {itemTitle}
+                  </h4>
+                </div>
               </div>
             </div>
           );
@@ -2496,6 +2520,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     mode: 'grid',
     scrollContainerRef: mainContainerRef,
     virtualContainerRef: gridContainerRef,
+    isFrozen: Boolean(selectedMovie || selectedSeries),
     resetKey: `${section}_${activeCategoryId ?? 'showcase'}_${normalizedQuery}`,
     maxWindowItems: 96,
   });
@@ -2537,18 +2562,18 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       (inicioSearchResults.live.length > 0 ? 1 : 0) +
       (inicioSearchResults.vod.length > 0 ? 1 : 0) +
       (inicioSearchResults.series.length > 0 ? 1 : 0);
-    const perSectionMaxWindow =
-      nonEmptyDomains <= 1 ? 60 : nonEmptyDomains === 2 ? 36 : 24;
+    const perSectionMaxWindow = nonEmptyDomains <= 1 ? 60 : 36;
 
     const estCols = 6;
-    const estRowHeight = 260;
+    const estLiveRowHeight = 160;
+    const estPosterRowHeight = 260;
     const liveHeight =
       inicioSearchResults.live.length > 0
-        ? 64 + Math.ceil(inicioSearchResults.live.length / estCols) * estRowHeight
+        ? 64 + Math.ceil(inicioSearchResults.live.length / estCols) * estLiveRowHeight
         : 0;
     const vodHeight =
       inicioSearchResults.vod.length > 0
-        ? 64 + Math.ceil(inicioSearchResults.vod.length / estCols) * estRowHeight
+        ? 64 + Math.ceil(inicioSearchResults.vod.length / estCols) * estPosterRowHeight
         : 0;
 
     return {
@@ -2814,6 +2839,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                 resetKey={`inicio_search_live_${normalizedQuery}`}
                 maxWindowItems={inicioSearchWindowMetrics.perSectionMaxWindow}
                 fallbackOffsetTopPx={inicioSearchWindowMetrics.liveOffsetTopPx}
+                isFrozen={Boolean(selectedMovie || selectedSeries)}
                 onLiveClick={handleLiveChannelClick}
                 onMediaClick={handleSelectItem}
               />
@@ -2829,6 +2855,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                 resetKey={`inicio_search_vod_${normalizedQuery}`}
                 maxWindowItems={inicioSearchWindowMetrics.perSectionMaxWindow}
                 fallbackOffsetTopPx={inicioSearchWindowMetrics.vodOffsetTopPx}
+                isFrozen={Boolean(selectedMovie || selectedSeries)}
                 onLiveClick={handleLiveChannelClick}
                 onMediaClick={handleSelectItem}
               />
@@ -2844,6 +2871,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                 resetKey={`inicio_search_series_${normalizedQuery}`}
                 maxWindowItems={inicioSearchWindowMetrics.perSectionMaxWindow}
                 fallbackOffsetTopPx={inicioSearchWindowMetrics.seriesOffsetTopPx}
+                isFrozen={Boolean(selectedMovie || selectedSeries)}
                 onLiveClick={handleLiveChannelClick}
                 onMediaClick={handleSelectItem}
               />
@@ -2895,6 +2923,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                   ref={virtualContainerCallbackRef}
                   data-nav-grid="true"
                   data-virtual-container="true"
+                  data-virtual-total={displayedGridItems.length}
                   className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
                 >
                   {displayedGridItems.slice(startIndex, endIndex).map((item: any, localIdx: number) => {
@@ -2915,6 +2944,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                         role="button"
                         aria-label={itemTitle}
                         data-nav-item="true"
+                        data-showcase-card="true"
                         data-virtual-index={virtualIndex}
                         data-virtual-key={itemKey}
                         onClick={(e) => {
@@ -2941,41 +2971,46 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                             );
                           }
                         }}
-                        className="group relative aspect-[2/3] bg-nc-bg-card rounded-xl overflow-hidden border border-nc-border hover:border-nc-primary/50 transition-all cursor-pointer flex flex-col justify-end"
+                        className="nc-showcase-card relative z-0 hover:z-20 focus:z-20 focus-visible:z-20 group aspect-[2/3] rounded-xl overflow-visible cursor-pointer select-none"
                       >
-                        <MediaImage
-                          src={itemImage}
-                          serverUrl={credentials?.serverUrl}
-                          alt={itemTitle}
-                          itemId={itemId}
-                          itemName={itemTitle}
-                          className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
+                        <div
+                          data-card-visual="true"
+                          className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card border border-nc-border flex flex-col justify-end"
+                        >
+                          <MediaImage
+                            src={itemImage}
+                            serverUrl={credentials?.serverUrl}
+                            alt={itemTitle}
+                            itemId={itemId}
+                            itemName={itemTitle}
+                            className="absolute inset-0 w-full h-full object-cover"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
 
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <div className="w-12 h-12 rounded-full bg-nc-primary flex items-center justify-center text-black transform scale-75 group-hover:scale-100 transition-transform shadow-lg">
-                            <Play className="w-6 h-6 fill-current ml-1" />
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center">
+                            <div className="w-12 h-12 rounded-full bg-nc-primary flex items-center justify-center text-black transform scale-75 group-hover:scale-100 group-focus:scale-100 transition-transform shadow-lg">
+                              <Play className="w-6 h-6 fill-current ml-1" />
+                            </div>
                           </div>
-                        </div>
 
-                        <div className="relative z-10 p-3">
-                          <h3 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
-                            {itemTitle}
-                          </h3>
-                          <div className="flex items-center justify-between gap-2 mt-1">
-                            {item.rating && item.rating !== '0' ? (
-                              <span className="nc-text-meta text-yellow-500 flex items-center gap-1">
-                                ★ {item.rating}
-                              </span>
-                            ) : (
-                              <span />
-                            )}
-                            {releaseYear && (
-                              <span className="nc-text-meta text-nc-text-secondary font-medium">
-                                {releaseYear}
-                              </span>
-                            )}
+                          <div className="relative z-10 p-3">
+                            <h3 className="text-white nc-card-title line-clamp-2 group-hover:text-nc-primary transition-colors">
+                              {itemTitle}
+                            </h3>
+                            <div className="flex items-center justify-between gap-2 mt-1">
+                              {item.rating && item.rating !== '0' ? (
+                                <span className="nc-text-meta text-yellow-500 flex items-center gap-1">
+                                  ★ {item.rating}
+                                </span>
+                              ) : (
+                                <span />
+                              )}
+                              {releaseYear && (
+                                <span className="nc-text-meta text-nc-text-secondary font-medium">
+                                  {releaseYear}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -3066,7 +3101,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                           {row.title}
                         </h2>
                         <div
-                          className="flex flex-row overflow-hidden w-full gap-4 pb-8 pt-4 pointer-events-none select-none"
+                          className="flex flex-row overflow-hidden w-full gap-4 px-2 pb-8 pt-4 pointer-events-none select-none"
                           aria-hidden="true"
                         >
                           <div

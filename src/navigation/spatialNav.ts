@@ -510,11 +510,24 @@ export function ensureElementScrolledIntoView(
         (showcaseRowsContainer.getAttribute('data-showcase-virtualized') === 'true' ||
           showcaseRowControllers.has(showcaseRowsContainer))
     );
+    const isVirtualizedGrid = Boolean(
+      el.closest('[data-virtual-container="true"][data-nav-grid="true"]')
+    );
+    const isInsideVirtualContainer = Boolean(el.closest('[data-virtual-container="true"]'));
     const useImmediateVerticalScroll =
-      isVirtualizedShowcase && (direction === 'up' || direction === 'down');
+      (isVirtualizedShowcase || isVirtualizedGrid) && (direction === 'up' || direction === 'down');
+
+    if (isInsideVirtualContainer && direction) {
+      (scrollContainer as any).__ncDpadNavActive = true;
+      (scrollContainer as any).__ncDpadTargetTop = scrollContainer.scrollTop || 0;
+    }
 
     const applyVerticalScrollTop = (nextTop: number) => {
       const clampedTop = Math.max(0, nextTop);
+      if (isInsideVirtualContainer) {
+        (scrollContainer as any).__ncDpadNavActive = true;
+        (scrollContainer as any).__ncDpadTargetTop = clampedTop;
+      }
       if (useImmediateVerticalScroll) {
         setElementScrollTopImmediate(scrollContainer, clampedTop);
       } else {
@@ -574,6 +587,9 @@ export function ensureElementScrolledIntoView(
     }
 
     // Fallback for simulated DOM environments where getBoundingClientRect() returns 0x0
+    if (isVirtualizedGrid) {
+      return;
+    }
     const parsedHomeRowIdx = homeRowWrapper?.hasAttribute('data-home-row-index')
       ? parseInt(homeRowWrapper.getAttribute('data-home-row-index') || '-1', 10)
       : -1;
@@ -886,7 +902,8 @@ function pickBestItemInBlock(
   current: HTMLElement,
   block: ZoneBlock,
   hasRealGeometry: boolean,
-  ctx: NavPassContext
+  ctx: NavPassContext,
+  direction?: SpatialDirection
 ): HTMLElement {
   if (block.items.length === 1) {
     return block.items[0];
@@ -923,6 +940,51 @@ function pickBestItemInBlock(
     }
   }
 
+  // When entering a virtualized grid block vertically (e.g. crossing between live <-> vod <-> series search domains),
+  // target the first logical row when moving 'down' and the last logical row when moving 'up', preserving column alignment.
+  if (block.type === 'grid' && (direction === 'down' || direction === 'up')) {
+    const targetController = virtualControllers.get(block.container);
+    if (targetController && targetController.totalCount > 0) {
+      const targetCols = Math.max(1, targetController.getColumns());
+      const targetTotal = targetController.totalCount;
+
+      let currentCol = 0;
+      const currVirtualEl = current.closest<HTMLElement>('[data-virtual-index]');
+      const currVirtualContainer = currVirtualEl?.closest<HTMLElement>(
+        '[data-virtual-container="true"]'
+      );
+      if (currVirtualEl && currVirtualContainer) {
+        const currController = virtualControllers.get(currVirtualContainer);
+        const currIdx = parseInt(currVirtualEl.getAttribute('data-virtual-index') || '-1', 10);
+        const currCols = currController ? Math.max(1, currController.getColumns()) : targetCols;
+        if (!isNaN(currIdx) && currIdx >= 0) {
+          currentCol = currIdx % currCols;
+        }
+      }
+
+      const clampedCol = Math.min(targetCols - 1, Math.max(0, currentCol));
+      const targetTotalRows = Math.max(1, Math.ceil(targetTotal / targetCols));
+      const desiredRow = direction === 'down' ? 0 : targetTotalRows - 1;
+      const desiredVirtualIndex = Math.min(
+        targetTotal - 1,
+        desiredRow * targetCols + clampedCol
+      );
+
+      const expanded = targetController.ensureIndexMounted(desiredVirtualIndex);
+      if (expanded) {
+        spatialPerfStats.virtualWindowExpansions++;
+        invalidateCandidateCache();
+      }
+
+      const exactMatch = block.container.querySelector<HTMLElement>(
+        `[data-virtual-index="${desiredVirtualIndex}"]`
+      );
+      if (exactMatch && isElementFocusable(exactMatch, ctx.ancestorCache)) {
+        return exactMatch;
+      }
+    }
+  }
+
   if (hasRealGeometry) {
     const currRect = getCachedRect(current, ctx);
     const cx = currRect.left + currRect.width / 2;
@@ -937,6 +999,31 @@ function pickBestItemInBlock(
         });
         if (visibleInRow.length > 0) {
           pool = visibleInRow;
+        }
+      }
+    } else if (block.type === 'grid' && (direction === 'down' || direction === 'up')) {
+      // Restrict pool to the topmost row of the grid when entering from above ('down')
+      // or the bottommost row of the grid when entering from below ('up')
+      let edgeTop = direction === 'down' ? Infinity : -Infinity;
+      let refHeight = 0;
+      for (const item of block.items) {
+        const r = getCachedRect(item, ctx);
+        if (r.width <= 0 || r.height <= 0) continue;
+        if (direction === 'down' && r.top < edgeTop) {
+          edgeTop = r.top;
+          refHeight = r.height;
+        } else if (direction === 'up' && r.top > edgeTop) {
+          edgeTop = r.top;
+          refHeight = r.height;
+        }
+      }
+      if (Number.isFinite(edgeTop) && refHeight > 0) {
+        const edgeRowItems = block.items.filter((item) => {
+          const r = getCachedRect(item, ctx);
+          return r.width > 0 && r.height > 0 && Math.abs(r.top - edgeTop) < refHeight * 0.45;
+        });
+        if (edgeRowItems.length > 0) {
+          pool = edgeRowItems;
         }
       }
     }
@@ -955,6 +1042,10 @@ function pickBestItemInBlock(
     return best;
   }
 
+  if (block.type === 'grid' && direction === 'up' && block.items.length > 0) {
+    return block.items[block.items.length - 1];
+  }
+
   return block.items[0];
 }
 
@@ -967,6 +1058,91 @@ function findNextInGridBlock(
 ): HTMLElement | null {
   const idx = gridItems.indexOf(current);
   if (idx === -1) return null;
+
+  // Deterministic logical index navigation for virtualized grids ([data-virtual-container="true"])
+  // Ensures every ArrowDown/ArrowUp/ArrowLeft/ArrowRight moves to the exact logical neighbor,
+  // mounts it synchronously if near/outside the current window, and never loses focus or falls back to top reset.
+  const virtualItemEl = current.closest<HTMLElement>('[data-virtual-index]');
+  const virtualContainer = virtualItemEl?.closest<HTMLElement>('[data-virtual-container="true"]');
+  if (virtualItemEl && virtualContainer) {
+    const controller = virtualControllers.get(virtualContainer);
+    const currentIndex = parseInt(virtualItemEl.getAttribute('data-virtual-index') || '-1', 10);
+    if (controller && controller.totalCount > 0 && currentIndex >= 0) {
+      let cols = Math.max(1, controller.getColumns());
+      if (hasRealGeometry && gridItems.length > 1) {
+        const firstRect = getCachedRect(gridItems[0], ctx);
+        if (firstRect.width > 0 && firstRect.height > 0) {
+          let measuredCols = 0;
+          let foundSecondRow = false;
+          for (let i = 0; i < Math.min(gridItems.length, 16); i++) {
+            const r = getCachedRect(gridItems[i], ctx);
+            if (r.width <= 0 || r.height <= 0) continue;
+            if (Math.abs(r.top - firstRect.top) < firstRect.height * 0.4) {
+              measuredCols++;
+            } else if (r.top >= firstRect.top + firstRect.height * 0.5) {
+              foundSecondRow = true;
+              break;
+            }
+          }
+          if (foundSecondRow && measuredCols >= 1) {
+            cols = measuredCols;
+          }
+        }
+      }
+
+      const totalCount = controller.totalCount;
+      const currentRow = Math.floor(currentIndex / cols);
+      const currentCol = currentIndex % cols;
+      const totalRows = Math.ceil(totalCount / cols);
+      let targetVirtualIndex = -1;
+
+      if (direction === 'right') {
+        targetVirtualIndex = currentIndex + 1 < totalCount ? currentIndex + 1 : -1;
+      } else if (direction === 'left') {
+        targetVirtualIndex = currentIndex - 1 >= 0 ? currentIndex - 1 : -1;
+      } else if (direction === 'down') {
+        targetVirtualIndex =
+          currentRow < totalRows - 1
+            ? Math.min(totalCount - 1, (currentRow + 1) * cols + currentCol)
+            : -1;
+      } else if (direction === 'up') {
+        targetVirtualIndex =
+          currentRow > 0 ? (currentRow - 1) * cols + currentCol : -1;
+      }
+
+      if (targetVirtualIndex >= 0 && targetVirtualIndex < totalCount) {
+        const targetStr = String(targetVirtualIndex);
+        let match =
+          gridItems.find(
+            (item) =>
+              (item.getAttribute('data-virtual-index') ||
+                item
+                  .closest<HTMLElement>('[data-virtual-index]')
+                  ?.getAttribute('data-virtual-index')) === targetStr
+          ) ||
+          virtualContainer.querySelector<HTMLElement>(`[data-virtual-index="${targetStr}"]`);
+
+        if (!match) {
+          const expanded = controller.ensureIndexMounted(targetVirtualIndex, currentIndex);
+          if (expanded) {
+            spatialPerfStats.virtualWindowExpansions++;
+            invalidateCandidateCache();
+          }
+          match = virtualContainer.querySelector<HTMLElement>(
+            `[data-virtual-index="${targetStr}"]`
+          );
+        }
+
+        if (match && isElementFocusable(match, ctx.ancestorCache)) {
+          return match;
+        }
+        // Logical neighbor exists inside this virtualized grid: preserve current focus rather than exiting the grid
+        return current;
+      }
+
+      return null;
+    }
+  }
 
   if (hasRealGeometry) {
     const currentRect = getCachedRect(current, ctx);
@@ -1019,44 +1195,6 @@ function findNextInGridBlock(
     }
 
     return best;
-  }
-
-  // Structural fallback in headless DOM (0x0 rects)
-  const virtualItemEl = current.closest<HTMLElement>('[data-virtual-index]');
-  const virtualContainer = virtualItemEl?.closest<HTMLElement>('[data-virtual-container="true"]');
-  if (virtualItemEl && virtualContainer) {
-    const controller = virtualControllers.get(virtualContainer);
-    const currentIndex = parseInt(virtualItemEl.getAttribute('data-virtual-index') || '-1', 10);
-    if (controller && controller.totalCount > 0 && currentIndex >= 0) {
-      const cols = Math.max(1, controller.getColumns());
-      const totalCount = controller.totalCount;
-      let targetVirtualIndex = -1;
-
-      if (direction === 'right') {
-        targetVirtualIndex = currentIndex + 1 < totalCount ? currentIndex + 1 : -1;
-      } else if (direction === 'left') {
-        targetVirtualIndex = currentIndex - 1 >= 0 ? currentIndex - 1 : -1;
-      } else if (direction === 'down') {
-        const currentRow = Math.floor(currentIndex / cols);
-        const totalRows = Math.ceil(totalCount / cols);
-        targetVirtualIndex =
-          currentRow < totalRows - 1 ? Math.min(totalCount - 1, currentIndex + cols) : -1;
-      } else if (direction === 'up') {
-        targetVirtualIndex = currentIndex - cols >= 0 ? currentIndex - cols : -1;
-      }
-
-      if (targetVirtualIndex >= 0) {
-        const targetStr = String(targetVirtualIndex);
-        const match = gridItems.find(
-          (item) =>
-            (item.getAttribute('data-virtual-index') ||
-              item.closest<HTMLElement>('[data-virtual-index]')?.getAttribute('data-virtual-index')) ===
-            targetStr
-        );
-        return match || null;
-      }
-      return null;
-    }
   }
 
   if (direction === 'right' || direction === 'down') {
@@ -1229,9 +1367,12 @@ function ensureVirtualTargetMountedIfNeeded(
     } else if (
       direction === 'down' &&
       (activeEl.closest('[data-hero-stage="true"]') ||
-        activeEl.closest('[data-showcase-categories-bar="true"]'))
+        activeEl.closest('[data-showcase-categories-bar="true"]') ||
+        activeEl.closest('header'))
     ) {
-      const showcaseSection = activeEl.closest<HTMLElement>('[data-showcase-section]');
+      const showcaseSection =
+        activeEl.closest<HTMLElement>('[data-showcase-section]') ||
+        document.querySelector<HTMLElement>('[data-showcase-section]');
       const rowsContainer = showcaseSection?.querySelector<HTMLElement>(
         '[data-showcase-rows-container="true"]'
       );
@@ -1242,6 +1383,21 @@ function ensureVirtualTargetMountedIfNeeded(
           if (expanded) {
             spatialPerfStats.virtualWindowExpansions++;
             invalidateCandidateCache();
+          }
+        }
+      } else if (showcaseSection) {
+        const firstVirtualGrid = showcaseSection.querySelector<HTMLElement>(
+          '[data-nav-grid="true"][data-virtual-container="true"]'
+        );
+        const scrollRoot = firstVirtualGrid ? findScrollContainer(firstVirtualGrid) : null;
+        if (firstVirtualGrid && (!scrollRoot || (scrollRoot.scrollTop || 0) <= 120)) {
+          const gridController = virtualControllers.get(firstVirtualGrid);
+          if (gridController && gridController.totalCount > 0) {
+            const expanded = gridController.ensureIndexMounted(0, 0);
+            if (expanded) {
+              spatialPerfStats.virtualWindowExpansions++;
+              invalidateCandidateCache();
+            }
           }
         }
       }
@@ -1540,7 +1696,8 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
                 activeEl,
                 targetBlock,
                 hasRealGeometry,
-                ctx
+                ctx,
+                direction
               );
               focusElementSafely(nextEl, direction);
               return nextEl;
@@ -1598,7 +1755,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
         const targetBlockIdx = direction === 'down' ? bIdx + 1 : bIdx - 1;
         if (targetBlockIdx >= 0 && targetBlockIdx < blocks.length) {
           const targetBlock = blocks[targetBlockIdx];
-          const nextEl = pickBestItemInBlock(activeEl, targetBlock, hasRealGeometry, ctx);
+          const nextEl = pickBestItemInBlock(activeEl, targetBlock, hasRealGeometry, ctx, direction);
           focusElementSafely(nextEl, direction);
           return nextEl;
         }
@@ -1610,7 +1767,10 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       const scrollContainer = findScrollContainer(activeEl);
       if (scrollContainer && scrollContainer.scrollTop > 0) {
         scrollContainer.scrollTop = 0;
-        return activeEl;
+        (scrollContainer as any).__ncDpadTargetTop = 0;
+        if (!currentGrid) {
+          return activeEl;
+        }
       }
 
       if (currentZone === 'content') {

@@ -24512,7 +24512,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           clearItemProgress(stage2Creds, 'episode', 'ep_3001_2');
           setStoredFavorites(stage2FavKey, []);
 
-          // [12.25-f] Ajuste das Vitrines (TV Mode Reserved Height, Inner Outline e 3% Visual Zoom):
+          // [12.25-f / 12.25-g] Ajuste das Vitrines (TV Mode Reserved Height, Top-Layer Outline ::after e 5% Unified Visual Scale):
           // 1. Validar dimensões e altura reservada no modo TV (961x541 a 90%) e 390px
           const tvScale90 = 0.9;
           const remPxTv90 = 16 * tvScale90; // 14.4px
@@ -24553,7 +24553,7 @@ if (args[0] === 'add' && args[1] === 'android') {
               '[12.25-f] Espaço reservado desmontado NÃO deve mais usar altura fixa 264px que causava salto de 64.2px na TV'
             );
 
-            // 2. Validar auditoria de contorno interno (#d1d5db) e contraste em src/index.css
+            // 2. Validar auditoria de contorno interno (#d1d5db), camada superior ::after e escala unificada de 5% em src/index.css
             const indexCssText = fs.readFileSync(
               path.resolve(process.cwd(), 'src/index.css'),
               'utf-8'
@@ -24578,55 +24578,73 @@ if (args[0] === 'add' && args[1] === 'android') {
               '[12.25-f] Os botões da barra central devem usar sombra interna (inset) para não vazar a borda'
             );
 
-            // Contorno interno nas capas das vitrines
+            // Caixa estrutural externa (.nc-showcase-card) estática + elevação z-index
             const cardFocusMatch = indexCssText.match(
               /\.nc-showcase-card:focus[\s\S]*?\{([\s\S]*?)\}/
             );
             assert(
               cardFocusMatch !== null,
-              '[12.25-f] Regra de foco para .nc-showcase-card deve existir em src/index.css'
+              '[12.25-g] Regra de foco/hover para .nc-showcase-card deve existir em src/index.css'
             );
             const cardFocusCss = cardFocusMatch![1];
             assert(
-              cardFocusCss.includes('outline: 2px solid #d1d5db') &&
-                cardFocusCss.includes('outline-offset: -2px'),
-              '[12.25-f] Capas das vitrines devem ter contorno interno em cinza claro #d1d5db (outline-offset: -2px)'
-            );
-            assert(
-              cardFocusCss.includes('box-shadow: inset 0 0 0 2px #d1d5db') &&
-                cardFocusCss.includes('rgba(0, 0, 0, 0.85)'),
-              '[12.25-f] Contorno das capas deve ter dupla camada interna com contraste escuro garantido também sobre capas claras'
-            );
-            assert(
-              cardFocusCss.includes('transform: none !important'),
-              '[12.25-f] Caixa externa da capa deve permanecer estática no foco para medições e candidate caching'
+              cardFocusCss.includes('transform: none !important') &&
+                cardFocusCss.includes('z-index: 20'),
+              '[12.25-g] Caixa externa (.nc-showcase-card) deve permanecer estática (transform: none !important) e elevar z-index: 20 no foco/hover'
             );
 
-            // 3. Validar zoom suave de ~3% com 120ms na camada visual
+            // Camada superior ::after para o contorno de foco acima da imagem opaca e dos gradientes
+            const afterFocusMatch = indexCssText.match(
+              /\.nc-showcase-card:focus \.nc-card-visual-layer::after[\s\S]*?\{([\s\S]*?)\}/
+            );
+            assert(
+              afterFocusMatch !== null,
+              '[12.25-g] Regra .nc-card-visual-layer::after de foco deve existir em src/index.css'
+            );
+            const afterFocusCss = afterFocusMatch![1];
+            assert(
+              afterFocusCss.includes('box-shadow: inset 0 0 0 2px #d1d5db') &&
+                afterFocusCss.includes('rgba(0, 0, 0, 0.88)'),
+              '[12.25-g] Contorno de foco em .nc-card-visual-layer::after deve ter dupla camada interna (#d1d5db + contraste escuro) acima da imagem'
+            );
+            const baseAfterMatch = indexCssText.match(
+              /\.nc-card-visual-layer::after\s*\{([\s\S]*?)\}/
+            );
+            assert(
+              baseAfterMatch !== null &&
+                baseAfterMatch[1].includes('z-index: 30') &&
+                baseAfterMatch[1].includes('pointer-events: none') &&
+                baseAfterMatch[1].includes('border-radius: inherit'),
+              '[12.25-g] Pseudo-elemento .nc-card-visual-layer::after deve ter z-index: 30, pointer-events: none e border-radius: inherit'
+            );
+
+            // 3. Validar ampliação unificada de 5% (scale(1.05)) com 120ms na camada visual em hover, focus e focus-visible
             const visualLayerMatch = indexCssText.match(
-              /\.nc-card-visual-layer[\s\S]*?\{([\s\S]*?)\}/
+              /\.nc-card-visual-layer\s*\{([\s\S]*?)\}/
             );
             assert(
               visualLayerMatch !== null,
-              '[12.25-f] Regra .nc-card-visual-layer deve existir em src/index.css'
+              '[12.25-g] Regra .nc-card-visual-layer deve existir em src/index.css'
             );
             const visualLayerCss = visualLayerMatch![1];
             assert(
-              visualLayerCss.includes('transition: transform 120ms ease-out'),
-              '[12.25-f] Camada visual deve ter transição de cerca de 120ms (transform 120ms ease-out)'
+              visualLayerCss.includes('transform 150ms cubic-bezier(0.22, 1, 0.36, 1)') &&
+                !visualLayerCss.includes('will-change: transform'),
+              '[12.25-g] Camada visual base deve ter transição suave (150ms cubic-bezier) e NÃO deve manter will-change permanente'
             );
 
-            const visualFocusMatch = indexCssText.match(
-              /\.nc-showcase-card:focus \.nc-card-visual-layer[\s\S]*?\{([\s\S]*?)\}/
+            const visualActiveMatch = indexCssText.match(
+              /\.nc-showcase-card:hover \.nc-card-visual-layer,[\s\S]*?\.nc-showcase-card:focus \.nc-card-visual-layer,[\s\S]*?\.nc-showcase-card:focus-visible \.nc-card-visual-layer[\s\S]*?\{([\s\S]*?)\}/
             );
             assert(
-              visualFocusMatch !== null,
-              '[12.25-f] Regra de zoom da camada visual focada deve existir em src/index.css'
+              visualActiveMatch !== null,
+              '[12.25-g] Regra unificada de hover/focus/focus-visible para .nc-card-visual-layer deve existir em src/index.css'
             );
-            const visualFocusCss = visualFocusMatch![1];
+            const visualActiveCss = visualActiveMatch![1];
             assert(
-              visualFocusCss.includes('transform: scale(1.03)'),
-              '[12.25-f] Camada visual da capa focada deve aplicar zoom sutil de 3% (scale(1.03))'
+              visualActiveCss.includes('transform: scale(1.05)') &&
+                visualActiveCss.includes('will-change: transform'),
+              '[12.25-g] Camada visual ativa (hover, focus, focus-visible) deve aplicar scale(1.05) e will-change: transform apenas enquanto ativa'
             );
 
             // Suporte a prefers-reduced-motion
@@ -24635,12 +24653,12 @@ if (args[0] === 'add' && args[1] === 'android') {
             );
             assert(
               reducedMotionMatch !== null,
-              '[12.25-f] src/index.css deve respeitar prefers-reduced-motion desativando o zoom da camada visual'
+              '[12.25-g] src/index.css deve respeitar prefers-reduced-motion desativando o zoom da camada visual'
             );
             assert(
               reducedMotionMatch![1].includes('transform: none !important') &&
                 reducedMotionMatch![1].includes('transition: none !important'),
-              '[12.25-f] prefers-reduced-motion deve forçar transform: none e transition: none na camada visual'
+              '[12.25-g] prefers-reduced-motion deve forçar transform: none e transition: none na camada visual mantendo o contorno'
             );
           } finally {
             if (prevDocMode !== null) {
@@ -24655,17 +24673,857 @@ if (args[0] === 'add' && args[1] === 'android') {
             }
           }
 
+          // ===================================================================
+          // [12.25-g] TESTES DE REGRESSÃO OBRIGATÓRIOS — CICLO 12.25-g:
+          // Parte A: Navegação por setas nos resultados da pesquisa (Início global, Filmes, Séries;
+          //          dezenas, centenas e 2.500 resultados; repeat: true + eventos de scroll intermediários;
+          //          transições entre janelas e entre domínios live <-> vod <-> series;
+          //          alcance do último item e retorno ao primeiro; inversão de direção na fronteira;
+          //          abrir/fechar MovieDetails e SeriesDetails; fechar pesquisa e restaurar origem).
+          // Parte B: Animação unificada de 5% (hover/focus/D-Pad), caixa estrutural estática,
+          //          contorno ::after acima da imagem opaca e sem will-change permanente em 390px,
+          //          1280x720 e modo TV 961x541 (escalas 50%, 85%, 90%, 100%, 125%).
+          // ===================================================================
+          await act(async () => {
+            (windowInstance as any).innerWidth = 1280;
+            (windowInstance as any).innerHeight = 720;
+            windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+          });
+
+          const cycleGSearchCreds = {
+            serverUrl: 'http://stage2-1225g.local:8080',
+            username: 'user_1225g',
+            password: 'pass_1225g',
+          };
+          windowInstance.localStorage.setItem(
+            CREDENTIALS_KEY,
+            JSON.stringify(cycleGSearchCreds)
+          );
+
+          // Catálogo com:
+          // - 2.500 itens "BuscaMassiva" (500 live + 1.000 vod + 1.000 series)
+          // - 180 itens "BuscaCentenas" (60 live + 60 vod + 60 series)
+          // - 36 itens "BuscaDezenas" (12 live + 12 vod + 12 series)
+          const gLiveStreams: any[] = [];
+          const gVodStreams: any[] = [];
+          const gSeriesStreams: any[] = [];
+
+          for (let i = 0; i < 500; i++) {
+            const tags = [
+              'BuscaMassiva',
+              i < 60 ? 'BuscaCentenas' : '',
+              i < 12 ? 'BuscaDezenas' : '',
+            ]
+              .filter(Boolean)
+              .join(' ');
+            gLiveStreams.push({
+              stream_id: 800000 + i,
+              name: `Canal ${tags} #${i + 1}`,
+              category_id: 'g_live_1',
+              stream_icon: `http://stage2-1225g.local:8080/live_${i}.png`,
+            });
+          }
+          for (let i = 0; i < 1000; i++) {
+            const tags = [
+              'BuscaMassiva',
+              i < 60 ? 'BuscaCentenas' : '',
+              i < 12 ? 'BuscaDezenas' : '',
+            ]
+              .filter(Boolean)
+              .join(' ');
+            gVodStreams.push({
+              stream_id: 810000 + i,
+              name: `Filme ${tags} #${i + 1}`,
+              category_id: 'g_vod_1',
+              year: '2025',
+              rating: '8.7',
+              stream_icon: `http://stage2-1225g.local:8080/vod_${i}.jpg`,
+              container_extension: 'mp4',
+            });
+          }
+          for (let i = 0; i < 1000; i++) {
+            const tags = [
+              'BuscaMassiva',
+              i < 60 ? 'BuscaCentenas' : '',
+              i < 12 ? 'BuscaDezenas' : '',
+            ]
+              .filter(Boolean)
+              .join(' ');
+            gSeriesStreams.push({
+              series_id: 820000 + i,
+              name: `Série ${tags} #${i + 1}`,
+              category_id: 'g_ser_1',
+              year: '2025',
+              rating: '8.8',
+              cover: `http://stage2-1225g.local:8080/ser_${i}.jpg`,
+            });
+          }
+
+          (XtreamService as any).getLiveCategories = async () => [
+            { category_id: 'g_live_1', category_name: 'Canais G' },
+          ];
+          (XtreamService as any).getVodCategories = async () => [
+            { category_id: 'g_vod_1', category_name: 'Filmes G' },
+          ];
+          (XtreamService as any).getSeriesCategories = async () => [
+            { category_id: 'g_ser_1', category_name: 'Séries G' },
+          ];
+          (XtreamService as any).getLiveStreams = async () => gLiveStreams;
+          (XtreamService as any).getVodStreams = async () => gVodStreams;
+          (XtreamService as any).getSeries = async () => gSeriesStreams;
+          (XtreamService as any).getVodInfo = async (_c: any, vodId: any) => ({
+            info: {
+              name: `Filme #${vodId}`,
+              plot: `Sinopse do filme ${vodId}`,
+              genre: 'Ação',
+              releasedate: '2025',
+              duration: '01:55:00',
+            },
+            movie_data: {
+              stream_id: Number(vodId),
+              name: `Filme #${vodId}`,
+              container_extension: 'mp4',
+            },
+          });
+          (XtreamService as any).getSeriesInfo = async (_c: any, serId: any) => ({
+            info: {
+              name: `Série #${serId}`,
+              plot: `Sinopse da série ${serId}`,
+              genre: 'Drama',
+              releasedate: '2025',
+              backdrop_path: [],
+            },
+            episodes: {
+              '1': [
+                {
+                  id: `ep_${serId}_1`,
+                  episode_num: 1,
+                  title: 'Episódio 1',
+                  container_extension: 'mp4',
+                },
+              ],
+            },
+          });
+
+          await act(async () => {
+            stage1Root.render(React.createElement('div', null));
+          });
+          await act(async () => {
+            stage1Root.render(
+              React.createElement(
+                MemoryRouter,
+                { initialEntries: ['/home'] },
+                React.createElement(
+                  Stage1NavProvider,
+                  null,
+                  React.createElement(RealHomeApp)
+                )
+              )
+            );
+            await new Promise((r) => setTimeout(r, 80));
+          });
+
+          const getActiveMainScroll = () => {
+            const el = stage1Container.querySelector<HTMLElement>(
+              'main[data-scroll-container="true"]'
+            )!;
+            if (el && el.clientHeight !== 720) {
+              Object.defineProperty(el, 'clientHeight', {
+                value: 720,
+                configurable: true,
+              });
+            }
+            return el;
+          };
+
+          // Helper para disparar tecla D-Pad (com ou sem repeat=true) e intercalar evento de scroll intermediário
+          const stepSearchDpadKey = async (
+            key: 'ArrowDown' | 'ArrowUp' | 'ArrowLeft' | 'ArrowRight',
+            opts?: { repeat?: boolean; intermediateScrollOffset?: number }
+          ) => {
+            if (opts?.repeat) {
+              // Respeitar KEY_REPEAT_THROTTLE_MS (48ms) de NavigationProvider ao simular tecla mantida pressionada
+              await new Promise((r) => setTimeout(r, 50));
+            }
+            await act(async () => {
+              windowInstance.dispatchEvent(
+                new (windowInstance as any).KeyboardEvent('keydown', {
+                  key,
+                  repeat: Boolean(opts?.repeat),
+                  bubbles: true,
+                  cancelable: true,
+                })
+              );
+              if (typeof opts?.intermediateScrollOffset === 'number') {
+                // Simular scroll intermediário assíncrono do navegador durante a transição
+                const activeMain = getActiveMainScroll();
+                const targetTop = Math.max(
+                  0,
+                  (activeMain.scrollTop || 0) + opts.intermediateScrollOffset
+                );
+                activeMain.scrollTop = targetTop;
+                activeMain.dispatchEvent(
+                  new windowInstance.Event('scroll') as unknown as Event
+                );
+              }
+            });
+          };
+
+          // -------------------------------------------------------------------
+          // PARTE A.1: Pesquisa em Filmes (dezenas=12, centenas=60 e 1.000 resultados)
+          // -------------------------------------------------------------------
+          const gMoviesTabBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="movies"]'
+          )!;
+          await act(async () => {
+            gMoviesTabBtn.focus();
+            gMoviesTabBtn.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          // Definir scroll inicial na vitrine de Filmes antes de abrir a pesquisa para validar restauração ao fechar
+          getActiveMainScroll().scrollTop = 420;
+          const gSearchTriggerMovies = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
+          await act(async () => {
+            gSearchTriggerMovies.focus();
+            gSearchTriggerMovies.click();
+          });
+          const gSearchInputMovies = stage1Container.querySelector<HTMLInputElement>(
+            'input[data-header-search-input="true"]'
+          )!;
+
+          // (A.1.a) Dezenas de resultados em Filmes ("BuscaDezenas" -> 12 filmes, 2 linhas de 6 colunas)
+          await act(async () => {
+            typeInRealInput(gSearchInputMovies, 'BuscaDezenas');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+
+          const firstCardDezenas = stage1Container.querySelector<HTMLElement>(
+            '[data-virtual-container="true"] [data-virtual-index="0"]'
+          )!;
+          assert(
+            firstCardDezenas !== null,
+            '[12.25-g] Busca de dezenas em Filmes deve montar o índice 0'
+          );
+          await act(async () => {
+            firstCardDezenas.focus();
+          });
+          // ArrowRight até a coluna 5 (índice 5), ArrowDown para linha 2 coluna 5 (índice 11), ArrowLeft até índice 6, ArrowUp de volta para índice 0
+          for (let c = 1; c <= 5; c++) {
+            await stepSearchDpadKey('ArrowRight');
+            assert.strictEqual(
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+              String(c),
+              `[12.25-g] ArrowRight em BuscaDezenas deve mover para coluna ${c}`
+            );
+          }
+          await stepSearchDpadKey('ArrowDown');
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '11',
+            '[12.25-g] ArrowDown na coluna 5 deve focar o último item (índice 11) da linha 2'
+          );
+          for (let c = 10; c >= 6; c--) {
+            await stepSearchDpadKey('ArrowLeft');
+            assert.strictEqual(
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+              String(c),
+              `[12.25-g] ArrowLeft na linha 2 deve focar o índice ${c}`
+            );
+          }
+          await stepSearchDpadKey('ArrowUp');
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '0',
+            '[12.25-g] ArrowUp da linha 2 coluna 0 deve retornar ao índice 0'
+          );
+
+          // (A.1.b) Centenas (60) e Milhares (1.000) de resultados em Filmes ("BuscaMassiva" -> 1.000 filmes, 167 linhas de 6 colunas)
+          await act(async () => {
+            typeInRealInput(gSearchInputMovies, 'BuscaMassiva');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+
+          const moviesGridContainer = stage1Container.querySelector<HTMLElement>(
+            '[data-virtual-container="true"]'
+          )!;
+          assert.strictEqual(
+            moviesGridContainer.getAttribute('data-virtual-total'),
+            '1000',
+            '[12.25-g] BuscaMassiva em Filmes deve ter 1.000 resultados na grade virtualizada'
+          );
+
+          const movieCard0 = moviesGridContainer.querySelector<HTMLElement>(
+            '[data-virtual-index="0"]'
+          )!;
+          await act(async () => {
+            movieCard0.focus();
+          });
+          // Mover para a coluna 2 (índice 2)
+          await stepSearchDpadKey('ArrowRight');
+          await stepSearchDpadKey('ArrowRight');
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '2',
+            '[12.25-g] Foco deve estar na coluna 2 (índice 2) antes da descida contínua'
+          );
+
+          // Descer 30 linhas seguidas com repeat=true e eventos de scroll intermediários intercalados
+          // (atravessando múltiplas janelas de 60 itens: índice 2 -> 8 -> 14 -> ... -> 182)
+          for (let r = 1; r <= 30; r++) {
+            await stepSearchDpadKey('ArrowDown', {
+              repeat: r % 2 === 0,
+              intermediateScrollOffset: -95, // simula scrollTop intermediário atrasado que antes desmontava o alvo
+            });
+            const expectedIdx = 2 + r * 6;
+            const activeIdx = (document.activeElement as HTMLElement | null)?.getAttribute(
+              'data-virtual-index'
+            );
+            assert.strictEqual(
+              activeIdx,
+              String(expectedIdx),
+              `[12.25-g] Descida rápida (repeat=true + scroll intermediário) passo ${r} em Filmes deve manter coluna 2 no índice ${expectedIdx} (obteve ${activeIdx})`
+            );
+            assert(
+              document.activeElement !== document.body &&
+                moviesGridContainer.contains(document.activeElement),
+              `[12.25-g] O foco NUNCA deve cair em document.body ou sair da grade no passo ${r}`
+            );
+          }
+
+          // Inverter direção exatamente na fronteira de janela (ArrowUp <-> ArrowDown repetidos) sem oscilação nem salto para scrollTop = 0
+          for (let flip = 0; flip < 4; flip++) {
+            await stepSearchDpadKey('ArrowUp', { repeat: true, intermediateScrollOffset: 60 });
+            assert.strictEqual(
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+              String(2 + 29 * 6),
+              `[12.25-g] Inversão de direção (ArrowUp #${flip + 1}) na fronteira de janela deve focar linha 29 sem oscilar`
+            );
+            await stepSearchDpadKey('ArrowDown', { repeat: true, intermediateScrollOffset: -60 });
+            assert.strictEqual(
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+              String(2 + 30 * 6),
+              `[12.25-g] Inversão de direção (ArrowDown #${flip + 1}) na fronteira de janela deve focar linha 30 sem oscilar`
+            );
+            assert(
+              getActiveMainScroll().scrollTop > 0,
+              '[12.25-g] Inversão de direção na fronteira NUNCA deve resetar scrollTop para 0'
+            );
+          }
+
+          // Abrir MovieDetails a partir do resultado focado (índice 182 = linha 30, coluna 2) e fechar com Escape ->
+          // deve preservar scrollTop e restaurar o foco exatamente no índice 182!
+          const scrollBeforeMovieModal = getActiveMainScroll().scrollTop;
+          const card182BeforeModal = document.activeElement as HTMLElement;
+          await act(async () => {
+            card182BeforeModal.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+          assert(
+            document.querySelector('[data-focus-scope="modal"]') !== null,
+            '[12.25-g] Clicar no resultado 182 da pesquisa em Filmes deve abrir MovieDetails'
+          );
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await waitForCondition(
+            () => document.querySelector('[data-focus-scope="modal"]') === null,
+            1200,
+            '[12.25-g] Fechar MovieDetails aberto pelos resultados da pesquisa'
+          );
+          assert.strictEqual(
+            getActiveMainScroll().scrollTop,
+            scrollBeforeMovieModal,
+            '[12.25-g] Fechar MovieDetails nos resultados da pesquisa deve preservar o scrollTop atual'
+          );
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '182',
+            '[12.25-g] Fechar MovieDetails nos resultados da pesquisa deve restaurar o foco no cartão 182'
+          );
+
+          // Avançar até a última linha (linha 166: índices 996..999) e alcançar o último item (índice 999) por setas
+          for (let r = 31; r <= 166; r++) {
+            await stepSearchDpadKey('ArrowDown');
+          }
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '998',
+            '[12.25-g] Descida até a última linha (166) na coluna 2 deve alcançar o índice 998'
+          );
+          await stepSearchDpadKey('ArrowRight');
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '999',
+            '[12.25-g] ArrowRight na última linha deve focar o último item (índice 999) de 1.000 filmes'
+          );
+          // Pressionar ArrowDown no último item não deve perder o foco nem resetar para o topo
+          await stepSearchDpadKey('ArrowDown');
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '999',
+            '[12.25-g] ArrowDown no último item da pesquisa deve preservar o foco no índice 999'
+          );
+
+          // Subir de volta até a primeira linha (índice 3) por ArrowUp contínuo e voltar ao índice 0
+          for (let r = 165; r >= 0; r--) {
+            await stepSearchDpadKey('ArrowUp');
+          }
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '3',
+            '[12.25-g] Subida contínua por ArrowUp deve retornar à primeira linha (índice 3)'
+          );
+          await stepSearchDpadKey('ArrowLeft');
+          await stepSearchDpadKey('ArrowLeft');
+          await stepSearchDpadKey('ArrowLeft');
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '0',
+            '[12.25-g] ArrowLeft na primeira linha deve retornar ao primeiro item (índice 0)'
+          );
+
+          // Fechar a pesquisa em Filmes e confirmar restauração da vitrine e do scrollTop=420
+          await act(async () => {
+            gSearchInputMovies.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+          assert(
+            stage1Container.querySelector('[data-showcase-rows-container="true"]') !== null,
+            '[12.25-g] Fechar a pesquisa em Filmes deve restaurar a vitrine'
+          );
+          assert.strictEqual(
+            getActiveMainScroll().scrollTop,
+            420,
+            '[12.25-g] Fechar a pesquisa em Filmes deve restaurar o scrollTop=420 da vitrine de origem'
+          );
+
+          // -------------------------------------------------------------------
+          // PARTE A.2: Pesquisa em Séries (centenas=60 resultados + SeriesDetails)
+          // -------------------------------------------------------------------
+          const gSeriesTabBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="series"]'
+          )!;
+          await act(async () => {
+            gSeriesTabBtn.focus();
+            gSeriesTabBtn.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          const gSearchTriggerSeries = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
+          await act(async () => {
+            gSearchTriggerSeries.focus();
+            gSearchTriggerSeries.click();
+          });
+          const gSearchInputSeries = stage1Container.querySelector<HTMLInputElement>(
+            'input[data-header-search-input="true"]'
+          )!;
+          await act(async () => {
+            typeInRealInput(gSearchInputSeries, 'BuscaCentenas');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+
+          const seriesGridContainer = stage1Container.querySelector<HTMLElement>(
+            '[data-virtual-container="true"]'
+          )!;
+          assert.strictEqual(
+            seriesGridContainer.getAttribute('data-virtual-total'),
+            '60',
+            '[12.25-g] BuscaCentenas em Séries deve exibir 60 resultados (10 linhas de 6 colunas)'
+          );
+          const serCard0 = seriesGridContainer.querySelector<HTMLElement>(
+            '[data-virtual-index="0"]'
+          )!;
+          await act(async () => {
+            serCard0.focus();
+          });
+          for (let r = 1; r <= 9; r++) {
+            await stepSearchDpadKey('ArrowDown', { repeat: true });
+            assert.strictEqual(
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+              String(r * 6),
+              `[12.25-g] ArrowDown em Séries (BuscaCentenas) deve focar linha ${r} (índice ${r * 6})`
+            );
+          }
+          // Abrir SeriesDetails no índice 54 e fechar com Escape
+          const activeSerCard54 = document.activeElement as HTMLElement;
+          await act(async () => {
+            activeSerCard54.click();
+            await new Promise((r) => setTimeout(r, 50));
+          });
+          assert(
+            document.querySelector('[data-focus-scope="modal"]') !== null,
+            '[12.25-g] Clicar no resultado 54 em Séries deve abrir SeriesDetails'
+          );
+          await act(async () => {
+            windowInstance.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await waitForCondition(
+            () => document.querySelector('[data-focus-scope="modal"]') === null,
+            1200,
+            '[12.25-g] Fechar SeriesDetails aberto pela pesquisa de Séries'
+          );
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '54',
+            '[12.25-g] Fechar SeriesDetails deve restaurar o foco no cartão 54 da pesquisa de Séries'
+          );
+
+          await act(async () => {
+            gSearchInputSeries.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+
+          // -------------------------------------------------------------------
+          // PARTE A.3: Pesquisa Global em Início (transição entre domínios live <-> vod <-> series
+          //            com BuscaDezenas=36 itens e BuscaMassiva=2.500 itens)
+          // -------------------------------------------------------------------
+          const gHomeTabBtn = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-nav-id="home"]'
+          )!;
+          await act(async () => {
+            gHomeTabBtn.focus();
+            gHomeTabBtn.click();
+            await new Promise((r) => setTimeout(r, 40));
+          });
+
+          const gSearchTriggerHome = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
+          await act(async () => {
+            gSearchTriggerHome.focus();
+            gSearchTriggerHome.click();
+          });
+          const gSearchInputHome = stage1Container.querySelector<HTMLInputElement>(
+            'input[data-header-search-input="true"]'
+          )!;
+
+          // 1) Testar transição entre domínios live (12) -> vod (12) -> series (12) e volta series -> vod -> live
+          await act(async () => {
+            typeInRealInput(gSearchInputHome, 'BuscaDezenas');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+
+          const liveDomainSec = stage1Container.querySelector<HTMLElement>(
+            '[data-search-domain="live"]'
+          )!;
+          const vodDomainSec = stage1Container.querySelector<HTMLElement>(
+            '[data-search-domain="vod"]'
+          )!;
+          const seriesDomainSec = stage1Container.querySelector<HTMLElement>(
+            '[data-search-domain="series"]'
+          )!;
+          assert(
+            liveDomainSec !== null && vodDomainSec !== null && seriesDomainSec !== null,
+            '[12.25-g] Pesquisa global no Início deve exibir as 3 seções (live, vod, series)'
+          );
+
+          // Focar coluna 1 da linha 0 de live (índice 1)
+          const liveStartCard = liveDomainSec.querySelector<HTMLElement>(
+            '[data-virtual-index="1"]'
+          )!;
+          await act(async () => {
+            liveStartCard.focus();
+          });
+          // ArrowDown -> linha 1 de live (índice 7)
+          await stepSearchDpadKey('ArrowDown');
+          assert(
+            liveDomainSec.contains(document.activeElement) &&
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index') === '7',
+            '[12.25-g] ArrowDown em live deve ir para a última linha de live (índice 7, coluna 1)'
+          );
+          // ArrowDown na última linha de live -> deve entrar na PRIMEIRA linha de vod preservando a coluna 1 (índice 1)!
+          await stepSearchDpadKey('ArrowDown');
+          assert(
+            vodDomainSec.contains(document.activeElement) &&
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index') === '1',
+            `[12.25-g] ArrowDown na última linha de live deve entrar na 1ª linha de vod na mesma coluna (índice 1, obteve=${(document.activeElement as HTMLElement)?.getAttribute('data-virtual-index')})`
+          );
+          // ArrowDown -> linha 1 de vod (índice 7)
+          await stepSearchDpadKey('ArrowDown');
+          assert(
+            vodDomainSec.contains(document.activeElement) &&
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index') === '7',
+            '[12.25-g] ArrowDown em vod deve ir para a linha 1 de vod (índice 7)'
+          );
+          // ArrowDown na última linha de vod -> deve entrar na PRIMEIRA linha de series preservando a coluna 1 (índice 1)!
+          await stepSearchDpadKey('ArrowDown');
+          assert(
+            seriesDomainSec.contains(document.activeElement) &&
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index') === '1',
+            `[12.25-g] ArrowDown na última linha de vod deve entrar na 1ª linha de series na mesma coluna (índice 1, obteve=${(document.activeElement as HTMLElement)?.getAttribute('data-virtual-index')})`
+          );
+          // Agora subir: ArrowUp na 1ª linha de series -> deve entrar na ÚLTIMA linha de vod preservando a coluna 1 (índice 7)!
+          await stepSearchDpadKey('ArrowUp');
+          assert(
+            vodDomainSec.contains(document.activeElement) &&
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index') === '7',
+            `[12.25-g] ArrowUp na 1ª linha de series deve voltar para a última linha de vod na mesma coluna (índice 7, obteve=${(document.activeElement as HTMLElement)?.getAttribute('data-virtual-index')})`
+          );
+          // ArrowUp -> 1ª linha de vod (índice 1)
+          await stepSearchDpadKey('ArrowUp');
+          assert.strictEqual(
+            (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index'),
+            '1',
+            '[12.25-g] ArrowUp em vod deve subir para a 1ª linha de vod (índice 1)'
+          );
+          // ArrowUp na 1ª linha de vod -> deve entrar na ÚLTIMA linha de live preservando a coluna 1 (índice 7)!
+          await stepSearchDpadKey('ArrowUp');
+          assert(
+            liveDomainSec.contains(document.activeElement) &&
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index') === '7',
+            `[12.25-g] ArrowUp na 1ª linha de vod deve voltar para a última linha de live na mesma coluna (índice 7, obteve=${(document.activeElement as HTMLElement)?.getAttribute('data-virtual-index')})`
+          );
+          // ArrowUp -> 1ª linha de live (índice 1)
+          await stepSearchDpadKey('ArrowUp');
+          assert(
+            liveDomainSec.contains(document.activeElement) &&
+              (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index') === '1',
+            '[12.25-g] ArrowUp em live deve subir para a 1ª linha de live (índice 1)'
+          );
+          // ArrowUp na 1ª linha da primeira grade -> deve sair para o cabeçalho e zerar scrollTop
+          await stepSearchDpadKey('ArrowUp');
+          assert(
+            (document.activeElement as HTMLElement)?.closest('[data-nav-zone="header"]') !== null,
+            '[12.25-g] ArrowUp na 1ª linha da 1ª seção de busca deve subir para o cabeçalho'
+          );
+
+          // 2) Testar navegação D-Pad com 2.500 resultados no Início ("BuscaMassiva": 500 live + 1.000 vod + 1.000 series)
+          await act(async () => {
+            typeInRealInput(gSearchInputHome, 'BuscaMassiva');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+
+          const liveMassSec = stage1Container.querySelector<HTMLElement>(
+            '[data-search-domain="live"]'
+          )!;
+          const liveMassCard0 = liveMassSec.querySelector<HTMLElement>(
+            '[data-virtual-index="0"]'
+          )!;
+          await act(async () => {
+            liveMassCard0.focus();
+          });
+          // Descer 15 linhas seguidas em live (de 500 itens, janela de 36 itens = 6 linhas) com repeat=true e scroll intermediário
+          for (let r = 1; r <= 15; r++) {
+            await stepSearchDpadKey('ArrowDown', {
+              repeat: true,
+              intermediateScrollOffset: -70,
+            });
+            assert(
+              liveMassSec.contains(document.activeElement) &&
+                (document.activeElement as HTMLElement)?.getAttribute('data-virtual-index') ===
+                  String(r * 6),
+              `[12.25-g] Descida rápida em Início/live (2.500 resultados, janela=36) passo ${r} deve focar índice ${r * 6}`
+            );
+          }
+
+          // Fechar pesquisa no Início
+          await act(async () => {
+            gSearchInputHome.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+
+          // -------------------------------------------------------------------
+          // PARTE B: Validação no DOM da animação unificada de 5%, caixa estática,
+          //          contorno ::after acima da imagem e will-change sob demanda
+          //          em 390px, 1280x720 e Android TV 961x541 (50%, 85%, 90%, 100%, 125%)
+          // -------------------------------------------------------------------
+          const validateMountedCardsVisualAndPerf = (envLabel: string) => {
+            const mountedCards = Array.from(
+              stage1Container.querySelectorAll<HTMLElement>('.nc-showcase-card')
+            );
+            assert(
+              mountedCards.length > 0,
+              `[12.25-g] (${envLabel}) Deve haver cartões .nc-showcase-card montados para validação visual`
+            );
+
+            for (const card of mountedCards) {
+              // 1. Caixa externa deve ter overflow-visible e NUNCA ter will-change-transform permanente
+              assert(
+                card.classList.contains('overflow-visible') &&
+                  !card.classList.contains('overflow-hidden'),
+                `[12.25-g] (${envLabel}) Caixa externa .nc-showcase-card deve usar overflow-visible para não recortar scale(1.05)`
+              );
+              assert(
+                !card.className.includes('will-change'),
+                `[12.25-g] (${envLabel}) Caixa externa .nc-showcase-card NÃO deve ter will-change permanente`
+              );
+
+              // 2. Camada visual interna deve existir, conter a imagem e NÃO ter will-change-transform permanente na classe
+              const visualLayer = card.querySelector<HTMLElement>('.nc-card-visual-layer');
+              assert(
+                visualLayer !== null,
+                `[12.25-g] (${envLabel}) Todo .nc-showcase-card deve possuir uma camada interna .nc-card-visual-layer`
+              );
+              assert(
+                visualLayer!.classList.contains('rounded-xl') &&
+                  visualLayer!.classList.contains('overflow-hidden'),
+                `[12.25-g] (${envLabel}) .nc-card-visual-layer deve concentrar rounded-xl e overflow-hidden`
+              );
+              assert(
+                !visualLayer!.className.includes('will-change'),
+                `[12.25-g] (${envLabel}) .nc-card-visual-layer NÃO deve ter will-change-transform permanente no HTML/classe`
+              );
+
+              // 3. Imagem interna não deve ter group-hover:scale-105 duplicado
+              const innerImg = visualLayer!.querySelector<HTMLElement>('img');
+              if (innerImg) {
+                assert(
+                  !innerImg.className.includes('group-hover:scale-105') &&
+                    !innerImg.className.includes('will-change'),
+                  `[12.25-g] (${envLabel}) Imagem interna NÃO deve ter zoom duplicado (group-hover:scale-105) nem will-change permanente`
+                );
+              }
+            }
+
+            // Verificar primeiro e último cartão de cada carrossel montado (sem recorte horizontal graças ao px-2 e overflow-visible)
+            const rowTracks = Array.from(
+              stage1Container.querySelectorAll<HTMLElement>(
+                '[data-home-row-index] .overflow-x-auto'
+              )
+            );
+            for (const track of rowTracks) {
+              assert(
+                track.classList.contains('px-2'),
+                `[12.25-g] (${envLabel}) Faixa horizontal do carrossel deve ter folga lateral (px-2) para o primeiro e último cartão`
+              );
+            }
+          };
+
+          // 1) Validar em 1280x720 (Desktop) na vitrine do Início
+          validateMountedCardsVisualAndPerf('Desktop 1280x720 Vitrine Início');
+
+          // Verificar que focar um cartão mantém a geometria estrutural de .nc-showcase-card idêntica
+          const sampleCard = stage1Container.querySelector<HTMLElement>('.nc-showcase-card')!;
+          const rectBeforeFocus = sampleCard.getBoundingClientRect();
+          await act(async () => {
+            sampleCard.focus();
+          });
+          const rectAfterFocus = sampleCard.getBoundingClientRect();
+          assert.strictEqual(
+            rectAfterFocus.width,
+            rectBeforeFocus.width,
+            '[12.25-g] Focar .nc-showcase-card não deve alterar a largura estrutural da caixa de layout'
+          );
+          assert.strictEqual(
+            rectAfterFocus.height,
+            rectBeforeFocus.height,
+            '[12.25-g] Focar .nc-showcase-card não deve alterar a altura estrutural da caixa de layout'
+          );
+
+          // 2) Validar em 390px (Mobile)
+          await act(async () => {
+            (windowInstance as any).innerWidth = 390;
+            (windowInstance as any).innerHeight = 844;
+            windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+          });
+          validateMountedCardsVisualAndPerf('Mobile 390x844 Vitrine Início');
+
+          // 3) Validar em modo TV 961x541 nas escalas 50%, 85%, 90%, 100% e 125%
+          const tvScalesToTest = ['0.5', '0.85', '0.9', '1', '1.25'];
+          document.documentElement.setAttribute('data-display-mode', 'tv');
+          await act(async () => {
+            (windowInstance as any).innerWidth = 961;
+            (windowInstance as any).innerHeight = 541;
+            windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+          });
+          for (const scaleVal of tvScalesToTest) {
+            document.documentElement.style.setProperty('--nc-ui-scale', scaleVal);
+            validateMountedCardsVisualAndPerf(`Android TV 961x541 @ ${Number(scaleVal) * 100}%`);
+          }
+          document.documentElement.removeAttribute('data-display-mode');
+          document.documentElement.style.removeProperty('--nc-ui-scale');
+
+          // 4) Validar cartões montados nos resultados da pesquisa e na grade de categoria
+          await act(async () => {
+            gSearchTriggerHome.focus();
+            gSearchTriggerHome.click();
+          });
+          const gSearchInputForDom = stage1Container.querySelector<HTMLInputElement>(
+            'input[data-header-search-input="true"]'
+          )!;
+          await act(async () => {
+            typeInRealInput(gSearchInputForDom, 'BuscaDezenas');
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+          validateMountedCardsVisualAndPerf('Resultados da Pesquisa Global (live, vod, series)');
+          await act(async () => {
+            gSearchInputForDom.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'Escape',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+          });
+          await act(async () => {
+            await new Promise((r) => setTimeout(r, 520));
+          });
+
           console.log(
-            `📊 [Métricas Vitrine Etapa 2]\n` +
+            `📊 [Métricas Vitrine Etapa 2 & Ciclo 12.25-g]\n` +
               `   • Início (25 fileiras totais = 4 fixas + 12 Filmes + 9 Séries): início -> ${inicioInitialMountedRows} fileiras montadas, ${inicioInitialMountedImgs} img[src] | fim -> ${inicioEndMountedRows} fileiras montadas, ${inicioEndMountedImgs} img[src]\n` +
               `   • Filmes (13 fileiras totais = 1 fixa + 12 categorias, última c/ 1 título): início -> ${moviesInitialMountedRows} fileiras montadas, ${moviesInitialMountedImgs} img[src] | fim -> ${moviesEndMountedRows} fileiras montadas, ${moviesEndMountedImgs} img[src]\n` +
               `   • Percursos D-Pad até a fileira 12 ("Cinema Experimental Único", 1 título): abertura=${dpadInitialRun.mountedRowsAtEnd} fileiras | pós-busca=${dpadAfterSearchCloseRun.mountedRowsAtEnd} fileiras | pós-Ver-todos=${dpadAfterVerTodosRun.mountedRowsAtEnd} fileiras | pós-categoria=${dpadAfterCategoryRun.mountedRowsAtEnd} fileiras (controladores ativos=1)\n` +
               `   • Regressão D-Pad 32 fileiras (15->27->4->0 c/ scroll intermediário e repeat=true): ΔvisualAnchor=${Math.abs(visualTopRow3AfterWindowShift - visualTopRow3BeforeWindowShift).toFixed(2)}px (compensação=+180px), roda do mouse -> firstRow=${firstMountedAfterWheel} (janela=${mountedCountAfterWheel})\n` +
               `   • Regressão Touch 390px (32 fileiras c/ alturas ${Array.from(initialDistinctHeights390).join('/')}px): 1ª montagem fileira 9 (350px natural vs 327px base) -> salto antes=${measuredDisplacementBefore.toFixed(2)}px, após=${firstMountJumpPx.toFixed(2)}px (<= 1px) | escritas em scrollTop=${appScrollTopWriteCount}, salto visual máx=${maxVisualJumpDuringTouchPx.toFixed(2)}px, reversões na inércia=${windowReversalsInTail}\n` +
-              `   • Busca no Início (2.500 resultados): ${mountedSearchCards} cartões montados (${mountedLiveSearchCards}+${mountedVodSearchCards}+${mountedSeriesSearchCards}), ${mountedSearchImgs} img[src]`
+              `   • Busca no Início (2.500 resultados): ${mountedSearchCards} cartões montados (${mountedLiveSearchCards}+${mountedVodSearchCards}+${mountedSeriesSearchCards}), ${mountedSearchImgs} img[src]\n` +
+              `   • Ciclo 12.25-g: D-Pad na pesquisa (12, 60, 1.000 e 2.500 itens; live<->vod<->series; repeat=true c/ scroll intermediário; abertura/fechamento de detalhes) + scale(1.05) unificado + contorno ::after z-30 acima da imagem e will-change sob demanda validados!`
           );
           console.log(
-            '✅ [12.25] Etapa 2 validada com sucesso: vitrine completa sem limites artificiais, rolagem por toque em 390px sem oscilação e sem escrita em scrollTop, D-Pad vertical estável em 32 fileiras, busca virtualizada no Início (2.500 resultados) e retomada segura de episódio apenas com extensão confirmada!'
+            '✅ [12.25-g] Ciclo 12.25-g validado com sucesso: navegação por setas nos resultados da pesquisa estável, animação de 5% unificada entre hover/focus/D-Pad, contorno ::after visível acima da capa e will-change sob demanda!'
           );
         } finally {
           useDelayedSeriesCategories = false;
