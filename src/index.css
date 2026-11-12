@@ -782,10 +782,25 @@ html[data-display-mode="tv"] .nc-tv-details-header {
   padding: calc(0.55 * var(--nc-rem)) calc(1 * var(--nc-rem)) !important;
 }
 
+html[data-display-mode="tv"] .nc-tv-details-dialog {
+  max-width: min(calc(54 * var(--nc-rem)), 94vw) !important;
+  max-height: 92vh !important;
+  border-radius: calc(1 * var(--nc-rem)) !important;
+}
+
+html[data-display-mode="tv"] .nc-tv-details-close-btn {
+  width: calc(2.35 * var(--nc-rem)) !important;
+  height: calc(2.35 * var(--nc-rem)) !important;
+}
+
 html[data-display-mode="tv"] .nc-tv-details-scroll {
   padding: var(--nc-tv-section-pad) !important;
   min-width: 0 !important;
   min-height: 0 !important;
+}
+
+html[data-display-mode="tv"] [data-details-modal="movie"] .nc-tv-details-scroll {
+  padding: 0 !important;
 }
 
 html[data-display-mode="tv"] .nc-tv-details-stack {
@@ -797,7 +812,8 @@ html[data-display-mode="tv"] .nc-tv-details-hero {
 }
 
 html[data-display-mode="tv"] .nc-tv-movie-hero {
-  min-height: calc(15 * var(--nc-rem)) !important;
+  min-height: calc(14 * var(--nc-rem)) !important;
+  max-height: calc(22 * var(--nc-rem)) !important;
 }
 
 html[data-display-mode="tv"] .nc-tv-details-hero-inner {
@@ -816,7 +832,8 @@ html[data-display-mode="tv"] .nc-tv-details-synopsis {
   padding: calc(0.5 * var(--nc-rem)) calc(0.65 * var(--nc-rem)) !important;
 }
 
-html[data-display-mode="tv"] .nc-tv-details-synopsis p {
+html[data-display-mode="tv"] .nc-tv-details-synopsis p,
+html[data-display-mode="tv"] .nc-tv-movie-synopsis p {
   font-size: var(--nc-tv-synopsis-font) !important;
   line-height: 1.45 !important;
 }
@@ -827,7 +844,9 @@ html[data-display-mode="tv"] .nc-tv-details-action {
 }
 
 html[data-display-mode="tv"] .nc-tv-details-action-icon {
-  padding: calc(0.55 * var(--nc-rem)) !important;
+  width: calc(2.5 * var(--nc-rem)) !important;
+  height: calc(2.5 * var(--nc-rem)) !important;
+  padding: calc(0.45 * var(--nc-rem)) !important;
 }
 
 html[data-display-mode="tv"] .nc-tv-details-body {

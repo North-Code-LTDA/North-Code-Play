@@ -1043,6 +1043,12 @@ function pickBestItemInBlock(
   }
 
   if (block.type === 'grid' && direction === 'up' && block.items.length > 0) {
+    const rawCols = parseInt(block.container.getAttribute('data-grid-cols') || '0', 10);
+    if (!isNaN(rawCols) && rawCols > 0) {
+      const totalRows = Math.ceil(block.items.length / rawCols);
+      const lastRowStartIdx = Math.max(0, (totalRows - 1) * rawCols);
+      return block.items[lastRowStartIdx] || block.items[block.items.length - 1];
+    }
     return block.items[block.items.length - 1];
   }
 
@@ -1195,6 +1201,37 @@ function findNextInGridBlock(
     }
 
     return best;
+  }
+
+  const gridContainer = current.closest<HTMLElement>('[data-nav-grid="true"]');
+  const explicitCols = gridContainer
+    ? parseInt(gridContainer.getAttribute('data-grid-cols') || '0', 10)
+    : 0;
+  if (!isNaN(explicitCols) && explicitCols > 0) {
+    const totalCount = gridItems.length;
+    const currentRow = Math.floor(idx / explicitCols);
+    const currentCol = idx % explicitCols;
+    const totalRows = Math.ceil(totalCount / explicitCols);
+    if (direction === 'right') {
+      return idx + 1 < totalCount ? gridItems[idx + 1] : null;
+    }
+    if (direction === 'left') {
+      return idx - 1 >= 0 ? gridItems[idx - 1] : null;
+    }
+    if (direction === 'down') {
+      if (currentRow < totalRows - 1) {
+        const nextIdx = Math.min(totalCount - 1, (currentRow + 1) * explicitCols + currentCol);
+        return gridItems[nextIdx] || null;
+      }
+      return null;
+    }
+    if (direction === 'up') {
+      if (currentRow > 0) {
+        const prevIdx = (currentRow - 1) * explicitCols + currentCol;
+        return gridItems[prevIdx] || null;
+      }
+      return null;
+    }
   }
 
   if (direction === 'right' || direction === 'down') {

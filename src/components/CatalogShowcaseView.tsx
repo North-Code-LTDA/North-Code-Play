@@ -1847,6 +1847,12 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     [captureOriginBeforeDetails]
   );
 
+  // Switch active movie inside MovieDetails ("Títulos semelhantes") without overwriting origin focus/scroll memory
+  const handleSelectSimilarMovie = useCallback((movie: any) => {
+    if (!movie) return;
+    setSelectedMovie(movie);
+  }, []);
+
   // Direct Play / Resume from HeroBanner ("Assistir" or "Continuar")
   const handleHeroPlay = useCallback(
     (item: any, detailsResponse?: any): void | Promise<void> => {
@@ -2598,10 +2604,13 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           streamIcon={normalizeImageSource(
             selectedMovie.stream_icon || selectedMovie.cover || selectedMovie.image
           )}
+          categoryId={selectedMovie.category_id}
           categoryName={selectedMovie.category_name || 'Filme'}
           rating={selectedMovie.rating}
           year={selectedMovie.year}
           containerExtension={selectedMovie.container_extension}
+          catalogMovies={allVodStreams.length > 0 ? allVodStreams : vodStreams}
+          onSelectSimilarMovie={handleSelectSimilarMovie}
           onClose={handleCloseMovieDetails}
           onPlay={onPlay}
         />

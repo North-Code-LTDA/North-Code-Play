@@ -25217,7 +25217,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           //            com BuscaDezenas=36 itens e BuscaMassiva=2.500 itens)
           // -------------------------------------------------------------------
           const gHomeTabBtn = stage1Container.querySelector<HTMLButtonElement>(
-            'button[data-header-nav-id="home"]'
+            'button[data-header-nav-id="inicio"]'
           )!;
           await act(async () => {
             gHomeTabBtn.focus();
@@ -25485,9 +25485,12 @@ if (args[0] === 'add' && args[1] === 'android') {
           document.documentElement.style.removeProperty('--nc-ui-scale');
 
           // 4) Validar cartões montados nos resultados da pesquisa e na grade de categoria
+          const gSearchTriggerForDom = stage1Container.querySelector<HTMLButtonElement>(
+            'button[data-header-search-trigger="true"]'
+          )!;
           await act(async () => {
-            gSearchTriggerHome.focus();
-            gSearchTriggerHome.click();
+            gSearchTriggerForDom.focus();
+            gSearchTriggerForDom.click();
           });
           const gSearchInputForDom = stage1Container.querySelector<HTMLInputElement>(
             'input[data-header-search-input="true"]'
@@ -25525,6 +25528,879 @@ if (args[0] === 'add' && args[1] === 'android') {
           console.log(
             '✅ [12.25-g] Ciclo 12.25-g validado com sucesso: navegação por setas nos resultados da pesquisa estável, animação de 5% unificada entre hover/focus/D-Pad, contorno ::after visível acima da capa e will-change sob demanda!'
           );
+
+          // ===================================================================
+          // CICLO 12.26-a (ETAPA 3.1): REFORMULAÇÃO DOS DETALHES DE FILMES
+          // Validação completa dos 18 cenários obrigatórios (Seção 13.2):
+          // - Estrutura DetailsModalShell reutilizável (#181818, backdrop rgba(0,0,0,0.75), role="dialog", aria-modal="true")
+          // - Abertura a partir de Início, Filmes (vitrine), Categoria/Ver todos, Pesquisa e Favoritos
+          // - Fechamento por botão X, Escape e clique no backdrop externo preservando scrollTop e foco de origem
+          // - Botão principal Assistir (<=30s) e Continuar (>30s) + barra de progresso + submodal Continuar Assistindo?
+          // - Favoritar/desfavoritar + alerta de erro de persistência
+          // - Layout em 2 colunas (ano, duração, avaliação real c/ ★, sinopse sem scroll aninhado + Elenco, Gêneros, Direção)
+          // - Seção Títulos semelhantes (determinística, sem o filme atual, troca de filme in-place sem empilhar modais)
+          // - Seção inferior Sobre [nome do filme] e omissão limpa de campos ausentes (zero dados falsos)
+          // - Percurso completo por D-Pad (Assistir <-> Favoritar <-> X <-> Sinopse <-> Títulos semelhantes <-> Sobre)
+          // - Estados de fallback (sem backdrop, erro de getVodInfo) e responsividade (1280x720, 390x844, TV 961x541 50%-125%)
+          // ===================================================================
+          {
+            await act(async () => {
+              (windowInstance as any).innerWidth = 1280;
+              (windowInstance as any).innerHeight = 720;
+              windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+            });
+
+            const m1226Movies = [
+              {
+                stream_id: 910001,
+                name: 'O Protetor: Capítulo Final',
+                category_id: 'cat_acao_1226',
+                category_name: 'Filmes de ação e aventura',
+                year: '2023',
+                rating: '8.9',
+                stream_icon: 'http://stage2-1225g.local:8080/protetor_cover.jpg',
+                container_extension: 'mp4',
+              },
+              {
+                stream_id: 910002,
+                name: 'Meu Nome é Vingança',
+                category_id: 'cat_acao_1226',
+                category_name: 'Filmes de ação e aventura',
+                year: '2022',
+                rating: '7.8',
+                stream_icon: 'http://stage2-1225g.local:8080/vinganca_cover.jpg',
+                container_extension: 'mkv',
+              },
+              {
+                stream_id: 910003,
+                name: 'Sem Refúgio',
+                category_id: 'cat_acao_1226',
+                category_name: 'Filmes de ação e aventura',
+                year: '2024',
+                rating: '8.1',
+                stream_icon: 'http://stage2-1225g.local:8080/sem_refugio_cover.jpg',
+                container_extension: 'mp4',
+              },
+              {
+                stream_id: 910004,
+                name: 'Fogo Contra Fogo',
+                category_id: 'cat_acao_1226',
+                category_name: 'Filmes de ação e aventura',
+                year: '2012',
+                rating: '8.4',
+                stream_icon: 'http://stage2-1225g.local:8080/fogo_cover.jpg',
+                container_extension: 'mp4',
+              },
+              {
+                stream_id: 910005,
+                name: 'Missão Resgate Extremo',
+                category_id: 'cat_acao_1226',
+                category_name: 'Filmes de ação e aventura',
+                year: '2023',
+                rating: '7.5',
+                stream_icon: 'http://stage2-1225g.local:8080/resgate_cover.jpg',
+                container_extension: 'mp4',
+              },
+              {
+                stream_id: 910006,
+                name: 'Infiltrado na Máfia',
+                category_id: 'cat_acao_1226',
+                category_name: 'Filmes de ação e aventura',
+                year: '2021',
+                rating: '7.9',
+                stream_icon: 'http://stage2-1225g.local:8080/infiltrado_cover.jpg',
+                container_extension: 'mp4',
+              },
+              {
+                stream_id: 910007,
+                name: 'Documentário Solitário',
+                category_id: 'cat_doc_unico_1226',
+                category_name: 'Documentários Raros',
+                year: '2020',
+                rating: '0',
+                stream_icon: '',
+                container_extension: 'mp4',
+              },
+            ];
+
+            let vodInfoShouldFail = false;
+            (XtreamService as any).getVodCategories = async () => [
+              { category_id: 'cat_acao_1226', category_name: 'Filmes de ação e aventura' },
+              { category_id: 'cat_doc_unico_1226', category_name: 'Documentários Raros' },
+            ];
+            (XtreamService as any).getVodStreams = async () => m1226Movies;
+            (XtreamService as any).getVodInfo = async (_c: any, vodId: any) => {
+              if (vodInfoShouldFail) {
+                throw new Error('Falha simulada de rede em getVodInfo');
+              }
+              const idNum = Number(vodId);
+              if (idNum === 910001) {
+                return {
+                  info: {
+                    name: 'O Protetor: Capítulo Final',
+                    plot: 'Desde que desistiu de sua vida como assassino do governo, Robert McCall encontra consolo em fazer justiça para os oprimidos no sul da Itália.',
+                    director: 'Antoine Fuqua',
+                    cast: 'Denzel Washington, Dakota Fanning, Eugenio Mastrandrea',
+                    genre: 'Filmes de ação e aventura',
+                    releasedate: '2023-08-30',
+                    duration: '01:49:00',
+                    rating: '8.9',
+                    backdrop_path: ['http://stage2-1225g.local:8080/protetor_backdrop.jpg'],
+                    movie_image: 'http://stage2-1225g.local:8080/protetor_cover.jpg',
+                  },
+                  movie_data: {
+                    stream_id: 910001,
+                    name: 'O Protetor: Capítulo Final',
+                    category_id: 'cat_acao_1226',
+                    container_extension: 'mp4',
+                  },
+                };
+              }
+              if (idNum === 910002) {
+                return {
+                  info: {
+                    name: 'Meu Nome é Vingança',
+                    plot: 'Um ex-assassino e sua filha planejam vingança contra inimigos implacáveis.',
+                    director: 'Cosimo Gomez',
+                    cast: 'Alessandro Gassmann, Ginevra Francesconi',
+                    genre: 'Filmes de ação e aventura',
+                    releasedate: '2022',
+                    duration: '01:32:00',
+                    rating: '7.8',
+                    backdrop_path: ['http://stage2-1225g.local:8080/vinganca_backdrop.jpg'],
+                  },
+                  movie_data: {
+                    stream_id: 910002,
+                    name: 'Meu Nome é Vingança',
+                    category_id: 'cat_acao_1226',
+                    container_extension: 'mkv',
+                  },
+                };
+              }
+              if (idNum === 910007) {
+                // Filme sem backdrop, sem elenco, sem direção, sem duração e avaliação '0'
+                return {
+                  info: {
+                    name: 'Documentário Solitário',
+                    plot: 'Um registro silencioso na antártida.',
+                    backdrop_path: [],
+                  },
+                  movie_data: {
+                    stream_id: 910007,
+                    name: 'Documentário Solitário',
+                    category_id: 'cat_doc_unico_1226',
+                    container_extension: 'mp4',
+                  },
+                };
+              }
+              const matched = m1226Movies.find((m) => m.stream_id === idNum);
+              return {
+                info: {
+                  name: matched?.name || `Filme #${idNum}`,
+                  plot: `Sinopse detalhada de ${matched?.name || idNum}`,
+                  director: 'Diretor Teste',
+                  cast: 'Ator Um, Atriz Dois',
+                  genre: 'Filmes de ação e aventura',
+                  releasedate: matched?.year || '2024',
+                  duration: '01:35:00',
+                  rating: matched?.rating || '8.0',
+                  backdrop_path: [],
+                  movie_image: matched?.stream_icon || '',
+                },
+                movie_data: {
+                  stream_id: idNum,
+                  name: matched?.name || `Filme #${idNum}`,
+                  category_id: matched?.category_id || 'cat_acao_1226',
+                  container_extension: matched?.container_extension || 'mp4',
+                },
+              };
+            };
+
+            // Re-montar a aplicação limpa para o cenário 12.26-a
+            await act(async () => {
+              stage1Root.render(React.createElement('div', null));
+            });
+            await act(async () => {
+              stage1Root.render(
+                React.createElement(
+                  MemoryRouter,
+                  { initialEntries: ['/home'] },
+                  React.createElement(
+                    Stage1NavProvider,
+                    null,
+                    React.createElement(RealHomeApp)
+                  )
+                )
+              );
+              await new Promise((r) => setTimeout(r, 80));
+            });
+
+            // -----------------------------------------------------------------
+            // 1) Abrir MovieDetails a partir da vitrine de Início e validar estrutura modal Netflix
+            // -----------------------------------------------------------------
+            const inicioMainEl = getActiveMainScroll();
+            inicioMainEl.scrollTop = 220;
+            const inicioMovieCard = stage1Container.querySelector<HTMLElement>(
+              '[data-showcase-row-key="featured_movies"] [data-nav-item="true"]'
+            )!;
+            assert(
+              inicioMovieCard !== null,
+              '[12.26-a] Cartão de filme em Filmes em Destaque no Início deve existir'
+            );
+            await act(async () => {
+              inicioMovieCard.focus();
+              inicioMovieCard.click();
+              await new Promise((r) => setTimeout(r, 40));
+            });
+
+            const modalBackdropEl = document.querySelector<HTMLElement>(
+              '[data-details-backdrop="true"][data-focus-scope="modal"]'
+            )!;
+            const modalDialogEl = document.querySelector<HTMLElement>(
+              '[data-details-dialog="true"]'
+            )!;
+            assert(
+              modalBackdropEl !== null && modalDialogEl !== null,
+              '[12.26-a] MovieDetails deve renderizar DetailsModalShell com backdrop e diálogo centralizado'
+            );
+            assert.strictEqual(
+              modalBackdropEl.getAttribute('role'),
+              'dialog',
+              '[12.26-a] Modal deve expor role="dialog"'
+            );
+            assert.strictEqual(
+              modalBackdropEl.getAttribute('aria-modal'),
+              'true',
+              '[12.26-a] Modal deve expor aria-modal="true"'
+            );
+            assert(
+              stage1Container.querySelector('main[data-scroll-container="true"]') !== null,
+              '[12.26-a] Tela de fundo (main) deve continuar montada sob o backdrop do modal'
+            );
+            assert(
+              modalDialogEl.style.backgroundColor === 'rgb(24, 24, 24)' ||
+                modalDialogEl.className.includes('bg-[#181818]'),
+              '[12.26-a] Superfície principal do modal deve usar #181818'
+            );
+
+            // Fechar pelo botão X no topo direito e verificar restauração de foco e scrollTop no Início
+            const closeXBtn = modalBackdropEl.querySelector<HTMLButtonElement>(
+              'button[data-details-close="true"]'
+            )!;
+            assert(
+              closeXBtn !== null,
+              '[12.26-a] Botão circular X (data-details-close="true") deve existir no topo direito'
+            );
+            await act(async () => {
+              closeXBtn.click();
+              await new Promise((r) => setTimeout(r, 40));
+            });
+            assert.strictEqual(
+              document.querySelector('[data-details-dialog="true"]'),
+              null,
+              '[12.26-a] Clicar no botão X deve fechar o modal MovieDetails'
+            );
+            assert.strictEqual(
+              getActiveMainScroll().scrollTop,
+              220,
+              '[12.26-a] Fechar MovieDetails pelo botão X no Início deve preservar scrollTop=220'
+            );
+            assertSameElement(
+              document.activeElement,
+              inicioMovieCard,
+              '[12.26-a] Fechar MovieDetails pelo botão X no Início deve restaurar foco ao cartão de origem'
+            );
+
+            // -----------------------------------------------------------------
+            // 2) Abrir MovieDetails na vitrine de Filmes, validar metadados, 2 colunas,
+            //    Títulos semelhantes, Sobre [nome do filme], D-Pad completo e clique no backdrop
+            // -----------------------------------------------------------------
+            const navMoviesBtn = stage1Container.querySelector<HTMLButtonElement>(
+              'button[data-header-nav-id="movies"]'
+            )!;
+            await act(async () => {
+              navMoviesBtn.focus();
+              navMoviesBtn.click();
+              await new Promise((r) => setTimeout(r, 50));
+            });
+
+            const moviesShowcaseMain = getActiveMainScroll();
+            moviesShowcaseMain.scrollTop = 180;
+            const protetorCard = Array.from(
+              stage1Container.querySelectorAll<HTMLElement>('[data-showcase-card="true"]')
+            ).find((el) => el.getAttribute('aria-label') === 'O Protetor: Capítulo Final')!;
+            assert(
+              protetorCard !== null,
+              '[12.26-a] Cartão "O Protetor: Capítulo Final" deve estar montado na vitrine de Filmes'
+            );
+
+            await act(async () => {
+              protetorCard.focus();
+              protetorCard.click();
+              await new Promise((r) => setTimeout(r, 50));
+            });
+
+            const activeDialog = document.querySelector<HTMLElement>('[data-details-dialog="true"]')!;
+            const modalScrollEl = activeDialog.querySelector<HTMLElement>(
+              '[data-scroll-container="true"]'
+            )!;
+            const primaryCtaBtn = activeDialog.querySelector<HTMLButtonElement>(
+              'button[data-movie-primary-cta="true"]'
+            )!;
+            const favBtn = activeDialog.querySelector<HTMLButtonElement>(
+              'button[data-movie-favorite-btn="true"]'
+            )!;
+
+            assert(
+              primaryCtaBtn !== null && primaryCtaBtn.textContent?.includes('Assistir'),
+              '[12.26-a] Sem progresso salvo (>30s), o botão principal deve exibir "Assistir"'
+            );
+            assert.strictEqual(
+              activeDialog.querySelector('[data-movie-progress-bar="true"]'),
+              null,
+              '[12.26-a] Sem progresso salvo, barra de progresso NÃO deve ser exibida'
+            );
+            assertSameElement(
+              document.activeElement,
+              primaryCtaBtn,
+              '[12.26-a] Ao abrir MovieDetails, foco inicial deve estar no botão principal Assistir'
+            );
+
+            // Validar metadados em 2 colunas e ausência de dados falsos
+            const metaLineEl = activeDialog.querySelector<HTMLElement>('[data-movie-meta-line="true"]')!;
+            const sideCreditsEl = activeDialog.querySelector<HTMLElement>(
+              '[data-movie-side-credits="true"]'
+            )!;
+            assert(
+              metaLineEl !== null &&
+                metaLineEl.textContent?.includes('2023') &&
+                metaLineEl.textContent?.includes('1h 49min') &&
+                metaLineEl.textContent?.includes('★ 8.9'),
+              `[12.26-a] Linha técnica esquerda deve exibir ano (2023), duração formatada (1h 49min) e avaliação real (★ 8.9). Obteve: "${metaLineEl?.textContent}"`
+            );
+            assert(
+              !activeDialog.textContent?.includes('Relevância') &&
+                !activeDialog.textContent?.includes('Áudio Espacial'),
+              '[12.26-a] Modal NUNCA deve exibir "% Relevância" ou selos fictícios não fornecidos pelo Xtream'
+            );
+            assert(
+              sideCreditsEl !== null &&
+                sideCreditsEl.textContent?.includes('Elenco:') &&
+                sideCreditsEl.textContent?.includes('Denzel Washington') &&
+                sideCreditsEl.textContent?.includes('Gêneros:') &&
+                sideCreditsEl.textContent?.includes('Filmes de ação e aventura') &&
+                sideCreditsEl.textContent?.includes('Direção:') &&
+                sideCreditsEl.textContent?.includes('Antoine Fuqua'),
+              '[12.26-a] Coluna direita deve exibir Elenco, Gêneros e Direção reais'
+            );
+
+            // Validar seção Títulos semelhantes (5 outros filmes na mesma categoria cat_acao_1226, sem o filme atual 910001)
+            const similarGridEl = activeDialog.querySelector<HTMLElement>(
+              '[data-similar-movies-grid="true"]'
+            )!;
+            assert(
+              similarGridEl !== null,
+              '[12.26-a] Seção "Títulos semelhantes" deve ser renderizada quando há filmes da mesma categoria/gênero'
+            );
+            const similarCards = Array.from(
+              similarGridEl.querySelectorAll<HTMLElement>('[data-similar-movie-card="true"]')
+            );
+            assert.strictEqual(
+              similarCards.length,
+              5,
+              '[12.26-a] Títulos semelhantes deve listar os 5 outros filmes de ação do catálogo, excluindo o atual e o documentário'
+            );
+            assert(
+              similarCards.every((c) => c.getAttribute('data-similar-movie-id') !== '910001'),
+              '[12.26-a] Títulos semelhantes NUNCA deve incluir o próprio filme atual (910001)'
+            );
+
+            // Validar seção Sobre [nome do filme]
+            const aboutSectionEl = activeDialog.querySelector<HTMLElement>(
+              '[data-about-movie-section="true"]'
+            )!;
+            assert(
+              aboutSectionEl !== null &&
+                aboutSectionEl.textContent?.includes('Sobre O Protetor: Capítulo Final') &&
+                aboutSectionEl.textContent?.includes('Antoine Fuqua') &&
+                aboutSectionEl.textContent?.includes('1h 49min'),
+              '[12.26-a] Seção inferior "Sobre O Protetor: Capítulo Final" deve exibir ficha técnica completa'
+            );
+
+            // Validar navegação D-Pad completa dentro do modal:
+            // Assistir -> ArrowRight -> Favoritar -> ArrowLeft -> Assistir -> ArrowUp -> Botão X -> ArrowDown -> Assistir
+            await stepSearchDpadKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              favBtn,
+              '[12.26-a] ArrowRight a partir de Assistir deve focar o botão circular Favoritar'
+            );
+            await stepSearchDpadKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              primaryCtaBtn,
+              '[12.26-a] ArrowLeft a partir de Favoritar deve voltar ao botão Assistir'
+            );
+            await stepSearchDpadKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              activeDialog.querySelector('button[data-details-close="true"]'),
+              '[12.26-a] ArrowUp a partir de Assistir deve alcançar o botão X de fechar no topo'
+            );
+            await stepSearchDpadKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              primaryCtaBtn,
+              '[12.26-a] ArrowDown a partir do botão X deve retornar à linha de ações principais (Assistir)'
+            );
+
+            // Assistir -> ArrowDown -> Sinopse -> ArrowDown -> Títulos semelhantes (linha 0, col 0)
+            // -> ArrowRight (col 1) -> ArrowDown (linha 1, col 1) -> ArrowDown -> Sobre [nome do filme]
+            await stepSearchDpadKey('ArrowDown');
+            const synopsisFocusEl = activeDialog.querySelector<HTMLElement>(
+              '[data-synopsis-focus="true"]'
+            )!;
+            assertSameElement(
+              document.activeElement,
+              synopsisFocusEl,
+              '[12.26-a] ArrowDown a partir de Assistir deve focar a sinopse'
+            );
+
+            await stepSearchDpadKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              similarCards[0],
+              '[12.26-a] ArrowDown a partir da sinopse deve entrar no 1º card de Títulos semelhantes (índice 0)'
+            );
+            await stepSearchDpadKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              similarCards[1],
+              '[12.26-a] ArrowRight em Títulos semelhantes deve focar o 2º card da 1ª linha (índice 1)'
+            );
+            await stepSearchDpadKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              similarCards[4],
+              '[12.26-a] ArrowDown na coluna 1 da 1ª linha de Títulos semelhantes (3 cols) deve focar o card da 2ª linha na mesma coluna (índice 4)'
+            );
+            await stepSearchDpadKey('ArrowDown');
+            const aboutFocusEl = activeDialog.querySelector<HTMLElement>(
+              '[data-about-movie-focus="true"]'
+            )!;
+            assertSameElement(
+              document.activeElement,
+              aboutFocusEl,
+              '[12.26-a] ArrowDown na última linha de Títulos semelhantes deve alcançar a seção inferior "Sobre O Protetor: Capítulo Final"'
+            );
+
+            // Simular modal rolado para o fundo (scrollTop = 480) e subir de volta até Assistir (que deve zerar scrollTop = 0)
+            modalScrollEl.scrollTop = 480;
+            await stepSearchDpadKey('ArrowUp');
+            assert(
+              similarGridEl.contains(document.activeElement),
+              '[12.26-a] ArrowUp a partir de "Sobre" deve retornar à última linha de Títulos semelhantes'
+            );
+            await stepSearchDpadKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              similarCards[0],
+              '[12.26-a] ArrowUp na 2ª linha de Títulos semelhantes deve subir para a 1ª linha'
+            );
+            await stepSearchDpadKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              synopsisFocusEl,
+              '[12.26-a] ArrowUp na 1ª linha de Títulos semelhantes deve retornar à sinopse'
+            );
+            await stepSearchDpadKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              primaryCtaBtn,
+              '[12.26-a] ArrowUp a partir da sinopse deve retornar ao botão principal Assistir'
+            );
+            assert.strictEqual(
+              modalScrollEl.scrollTop,
+              0,
+              '[12.26-a] Retornar ao botão Assistir no topo do modal deve zerar modalScrollEl.scrollTop = 0'
+            );
+
+            // -----------------------------------------------------------------
+            // 3) Trocar de filme clicando em um card de "Títulos semelhantes" (in-place, sem empilhar modais)
+            // -----------------------------------------------------------------
+            modalScrollEl.scrollTop = 320;
+            const secondMovieSimCard = similarCards.find(
+              (c) => c.getAttribute('data-similar-movie-id') === '910002'
+            )!;
+            await act(async () => {
+              secondMovieSimCard.click();
+              await new Promise((r) => setTimeout(r, 50));
+            });
+
+            assert.strictEqual(
+              document.querySelectorAll('[data-details-dialog="true"]').length,
+              1,
+              '[12.26-a] Clicar em Título semelhante NÃO deve empilhar múltiplos modais'
+            );
+            assert.strictEqual(
+              modalScrollEl.scrollTop,
+              0,
+              '[12.26-a] Trocar para um título semelhante deve reposicionar o scroll do modal no topo (0)'
+            );
+            assert(
+              activeDialog.querySelector('h1')?.textContent?.includes('Meu Nome é Vingança'),
+              '[12.26-a] O título do modal deve atualizar para o filme semelhante selecionado ("Meu Nome é Vingança")'
+            );
+            assert(
+              activeDialog.textContent?.includes('Cosimo Gomez') &&
+                activeDialog.textContent?.includes('1h 32min'),
+              '[12.26-a] Os metadados e direção devem atualizar para o filme semelhante selecionado'
+            );
+
+            // Fechar clicando no backdrop externo e confirmar que o foco volta para o cartão ORIGINAL da vitrine ("O Protetor") e scrollTop=180
+            const currentBackdrop = document.querySelector<HTMLElement>(
+              '[data-details-backdrop="true"]'
+            )!;
+            await act(async () => {
+              currentBackdrop.dispatchEvent(
+                new (windowInstance as any).MouseEvent('click', {
+                  bubbles: true,
+                  cancelable: true,
+                })
+              );
+              await new Promise((r) => setTimeout(r, 40));
+            });
+            assert.strictEqual(
+              document.querySelector('[data-details-dialog="true"]'),
+              null,
+              '[12.26-a] Clicar no backdrop externo deve fechar o modal MovieDetails'
+            );
+            assert.strictEqual(
+              getActiveMainScroll().scrollTop,
+              180,
+              '[12.26-a] Fechar após navegar por Títulos semelhantes deve preservar o scrollTop=180 original da vitrine'
+            );
+            assertSameElement(
+              document.activeElement,
+              protetorCard,
+              '[12.26-a] Fechar após navegar por Títulos semelhantes deve restaurar o foco ao cartão original que abriu o modal'
+            );
+
+            // -----------------------------------------------------------------
+            // 4) Progresso salvo (>30s): botão "Continuar", barra de progresso e submodal "Continuar Assistindo?"
+            //    + Favoritar / Desfavoritar e erro de persistência
+            // -----------------------------------------------------------------
+            recordPlaybackPosition(cycleGSearchCreds as any, {
+              id: 910001,
+              type: 'movie',
+              positionSec: 1500, // 25 min
+            });
+
+            await act(async () => {
+              protetorCard.focus();
+              protetorCard.click();
+              await new Promise((r) => setTimeout(r, 50));
+            });
+
+            const dialogWithProgress = document.querySelector<HTMLElement>(
+              '[data-details-dialog="true"]'
+            )!;
+            const continueCtaBtn = dialogWithProgress.querySelector<HTMLButtonElement>(
+              'button[data-movie-primary-cta="true"]'
+            )!;
+            const progressBarEl = dialogWithProgress.querySelector<HTMLElement>(
+              '[data-movie-progress-bar="true"]'
+            )!;
+            assert(
+              continueCtaBtn.textContent?.includes('Continuar'),
+              '[12.26-a] Com progresso > 30s (1500s), o botão principal deve exibir "Continuar"'
+            );
+            assert(
+              progressBarEl !== null && progressBarEl.textContent?.includes('25 de 109min'),
+              `[12.26-a] Barra de progresso deve exibir "25 de 109min". Obteve: "${progressBarEl?.textContent}"`
+            );
+
+            // Testar Favoritar e Desfavoritar no modal
+            const modalFavBtn = dialogWithProgress.querySelector<HTMLButtonElement>(
+              'button[data-movie-favorite-btn="true"]'
+            )!;
+            assert.strictEqual(
+              modalFavBtn.getAttribute('title'),
+              'Adicionar aos Favoritos',
+              '[12.26-a] Filme inicialmente não favoritado deve ter title="Adicionar aos Favoritos"'
+            );
+            await act(async () => {
+              modalFavBtn.click();
+            });
+            assert.strictEqual(
+              modalFavBtn.getAttribute('title'),
+              'Remover dos Favoritos',
+              '[12.26-a] Clicar em Favoritar deve adicionar o filme aos favoritos'
+            );
+
+            // Clicar em Continuar -> deve abrir submodal "Continuar Assistindo?"
+            await act(async () => {
+              continueCtaBtn.click();
+              await new Promise((r) => setTimeout(r, 30));
+            });
+            const resumeSubModal = dialogWithProgress.querySelector<HTMLElement>(
+              '[data-resume-modal="true"]'
+            )!;
+            assert(
+              resumeSubModal !== null &&
+                resumeSubModal.textContent?.includes('Continuar Assistindo?') &&
+                resumeSubModal.textContent?.includes('Retomar de 25 min'),
+              '[12.26-a] Clicar em Continuar deve abrir o submodal "Continuar Assistindo?" com "Retomar de 25 min"'
+            );
+
+            // Pressionar Escape com submodal aberto deve fechar APENAS o submodal (BACK_PRIORITY.SUB_MODAL) e manter MovieDetails aberto
+            await act(async () => {
+              windowInstance.dispatchEvent(
+                new (windowInstance as any).KeyboardEvent('keydown', {
+                  key: 'Escape',
+                  bubbles: true,
+                  cancelable: true,
+                })
+              );
+              await new Promise((r) => setTimeout(r, 30));
+            });
+            assert.strictEqual(
+              dialogWithProgress.querySelector('[data-resume-modal="true"]'),
+              null,
+              '[12.26-a] 1º Escape deve fechar o submodal de retomada'
+            );
+            assert(
+              document.querySelector('[data-details-dialog="true"]') !== null,
+              '[12.26-a] 1º Escape no submodal NÃO deve fechar MovieDetails'
+            );
+
+            // Abrir submodal novamente e clicar em "Assistir do Início" -> deve limpar progresso e abrir player em startAt=0
+            await act(async () => {
+              continueCtaBtn.click();
+              await new Promise((r) => setTimeout(r, 30));
+            });
+            const restartBtn = Array.from(
+              dialogWithProgress.querySelectorAll<HTMLButtonElement>(
+                '[data-resume-modal="true"] button'
+              )
+            ).find((b) => b.textContent?.includes('Assistir do Início'))!;
+            await act(async () => {
+              restartBtn.click();
+              await new Promise((r) => setTimeout(r, 50));
+            });
+            assert(
+              document.querySelector('[data-player-container="true"]') !== null,
+              '[12.26-a] Clicar em "Assistir do Início" deve abrir o VideoPlayer'
+            );
+            // Fechar VideoPlayer com Escape
+            await act(async () => {
+              windowInstance.dispatchEvent(
+                new (windowInstance as any).KeyboardEvent('keydown', {
+                  key: 'Escape',
+                  bubbles: true,
+                  cancelable: true,
+                })
+              );
+            });
+            await waitForCondition(
+              () => document.querySelector('[data-player-container="true"]') === null,
+              1200,
+              '[12.26-a] Fechar VideoPlayer após Assistir do Início'
+            );
+            // Agora o progresso foi zerado, então o botão principal deve mostrar "Assistir"
+            assert(
+              continueCtaBtn.textContent?.includes('Assistir'),
+              '[12.26-a] Após "Assistir do Início", o progresso salvo é limpo e o botão volta para "Assistir"'
+            );
+
+            // Fechar MovieDetails com Escape
+            await act(async () => {
+              windowInstance.dispatchEvent(
+                new (windowInstance as any).KeyboardEvent('keydown', {
+                  key: 'Escape',
+                  bubbles: true,
+                  cancelable: true,
+                })
+              );
+              await new Promise((r) => setTimeout(r, 40));
+            });
+            assert.strictEqual(
+              document.querySelector('[data-details-dialog="true"]'),
+              null,
+              '[12.26-a] Escape deve fechar MovieDetails'
+            );
+
+            // -----------------------------------------------------------------
+            // 5) Abrir MovieDetails a partir de Favoritos (FavoritesView)
+            // -----------------------------------------------------------------
+            const navFavBtn = stage1Container.querySelector<HTMLButtonElement>(
+              'button[data-header-nav-id="favorites"]'
+            )!;
+            await act(async () => {
+              navFavBtn.focus();
+              navFavBtn.click();
+              await new Promise((r) => setTimeout(r, 80));
+            });
+            await waitForCondition(
+              () =>
+                stage1Container.querySelector(
+                  '[data-nav-item="true"][aria-label="O Protetor: Capítulo Final"]'
+                ) !== null,
+              1200,
+              '[12.26-a] Filme favoritado deve aparecer em Favoritos'
+            );
+            const favCardEl = stage1Container.querySelector<HTMLElement>(
+              '[data-nav-item="true"][aria-label="O Protetor: Capítulo Final"]'
+            )!;
+            assert(
+              favCardEl !== null,
+              '[12.26-a] Filme favoritado deve aparecer em Favoritos'
+            );
+            await act(async () => {
+              favCardEl.click();
+              await new Promise((r) => setTimeout(r, 50));
+            });
+            assert(
+              document.querySelector('[data-details-dialog="true"]') !== null,
+              '[12.26-a] Clicar no filme em Favoritos deve abrir o novo MovieDetails modal'
+            );
+            await act(async () => {
+              windowInstance.dispatchEvent(
+                new (windowInstance as any).KeyboardEvent('keydown', {
+                  key: 'Escape',
+                  bubbles: true,
+                  cancelable: true,
+                })
+              );
+              await new Promise((r) => setTimeout(r, 40));
+            });
+
+            // -----------------------------------------------------------------
+            // 6) Abrir MovieDetails a partir de Categoria filtrada ("Documentários Raros")
+            //    e validar fallback sem backdrop, sem semelhantes, sem campos ausentes e erro de getVodInfo
+            // -----------------------------------------------------------------
+            const navMoviesBtn2 = stage1Container.querySelector<HTMLButtonElement>(
+              'button[data-header-nav-id="movies"]'
+            )!;
+            await act(async () => {
+              navMoviesBtn2.focus();
+              navMoviesBtn2.click();
+              await new Promise((r) => setTimeout(r, 50));
+            });
+            const catTriggerEl = stage1Container.querySelector<HTMLButtonElement>(
+              'button[data-categories-trigger="true"]'
+            )!;
+            await act(async () => {
+              catTriggerEl.click();
+            });
+            const docCatOption = stage1Container.querySelector<HTMLButtonElement>(
+              'button[data-category-id="cat_doc_unico_1226"]'
+            )!;
+            await act(async () => {
+              docCatOption.click();
+              await new Promise((r) => setTimeout(r, 40));
+            });
+
+            const docCardEl = stage1Container.querySelector<HTMLElement>(
+              '[data-nav-grid="true"] [data-virtual-index="0"]'
+            )!;
+            await act(async () => {
+              docCardEl.focus();
+              docCardEl.click();
+              await new Promise((r) => setTimeout(r, 50));
+            });
+
+            const docDialog = document.querySelector<HTMLElement>('[data-details-dialog="true"]')!;
+            assert(
+              docDialog.querySelector('[data-movie-hero-fallback="true"]') !== null,
+              '[12.26-a] Filme sem backdrop e sem capa deve renderizar o header escuro de fallback elegante'
+            );
+            assert.strictEqual(
+              docDialog.querySelector('[data-similar-movies-section="true"]'),
+              null,
+              '[12.26-a] Filme sem títulos semelhantes reais no catálogo deve omitir a seção "Títulos semelhantes"'
+            );
+            assert.strictEqual(
+              docDialog.querySelector('[data-movie-rating="true"]'),
+              null,
+              '[12.26-a] Avaliação "0" deve ser omitida sem exibir estrela falsa'
+            );
+
+            // Validar responsividade do MovieDetails em Mobile (390x844) e Android TV (961x541 @ 50%..125%)
+            await act(async () => {
+              (windowInstance as any).innerWidth = 390;
+              (windowInstance as any).innerHeight = 844;
+              windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+            });
+            assert(
+              docDialog.querySelector('button[data-details-close="true"]') !== null &&
+                docDialog.querySelector('button[data-movie-primary-cta="true"]') !== null,
+              '[12.26-a] Em Mobile 390x844, botão X e botão principal devem continuar visíveis e acessíveis'
+            );
+
+            document.documentElement.setAttribute('data-display-mode', 'tv');
+            await act(async () => {
+              (windowInstance as any).innerWidth = 961;
+              (windowInstance as any).innerHeight = 541;
+              windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+            });
+            for (const tvScale of ['0.5', '0.85', '0.9', '1', '1.25']) {
+              document.documentElement.style.setProperty('--nc-ui-scale', tvScale);
+              assert(
+                docDialog.classList.contains('nc-tv-details-dialog') &&
+                  docDialog.querySelector('.nc-tv-details-title') !== null,
+                `[12.26-a] Em Android TV 961x541 @ ${Number(tvScale) * 100}%, modal deve aplicar classes adaptativas de TV`
+              );
+            }
+            document.documentElement.removeAttribute('data-display-mode');
+            document.documentElement.style.removeProperty('--nc-ui-scale');
+            await act(async () => {
+              (windowInstance as any).innerWidth = 1280;
+              (windowInstance as any).innerHeight = 720;
+              windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+            });
+
+            // Fechar modal do documentário e testar estado de erro de getVodInfo ("Ops, algo deu errado" + "Reproduzir mesmo assim")
+            await act(async () => {
+              windowInstance.dispatchEvent(
+                new (windowInstance as any).KeyboardEvent('keydown', {
+                  key: 'Escape',
+                  bubbles: true,
+                  cancelable: true,
+                })
+              );
+              await new Promise((r) => setTimeout(r, 40));
+            });
+
+            vodInfoShouldFail = true;
+            await act(async () => {
+              docCardEl.focus();
+              docCardEl.click();
+              await new Promise((r) => setTimeout(r, 50));
+            });
+            const errDialog = document.querySelector<HTMLElement>('[data-details-dialog="true"]')!;
+            assert(
+              errDialog.textContent?.includes('Ops, algo deu errado') &&
+                errDialog.textContent?.includes('Reproduzir mesmo assim'),
+              '[12.26-a] Quando getVodInfo falha, o modal deve apresentar o estado de erro amigável com "Reproduzir mesmo assim"'
+            );
+            vodInfoShouldFail = false;
+
+            await act(async () => {
+              windowInstance.dispatchEvent(
+                new (windowInstance as any).KeyboardEvent('keydown', {
+                  key: 'Escape',
+                  bubbles: true,
+                  cancelable: true,
+                })
+              );
+              await new Promise((r) => setTimeout(r, 40));
+            });
+
+            console.log(
+              '✅ [12.26-a] Etapa 3.1 (Reformulação dos Detalhes de Filmes + DetailsModalShell) validada com sucesso nos 18 cenários!'
+            );
+          }
         } finally {
           useDelayedSeriesCategories = false;
           (windowInstance as any).innerWidth = prevInnerWStage1;

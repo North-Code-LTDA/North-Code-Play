@@ -20,7 +20,7 @@
     "android:open": "node tooling/android/prepare-android.mjs --skip-web-build --open"
   },
   "dependencies": {
-    "@capacitor/android": "^8.0.0",
+    "@capacitor/android": "8.6.0",
     "@capacitor/app": "^8.0.0",
     "@capacitor/core": "^8.0.0",
     "@fontsource/inter": "^5.1.0",
