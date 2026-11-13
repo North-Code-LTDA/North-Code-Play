@@ -29,7 +29,6 @@ import {
   buildEpgCacheKeys,
   resolveNowPlayingProgram,
   LIVE_SHOWCASE_ROW_WINDOW_SIZE,
-  computeLiveShowcaseRowBounds,
   EPG_CLOCK_UPDATE_INTERVAL_MS,
   getLiveEpgClockNowMs,
   subscribeLiveEpgClockForTest,
@@ -62,6 +61,148 @@ export function setLiveFallbackTimeoutMsForTest(ms: number | null): void {
   liveFallbackTimeoutOverrideMs = ms;
 }
 
+const SHOWCASE_SCROLL_HYSTERESIS_PX = 24;
+
+function setElementScrollTopImmediate(el: HTMLElement, targetScrollTop: number): void {
+  const next = Math.max(0, targetScrollTop);
+  const prevBehavior = el.style?.scrollBehavior ?? '';
+  try {
+    if (el.style) {
+      el.style.scrollBehavior = 'auto';
+    }
+    if (typeof el.scrollTo === 'function') {
+      try {
+        el.scrollTo({ top: next, behavior: 'instant' as ScrollBehavior });
+      } catch {
+        el.scrollTo({ top: next, behavior: 'auto' });
+      }
+    }
+    el.scrollTop = next;
+  } catch {
+    el.scrollTop = next;
+  } finally {
+    if (el.style) {
+      if (prevBehavior) {
+        el.style.scrollBehavior = prevBehavior;
+      } else {
+        el.style.removeProperty('scroll-behavior');
+      }
+    }
+  }
+}
+
+function measureShowcaseRowVisualTop(
+  containerEl: HTMLElement | null,
+  mainEl: HTMLElement | null,
+  rowIndex: number
+): number | null {
+  if (!containerEl || !mainEl || rowIndex < 0) return null;
+  const targetEl =
+    containerEl.querySelector<HTMLElement>(
+      `[data-scroll-block="true"][data-showcase-row-index="${rowIndex}"]`
+    ) ||
+    containerEl
+      .querySelector<HTMLElement>(`[data-home-row-index="${rowIndex}"]`)
+      ?.closest<HTMLElement>('[data-scroll-block="true"]') ||
+    containerEl.querySelector<HTMLElement>(`[data-home-row-index="${rowIndex}"]`);
+  if (!targetEl) return null;
+  const mainRect = mainEl.getBoundingClientRect();
+  const rowRect = targetEl.getBoundingClientRect();
+  if (
+    (rowRect.height > 0 || rowRect.top !== 0 || rowRect.bottom !== 0) &&
+    typeof rowRect.top === 'number' &&
+    typeof mainRect.top === 'number'
+  ) {
+    return rowRect.top - mainRect.top;
+  }
+  const offsetTop = (targetEl as any).offsetTop;
+  if (typeof offsetTop === 'number' && offsetTop > 0) {
+    return offsetTop - (mainEl.scrollTop || 0);
+  }
+  return null;
+}
+
+function estimateTitleLineCount(
+  title: string,
+  availableWidthPx: number,
+  fontSizePx: number
+): number {
+  const trimmed = (title || '').trim();
+  if (!trimmed) return 1;
+  const safeWidth = Math.max(120, availableWidthPx);
+  const avgCharWidth = Math.max(8, fontSizePx * 0.68);
+  const maxCharsPerLine = Math.max(8, Math.floor(safeWidth / avgCharWidth));
+  const words = trimmed.split(/\s+/);
+  let lines = 1;
+  let currentLineChars = 0;
+
+  for (const word of words) {
+    const wordLen = word.length;
+    if (currentLineChars === 0) {
+      if (wordLen <= maxCharsPerLine) {
+        currentLineChars = wordLen;
+      } else {
+        const extraLines = Math.ceil(wordLen / maxCharsPerLine) - 1;
+        lines += extraLines;
+        currentLineChars = wordLen % maxCharsPerLine || maxCharsPerLine;
+      }
+    } else if (currentLineChars + 1 + wordLen <= maxCharsPerLine) {
+      currentLineChars += 1 + wordLen;
+    } else {
+      lines += 1;
+      if (wordLen <= maxCharsPerLine) {
+        currentLineChars = wordLen;
+      } else {
+        const extraLines = Math.ceil(wordLen / maxCharsPerLine) - 1;
+        lines += extraLines;
+        currentLineChars = wordLen % maxCharsPerLine || maxCharsPerLine;
+      }
+    }
+  }
+  return Math.max(1, lines);
+}
+
+function estimateLiveShowcaseRowSlotHeight(title: string, viewportWidth: number): number {
+  const safeVw = viewportWidth > 0 ? viewportWidth : 1280;
+
+  let isTvMode = false;
+  let tvScale = 85;
+  if (typeof document !== 'undefined' && document.documentElement) {
+    isTvMode = document.documentElement.getAttribute('data-display-mode') === 'tv';
+    const inlineScale = parseFloat(
+      document.documentElement.style.getPropertyValue('--nc-ui-scale') || ''
+    );
+    if (Number.isFinite(inlineScale) && inlineScale > 0) {
+      tvScale = inlineScale * 100;
+    }
+  }
+
+  let cardHeightPx: number;
+  let headingFontSizePx: number;
+
+  if (isTvMode) {
+    const clampedScale = Math.max(0.5, Math.min(1.25, tvScale / 100));
+    const remPx = 16 * clampedScale;
+    cardHeightPx = 8.75 * remPx;
+    headingFontSizePx = Math.min(
+      1.5 * remPx,
+      Math.max(1.125 * remPx, 0.98 * remPx + 0.0065 * safeVw)
+    );
+  } else {
+    cardHeightPx = safeVw >= 768 ? 140 : safeVw >= 640 ? 132 : 116;
+    headingFontSizePx = Math.min(24, Math.max(18, 15.68 + 0.0065 * safeVw));
+  }
+
+  const horizontalPadPx = safeVw >= 768 ? 80 : safeVw >= 640 ? 48 : 32;
+  const availableTitleWidthPx = Math.max(160, safeVw - horizontalPadPx);
+  const titleLines = estimateTitleLineCount(title, availableTitleWidthPx, headingFontSizePx);
+  const headingLineHeightPx = headingFontSizePx * 1.25;
+  const headingHeightPx = titleLines * headingLineHeightPx;
+
+  // mb-4 (16px) + pt-4 (16px) + pb-8 (32px) + pb-6 (24px) = 88px vertical chrome
+  return Math.round(headingHeightPx + cardHeightPx + 88);
+}
+
 /**
  * Selects the next channel variant stream to attempt.
  * - In 'auto' mode: strictly follows SD -> HD -> FHD -> 4K priority (lowest to highest resolution),
@@ -85,7 +226,8 @@ export function selectChannelVariantForAttempt(
   // 1. Manual mode handling
   if (targetMode !== 'auto') {
     const selectedVariant = group.variants.find(
-      (v) => String(v.streamId) === targetMode || v.label === targetMode || v.resolution === targetMode
+      (v) =>
+        String(v.streamId) === targetMode || v.label === targetMode || v.resolution === targetMode
     );
 
     const targetResolution = selectedVariant
@@ -412,8 +554,20 @@ export const LiveTvView = React.memo(function LiveTvView({
   const [isCategoriesMenuOpen, setIsCategoriesMenuOpen] = useState(false);
   const [isRetryingDomain, setIsRetryingDomain] = useState(false);
 
-  // Active Hero playback & variant states
+  // Active Hero playback, sliding docked preview & variant states
   const [selectedGroup, setSelectedGroup] = useState<LiveChannelGroup | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState<boolean>(false);
+  const isPreviewOpenRef = useRef<boolean>(false);
+  isPreviewOpenRef.current = isPreviewOpen;
+
+  const [isHeroScrolledOutOfView, setIsHeroScrolledOutOfView] = useState<boolean>(false);
+  const isHeroScrolledOutOfViewRef = useRef<boolean>(false);
+  isHeroScrolledOutOfViewRef.current = isHeroScrolledOutOfView;
+
+  const [heroSlotHeightPx, setHeroSlotHeightPx] = useState<number>(470);
+  const heroSlotHeightRef = useRef<number>(470);
+  const [dockTopPx, setDockTopPx] = useState<number>(112);
+
   const [activeVariantStream, setActiveVariantStream] = useState<any | null>(null);
   const [selectedResolutionMode, setSelectedResolutionMode] = useState<'auto' | string>('auto');
   const [attemptTrigger, setAttemptTrigger] = useState(0);
@@ -443,22 +597,46 @@ export const LiveTvView = React.memo(function LiveTvView({
   const heroWasExplicitlyActivatedRef = useRef<boolean>(false);
   const consumedIntentRequestIdRef = useRef<number | null>(null);
   const prevAccountPrefixRef = useRef<string | null>(null);
+  const lastActivatedCardRef = useRef<HTMLButtonElement | null>(null);
 
-  // Scroll & showcase vertical windowing refs
+  // Scroll & showcase vertical windowing refs (matching CatalogShowcaseView)
   const viewRootRef = useRef<HTMLDivElement>(null);
   const mainContainerRef = useRef<HTMLElement>(null);
+  const heroSlotRef = useRef<HTMLDivElement>(null);
   const categoriesTriggerRef = useRef<HTMLButtonElement>(null);
   const categoriesMenuRef = useRef<HTMLDivElement>(null);
   const showcaseRowsContainerRef = useRef<HTMLDivElement | null>(null);
   const registeredShowcaseContainerRef = useRef<HTMLDivElement | null>(null);
   const rowWindowStartRef = useRef<number>(0);
   const [rowWindowStart, setRowWindowStart] = useState(0);
+  rowWindowStartRef.current = rowWindowStart;
   const measuredRowHeightsRef = useRef<Map<number, number>>(new Map());
-  const defaultEstimatedRowHeightRef = useRef<number>(216);
-  const showcaseRowsOffsetTopRef = useRef<number>(420);
+  const measuredRowsStartOffsetRef = useRef<number | null>(null);
   const isDpadShowcaseNavActiveRef = useRef<boolean>(false);
   const isProgrammaticRowShiftRef = useRef<boolean>(false);
   const lastManualScrollTopRef = useRef<number | null>(null);
+
+  const [viewportWidth, setViewportWidth] = useState<number>(() =>
+    typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 1280
+  );
+  const liveViewportWidth =
+    typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : viewportWidth;
+  const lastMeasuredViewportWidthRef = useRef<number>(liveViewportWidth);
+  if (lastMeasuredViewportWidthRef.current !== liveViewportWidth) {
+    lastMeasuredViewportWidthRef.current = liveViewportWidth;
+    measuredRowHeightsRef.current.clear();
+    measuredRowsStartOffsetRef.current = null;
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => {
+      const nextW = window.innerWidth > 0 ? window.innerWidth : 1280;
+      setViewportWidth((prev) => (prev === nextW ? prev : nextW));
+    };
+    window.addEventListener('resize', handleResize, { passive: true });
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const accountPrefix = useMemo(() => {
     if (!credentials?.serverUrl && !credentials?.username) return '';
@@ -554,6 +732,11 @@ export const LiveTvView = React.memo(function LiveTvView({
     setEpgCacheVersion((v) => v + 1);
     heroWasExplicitlyActivatedRef.current = false;
     consumedIntentRequestIdRef.current = null;
+    lastActivatedCardRef.current = null;
+    isPreviewOpenRef.current = false;
+    setIsPreviewOpen(false);
+    isHeroScrolledOutOfViewRef.current = false;
+    setIsHeroScrolledOutOfView(false);
     setSelectedGroup(null);
     setActiveVariantStream(null);
     setSelectedResolutionMode('auto');
@@ -568,6 +751,7 @@ export const LiveTvView = React.memo(function LiveTvView({
     rowWindowStartRef.current = 0;
     setRowWindowStart(0);
     measuredRowHeightsRef.current.clear();
+    measuredRowsStartOffsetRef.current = null;
   }, [credentials, accountPrefix]);
 
   useEffect(() => {
@@ -674,7 +858,7 @@ export const LiveTvView = React.memo(function LiveTvView({
         key: 'nc_recent',
         title: 'Assistidos Recentemente',
         groups: recentGroups,
-        virtualize: recentGroups.length > 18,
+        virtualize: true,
       });
     }
 
@@ -683,7 +867,7 @@ export const LiveTvView = React.memo(function LiveTvView({
         key: 'nc_fav',
         title: 'Canais Favoritos',
         groups: favoriteGroups,
-        virtualize: favoriteGroups.length > 18,
+        virtualize: true,
       });
     }
 
@@ -708,7 +892,7 @@ export const LiveTvView = React.memo(function LiveTvView({
         key: `cat_${catId}`,
         title: formatCategoryLabel(cat.category_name, 'live'),
         groups,
-        virtualize: groups.length > 18,
+        virtualize: true,
       });
     }
 
@@ -723,7 +907,7 @@ export const LiveTvView = React.memo(function LiveTvView({
             key: 'all_channels',
             title: 'Canais Ao Vivo',
             groups: allGrps,
-            virtualize: allGrps.length > 18,
+            virtualize: true,
           });
         }
       }
@@ -735,7 +919,9 @@ export const LiveTvView = React.memo(function LiveTvView({
   const totalShowcaseRows = showcaseRowDefinitions.length;
   const shouldVirtualizeShowcaseRows =
     !isGridMode && totalShowcaseRows > LIVE_SHOWCASE_ROW_WINDOW_SIZE;
-  const maxRowWindowStart = Math.max(0, totalShowcaseRows - LIVE_SHOWCASE_ROW_WINDOW_SIZE);
+  const maxRowWindowStart = shouldVirtualizeShowcaseRows
+    ? Math.max(0, totalShowcaseRows - LIVE_SHOWCASE_ROW_WINDOW_SIZE)
+    : 0;
   const effectiveRowWindowStart = shouldVirtualizeShowcaseRows
     ? Math.max(0, Math.min(rowWindowStart, maxRowWindowStart))
     : 0;
@@ -786,7 +972,9 @@ export const LiveTvView = React.memo(function LiveTvView({
       targetMode: string,
       attemptedSet: Set<string | number>
     ): any | null => {
-      const successfulId = group ? sessionSuccessfulVariantsRef.current.get(group.groupId) : undefined;
+      const successfulId = group
+        ? sessionSuccessfulVariantsRef.current.get(group.groupId)
+        : undefined;
       return selectChannelVariantForAttempt(group, targetMode, attemptedSet, successfulId);
     },
     []
@@ -863,45 +1051,133 @@ export const LiveTvView = React.memo(function LiveTvView({
     [credentials, pickVariantForGroup]
   );
 
-  // Smoothly scroll Hero into view ONLY when user was already scrolled down when activating a channel
-  const scrollHeroIntoViewIfScrolledDown = useCallback(() => {
-    const mainEl = mainContainerRef.current;
-    if (!mainEl) return;
-    if ((mainEl.scrollTop || 0) > 20) {
-      if (typeof mainEl.scrollTo === 'function') {
-        try {
-          mainEl.scrollTo({ top: 0, behavior: 'smooth' });
-        } catch {
-          mainEl.scrollTop = 0;
-        }
-      } else {
-        mainEl.scrollTop = 0;
-      }
-    }
-  }, []);
-
-  // Explicit activation of a channel card (mouse click, touch tap, Enter/Space)
+  // Explicit activation of a channel card (mouse click, touch tap, Enter/Space):
+  // - NEVER scrolls the page back to the top or shifts category scrollTop / row scrollLeft.
+  // - 1st activation: selects channel and opens preview (in top Hero or sliding dock if scrolled down).
+  // - 2nd consecutive activation on same channel while preview is open: expands to fullscreen.
+  // - Activation on same channel after sliding preview was collapsed: reopens preview first.
   const handleActivateGroup = useCallback(
-    (group: LiveChannelGroup) => {
+    (group: LiveChannelGroup, cardEl?: HTMLButtonElement | null) => {
       if (!group) return;
       heroWasExplicitlyActivatedRef.current = true;
 
-      if (selectedGroup && selectedGroup.groupId === group.groupId && !miniPlayerError && miniPlayerUrl) {
+      if (cardEl) {
+        lastActivatedCardRef.current = cardEl;
+        if (typeof document !== 'undefined' && document.activeElement !== cardEl) {
+          try {
+            cardEl.focus({ preventScroll: true });
+          } catch {}
+        }
+      }
+
+      const mainEl = mainContainerRef.current;
+      const currentScrollTop = mainEl ? mainEl.scrollTop || 0 : 0;
+      const threshold = Math.max(180, Math.round(heroSlotHeightRef.current * 0.55));
+      const isScrolledOut = currentScrollTop > threshold;
+      if (isHeroScrolledOutOfViewRef.current !== isScrolledOut) {
+        isHeroScrolledOutOfViewRef.current = isScrolledOut;
+        setIsHeroScrolledOutOfView(isScrolledOut);
+      }
+      if (mainEl) {
+        const mRect = mainEl.getBoundingClientRect();
+        if (mRect.top > 0) {
+          setDockTopPx(Math.round(mRect.top));
+        }
+      }
+
+      // Estado 3: 2nd consecutive activation on the SAME channel while preview is open -> expand fullscreen immediately
+      if (
+        selectedGroup &&
+        selectedGroup.groupId === group.groupId &&
+        isPreviewOpenRef.current &&
+        !miniPlayerError &&
+        miniPlayerUrl
+      ) {
         setFullscreenRequestTrigger((prev) => prev + 1);
         return;
       }
 
+      // Estado 5 -> Estado 2: Re-activating the SAME channel after its preview was collapsed -> reopen preview & resume playback
+      if (selectedGroup && selectedGroup.groupId === group.groupId && !isPreviewOpenRef.current) {
+        isPreviewOpenRef.current = true;
+        setIsPreviewOpen(true);
+        startVariantAttempt(
+          group,
+          selectedResolutionMode,
+          activeVariantStreamRef.current || undefined
+        );
+        return;
+      }
+
+      // Estado 2: 1st activation of a channel -> select channel, open preview, preserve scrollTop/scrollLeft & card focus
+      isPreviewOpenRef.current = true;
+      setIsPreviewOpen(true);
       setSelectedGroup(group);
       setSelectedResolutionMode('auto');
       attemptedStreamIdsRef.current.clear();
       startVariantAttempt(group, 'auto');
-      scrollHeroIntoViewIfScrolledDown();
     },
-    [selectedGroup, miniPlayerError, miniPlayerUrl, startVariantAttempt, scrollHeroIntoViewIfScrolledDown]
+    [
+      selectedGroup,
+      miniPlayerError,
+      miniPlayerUrl,
+      selectedResolutionMode,
+      startVariantAttempt,
+    ]
   );
 
-  // Note: On normal entry (no initialChannelIntent), LiveTvView remains in the neutral Hero state
-  // until the user explicitly activates a channel card (click, tap, or Enter/OK).
+  // Close sliding dock explicitly (e.g., close button or arrow navigation while docked)
+  const handleCloseDock = useCallback(() => {
+    if (!isPreviewOpenRef.current) return;
+    isPreviewOpenRef.current = false;
+    setIsPreviewOpen(false);
+    if (fallbackTimeoutRef.current) {
+      clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = null;
+    }
+  }, []);
+
+  // Estado 4: Pressing any directional arrow key while the sliding docked preview is open
+  // collapses the sliding preview AND lets the same arrow key move focus to the neighboring card/category.
+  useEffect(() => {
+    const onKeyDownCapture = (e: KeyboardEvent) => {
+      if (
+        e.key !== 'ArrowLeft' &&
+        e.key !== 'ArrowRight' &&
+        e.key !== 'ArrowUp' &&
+        e.key !== 'ArrowDown'
+      ) {
+        return;
+      }
+      if (!isHeroScrolledOutOfViewRef.current || !isPreviewOpenRef.current) {
+        return;
+      }
+      if (
+        typeof document !== 'undefined' &&
+        document.querySelector('[data-focus-scope="modal"]') !== null
+      ) {
+        return;
+      }
+      // Collapse sliding preview without consuming the arrow key so spatialNav advances focus in the same keystroke
+      isPreviewOpenRef.current = false;
+      try {
+        flushSync(() => {
+          setIsPreviewOpen(false);
+        });
+      } catch {
+        setIsPreviewOpen(false);
+      }
+      if (fallbackTimeoutRef.current) {
+        clearTimeout(fallbackTimeoutRef.current);
+        fallbackTimeoutRef.current = null;
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDownCapture, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDownCapture, true);
+    };
+  }, []);
 
   // Consume launch intent from Home ("Canais Ao Vivo")
   useEffect(() => {
@@ -919,6 +1195,8 @@ export const LiveTvView = React.memo(function LiveTvView({
     consumedIntentRequestIdRef.current = initialChannelIntent.requestId;
     onConsumeChannelIntent?.(initialChannelIntent.requestId);
     heroWasExplicitlyActivatedRef.current = true;
+    isPreviewOpenRef.current = true;
+    setIsPreviewOpen(true);
 
     const rawStreamId = initialChannelIntent.streamId;
     const targetIdStr =
@@ -964,6 +1242,8 @@ export const LiveTvView = React.memo(function LiveTvView({
       if (mainContainerRef.current) {
         mainContainerRef.current.scrollTop = 0;
       }
+      isHeroScrolledOutOfViewRef.current = false;
+      setIsHeroScrolledOutOfView(false);
       return;
     }
 
@@ -1017,6 +1297,8 @@ export const LiveTvView = React.memo(function LiveTvView({
     (variant: any | 'auto') => {
       if (!selectedGroup) return;
       heroWasExplicitlyActivatedRef.current = true;
+      isPreviewOpenRef.current = true;
+      setIsPreviewOpen(true);
       attemptedStreamIdsRef.current.clear();
 
       if (variant === 'auto') {
@@ -1034,6 +1316,8 @@ export const LiveTvView = React.memo(function LiveTvView({
   const handleExpandFullscreen = useCallback(() => {
     if (!selectedGroup) return;
     heroWasExplicitlyActivatedRef.current = true;
+    isPreviewOpenRef.current = true;
+    setIsPreviewOpen(true);
     setFullscreenRequestTrigger((prev) => prev + 1);
   }, [selectedGroup]);
 
@@ -1092,18 +1376,40 @@ export const LiveTvView = React.memo(function LiveTvView({
       setMiniPlayerError('Não foi possível carregar nenhuma versão do canal. ' + (errorMsg || ''));
       setMiniPlayerLoading(false);
     },
-    [activeVariantStream, selectedGroup, selectedResolutionMode, pickVariantForGroup, startVariantAttempt]
+    [
+      activeVariantStream,
+      selectedGroup,
+      selectedResolutionMode,
+      pickVariantForGroup,
+      startVariantAttempt,
+    ]
   );
 
   const handleRetryPlayback = useCallback(() => {
     if (!selectedGroup) return;
     heroWasExplicitlyActivatedRef.current = true;
+    isPreviewOpenRef.current = true;
+    setIsPreviewOpen(true);
     attemptedStreamIdsRef.current.clear();
     startVariantAttempt(selectedGroup, selectedResolutionMode);
   }, [selectedGroup, selectedResolutionMode, startVariantAttempt]);
 
   const handleBackFromHeroPlayer = useCallback(() => {
-    // Embedded Hero stays mounted; if fullscreen was exited VideoPlayer restores focus cleanly
+    // Restore focus to the active channel card first (preserving the user's position in the grid),
+    // falling back to the Hero play button only if no channel card is connected.
+    const selectedCard =
+      (lastActivatedCardRef.current && lastActivatedCardRef.current.isConnected
+        ? lastActivatedCardRef.current
+        : null) ||
+      viewRootRef.current?.querySelector<HTMLButtonElement>(
+        'button[data-live-channel-selected="true"]'
+      );
+    if (selectedCard && selectedCard.isConnected) {
+      try {
+        selectedCard.focus({ preventScroll: true });
+        return;
+      } catch {}
+    }
     if (getNavMode() === 'remote') {
       const heroPlayBtn = viewRootRef.current?.querySelector<HTMLButtonElement>(
         'button[data-live-hero-play="true"]'
@@ -1177,76 +1483,255 @@ export const LiveTvView = React.memo(function LiveTvView({
     [epgData, epgClockNowMs]
   );
 
-  // Showcase vertical row measurement & synchronization (prevents layout shifts during scrolling)
-  const measureMountedShowcaseGeometry = useCallback(() => {
-    const rowsContainer = showcaseRowsContainerRef.current;
+  // Showcase vertical row measurement & synchronization (identical architecture to CatalogShowcaseView)
+  const getRowSlotHeight = useCallback(
+    (rowIndex: number): number => {
+      const measured = measuredRowHeightsRef.current.get(rowIndex);
+      if (typeof measured === 'number' && measured > 0) {
+        return measured;
+      }
+      const rowDef = showcaseRowDefinitions[rowIndex];
+      return estimateLiveShowcaseRowSlotHeight(rowDef?.title || '', liveViewportWidth);
+    },
+    [showcaseRowDefinitions, liveViewportWidth]
+  );
+
+  const measureMountedShowcaseGeometry = useCallback((): void => {
     const mainEl = mainContainerRef.current;
-    if (!rowsContainer || !mainEl) return;
+    const rowsContainerEl = showcaseRowsContainerRef.current;
+    if (!mainEl) return;
 
-    const mainTop = mainEl.getBoundingClientRect().top;
-    const containerTop = rowsContainer.getBoundingClientRect().top;
-    if (Number.isFinite(mainTop) && Number.isFinite(containerTop)) {
-      showcaseRowsOffsetTopRef.current = Math.max(
-        0,
-        containerTop - mainTop + (mainEl.scrollTop || 0)
+    const mainRect = mainEl.getBoundingClientRect();
+    if (mainRect.top > 0) {
+      setDockTopPx(Math.round(mainRect.top));
+    }
+
+    if (heroSlotRef.current && !isHeroScrolledOutOfViewRef.current) {
+      const hRect = heroSlotRef.current.getBoundingClientRect();
+      const rawHeroH = hRect.height || heroSlotRef.current.offsetHeight;
+      if (rawHeroH > 120) {
+        const roundedH = Math.round(rawHeroH);
+        heroSlotHeightRef.current = roundedH;
+        setHeroSlotHeightPx((prev) => (Math.abs(prev - roundedH) > 1 ? roundedH : prev));
+      }
+    }
+
+    if (!rowsContainerEl) return;
+
+    const scrollTop = mainEl.scrollTop || 0;
+    const topSpacerEl = rowsContainerEl.querySelector<HTMLElement>(
+      '[data-showcase-row-spacer="top"]'
+    );
+    const currentTopSpacerPx = topSpacerEl
+      ? parseFloat(topSpacerEl.style.height || '0') || 0
+      : 0;
+
+    const allBlocks = rowsContainerEl.querySelectorAll<HTMLElement>('[data-scroll-block="true"]');
+
+    if (allBlocks.length > 0) {
+      const firstBlock = allBlocks[0];
+      const firstRect = firstBlock.getBoundingClientRect();
+      if (firstRect.height > 0 && typeof firstRect.top === 'number') {
+        const inferredStart = Math.round(
+          firstRect.top - mainRect.top + scrollTop - currentTopSpacerPx
+        );
+        if (inferredStart >= 0) {
+          measuredRowsStartOffsetRef.current = inferredStart;
+        }
+      }
+    }
+
+    if (measuredRowsStartOffsetRef.current === null) {
+      const containerRect = rowsContainerEl.getBoundingClientRect();
+      if (containerRect.height > 0 && typeof containerRect.top === 'number') {
+        const offsetFromContainer = Math.round(containerRect.top - mainRect.top + scrollTop);
+        if (offsetFromContainer >= 0) {
+          measuredRowsStartOffsetRef.current = offsetFromContainer;
+        }
+      }
+    }
+
+    for (let i = 0; i < allBlocks.length; i++) {
+      const scrollBlock = allBlocks[i];
+      const rIdx = parseInt(
+        scrollBlock.getAttribute('data-showcase-row-index') ||
+          scrollBlock.querySelector('[data-home-row-index]')?.getAttribute('data-home-row-index') ||
+          String(i),
+        10
       );
-    }
-
-    const rowWrappers = rowsContainer.querySelectorAll<HTMLElement>('[data-showcase-row-index]');
-    const measuredValues: number[] = [];
-    rowWrappers.forEach((wrapper) => {
-      const idx = parseInt(wrapper.getAttribute('data-showcase-row-index') || '-1', 10);
-      if (isNaN(idx) || idx < 0) return;
-      const rect = wrapper.getBoundingClientRect();
-      const h = rect.height || wrapper.offsetHeight;
-      if (h > 40) {
-        measuredRowHeightsRef.current.set(idx, h);
-        measuredValues.push(h);
-      }
-    });
-
-    if (measuredValues.length > 0) {
-      const avg = measuredValues.reduce((sum, v) => sum + v, 0) / measuredValues.length;
-      if (avg > 40) {
-        defaultEstimatedRowHeightRef.current = Math.round(avg);
+      if (isNaN(rIdx) || rIdx < 0) continue;
+      const rect = scrollBlock.getBoundingClientRect();
+      const rawHeight = rect.height > 0 ? rect.height : scrollBlock.offsetHeight;
+      if (typeof rawHeight === 'number' && rawHeight > 0) {
+        measuredRowHeightsRef.current.set(rIdx, Math.round(rawHeight));
       }
     }
   }, []);
 
-  const getEstimatedRowHeight = useCallback((rowIdx: number): number => {
-    return measuredRowHeightsRef.current.get(rowIdx) ?? defaultEstimatedRowHeightRef.current;
-  }, []);
+  useLayoutEffect(() => {
+    if (isGridMode || totalShowcaseRows === 0) return;
+    measureMountedShowcaseGeometry();
+  }, [
+    isGridMode,
+    totalShowcaseRows,
+    effectiveRowWindowStart,
+    effectiveRowWindowEnd,
+    liveViewportWidth,
+    measureMountedShowcaseGeometry,
+  ]);
 
   const computeShowcaseRowStartFromScroll = useCallback(
-    (scrollTop: number, curStart: number): number => {
+    (scrollTop: number, currentWindowStart?: number): number => {
       if (!shouldVirtualizeShowcaseRows || totalShowcaseRows <= LIVE_SHOWCASE_ROW_WINDOW_SIZE) {
         return 0;
       }
-      const rowsTop = Math.max(0, showcaseRowsOffsetTopRef.current);
-      if (scrollTop <= rowsTop) {
-        return 0;
-      }
-      const relTop = scrollTop - rowsTop;
-      let acc = 0;
-      let topVisibleIdx = 0;
+      const rowsStartOffsetPx =
+        measuredRowsStartOffsetRef.current ?? Math.max(320, heroSlotHeightRef.current + 16);
+      const relativeTop = Math.max(0, scrollTop - rowsStartOffsetPx);
+
+      const offsets = new Array<number>(totalShowcaseRows + 1);
+      offsets[0] = 0;
       for (let i = 0; i < totalShowcaseRows; i++) {
-        const h = getEstimatedRowHeight(i);
-        if (acc + h * 0.7 > relTop) {
-          topVisibleIdx = i;
-          break;
-        }
-        acc += h;
-        topVisibleIdx = i;
+        offsets[i + 1] = offsets[i] + getRowSlotHeight(i);
       }
 
-      const desired = Math.max(0, Math.min(maxRowWindowStart, topVisibleIdx - 2));
-      const curEnd = Math.min(totalShowcaseRows, curStart + LIVE_SHOWCASE_ROW_WINDOW_SIZE);
-      if (topVisibleIdx >= curStart + 1 && topVisibleIdx < curEnd - 2) {
-        return curStart;
+      const findRowAtOffset = (targetOffset: number): number => {
+        if (targetOffset <= 0) return 0;
+        let low = 0;
+        let high = totalShowcaseRows - 1;
+        while (low <= high) {
+          const mid = (low + high) >> 1;
+          if (offsets[mid + 1] <= targetOffset) {
+            low = mid + 1;
+          } else if (offsets[mid] > targetOffset) {
+            high = mid - 1;
+          } else {
+            return mid;
+          }
+        }
+        return Math.max(0, Math.min(totalShowcaseRows - 1, low));
+      };
+
+      const firstVisibleRow = findRowAtOffset(relativeTop);
+      const rawDesired = Math.max(0, Math.min(maxRowWindowStart, firstVisibleRow - 1));
+
+      if (typeof currentWindowStart !== 'number') {
+        return rawDesired;
       }
-      return desired;
+
+      const clampedCurrent = Math.max(0, Math.min(maxRowWindowStart, currentWindowStart));
+      if (rawDesired === clampedCurrent) {
+        return clampedCurrent;
+      }
+
+      if (rawDesired > clampedCurrent) {
+        const downRow = findRowAtOffset(
+          Math.max(0, relativeTop - SHOWCASE_SCROLL_HYSTERESIS_PX)
+        );
+        const downDesired = Math.max(0, Math.min(maxRowWindowStart, downRow - 1));
+        return Math.max(clampedCurrent, downDesired);
+      }
+
+      if (scrollTop <= 0) {
+        return 0;
+      }
+      const upRow = findRowAtOffset(relativeTop + SHOWCASE_SCROLL_HYSTERESIS_PX);
+      const upDesired = Math.max(0, Math.min(maxRowWindowStart, upRow - 1));
+      return Math.min(clampedCurrent, upDesired);
     },
-    [shouldVirtualizeShowcaseRows, totalShowcaseRows, maxRowWindowStart, getEstimatedRowHeight]
+    [shouldVirtualizeShowcaseRows, totalShowcaseRows, getRowSlotHeight, maxRowWindowStart]
+  );
+
+  // Shift showcase row window for D-Pad / programmatic restore while preserving the anchor row's
+  // visual position in the viewport via a single measured delta compensation pass.
+  const shiftShowcaseWindowWithAnchor = useCallback(
+    (desiredStart: number, preferredAnchorRowIndex?: number): boolean => {
+      const clampedDesired = Math.max(0, Math.min(maxRowWindowStart, desiredStart));
+      const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
+      if (clampedDesired === curStart) {
+        return false;
+      }
+      measureMountedShowcaseGeometry();
+
+      const curEnd = Math.min(totalShowcaseRows, curStart + LIVE_SHOWCASE_ROW_WINDOW_SIZE);
+      const nextEnd = Math.min(
+        totalShowcaseRows,
+        clampedDesired + LIVE_SHOWCASE_ROW_WINDOW_SIZE
+      );
+      const overlapStart = Math.max(curStart, clampedDesired);
+      const overlapEnd = Math.min(curEnd, nextEnd);
+
+      let anchorRowIdx = -1;
+      if (overlapStart < overlapEnd) {
+        if (
+          typeof preferredAnchorRowIndex === 'number' &&
+          preferredAnchorRowIndex >= overlapStart &&
+          preferredAnchorRowIndex < overlapEnd
+        ) {
+          anchorRowIdx = preferredAnchorRowIndex;
+        } else {
+          const activeEl =
+            typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
+          const focusedRowWrapper = activeEl?.closest<HTMLElement>('[data-home-row-index]');
+          const parsedFocusedRow = focusedRowWrapper?.hasAttribute('data-home-row-index')
+            ? parseInt(focusedRowWrapper.getAttribute('data-home-row-index') || '-1', 10)
+            : -1;
+          if (
+            !isNaN(parsedFocusedRow) &&
+            parsedFocusedRow >= overlapStart &&
+            parsedFocusedRow < overlapEnd
+          ) {
+            anchorRowIdx = parsedFocusedRow;
+          } else {
+            anchorRowIdx = overlapStart;
+          }
+        }
+      }
+
+      const mainEl = mainContainerRef.current;
+      const rowsContainerEl = showcaseRowsContainerRef.current;
+      const visualTopBefore =
+        anchorRowIdx >= 0
+          ? measureShowcaseRowVisualTop(rowsContainerEl, mainEl, anchorRowIdx)
+          : null;
+
+      isProgrammaticRowShiftRef.current = true;
+      rowWindowStartRef.current = clampedDesired;
+      try {
+        try {
+          flushSync(() => {
+            setRowWindowStart(clampedDesired);
+          });
+        } catch {
+          setRowWindowStart(clampedDesired);
+        }
+
+        measureMountedShowcaseGeometry();
+
+        if (anchorRowIdx >= 0 && visualTopBefore !== null && mainContainerRef.current) {
+          const visualTopAfter = measureShowcaseRowVisualTop(
+            showcaseRowsContainerRef.current,
+            mainContainerRef.current,
+            anchorRowIdx
+          );
+          if (visualTopAfter !== null) {
+            const delta = visualTopAfter - visualTopBefore;
+            if (Math.abs(delta) > 0.5) {
+              setElementScrollTopImmediate(
+                mainContainerRef.current,
+                Math.max(0, (mainContainerRef.current.scrollTop || 0) + delta)
+              );
+            }
+          }
+        }
+      } finally {
+        isProgrammaticRowShiftRef.current = false;
+      }
+      return true;
+    },
+    [maxRowWindowStart, totalShowcaseRows, measureMountedShowcaseGeometry]
   );
 
   const ensureShowcaseRowMounted = useCallback(
@@ -1255,13 +1740,21 @@ export const LiveTvView = React.memo(function LiveTvView({
       if (!shouldVirtualizeShowcaseRows || totalShowcaseRows <= LIVE_SHOWCASE_ROW_WINDOW_SIZE) {
         return false;
       }
-      const clampedTarget = Math.max(0, Math.min(totalShowcaseRows - 1, Math.floor(targetRowIndex)));
+      const clampedTarget = Math.max(
+        0,
+        Math.min(totalShowcaseRows - 1, Math.floor(targetRowIndex))
+      );
       const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
       const curEnd = Math.min(totalShowcaseRows, curStart + LIVE_SHOWCASE_ROW_WINDOW_SIZE);
 
       const hasTopMargin = curStart === 0 || clampedTarget >= curStart + 1;
       const hasBottomMargin = curEnd >= totalShowcaseRows || clampedTarget < curEnd - 1;
-      if (clampedTarget >= curStart && clampedTarget < curEnd && hasTopMargin && hasBottomMargin) {
+      if (
+        clampedTarget >= curStart &&
+        clampedTarget < curEnd &&
+        hasTopMargin &&
+        hasBottomMargin
+      ) {
         return false;
       }
 
@@ -1280,27 +1773,23 @@ export const LiveTvView = React.memo(function LiveTvView({
         desiredStart = clampedTarget - Math.floor(LIVE_SHOWCASE_ROW_WINDOW_SIZE / 2);
       }
 
-      const bounds = computeLiveShowcaseRowBounds(
-        totalShowcaseRows,
-        desiredStart,
-        LIVE_SHOWCASE_ROW_WINDOW_SIZE
-      );
-      if (bounds.start === curStart) return false;
+      desiredStart = Math.max(0, Math.min(maxRowWindowStart, desiredStart));
 
-      isProgrammaticRowShiftRef.current = true;
-      rowWindowStartRef.current = bounds.start;
-      try {
-        flushSync(() => {
-          setRowWindowStart(bounds.start);
-        });
-      } catch {
-        setRowWindowStart(bounds.start);
-      } finally {
-        isProgrammaticRowShiftRef.current = false;
-      }
-      return true;
+      const preferredAnchor =
+        typeof preserveRowIndex === 'number' &&
+        preserveRowIndex >= 0 &&
+        preserveRowIndex < totalShowcaseRows
+          ? preserveRowIndex
+          : clampedTarget;
+
+      return shiftShowcaseWindowWithAnchor(desiredStart, preferredAnchor);
     },
-    [shouldVirtualizeShowcaseRows, totalShowcaseRows, maxRowWindowStart]
+    [
+      shouldVirtualizeShowcaseRows,
+      totalShowcaseRows,
+      maxRowWindowStart,
+      shiftShowcaseWindowWithAnchor,
+    ]
   );
 
   const latestControllerRef = useRef({
@@ -1338,6 +1827,12 @@ export const LiveTvView = React.memo(function LiveTvView({
       }
       return;
     }
+    if (
+      registeredShowcaseContainerRef.current &&
+      registeredShowcaseContainerRef.current !== containerEl
+    ) {
+      unregisterShowcaseRowController(registeredShowcaseContainerRef.current);
+    }
     registerShowcaseRowController(containerEl, {
       totalRows: totalShowcaseRows,
       ensureRowMounted: ensureShowcaseRowMounted,
@@ -1345,40 +1840,73 @@ export const LiveTvView = React.memo(function LiveTvView({
     registeredShowcaseContainerRef.current = containerEl;
   }, [totalShowcaseRows, ensureShowcaseRowMounted]);
 
-  // Manual scroll listener syncing vertical showcase window cleanly
+  // Track whether the natural top Hero slot is scrolled out of view & sync showcase row window on manual scroll
   useEffect(() => {
     const mainEl = mainContainerRef.current;
-    if (!mainEl || isGridMode || !shouldVirtualizeShowcaseRows) {
-      isDpadShowcaseNavActiveRef.current = false;
-      lastManualScrollTopRef.current = null;
-      return;
-    }
+    if (!mainEl) return;
 
-    const releaseDpad = () => {
+    const releaseDpadScrollControl = () => {
       isDpadShowcaseNavActiveRef.current = false;
     };
-    const onKeyDown = (e: KeyboardEvent) => {
+
+    const onShowcaseKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        const activeEl = document.activeElement as HTMLElement | null;
+        const activeEl =
+          typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
         if (activeEl && mainEl.contains(activeEl)) {
           isDpadShowcaseNavActiveRef.current = true;
         }
       }
     };
-    const onScroll = () => {
+
+    const handleScroll = () => {
+      const currentScrollTop = Math.max(0, mainEl.scrollTop || 0);
+      const threshold = Math.max(180, Math.round(heroSlotHeightRef.current * 0.55));
+      const nextScrolledOut = currentScrollTop > threshold;
+
+      if (nextScrolledOut !== isHeroScrolledOutOfViewRef.current) {
+        isHeroScrolledOutOfViewRef.current = nextScrolledOut;
+        setIsHeroScrolledOutOfView(nextScrolledOut);
+        if (nextScrolledOut) {
+          // Estado 1: Scrolling down past the Hero naturally leaves the Hero out of view
+          // until the user explicitly activates a channel while scrolled down.
+          isPreviewOpenRef.current = false;
+          setIsPreviewOpen(false);
+          if (fallbackTimeoutRef.current) {
+            clearTimeout(fallbackTimeoutRef.current);
+            fallbackTimeoutRef.current = null;
+          }
+        } else if (selectedGroupRef.current) {
+          // Returning to the top of the page restores the top Hero preview
+          isPreviewOpenRef.current = true;
+          setIsPreviewOpen(true);
+        }
+      }
+
+      if (isGridMode || !shouldVirtualizeShowcaseRows) return;
       if (isProgrammaticRowShiftRef.current || isDpadShowcaseNavActiveRef.current) return;
+
       measureMountedShowcaseGeometry();
-      const curTop = Math.max(0, mainEl.scrollTop || 0);
-      const prevTop = lastManualScrollTopRef.current;
-      if (prevTop !== null && Math.abs(curTop - prevTop) < 0.5) return;
-      lastManualScrollTopRef.current = curTop;
+
+      const prevScrollTop = lastManualScrollTopRef.current;
+      if (prevScrollTop !== null && Math.abs(currentScrollTop - prevScrollTop) < 0.5) {
+        return;
+      }
+      lastManualScrollTopRef.current = currentScrollTop;
 
       const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
-      let nextStart = computeShowcaseRowStartFromScroll(curTop, curStart);
-      if (prevTop !== null) {
-        if (curTop > prevTop && nextStart < curStart) nextStart = curStart;
-        else if (curTop < prevTop && nextStart > curStart) nextStart = curStart;
+      let nextStart = computeShowcaseRowStartFromScroll(currentScrollTop, curStart);
+
+      if (prevScrollTop !== null) {
+        if (currentScrollTop > prevScrollTop && nextStart < curStart) {
+          nextStart = curStart;
+        } else if (currentScrollTop < prevScrollTop && nextStart > curStart) {
+          nextStart = curStart;
+        }
       }
+
       if (nextStart !== curStart) {
         rowWindowStartRef.current = nextStart;
         try {
@@ -1388,27 +1916,32 @@ export const LiveTvView = React.memo(function LiveTvView({
         } catch {
           setRowWindowStart(nextStart);
         }
+        measureMountedShowcaseGeometry();
       }
     };
 
-    mainEl.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('wheel', releaseDpad, { passive: true });
-    window.addEventListener('touchstart', releaseDpad, { passive: true });
-    window.addEventListener('pointerdown', releaseDpad, { passive: true });
-    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keydown', onShowcaseKeyDown, true);
+    mainEl.addEventListener('wheel', releaseDpadScrollControl, { passive: true });
+    mainEl.addEventListener('touchstart', releaseDpadScrollControl, { passive: true });
+    mainEl.addEventListener('touchmove', releaseDpadScrollControl, { passive: true });
+    mainEl.addEventListener('pointerdown', releaseDpadScrollControl, { passive: true });
+    mainEl.addEventListener('mousedown', releaseDpadScrollControl, { passive: true });
+    mainEl.addEventListener('scroll', handleScroll, { passive: true });
     return () => {
-      mainEl.removeEventListener('scroll', onScroll);
-      window.removeEventListener('wheel', releaseDpad);
-      window.removeEventListener('touchstart', releaseDpad);
-      window.removeEventListener('pointerdown', releaseDpad);
-      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('keydown', onShowcaseKeyDown, true);
+      mainEl.removeEventListener('wheel', releaseDpadScrollControl);
+      mainEl.removeEventListener('touchstart', releaseDpadScrollControl);
+      mainEl.removeEventListener('touchmove', releaseDpadScrollControl);
+      mainEl.removeEventListener('pointerdown', releaseDpadScrollControl);
+      mainEl.removeEventListener('mousedown', releaseDpadScrollControl);
+      mainEl.removeEventListener('scroll', handleScroll);
     };
   }, [
     isGridMode,
     shouldVirtualizeShowcaseRows,
     maxRowWindowStart,
-    measureMountedShowcaseGeometry,
     computeShowcaseRowStartFromScroll,
+    measureMountedShowcaseGeometry,
   ]);
 
   // Category dropdown selection
@@ -1422,6 +1955,8 @@ export const LiveTvView = React.memo(function LiveTvView({
         if (mainContainerRef.current) {
           mainContainerRef.current.scrollTop = 0;
         }
+        isHeroScrolledOutOfViewRef.current = false;
+        setIsHeroScrolledOutOfView(false);
         if (getNavMode() === 'remote' && categoriesTriggerRef.current) {
           setTimeout(() => {
             if (categoriesTriggerRef.current) focusElementSafely(categoriesTriggerRef.current);
@@ -1434,6 +1969,8 @@ export const LiveTvView = React.memo(function LiveTvView({
       if (mainContainerRef.current) {
         mainContainerRef.current.scrollTop = 0;
       }
+      isHeroScrolledOutOfViewRef.current = false;
+      setIsHeroScrolledOutOfView(false);
 
       if (
         catId !== 'nc_recent' &&
@@ -1480,9 +2017,31 @@ export const LiveTvView = React.memo(function LiveTvView({
     return () => window.removeEventListener('pointerdown', onPointerDown, true);
   }, [isCategoriesMenuOpen]);
 
+  // Keyboard navigation inside Categories menu (matching CatalogShowcaseView)
   const handleCategoriesMenuKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Tab') {
       setIsCategoriesMenuOpen(false);
+      return;
+    }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const menuEl = categoriesMenuRef.current;
+    if (!menuEl) return;
+    const items = Array.from<HTMLButtonElement>(
+      menuEl.querySelectorAll<HTMLButtonElement>('button[data-category-id]:not(:disabled)')
+    );
+    if (items.length === 0) return;
+    const active = document.activeElement as HTMLButtonElement | null;
+    const currentIdx = active ? items.indexOf(active) : -1;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.key === 'ArrowDown') {
+      const nextIdx = currentIdx < 0 ? 0 : Math.min(items.length - 1, currentIdx + 1);
+      focusElementSafely(items[nextIdx], 'down');
+    } else if (e.key === 'ArrowUp') {
+      const prevIdx = currentIdx <= 0 ? 0 : currentIdx - 1;
+      focusElementSafely(items[prevIdx], 'up');
     }
   }, []);
 
@@ -1515,6 +2074,8 @@ export const LiveTvView = React.memo(function LiveTvView({
         if (mainContainerRef.current) {
           mainContainerRef.current.scrollTop = 0;
         }
+        isHeroScrolledOutOfViewRef.current = false;
+        setIsHeroScrolledOutOfView(false);
         setTimeout(() => {
           if (categoriesTriggerRef.current && isElementFocusable(categoriesTriggerRef.current)) {
             focusElementSafely(categoriesTriggerRef.current);
@@ -1563,6 +2124,13 @@ export const LiveTvView = React.memo(function LiveTvView({
     loadingLive ||
     (liveCategoriesStatus === 'loading' && liveCategories.length === 0);
 
+  // Estado 5: When the Hero is scrolled out of view and the sliding preview is collapsed,
+  // suspend the embedded streamUrl so hidden background video does not decode indefinitely.
+  const isHeroDockedMode = Boolean(selectedGroup && isHeroScrolledOutOfView);
+  const isDockedPreviewVisible = Boolean(isHeroDockedMode && isPreviewOpen);
+  const effectiveStreamUrl =
+    isHeroScrolledOutOfView && !isPreviewOpen ? '' : miniPlayerUrl;
+
   return (
     <div
       ref={viewRootRef}
@@ -1579,14 +2147,14 @@ export const LiveTvView = React.memo(function LiveTvView({
         </div>
       )}
 
-      {/* Domain Top Bar with "TV ao Vivo" Title & "Categorias" Selector */}
+      {/* Domain Top Bar with "TV ao Vivo" Title & "Categorias" Selector (identical to CatalogShowcaseView) */}
       <div
         data-nav-zone="categories"
         data-showcase-categories-bar="true"
         className="relative z-30 shrink-0 px-4 sm:px-6 md:px-10 pt-3 pb-2 flex flex-wrap items-center justify-between gap-3 bg-nc-bg"
       >
         <div data-nav-row="true" className="flex flex-wrap items-center gap-3 sm:gap-4">
-          <h2 className="nc-section-title font-bold text-white tracking-tight">TV ao Vivo</h2>
+          <h1 className="nc-section-title font-bold text-white tracking-tight">TV ao Vivo</h1>
 
           <div className="relative">
             <button
@@ -1724,13 +2292,13 @@ export const LiveTvView = React.memo(function LiveTvView({
         data-scroll-container="true"
         data-nav-zone="content"
         style={{ overflowAnchor: 'none' }}
-        className="flex-1 bg-nc-bg overflow-y-auto h-full pb-16"
+        className="flex-1 bg-nc-bg overflow-y-auto h-full"
       >
         {(liveCategoriesError || liveError) && (
           <div
             role="status"
             data-domain-error="live"
-            className="mx-4 sm:mx-6 md:mx-10 mt-2 mb-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+            className="mx-4 sm:mx-6 md:mx-10 mt-3 mb-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
           >
             <div className="flex items-start sm:items-center gap-2.5">
               <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
@@ -1751,144 +2319,172 @@ export const LiveTvView = React.memo(function LiveTvView({
           </div>
         )}
 
-        {/* Live TV Hero Stage (always scrollable at top, never sticky) */}
-        <LiveTvHero
-          selectedGroup={selectedGroup}
-          activeVariantStream={activeVariantStream}
-          selectedResolutionMode={selectedResolutionMode}
-          serverUrl={credentials?.serverUrl}
-          streamUrl={miniPlayerUrl}
-          attemptTrigger={attemptTrigger}
-          fullscreenRequestTrigger={fullscreenRequestTrigger}
-          isLoadingPlayback={miniPlayerLoading}
-          playbackError={miniPlayerError}
-          nowPlaying={heroNowPlaying}
-          loadingEpg={loadingEpg}
-          epgError={epgError}
-          isFavorited={isGroupFavorited(selectedGroup)}
-          isCatalogLoading={isCatalogLoading && totalShowcaseRows === 0}
-          onExpandFullscreen={handleExpandFullscreen}
-          onRetryPlayback={handleRetryPlayback}
-          onBackFromFullscreen={handleBackFromHeroPlayer}
-          onPlaybackSuccess={handlePlaybackSuccess}
-          onPlaybackFinalError={handlePlaybackFinalError}
-          onSelectResolutionMode={handleSelectResolutionMode}
-          onToggleFavorite={handleToggleHeroFavorite}
-        />
-
-        {isGridMode ? (
-          /* Virtualized Grid for Explicit Category Filter OR Search Results */
-          <div className="px-4 sm:px-6 md:px-10 pt-2 pb-12">
-            <div className="mb-4 flex items-center justify-between gap-2">
-              <h2 className="nc-heading-view font-semibold text-white whitespace-normal break-words">
-                {hasSearch
-                  ? `Resultados em TV ao Vivo para "${searchQuery}"`
-                  : activeCategoryLabel || 'Canais'}
-              </h2>
-            </div>
-
-            {isCatalogLoading && displayedGridGroups.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-nc-text-secondary">
-                <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-3" />
-                <p className="nc-text-subtitle">Carregando canais...</p>
-              </div>
-            ) : displayedGridGroups.length === 0 ? (
-              <div className="text-center py-16 text-nc-text-secondary">
-                <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                <p className="nc-text-subtitle">
-                  {hasSearch
-                    ? `Nenhum canal encontrado para "${searchQuery}".`
-                    : activeCategoryId === 'nc_recent'
-                      ? 'Você ainda não assistiu a canais recentemente.'
-                      : activeCategoryId === 'nc_fav'
-                        ? 'Você ainda não adicionou canais aos favoritos.'
-                        : 'Nenhum canal encontrado nesta categoria.'}
-                </p>
-              </div>
-            ) : (
-              <LiveChannelGrid
-                groups={displayedGridGroups}
-                mainContainerRef={mainContainerRef}
-                resetKey={`live_${activeCategoryId ?? 'showcase'}_${normalizedQuery}`}
-                serverUrl={credentials?.serverUrl}
-                accountPrefix={accountPrefix}
-                selectedGroupId={selectedGroup?.groupId ?? null}
-                epgCache={epgCacheRef.current}
-                epgCacheVersion={epgCacheVersion}
-                referenceNowMs={epgClockNowMs}
-                onActivateGroup={handleActivateGroup}
-              />
-            )}
+        <div className="pb-16">
+          {/* Natural Top Hero Slot: preserves exact measured height when Hero docks so scrollTop never shifts */}
+          <div
+            ref={heroSlotRef}
+            data-live-hero-slot="true"
+            style={
+              isHeroDockedMode
+                ? { height: `${heroSlotHeightPx}px`, overflowAnchor: 'none' }
+                : { overflowAnchor: 'none' }
+            }
+            className="w-full shrink-0"
+          >
+            <LiveTvHero
+              selectedGroup={selectedGroup}
+              activeVariantStream={activeVariantStream}
+              selectedResolutionMode={selectedResolutionMode}
+              serverUrl={credentials?.serverUrl}
+              streamUrl={effectiveStreamUrl}
+              attemptTrigger={attemptTrigger}
+              fullscreenRequestTrigger={fullscreenRequestTrigger}
+              isLoadingPlayback={miniPlayerLoading}
+              playbackError={miniPlayerError}
+              nowPlaying={heroNowPlaying}
+              loadingEpg={loadingEpg}
+              epgError={epgError}
+              isFavorited={isGroupFavorited(selectedGroup)}
+              isCatalogLoading={isCatalogLoading && totalShowcaseRows === 0}
+              isDocked={isHeroDockedMode}
+              isDockedVisible={isDockedPreviewVisible}
+              dockTopPx={dockTopPx}
+              onCloseDock={handleCloseDock}
+              onExpandFullscreen={handleExpandFullscreen}
+              onRetryPlayback={handleRetryPlayback}
+              onBackFromFullscreen={handleBackFromHeroPlayer}
+              onPlaybackSuccess={handlePlaybackSuccess}
+              onPlaybackFinalError={handlePlaybackFinalError}
+              onSelectResolutionMode={handleSelectResolutionMode}
+              onToggleFavorite={handleToggleHeroFavorite}
+            />
           </div>
-        ) : (
-          /* Vertical Category Showcase Mode (Horizontal Carousels of Wide Channel Cards) */
-          <>
-            {isCatalogLoading && totalShowcaseRows === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-nc-text-secondary">
-                <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-3" />
-                <p className="nc-text-subtitle">Carregando canais...</p>
-              </div>
-            ) : totalShowcaseRows === 0 ? (
-              <div className="text-center py-16 text-nc-text-secondary px-6">
-                <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                <p className="nc-text-subtitle">Nenhum canal disponível no momento.</p>
-              </div>
-            ) : (
-              <div
-                ref={showcaseRowsContainerCallbackRef}
-                data-showcase-rows-container="true"
-                data-showcase-virtualized={shouldVirtualizeShowcaseRows ? 'true' : 'false'}
-                data-showcase-total-rows={totalShowcaseRows}
-                style={{ overflowAnchor: 'none' }}
-                className="mt-1 px-4 sm:px-6 md:px-10 relative z-20"
-              >
-                {showcaseRowDefinitions.map((row, rowIndex) => {
-                  const isMounted =
-                    rowIndex >= effectiveRowWindowStart && rowIndex < effectiveRowWindowEnd;
 
-                  return (
-                    <div
-                      key={row.key}
-                      data-scroll-block="true"
-                      data-showcase-row-key={row.key}
-                      data-showcase-row-index={rowIndex}
-                      className="pb-6"
-                      style={{ overflowAnchor: 'none' }}
-                    >
-                      {isMounted ? (
-                        <LiveChannelRow
-                          title={row.title}
-                          groups={row.groups}
-                          rowIndex={rowIndex}
-                          serverUrl={credentials?.serverUrl}
-                          accountPrefix={accountPrefix}
-                          selectedGroupId={selectedGroup?.groupId ?? null}
-                          epgCache={epgCacheRef.current}
-                          epgCacheVersion={epgCacheVersion}
-                          referenceNowMs={epgClockNowMs}
-                          virtualize={row.virtualize}
-                          onActivateGroup={handleActivateGroup}
-                        />
-                      ) : (
-                        <div className="w-full" data-showcase-unmounted-row={rowIndex}>
-                          <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">
-                            {row.title}
-                          </h2>
-                          <div
-                            className="flex flex-row overflow-hidden w-full gap-4 px-2 pb-8 pt-4 pointer-events-none select-none"
-                            aria-hidden="true"
-                          >
-                            <div className="nc-live-wide-card shrink-0 rounded-xl invisible" />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+          {isGridMode ? (
+            /* Virtualized Grid for Explicit Category Filter OR Search Results */
+            <div className="px-4 sm:px-6 md:px-10 pt-2 pb-12">
+              <div className="mb-4 flex items-center justify-between gap-2">
+                <h2 className="nc-subsection-title font-bold text-white whitespace-normal break-words">
+                  {hasSearch
+                    ? `Resultados em TV ao Vivo para "${searchQuery}"`
+                    : activeCategoryLabel || 'Canais'}
+                </h2>
               </div>
-            )}
-          </>
-        )}
+
+              {isCatalogLoading && displayedGridGroups.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-nc-text-secondary">
+                  <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
+                  <p className="nc-text-subtitle">Carregando canais...</p>
+                </div>
+              ) : displayedGridGroups.length === 0 ? (
+                <div className="text-center py-20 text-nc-text-secondary">
+                  <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                  <p className="nc-text-subtitle">
+                    {hasSearch
+                      ? `Nenhum canal encontrado para "${searchQuery}".`
+                      : activeCategoryId === 'nc_recent'
+                        ? 'Você ainda não assistiu a canais recentemente.'
+                        : activeCategoryId === 'nc_fav'
+                          ? 'Você ainda não adicionou canais aos favoritos.'
+                          : 'Nenhum canal encontrado nesta categoria.'}
+                  </p>
+                </div>
+              ) : (
+                <LiveChannelGrid
+                  groups={displayedGridGroups}
+                  mainContainerRef={mainContainerRef}
+                  resetKey={`live_${activeCategoryId ?? 'showcase'}_${normalizedQuery}`}
+                  serverUrl={credentials?.serverUrl}
+                  accountPrefix={accountPrefix}
+                  selectedGroupId={selectedGroup?.groupId ?? null}
+                  epgCache={epgCacheRef.current}
+                  epgCacheVersion={epgCacheVersion}
+                  referenceNowMs={epgClockNowMs}
+                  onActivateGroup={handleActivateGroup}
+                />
+              )}
+            </div>
+          ) : (
+            /* Vertical Category Showcase Mode (HorizontalRow Carousels of Wide Channel Cards) */
+            <>
+              {isCatalogLoading && totalShowcaseRows === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-nc-text-secondary">
+                  <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
+                  <p className="nc-text-subtitle">Carregando canais...</p>
+                </div>
+              ) : totalShowcaseRows === 0 ? (
+                <div className="text-center py-20 text-nc-text-secondary px-6">
+                  <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                  <p className="nc-text-subtitle">Nenhum canal disponível no momento.</p>
+                </div>
+              ) : (
+                <div
+                  ref={showcaseRowsContainerCallbackRef}
+                  data-showcase-rows-container="true"
+                  data-showcase-virtualized={shouldVirtualizeShowcaseRows ? 'true' : 'false'}
+                  data-showcase-total-rows={totalShowcaseRows}
+                  style={{ overflowAnchor: 'none' }}
+                  className="mt-2 sm:mt-4 px-4 sm:px-6 md:px-10 relative z-20"
+                >
+                  <div
+                    data-showcase-row-spacer="top"
+                    aria-hidden="true"
+                    style={{ height: '0px', overflowAnchor: 'none' }}
+                  />
+                  {showcaseRowDefinitions.map((row, rowIndex) => {
+                    const isMounted =
+                      rowIndex >= effectiveRowWindowStart && rowIndex < effectiveRowWindowEnd;
+
+                    return (
+                      <div
+                        key={row.key}
+                        data-scroll-block="true"
+                        data-showcase-row-key={row.key}
+                        data-showcase-row-index={rowIndex}
+                        className="pb-6"
+                        style={{ overflowAnchor: 'none' }}
+                      >
+                        {isMounted ? (
+                          <LiveChannelRow
+                            title={row.title}
+                            groups={row.groups}
+                            rowIndex={rowIndex}
+                            serverUrl={credentials?.serverUrl}
+                            accountPrefix={accountPrefix}
+                            selectedGroupId={selectedGroup?.groupId ?? null}
+                            epgCache={epgCacheRef.current}
+                            epgCacheVersion={epgCacheVersion}
+                            referenceNowMs={epgClockNowMs}
+                            virtualize={row.virtualize}
+                            scrollContainer={mainContainerRef.current}
+                            onActivateGroup={handleActivateGroup}
+                          />
+                        ) : (
+                          <div className="w-full group" data-showcase-unmounted-row={rowIndex}>
+                            <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">
+                              {row.title}
+                            </h2>
+                            <div
+                              className="flex flex-row overflow-hidden w-full gap-4 px-2 pb-8 pt-4 pointer-events-none select-none"
+                              aria-hidden="true"
+                            >
+                              <div className="nc-live-wide-card shrink-0 rounded-xl invisible" />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div
+                    data-showcase-row-spacer="bottom"
+                    aria-hidden="true"
+                    style={{ height: '0px', overflowAnchor: 'none' }}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </main>
     </div>
   );

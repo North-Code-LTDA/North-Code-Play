@@ -60,7 +60,14 @@ export interface HorizontalRowWindowState {
 }
 
 export function getHorizontalRowItemKey(item: any, fallbackIndex?: number): string {
-  const raw = item?.rowKey ?? item?.stream_id ?? item?.series_id ?? item?.id ?? fallbackIndex ?? 0;
+  const raw =
+    item?.rowKey ??
+    item?.groupId ??
+    item?.stream_id ??
+    item?.series_id ??
+    item?.id ??
+    fallbackIndex ??
+    0;
   return String(raw);
 }
 
@@ -172,7 +179,8 @@ export function setHorizontalScrollLeftImmediate(
 export function resolveCssRowMetrics(
   type: 'live' | 'vod' | 'series',
   displayMode: DisplayMode,
-  tvScale: number
+  tvScale: number,
+  cardVariant: 'default' | 'live-wide' = 'default'
 ): HorizontalRowMetrics {
   const isTvMode =
     displayMode === 'tv' ||
@@ -191,7 +199,14 @@ export function resolveCssRowMetrics(
     }
     const clampedScale = Math.max(0.5, Math.min(1.25, scaleRatio));
     const remPx = 16 * clampedScale;
-    const cardWidth = Math.round((type === 'live' ? 15.5 * remPx : 9.25 * remPx) * 100) / 100;
+    const cardWidth =
+      Math.round(
+        (cardVariant === 'live-wide'
+          ? 29.75 * remPx
+          : type === 'live'
+            ? 15.5 * remPx
+            : 9.25 * remPx) * 100
+      ) / 100;
     const gap = Math.round(1.0 * remPx * 100) / 100;
     const viewportW =
       typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 1120;
@@ -206,7 +221,20 @@ export function resolveCssRowMetrics(
   const viewportW =
     typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 1120;
   const isMd = viewportW >= 768;
-  const cardWidth = type === 'live' ? (isMd ? 288 : 256) : isMd ? 176 : 144;
+  const cardWidth =
+    cardVariant === 'live-wide'
+      ? isMd
+        ? 560
+        : viewportW >= 640
+          ? 464
+          : 304
+      : type === 'live'
+        ? isMd
+          ? 288
+          : 256
+        : isMd
+          ? 176
+          : 144;
   const gap = 16;
   return {
     rowWidth: viewportW,
@@ -314,14 +342,28 @@ export function computeHorizontalVirtualWindow({
   };
 }
 
-interface HorizontalRowProps {
+export interface HorizontalRowCustomCardRenderParams {
+  item: any;
+  index: number;
+  itemKey: string;
+  virtualize: boolean;
+  isAuthorized: boolean;
+  isFocused: boolean;
+  setCardRef: (el: HTMLElement | null) => void;
+  onFocusCard: () => void;
+  onBlurCard: () => void;
+}
+
+export interface HorizontalRowProps {
   title: string;
   items: any[];
   type: 'live' | 'vod' | 'series';
-  onItemClick: (item: any) => void;
+  onItemClick: (item: any, element?: HTMLElement) => void;
   rowIndex?: number;
   scrollContainer?: HTMLElement | null;
   virtualize?: boolean;
+  cardVariant?: 'default' | 'live-wide';
+  renderCardItem?: (params: HorizontalRowCustomCardRenderParams) => React.ReactNode;
 }
 
 export const HorizontalRow = React.memo(function HorizontalRow({
@@ -332,6 +374,8 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   rowIndex = 0,
   scrollContainer = null,
   virtualize = false,
+  cardVariant = 'default',
+  renderCardItem,
 }: HorizontalRowProps) {
   const rowWrapperRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -364,11 +408,11 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   const [focusedCardIndex, setFocusedCardIndex] = useState<number | null>(null);
 
   const metricsRef = useRef<HorizontalRowMetrics>(
-    resolveCssRowMetrics(type, displayMode, tvScale)
+    resolveCssRowMetrics(type, displayMode, tvScale, cardVariant)
   );
 
   const [windowState, setWindowState] = useState<HorizontalRowWindowState>(() => {
-    const initialCss = resolveCssRowMetrics(type, displayMode, tvScale);
+    const initialCss = resolveCssRowMetrics(type, displayMode, tvScale, cardVariant);
     if (!virtualize) {
       return {
         startIndex: 0,
@@ -401,7 +445,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   const windowStateRef = useRef<HorizontalRowWindowState>(windowState);
   windowStateRef.current = windowState;
 
-  const setCardElementRef = useCallback((idx: number, el: HTMLDivElement | null) => {
+  const setCardElementRef = useCallback((idx: number, el: HTMLElement | null) => {
     if (el) {
       cardElementsRef.current.set(idx, el);
     } else {
@@ -459,7 +503,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   const measureAndSyncWindow = useCallback(
     (pinnedRange?: { minIndex: number; maxIndex: number } | null): HorizontalVirtualWindowResult => {
       const rowEl = rowRef.current;
-      const cssMetrics = resolveCssRowMetrics(type, displayMode, tvScale);
+      const cssMetrics = resolveCssRowMetrics(type, displayMode, tvScale, cardVariant);
       let rowWidth = cssMetrics.rowWidth;
       let cardWidth = cssMetrics.cardWidth;
       let gap = cssMetrics.gap;
@@ -530,7 +574,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
             Math.abs(chosenBox1.width - 165) < 0.5 &&
             (rawMeasuredGap === null || Math.abs(rawMeasuredGap - 20) < 0.5);
           const useCssOverrideForTvMock =
-            isTvMode &&
+            (isTvMode || cardVariant === 'live-wide') &&
             isDefaultMockDimensions &&
             Math.abs(chosenBox1.width - cssMetrics.cardWidth) > 5;
 
@@ -564,7 +608,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
       applyWindowState(win, nextMetrics, false);
       return win;
     },
-    [type, displayMode, tvScale, applyWindowState]
+    [type, displayMode, tvScale, cardVariant, applyWindowState]
   );
 
   const clearPendingFocusRestore = useCallback(() => {
@@ -838,7 +882,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
         windowStateRef.current.leftSpacerPx !== 0 ||
         windowStateRef.current.rightSpacerPx !== 0
       ) {
-        const cssMetrics = resolveCssRowMetrics(type, displayMode, tvScale);
+        const cssMetrics = resolveCssRowMetrics(type, displayMode, tvScale, cardVariant);
         const fullState: HorizontalRowWindowState = {
           startIndex: 0,
           endIndex: items.length,
@@ -1262,6 +1306,20 @@ export const HorizontalRow = React.memo(function HorizontalRow({
               (isRowVerticallyVisible && horizontallyVisibleIndices.has(idx)) ||
               focusedCardIndex === idx;
 
+            if (renderCardItem) {
+              return renderCardItem({
+                item,
+                index: idx,
+                itemKey,
+                virtualize,
+                isAuthorized: isCardAuthorized,
+                isFocused: focusedCardIndex === idx,
+                setCardRef: (el) => setCardElementRef(idx, el),
+                onFocusCard: () => setFocusedCardIndex(idx),
+                onBlurCard: () => setFocusedCardIndex((prev) => (prev === idx ? null : prev)),
+              });
+            }
+
             return (
               <motion.div
                 key={itemKey}
@@ -1283,7 +1341,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                     } catch {}
                   }
                   pushFocusMemory(el);
-                  onItemClick(item);
+                  onItemClick(item, el);
                 }}
                 onFocus={() => setFocusedCardIndex(idx)}
                 onBlur={() => setFocusedCardIndex((prev) => (prev === idx ? null : prev))}

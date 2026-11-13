@@ -20070,7 +20070,10 @@ if (args[0] === 'add' && args[1] === 'android') {
             });
             assert.strictEqual(variantBtns[4].getAttribute('data-variant-active'), 'true', `[12.23][${testDisplayMode}] Clique em 4K ativa resolução 4K`);
 
-            // Problema B na UI: Simular rolagem abaixo de 20px e ativar explicitamente Canal 2 (cujo EPG contém apenas programas passados e futuros -> deve exibir Programação indisponível)
+            // Fase C (Ciclo 12.27-b): Simular rolagem abaixo do Hero (scrollTop = 260) e ativar explicitamente Canal 2:
+            // - NÃO deve rolar a página de volta ao topo (scrollTop permanece 260, smoothScrollTopCalled === false)
+            // - Deve manter o foco no cartão ativado (ch2Btn)
+            // - Deve abrir o preview deslizante no topo da área visível (data-live-hero-docked="true", data-live-preview-state="open")
             const mainScrollEl = liveEpgContainer.querySelector<HTMLElement>('main[data-scroll-container="true"]')!;
             assert(mainScrollEl, `[12.23][${testDisplayMode}] Container principal com rolagem deve existir`);
             mainScrollEl.scrollTop = 260;
@@ -20087,8 +20090,39 @@ if (args[0] === 'add' && args[1] === 'android') {
               ch2Btn.click();
               await new Promise((r) => setTimeout(r, 20));
             });
-            assert.strictEqual(smoothScrollTopCalled, true, `[12.23][${testDisplayMode}] Ao ativar novo canal estando rolado abaixo, rola suavemente para o Hero`);
+            assert.strictEqual(
+              smoothScrollTopCalled,
+              false,
+              `[12.23][${testDisplayMode}] Ao ativar canal estando rolado abaixo, NÃO deve rolar a página de volta para o topo`
+            );
+            assert.strictEqual(
+              mainScrollEl.scrollTop,
+              260,
+              `[12.23][${testDisplayMode}] O scrollTop da lista de categorias deve permanecer inalterado (260px)`
+            );
+            assertSameElement(
+              document.activeElement,
+              ch2Btn,
+              `[12.23][${testDisplayMode}] O foco deve permanecer no cartão de canal selecionado`
+            );
             assert.strictEqual(ch2Btn.getAttribute('data-live-channel-selected'), 'true', `[12.23][${testDisplayMode}] Canal 2 agora é o canal ativo`);
+            const dockedHeroEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-hero="true"]')!;
+            assert.strictEqual(
+              dockedHeroEl.getAttribute('data-live-hero-docked'),
+              'true',
+              `[12.23][${testDisplayMode}] Com scrollTop abaixo do Hero, 1ª ativação revela o preview deslizante (data-live-hero-docked="true")`
+            );
+            assert.strictEqual(
+              dockedHeroEl.getAttribute('data-live-preview-state'),
+              'open',
+              `[12.23][${testDisplayMode}] Estado do preview deslizante deve ser "open"`
+            );
+            assert.strictEqual(
+              liveEpgContainer.querySelectorAll('video').length,
+              1,
+              `[12.23][${testDisplayMode}] Deve existir apenas 1 instância de <video> no DOM`
+            );
+
             const emptyStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="empty"]');
             assert(
               emptyStateEl && emptyStateEl.textContent?.includes('Programação indisponível'),
@@ -20101,7 +20135,50 @@ if (args[0] === 'add' && args[1] === 'android') {
             );
             assert.strictEqual(liveEpgContainer.querySelector('[data-live-epg-progress="true"]'), null, `[12.23][${testDisplayMode}] Canal 2 sem programa ativo em nowMs não exibe barra de progresso`);
 
-            // Segundo clique no canal já ativo abre tela cheia preservando a mesma instância de <video>
+            // Estado 4 (Ciclo 12.27-b): Pressionar uma seta (ArrowRight) enquanto o preview deslizante está aberto:
+            // - Recolhe o preview deslizante (data-live-hero-docked="false", data-live-preview-state="collapsed")
+            // - A seta NÃO é consumida apenas para fechar: o foco avança normalmente para o Canal 3 na mesma tecla!
+            await dispatchArrowKey('ArrowRight');
+            assert.strictEqual(
+              dockedHeroEl.getAttribute('data-live-hero-docked'),
+              'false',
+              `[12.23][${testDisplayMode}] Pressionar seta com preview deslizante aberto deve recolher o painel (data-live-hero-docked="false")`
+            );
+            assert.strictEqual(
+              dockedHeroEl.getAttribute('data-live-preview-state'),
+              'collapsed',
+              `[12.23][${testDisplayMode}] Estado do preview após seta deve ser "collapsed"`
+            );
+            assertSameElement(
+              document.activeElement,
+              ch3Btn,
+              `[12.23][${testDisplayMode}] A seta pressionada com preview aberto avança o foco diretamente para o próximo cartão (Canal 3)`
+            );
+            assert.strictEqual(
+              mainScrollEl.scrollTop,
+              260,
+              `[12.23][${testDisplayMode}] Recolher o preview ao navegar com setas preserva scrollTop=260`
+            );
+
+            // Estado 5 -> Estado 2: Voltar o foco ao Canal 2 e ativar novamente com preview recolhido reabre o preview deslizante primeiro
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(document.activeElement, ch2Btn, `[12.23][${testDisplayMode}] ArrowLeft retorna o foco ao Canal 2`);
+            await act(async () => {
+              ch2Btn.click();
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            assert.strictEqual(
+              dockedHeroEl.getAttribute('data-live-hero-docked'),
+              'true',
+              `[12.23][${testDisplayMode}] Reativar o mesmo canal após o preview ter sido recolhido reabre o preview deslizante primeiro`
+            );
+            assert.strictEqual(
+              liveEpgContainer.querySelector('[data-player-container="true"][data-focus-scope="modal"]'),
+              null,
+              `[12.23][${testDisplayMode}] Reabrir preview recolhido não entra diretamente em tela cheia na 1ª ativação`
+            );
+
+            // Estado 3: Segunda ativação consecutiva no canal já ativo com preview aberto abre tela cheia preservando a mesma instância de <video>
             const currentVideoBeforeFs = liveEpgContainer.querySelector('video')!;
             await act(async () => {
               ch2Btn.click();
@@ -20109,7 +20186,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             });
             assert(
               liveEpgContainer.querySelector('[data-player-container="true"][data-focus-scope="modal"]') !== null,
-              `[12.23][${testDisplayMode}] 2º clique no canal ativo abre tela cheia`
+              `[12.23][${testDisplayMode}] 2º clique consecutivo no canal ativo com preview aberto abre tela cheia`
             );
             assertSameElement(
               liveEpgContainer.querySelector('video'),
@@ -20129,6 +20206,18 @@ if (args[0] === 'add' && args[1] === 'android') {
             );
             assertSameElement(document.activeElement, ch2Btn, `[12.23][${testDisplayMode}] Sair da tela cheia devolve foco ao canal ativo`);
 
+            // Retornar scrollTop ao topo (0) restaura o Hero na posição natural do topo
+            await act(async () => {
+              mainScrollEl.scrollTop = 0;
+              mainScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            assert.strictEqual(
+              dockedHeroEl.getAttribute('data-live-hero-docked'),
+              'false',
+              `[12.23][${testDisplayMode}] Voltar ao topo restaura o Hero na posição natural (data-live-hero-docked="false")`
+            );
+
             // Testar Canal 3 (EPG carregando -> resolvido vazio) e Canal 4 (EPG com erro)
             await act(async () => {
               ch3Btn.click();
@@ -20146,23 +20235,24 @@ if (args[0] === 'add' && args[1] === 'android') {
             });
             assert(liveEpgContainer.querySelector('[data-epg-state="error"]'), `[12.23][${testDisplayMode}] Canal 4 com falha no EPG mostra Programação indisponível`);
 
-            // Verificar tokens CSS da nova arquitetura de cards largos
+            // Verificar tokens CSS da nova arquitetura de cards largos (largura equivalente a 3 cards de filmes + 2 gaps)
             const indexCssContent = fs.readFileSync(
               path.resolve(process.cwd(), 'src/index.css'),
               'utf-8'
             );
             assert(
               indexCssContent.includes('.nc-live-wide-card') &&
-                indexCssContent.includes('--nc-tv-row-card-live-wide-w') &&
+                indexCssContent.includes('--nc-tv-row-card-live-wide-w: calc(29.75 * var(--nc-rem))') &&
+                indexCssContent.includes('width: 35rem') &&
                 indexCssContent.includes('--nc-tv-row-card-live-wide-h'),
-              `[12.23][${testDisplayMode}] src/index.css deve definir tokens e dimensões para os cards horizontais largos da TV ao Vivo`
+              `[12.23][${testDisplayMode}] src/index.css deve definir tokens e largura equivalente a 3 cards de filmes (35rem desktop / 29.75*--nc-rem TV) para os cards largos da TV ao Vivo`
             );
           }
 
           console.log(
-            `📊 [Métricas 12.23 — Hotfix 12.27-a.1: Hero Neutro Inicial, EPG Estrito em Exibição e Relógio Compartilhado]\n` +
+            `📊 [Métricas 12.23 — Ciclo 12.27-b: Reutilização de HorizontalRow, Preview Deslizante sem Salto de Scroll e EPG Estrito]\n` +
               `   • Entrada normal sem initialChannelIntent: Hero neutro ("Selecione um canal"), 0 <video> montado, 0 chamadas de EPG\n` +
-              `   • EPG estrito: rejeita programas encerrados/futuros/sem horário e exibe apenas [startMs, endMs] contendo nowMs\n` +
+              `   • Preview deslizante (Estados 1-5): 0 salto de scroll ao ativar canal, recolhe ao navegar com seta avançando o foco na mesma tecla, e expande em tela cheia no 2º comando\n` +
               `   • Relógio compartilhado (60s + focus/visibility): atualiza progresso, avança para próximo programa e expira sem remontar <video>\n` +
               `   • Layout 961×541: ${layoutSummaryLines.join(' | ')}`
           );
@@ -27072,6 +27162,447 @@ if (args[0] === 'add' && args[1] === 'android') {
               );
             } finally {
               (XtreamService as any).getSeriesInfo = savedGetSeriesInfo1226b;
+            }
+          }
+
+          // ===================================================================
+          // 12.27-b: Reutilização de HorizontalRow na TV ao Vivo, D-Pad Vertical/Horizontal
+          // em 16 Categorias × 24 Canais e Preview Deslizante (Estados 1 a 5) sem Salto de Scroll
+          // ===================================================================
+          {
+            const live16Categories = Array.from({ length: 16 }, (_, catIdx) => ({
+              category_id: `live_cat_${catIdx + 1}`,
+              category_name: `Categoria Ao Vivo ${catIdx + 1}`,
+            }));
+            const live16x24Streams: any[] = [];
+            for (let catIdx = 0; catIdx < 16; catIdx++) {
+              const catId = `live_cat_${catIdx + 1}`;
+              for (let chIdx = 0; chIdx < 24; chIdx++) {
+                const streamId = 90000 + catIdx * 100 + chIdx + 1;
+                live16x24Streams.push({
+                  stream_id: streamId,
+                  name: `Canal Cat${catIdx + 1} #${chIdx + 1} HD`,
+                  category_id: catId,
+                  epg_channel_id: `epg_${streamId}`,
+                  stream_icon: `http://stage1.local:8080/logo_${streamId}.png`,
+                });
+              }
+            }
+
+            const live1227bContainer = document.createElement('div');
+            document.body.appendChild(live1227bContainer);
+            const live1227bRoot = createRoot(live1227bContainer);
+
+            const live1227bMockCtx: any = {
+              credentials: {
+                serverUrl: 'http://stage1.local:8080',
+                username: 'live_1227b_user',
+                password: 'live_1227b_pass',
+                allowed_output_formats: ['m3u8', 'ts'],
+              },
+              accountInfo: {
+                user_info: { allowed_output_formats: ['m3u8', 'ts'] },
+              },
+              isAuthenticated: true,
+              isAuthChecking: false,
+              isAuthRejected: false,
+              authError: null,
+              hasInitialMenuData: true,
+              isInitialSetupComplete: true,
+              liveCategories: live16Categories,
+              vodCategories: [],
+              seriesCategories: [],
+              liveStreams: live16x24Streams,
+              allLiveStreams: live16x24Streams,
+              vodStreams: [],
+              allVodStreams: [],
+              series: [],
+              allSeries: [],
+              loadingLive: false,
+              loadingVod: false,
+              loadingSeries: false,
+              liveError: null,
+              vodError: null,
+              seriesError: null,
+              liveCategoriesError: null,
+              vodCategoriesError: null,
+              seriesCategoriesError: null,
+              liveCategoriesStatus: 'ready',
+              vodCategoriesStatus: 'ready',
+              seriesCategoriesStatus: 'ready',
+              liveCatalogStatus: 'ready',
+              vodCatalogStatus: 'ready',
+              seriesCatalogStatus: 'ready',
+              fetchLiveCategories: async () => {},
+              fetchVodCategories: async () => {},
+              fetchSeriesCategories: async () => {},
+              fetchLiveStreams: async () => {},
+              fetchVodStreams: async () => {},
+              fetchSeries: async () => {},
+              retryInitialSetup: async () => {},
+            };
+
+            let liveDomObserver: any = null;
+            try {
+              (windowInstance as any).innerWidth = 1440;
+              (windowInstance as any).innerHeight = 900;
+
+              await act(async () => {
+                live1227bRoot.render(
+                  React.createElement(
+                    Stage1NavProvider,
+                    null,
+                    React.createElement(
+                      XtreamMockProvider,
+                      { value: live1227bMockCtx },
+                      React.createElement(LiveTvView, { onPlay: () => {} })
+                    )
+                  )
+                );
+                await new Promise((r) => setTimeout(r, 30));
+              });
+
+              await act(async () => {
+                setStage1NavMode('remote');
+              });
+
+              const liveMainEl = live1227bContainer.querySelector<HTMLElement>(
+                'main[data-scroll-container="true"]'
+              )!;
+              const liveRowsContainer = live1227bContainer.querySelector<HTMLElement>(
+                '[data-showcase-rows-container="true"]'
+              )!;
+              const liveHeroSlot = live1227bContainer.querySelector<HTMLElement>(
+                '[data-live-hero-slot="true"]'
+              )!;
+              assert(
+                liveMainEl && liveRowsContainer && liveHeroSlot,
+                '[12.27-b] Containers principais da vitrine de TV ao Vivo devem existir'
+              );
+              assert.strictEqual(
+                liveRowsContainer.getAttribute('data-showcase-total-rows'),
+                '16',
+                '[12.27-b] Vitrine deve registrar 16 fileiras de categorias'
+              );
+
+              Object.defineProperty(liveMainEl, 'clientHeight', {
+                value: 800,
+                configurable: true,
+              });
+              liveMainEl.getBoundingClientRect = () =>
+                ({
+                  top: 100,
+                  bottom: 900,
+                  left: 0,
+                  right: 1440,
+                  width: 1440,
+                  height: 800,
+                  x: 0,
+                  y: 100,
+                  toJSON: () => ({}),
+                }) as DOMRect;
+
+              const HERO_SIM_HEIGHT = 480;
+              const ROW_SIM_HEIGHT = 230;
+              const CARD_SIM_WIDTH = 560;
+              const CARD_SIM_GAP = 16;
+              const CARD_SIM_STEP = CARD_SIM_WIDTH + CARD_SIM_GAP;
+
+              const installLiveDynamicRects = () => {
+                liveHeroSlot.getBoundingClientRect = () => {
+                  const top = 100 - (liveMainEl.scrollTop || 0);
+                  return {
+                    top,
+                    bottom: top + HERO_SIM_HEIGHT,
+                    left: 40,
+                    right: 1400,
+                    width: 1360,
+                    height: HERO_SIM_HEIGHT,
+                    x: 40,
+                    y: top,
+                    toJSON: () => ({}),
+                  } as DOMRect;
+                };
+
+                const allBlocks = Array.from(
+                  liveRowsContainer.querySelectorAll<HTMLElement>('[data-scroll-block="true"]')
+                );
+                for (const blk of allBlocks) {
+                  const rIdx = parseInt(
+                    blk.getAttribute('data-showcase-row-index') || '0',
+                    10
+                  );
+                  const cTop = HERO_SIM_HEIGHT + rIdx * ROW_SIM_HEIGHT;
+                  const blockRectFn = () => {
+                    const vTop = 100 + cTop - (liveMainEl.scrollTop || 0);
+                    return {
+                      top: vTop,
+                      bottom: vTop + ROW_SIM_HEIGHT,
+                      left: 40,
+                      right: 1400,
+                      width: 1360,
+                      height: ROW_SIM_HEIGHT,
+                      x: 40,
+                      y: vTop,
+                      toJSON: () => ({}),
+                    } as DOMRect;
+                  };
+                  blk.getBoundingClientRect = blockRectFn;
+
+                  const wrapper = blk.querySelector<HTMLElement>('[data-home-row-index]');
+                  if (wrapper) {
+                    wrapper.getBoundingClientRect = blockRectFn;
+                  }
+                  const navRow = blk.querySelector<HTMLElement>('[data-nav-row="true"]');
+                  if (navRow) {
+                    Object.defineProperty(navRow, 'clientWidth', {
+                      value: 1360,
+                      configurable: true,
+                    });
+                    Object.defineProperty(navRow, 'scrollWidth', {
+                      value: 24 * CARD_SIM_STEP,
+                      configurable: true,
+                    });
+                    navRow.getBoundingClientRect = () => {
+                      const vTop = 100 + cTop + 44 - (liveMainEl.scrollTop || 0);
+                      return {
+                        top: vTop,
+                        bottom: vTop + 148,
+                        left: 40,
+                        right: 1400,
+                        width: 1360,
+                        height: 148,
+                        x: 40,
+                        y: vTop,
+                        toJSON: () => ({}),
+                      } as DOMRect;
+                    };
+
+                    const cards = Array.from(
+                      navRow.querySelectorAll<HTMLElement>('button[data-live-channel-btn="true"]')
+                    );
+                    for (const card of cards) {
+                      const cIdx = parseInt(
+                        card.getAttribute('data-row-card-index') || '0',
+                        10
+                      );
+                      card.getBoundingClientRect = () => {
+                        const vTop = 100 + cTop + 44 - (liveMainEl.scrollTop || 0);
+                        const sLeft = navRow.scrollLeft || 0;
+                        const left = 40 + cIdx * CARD_SIM_STEP - sLeft;
+                        return {
+                          top: vTop,
+                          bottom: vTop + 132,
+                          left,
+                          right: left + CARD_SIM_WIDTH,
+                          width: CARD_SIM_WIDTH,
+                          height: 132,
+                          x: left,
+                          y: vTop,
+                          toJSON: () => ({}),
+                        } as DOMRect;
+                      };
+                    }
+                  }
+                }
+              };
+
+              liveDomObserver = new (windowInstance as any).MutationObserver(() => {
+                installLiveDynamicRects();
+              });
+              liveDomObserver.observe(liveRowsContainer, {
+                childList: true,
+                subtree: true,
+              });
+              installLiveDynamicRects();
+
+              const pressLiveKey = async (
+                key: 'ArrowRight' | 'ArrowLeft' | 'ArrowDown' | 'ArrowUp' | 'Enter' | 'Escape'
+              ) => {
+                await act(async () => {
+                  const target =
+                    document.activeElement instanceof HTMLElement
+                      ? document.activeElement
+                      : windowInstance;
+                  target.dispatchEvent(
+                    new (windowInstance as any).KeyboardEvent('keydown', {
+                      key,
+                      bubbles: true,
+                      cancelable: true,
+                    })
+                  );
+                });
+                installLiveDynamicRects();
+              };
+
+              // 1. Validar reutilização de HorizontalRow e superfícies visuais na fileira 0
+              const row0Wrapper = liveRowsContainer.querySelector<HTMLElement>(
+                '[data-home-row-index="0"]'
+              )!;
+              assert(row0Wrapper, '[12.27-b] Fileira 0 deve estar montada com data-home-row-index="0"');
+              const row0Card0 = row0Wrapper.querySelector<HTMLButtonElement>(
+                'button[data-live-channel-btn="true"][data-row-card-index="0"]'
+              )!;
+              assert(
+                row0Card0 &&
+                  row0Card0.classList.contains('nc-live-wide-card') &&
+                  row0Card0.classList.contains('nc-showcase-card'),
+                '[12.27-b] Cartão de canal deve usar nc-live-wide-card e nc-showcase-card dentro do HorizontalRow'
+              );
+              const visualLayer0 = row0Card0.querySelector<HTMLElement>('.nc-card-visual-layer')!;
+              assert(
+                visualLayer0 &&
+                  visualLayer0.className.includes('bg-nc-bg-card') &&
+                  visualLayer0.className.includes('border-nc-border'),
+                '[12.27-b] Superfície do cartão deve usar bg-nc-bg-card e border-nc-border como Filmes e Séries'
+              );
+
+              // 2. Navegação horizontal D-Pad por todos os 24 canais da fileira 0 (0 -> 23 -> 0)
+              await act(async () => {
+                row0Card0.focus();
+              });
+              for (let expectedIdx = 1; expectedIdx < 24; expectedIdx++) {
+                await pressLiveKey('ArrowRight');
+                const activeEl = document.activeElement as HTMLElement | null;
+                assert(
+                  activeEl !== null &&
+                    activeEl.getAttribute('data-live-channel-btn') === 'true' &&
+                    Number(activeEl.getAttribute('data-row-card-index')) === expectedIdx,
+                  `[12.27-b] ArrowRight na fileira 0 deve avançar para o canal ${expectedIdx} (obteve ${activeEl?.getAttribute('data-row-card-index')})`
+                );
+              }
+              for (let expectedIdx = 22; expectedIdx >= 0; expectedIdx--) {
+                await pressLiveKey('ArrowLeft');
+                const activeEl = document.activeElement as HTMLElement | null;
+                assert(
+                  activeEl !== null &&
+                    activeEl.getAttribute('data-live-channel-btn') === 'true' &&
+                    Number(activeEl.getAttribute('data-row-card-index')) === expectedIdx,
+                  `[12.27-b] ArrowLeft na fileira 0 deve retornar para o canal ${expectedIdx} (obteve ${activeEl?.getAttribute('data-row-card-index')})`
+                );
+              }
+
+              // 3. Navegação vertical D-Pad pelas 16 categorias (0 -> 15 -> 0) sem pular fileiras e sem perder foco
+              for (let expectedRow = 1; expectedRow < 16; expectedRow++) {
+                await pressLiveKey('ArrowDown');
+                const activeEl = document.activeElement as HTMLElement | null;
+                const activeRowWrapper = activeEl?.closest<HTMLElement>('[data-home-row-index]');
+                const actualRow = activeRowWrapper
+                  ? Number(activeRowWrapper.getAttribute('data-home-row-index'))
+                  : -1;
+                assert.strictEqual(
+                  actualRow,
+                  expectedRow,
+                  `[12.27-b] ArrowDown deve avançar sequencialmente para a categoria ${expectedRow} sem pular fileiras (obteve ${actualRow})`
+                );
+              }
+              for (let expectedRow = 14; expectedRow >= 0; expectedRow--) {
+                await pressLiveKey('ArrowUp');
+                const activeEl = document.activeElement as HTMLElement | null;
+                const activeRowWrapper = activeEl?.closest<HTMLElement>('[data-home-row-index]');
+                const actualRow = activeRowWrapper
+                  ? Number(activeRowWrapper.getAttribute('data-home-row-index'))
+                  : -1;
+                assert.strictEqual(
+                  actualRow,
+                  expectedRow,
+                  `[12.27-b] ArrowUp deve retornar sequencialmente para a categoria ${expectedRow} sem pular fileiras (obteve ${actualRow})`
+                );
+              }
+
+              // 4. Descer até a categoria 8, avançar até o canal 4 e validar Estados 1 a 5 do preview deslizante
+              for (let r = 1; r <= 8; r++) {
+                await pressLiveKey('ArrowDown');
+              }
+              for (let c = 1; c <= 4; c++) {
+                await pressLiveKey('ArrowRight');
+              }
+
+              const row8Card4 = document.activeElement as HTMLButtonElement;
+              const row8Wrapper = row8Card4.closest<HTMLElement>('[data-home-row-index="8"]')!;
+              const row8NavRow = row8Wrapper.querySelector<HTMLElement>('[data-nav-row="true"]')!;
+              assert(
+                row8Wrapper &&
+                  row8Card4.getAttribute('data-row-card-index') === '4',
+                '[12.27-b] Foco deve estar posicionado na categoria 8, canal 4'
+              );
+
+              // Simular scrollTop da lista na altura real da categoria 8 (Hero totalmente fora da tela)
+              await act(async () => {
+                liveMainEl.scrollTop = HERO_SIM_HEIGHT + 6 * ROW_SIM_HEIGHT;
+                liveMainEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+                await new Promise((r) => setTimeout(r, 20));
+              });
+              installLiveDynamicRects();
+
+              const scrollTopBeforeActivate = liveMainEl.scrollTop;
+              const scrollLeftBeforeActivate = row8NavRow.scrollLeft;
+
+              // Estado 2: 1ª ativação do canal 4 na categoria 8 -> abre preview deslizante sem deslocar scrollTop/scrollLeft
+              await act(async () => {
+                row8Card4.click();
+                await new Promise((r) => setTimeout(r, 20));
+              });
+              const heroEl1227b = live1227bContainer.querySelector<HTMLElement>('[data-live-hero="true"]')!;
+              assert.strictEqual(
+                liveMainEl.scrollTop,
+                scrollTopBeforeActivate,
+                '[12.27-b] 1ª ativação em categoria inferior NÃO deve alterar scrollTop (deltaScrollTop === 0)'
+              );
+              assert.strictEqual(
+                row8NavRow.scrollLeft,
+                scrollLeftBeforeActivate,
+                '[12.27-b] 1ª ativação NÃO deve alterar scrollLeft da fileira ativa (deltaScrollLeft === 0)'
+              );
+              assertSameElement(
+                document.activeElement,
+                row8Card4,
+                '[12.27-b] Foco deve permanecer no cartão ativado (categoria 8, canal 4)'
+              );
+              assert.strictEqual(
+                heroEl1227b.getAttribute('data-live-hero-docked'),
+                'true',
+                '[12.27-b] Preview deslizante deve abrir (data-live-hero-docked="true")'
+              );
+              assert.strictEqual(
+                heroEl1227b.getAttribute('data-live-preview-state'),
+                'open',
+                '[12.27-b] Estado do preview deve ser "open"'
+              );
+
+              // Estado 4: Pressionar ArrowDown com preview deslizante aberto recolhe o preview E avança foco para categoria 9 na mesma tecla
+              await pressLiveKey('ArrowDown');
+              const activeAfterDown = document.activeElement as HTMLElement | null;
+              const rowAfterDown = activeAfterDown
+                ?.closest<HTMLElement>('[data-home-row-index]')
+                ?.getAttribute('data-home-row-index');
+              assert.strictEqual(
+                heroEl1227b.getAttribute('data-live-hero-docked'),
+                'false',
+                '[12.27-b] ArrowDown deve recolher o preview deslizante'
+              );
+              assert.strictEqual(
+                heroEl1227b.getAttribute('data-live-preview-state'),
+                'collapsed',
+                '[12.27-b] Estado do preview após ArrowDown deve ser "collapsed"'
+              );
+              assert.strictEqual(
+                rowAfterDown,
+                '9',
+                '[12.27-b] ArrowDown não deve ser consumida apenas para fechar: o foco deve avançar para a categoria 9 na mesma tecla'
+              );
+
+              console.log(
+                '✅ [12.27-b] Reutilização de HorizontalRow, navegação D-Pad 16×24 e preview deslizante (Estados 1-5) aprovados!'
+              );
+            } finally {
+              liveDomObserver?.disconnect();
+              await act(async () => {
+                live1227bRoot.unmount();
+              });
+              if (live1227bContainer.parentNode) {
+                document.body.removeChild(live1227bContainer);
+              }
             }
           }
         } finally {

@@ -189,7 +189,7 @@ html[data-display-mode="tv"] {
   --nc-tv-section-pad: calc(1 * var(--nc-rem));
   --nc-tv-card-min: calc(8.75 * var(--nc-rem));
   --nc-tv-row-card-live-w: calc(15.5 * var(--nc-rem));
-  --nc-tv-row-card-live-wide-w: calc(25.5 * var(--nc-rem));
+  --nc-tv-row-card-live-wide-w: calc(29.75 * var(--nc-rem));
   --nc-tv-row-card-live-wide-h: calc(8.75 * var(--nc-rem));
   --nc-tv-row-card-poster-w: calc(9.25 * var(--nc-rem));
   --nc-tv-hero-min-h: calc(15.5 * var(--nc-rem));
@@ -544,19 +544,22 @@ html[data-display-mode="tv"] .nc-tv-row-card-poster {
 
 .nc-live-wide-card {
   width: 19rem;
+  max-width: calc(100vw - 2.5rem);
   height: 7.25rem;
 }
 
 @media (min-width: 640px) {
   .nc-live-wide-card {
-    width: 22.5rem;
+    width: 29rem;
+    max-width: none;
     height: 8.25rem;
   }
 }
 
 @media (min-width: 768px) {
   .nc-live-wide-card {
-    width: 26.5rem;
+    width: 35rem;
+    max-width: none;
     height: 8.75rem;
   }
 }
