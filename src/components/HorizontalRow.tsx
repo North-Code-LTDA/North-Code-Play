@@ -202,7 +202,7 @@ export function resolveCssRowMetrics(
     const cardWidth =
       Math.round(
         (cardVariant === 'live-wide'
-          ? 29.75 * remPx
+          ? 16.5 * remPx
           : type === 'live'
             ? 15.5 * remPx
             : 9.25 * remPx) * 100
@@ -210,8 +210,12 @@ export function resolveCssRowMetrics(
     const gap = Math.round(1.0 * remPx * 100) / 100;
     const viewportW =
       typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 1120;
+    const fallbackRowWidth =
+      cardVariant === 'live-wide' && viewportW >= 768
+        ? Math.max(320, Math.round(viewportW * 0.5))
+        : viewportW;
     return {
-      rowWidth: viewportW,
+      rowWidth: fallbackRowWidth,
       cardWidth,
       gap,
       stride: cardWidth + gap,
@@ -224,10 +228,10 @@ export function resolveCssRowMetrics(
   const cardWidth =
     cardVariant === 'live-wide'
       ? isMd
-        ? 560
+        ? 264
         : viewportW >= 640
-          ? 464
-          : 304
+          ? 248
+          : 232
       : type === 'live'
         ? isMd
           ? 288
@@ -236,8 +240,12 @@ export function resolveCssRowMetrics(
           ? 176
           : 144;
   const gap = 16;
+  const fallbackRowWidth =
+    cardVariant === 'live-wide' && isMd
+      ? Math.max(320, Math.round(viewportW * 0.5))
+      : viewportW;
   return {
-    rowWidth: viewportW,
+    rowWidth: fallbackRowWidth,
     cardWidth,
     gap,
     stride: cardWidth + gap,

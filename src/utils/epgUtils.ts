@@ -334,3 +334,87 @@ export function computeLiveShowcaseRowBounds(
   const end = Math.min(totalRows, start + effectiveWindow);
   return { start, end, maxStart };
 }
+
+export interface ChronologicalEpgEntry {
+  id: string;
+  title: string;
+  description: string;
+  startMs: number | null;
+  endMs: number | null;
+  timeSlot: string | null;
+  isCurrent: boolean;
+  progressPercent: number | null;
+}
+
+/**
+ * Resolves a chronological list of current and upcoming EPG programs from raw Xtream listings.
+ * Never fabricates timestamps, titles, descriptions, or arbitrary progress bars.
+ */
+export function resolveChronologicalEpgSchedule(
+  listings: any[],
+  nowMs: number = getLiveEpgClockNowMs()
+): ChronologicalEpgEntry[] {
+  if (!Array.isArray(listings) || listings.length === 0) return [];
+  const safeNow = Number.isFinite(nowMs) ? nowMs : Date.now();
+
+  const parsed: Array<ChronologicalEpgEntry & { rawIdx: number }> = [];
+
+  for (let i = 0; i < listings.length; i++) {
+    const item = listings[i];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+
+    const title = decodeEpgText(item.title || item.name || '');
+    const description = decodeEpgText(item.description || item.plot || item.descr || '');
+    if (!title && !description) continue;
+
+    const startMs = parseEpgTimestampMs(item, 'start');
+    const endMs = parseEpgTimestampMs(item, 'end');
+
+    // Skip programs that have already finished before safeNow
+    if (startMs !== null && endMs !== null && endMs > startMs && endMs <= safeNow) {
+      continue;
+    }
+
+    const hasValidInterval = startMs !== null && endMs !== null && endMs > startMs;
+    const isCurrent = hasValidInterval && safeNow >= startMs! && safeNow < endMs!;
+    const progressPercent = isCurrent ? computeEpgProgressPercent(item, safeNow) : null;
+    const timeSlot = formatEpgTimeSlot(item);
+
+    parsed.push({
+      id: String(item.id ?? item.epg_id ?? `${startMs ?? 'na'}_${endMs ?? 'na'}_${i}`),
+      title: title || 'Programa sem título',
+      description,
+      startMs,
+      endMs,
+      timeSlot,
+      isCurrent,
+      progressPercent,
+      rawIdx: i,
+    });
+  }
+
+  parsed.sort((a, b) => {
+    if (a.isCurrent !== b.isCurrent) {
+      return a.isCurrent ? -1 : 1;
+    }
+    if (a.startMs !== null && b.startMs !== null && a.startMs !== b.startMs) {
+      return a.startMs - b.startMs;
+    }
+    if (a.startMs !== null && b.startMs === null) return -1;
+    if (a.startMs === null && b.startMs !== null) return 1;
+    return a.rawIdx - b.rawIdx;
+  });
+
+  const seen = new Set<string>();
+  const result: ChronologicalEpgEntry[] = [];
+  for (const entry of parsed) {
+    const dedupKey = `${entry.startMs ?? ''}|${entry.endMs ?? ''}|${entry.title}`;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+    const { rawIdx: _unused, ...cleanEntry } = entry;
+    result.push(cleanEntry);
+  }
+
+  return result;
+}
+

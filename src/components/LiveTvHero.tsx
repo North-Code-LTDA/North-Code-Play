@@ -1,9 +1,17 @@
 import React from 'react';
-import { Heart, Loader2, Maximize2, Play, TvMinimalPlay, X } from 'lucide-react';
+import {
+  ArrowLeft,
+  CalendarClock,
+  Heart,
+  Loader2,
+  Maximize2,
+  Play,
+  TvMinimalPlay,
+} from 'lucide-react';
 import { VideoPlayer } from './VideoPlayer';
 import { MediaImage } from './MediaImage';
 import { LiveChannelGroup, parseChannelVariantSuffix } from '../utils/liveChannelGroups';
-import type { ResolvedNowPlaying } from '../utils/epgUtils';
+import type { ChronologicalEpgEntry, ResolvedNowPlaying } from '../utils/epgUtils';
 
 export interface LiveTvHeroProps {
   selectedGroup: LiveChannelGroup | null;
@@ -16,14 +24,11 @@ export interface LiveTvHeroProps {
   isLoadingPlayback: boolean;
   playbackError: string | null;
   nowPlaying: ResolvedNowPlaying | null;
+  scheduleItems?: ChronologicalEpgEntry[];
   loadingEpg: boolean;
   epgError: string | null;
   isFavorited: boolean;
   isCatalogLoading?: boolean;
-  isDocked?: boolean;
-  isDockedVisible?: boolean;
-  dockTopPx?: number;
-  onCloseDock?: () => void;
   onExpandFullscreen: () => void;
   onRetryPlayback: () => void;
   onBackFromFullscreen: () => void;
@@ -31,6 +36,7 @@ export interface LiveTvHeroProps {
   onPlaybackFinalError: (errorMsg: string, attemptId?: number) => void;
   onSelectResolutionMode: (variant: any | 'auto') => void;
   onToggleFavorite: (group: LiveChannelGroup) => void;
+  onReturnFocusToCatalog?: () => void;
 }
 
 export const LiveTvHero = React.memo(function LiveTvHero({
@@ -44,14 +50,11 @@ export const LiveTvHero = React.memo(function LiveTvHero({
   isLoadingPlayback,
   playbackError,
   nowPlaying,
+  scheduleItems = [],
   loadingEpg,
   epgError,
   isFavorited,
   isCatalogLoading = false,
-  isDocked = false,
-  isDockedVisible = false,
-  dockTopPx = 112,
-  onCloseDock,
   onExpandFullscreen,
   onRetryPlayback,
   onBackFromFullscreen,
@@ -59,6 +62,7 @@ export const LiveTvHero = React.memo(function LiveTvHero({
   onPlaybackFinalError,
   onSelectResolutionMode,
   onToggleFavorite,
+  onReturnFocusToCatalog,
 }: LiveTvHeroProps) {
   const activeStreamResolution = activeVariantStream?.name
     ? parseChannelVariantSuffix(activeVariantStream.name).resolution
@@ -70,365 +74,68 @@ export const LiveTvHero = React.memo(function LiveTvHero({
 
   const previewState = !selectedGroup
     ? 'idle'
-    : isDocked
-      ? isDockedVisible
-        ? 'open'
-        : 'collapsed'
-      : streamUrl || isLoadingPlayback || playbackError
-        ? 'open'
-        : 'collapsed';
+    : streamUrl || isLoadingPlayback || playbackError
+      ? 'open'
+      : 'collapsed';
+
+  const handlePanelKeyDownCapture = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (!onReturnFocusToCatalog) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+
+    if (e.key === 'Escape' || e.key === 'Backspace') {
+      // Do not intercept if fullscreen modal player is open
+      if (
+        typeof document !== 'undefined' &&
+        document.querySelector('[data-player-container="true"][data-focus-scope="modal"]')
+      ) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      onReturnFocusToCatalog();
+      return;
+    }
+
+    if (e.key === 'ArrowLeft') {
+      const isLeftmostControl =
+        target.getAttribute('data-live-hero-play') === 'true' ||
+        target.getAttribute('data-live-epg-scroll') === 'true' ||
+        target.getAttribute('data-variant-first') === 'true' ||
+        target.getAttribute('data-live-neutral-back') === 'true';
+      if (isLeftmostControl) {
+        e.preventDefault();
+        e.stopPropagation();
+        onReturnFocusToCatalog();
+      }
+    }
+  };
 
   return (
     <section
-      data-scroll-top-anchor={!isDocked ? 'true' : undefined}
       data-live-hero="true"
-      data-live-hero-docked={isDocked && isDockedVisible ? 'true' : 'false'}
+      data-live-right-panel="true"
+      data-live-hero-docked="false"
       data-live-preview-state={previewState}
-      data-nav-ignore={isDocked ? 'true' : undefined}
-      inert={isDocked && !isDockedVisible ? true : undefined}
-      aria-hidden={isDocked && !isDockedVisible ? 'true' : undefined}
-      aria-label="Destaque TV ao Vivo"
-      style={
-        isDocked
-          ? {
-              top: isDockedVisible ? `${dockTopPx}px` : `${Math.max(0, dockTopPx - 32)}px`,
-            }
-          : undefined
-      }
-      className={
-        isDocked
-          ? `fixed left-0 right-0 z-40 px-4 sm:px-6 md:px-10 pt-2 pb-2 pointer-events-none transition-[top,opacity] duration-200 ease-out motion-reduce:transition-none ${
-              isDockedVisible ? 'opacity-100' : 'opacity-0'
-            }`
-          : 'nc-tv-hero w-full shrink-0 px-4 sm:px-6 md:px-10 pt-2 sm:pt-3 pb-2 bg-nc-bg'
-      }
+      data-nav-zone="live-panel"
+      aria-label="Painel de reprodução e programação da TV ao Vivo"
+      onKeyDownCapture={handlePanelKeyDownCapture}
+      className="w-full h-full flex flex-col min-h-0 bg-[#08090d] border-t md:border-t-0 md:border-l border-white/10 select-none overflow-hidden"
     >
-      <div
-        data-hero-stage={!isDocked ? 'true' : undefined}
-        data-live-dock-panel={isDocked ? 'true' : undefined}
-        className={
-          isDocked
-            ? `relative w-full max-w-5xl mx-auto rounded-2xl overflow-hidden border border-white/15 bg-[#0b0c10]/95 backdrop-blur-xl shadow-[0_24px_60px_rgba(0,0,0,0.9)] p-3 sm:p-4 select-none ${
-                isDockedVisible ? 'pointer-events-auto' : 'pointer-events-none'
-              }`
-            : 'relative w-full min-h-[320px] sm:min-h-[390px] md:min-h-[470px] lg:min-h-[530px] rounded-2xl md:rounded-3xl overflow-hidden border border-white/10 bg-[#0b0c10] shadow-[0_20px_50px_rgba(0,0,0,0.65)] flex flex-col justify-center p-5 sm:p-8 md:p-11 lg:p-14 select-none'
-        }
-      >
-        {/* Shared HeroBanner atmospheric background layers */}
+      {selectedGroup ? (
         <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_75%_25%,rgba(255,255,255,0.08),transparent_55%)]"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/95 via-black/55 to-black/15"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#0b0c10] via-[#0b0c10]/35 to-transparent"
-        />
-
-        {isDocked && onCloseDock && (
-          <button
-            type="button"
-            data-live-dock-close="true"
-            tabIndex={-1}
-            aria-label="Recolher pré-visualização"
-            onClick={onCloseDock}
-            className="absolute top-2.5 right-2.5 z-30 w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white/80 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        )}
-
-        {selectedGroup ? (
-          <div
-            data-live-top-section="true"
-            className={
-              isDocked
-                ? 'nc-live-top-section relative z-10 flex flex-row items-center gap-3.5 sm:gap-5 w-full pr-7'
-                : 'nc-live-top-section relative z-10 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-5 lg:gap-8 w-full'
-            }
-          >
-            {/* Left column: channel identity, real EPG summary, version selector, HeroBanner-aligned actions */}
-            <div
-              data-live-summary-col="true"
-              className={
-                isDocked
-                  ? 'nc-live-summary-col flex-1 min-w-0 flex flex-col items-start gap-2 order-2 md:order-1'
-                  : 'nc-live-summary-col flex-1 min-w-0 max-w-2xl flex flex-col items-start gap-3.5 order-2 md:order-1'
-              }
-            >
-              {/* Domain + Resolution Metadata Row matching HeroBanner */}
-              <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-                <span className="px-2.5 py-0.5 rounded-md text-xs font-bold uppercase tracking-wider bg-white/15 text-white border border-white/20 backdrop-blur-sm inline-flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
-                  Ao Vivo
-                </span>
-                {activeStreamResolution && (
-                  <span className="nc-badge-info px-2 py-0.5 rounded-md text-xs font-semibold uppercase bg-white/10 text-white/90 border border-white/15">
-                    {activeStreamResolution}
-                  </span>
-                )}
-                {nowPlaying?.timeSlot && (
-                  <span className="nc-text-meta font-mono text-white/80 font-medium">
-                    • {nowPlaying.timeSlot}
-                  </span>
-                )}
-              </div>
-
-              {/* Channel Logo + Hero Title */}
-              <div className="flex items-center gap-3 sm:gap-3.5 w-full min-w-0">
-                <div
-                  className={
-                    isDocked
-                      ? 'nc-live-channel-logo w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-black/40 border border-white/15 flex items-center justify-center overflow-hidden shrink-0 p-1.5'
-                      : 'nc-live-channel-logo w-12 h-12 sm:w-14 sm:h-14 rounded-xl bg-black/40 border border-white/15 flex items-center justify-center overflow-hidden shrink-0 p-2'
-                  }
-                >
-                  <MediaImage
-                    src={selectedGroup.stream_icon}
-                    serverUrl={serverUrl}
-                    alt={selectedGroup.displayName}
-                    itemId={primaryStreamId}
-                    itemName={selectedGroup.displayName}
-                    priority={true}
-                    loading="eager"
-                    className="w-full h-full object-contain"
-                  />
-                </div>
-
-                <h1
-                  className={
-                    isDocked
-                      ? 'nc-live-channel-title nc-text-subtitle sm:text-lg font-extrabold text-white tracking-tight drop-shadow-lg line-clamp-1 whitespace-normal break-words flex-1 min-w-0'
-                      : 'nc-live-channel-title nc-heading-hero nc-tv-hero-title font-extrabold text-white tracking-tight drop-shadow-lg line-clamp-2 whitespace-normal break-words flex-1 min-w-0'
-                  }
-                >
-                  {selectedGroup.displayName}
-                </h1>
-              </div>
-
-              {/* Current Program Block (strictly grounded in real EPG or honest unavailable state) */}
-              <div
-                data-live-now-playing="true"
-                className={
-                  isDocked
-                    ? 'nc-live-now-playing w-full flex flex-col gap-1'
-                    : 'nc-live-now-playing w-full rounded-xl bg-white/[0.04] border border-white/10 px-3.5 py-3 flex flex-col gap-1.5'
-                }
-              >
-                {loadingEpg ? (
-                  <div
-                    data-epg-state="loading"
-                    className="flex items-center gap-2 nc-text-subtitle text-nc-text-secondary"
-                  >
-                    <Loader2 className="w-4 h-4 animate-spin text-white/75 shrink-0" />
-                    <span>Carregando programação...</span>
-                  </div>
-                ) : epgError ? (
-                  <p
-                    data-epg-state="error"
-                    className="nc-text-subtitle text-nc-text-secondary"
-                  >
-                    Programação indisponível
-                  </p>
-                ) : nowPlaying ? (
-                  <>
-                    {!isDocked && (
-                      <div className="flex items-center justify-between gap-3 flex-wrap">
-                        <span className="nc-text-meta uppercase tracking-wider font-semibold text-white/60">
-                          Passando agora
-                        </span>
-                        {nowPlaying.timeSlot && (
-                          <span className="nc-text-meta font-mono text-white/75 shrink-0">
-                            {nowPlaying.timeSlot}
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    {nowPlaying.title && (
-                      <p
-                        data-live-now-playing-title="true"
-                        className="nc-text-subtitle font-semibold text-white line-clamp-1 sm:line-clamp-2 whitespace-normal break-words"
-                      >
-                        {nowPlaying.title}
-                      </p>
-                    )}
-
-                    {nowPlaying.progressPercent !== null && (
-                      <div
-                        data-live-epg-progress="true"
-                        role="progressbar"
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={nowPlaying.progressPercent}
-                        aria-label="Progresso do programa atual"
-                        className="w-full max-w-md h-1.5 rounded-full bg-white/20 overflow-hidden my-0.5"
-                      >
-                        <div
-                          className="h-full bg-white rounded-full transition-[width] duration-300"
-                          style={{ width: `${nowPlaying.progressPercent}%` }}
-                        />
-                      </div>
-                    )}
-
-                    {!isDocked && nowPlaying.description && (
-                      <p
-                        data-live-now-playing-desc="true"
-                        className="nc-live-now-playing-desc nc-text-reading text-white/80 line-clamp-2 whitespace-normal break-words"
-                      >
-                        {nowPlaying.description}
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p
-                    data-epg-state="empty"
-                    className="nc-text-subtitle text-nc-text-secondary"
-                  >
-                    Programação indisponível
-                  </p>
-                )}
-              </div>
-
-              {/* Clean Subtle Channel Version Selector (only when >1 version exists) */}
-              {selectedGroup.isGrouped && selectedGroup.variants.length > 0 && (
-                <div
-                  key={selectedGroup.groupId}
-                  className="nc-live-variants-bar w-full min-w-0 flex flex-wrap sm:flex-nowrap items-center gap-2"
-                >
-                  <span className="nc-text-meta font-medium text-white/60 shrink-0">
-                    Versão:
-                  </span>
-                  <div
-                    data-nav-row={!isDocked ? 'true' : undefined}
-                    data-live-variants-row="true"
-                    className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide min-w-0 max-w-full py-0.5 touch-pan-x"
-                  >
-                    <button
-                      type="button"
-                      tabIndex={isDocked ? -1 : 0}
-                      data-variant-active={selectedResolutionMode === 'auto' ? 'true' : 'false'}
-                      onClick={() => onSelectResolutionMode('auto')}
-                      className={`px-3 py-1 rounded-full nc-text-meta font-semibold transition-colors shrink-0 cursor-pointer ${
-                        selectedResolutionMode === 'auto'
-                          ? 'bg-white text-black'
-                          : 'bg-white/15 text-white/85 hover:bg-white/25 hover:text-white border border-white/15'
-                      }`}
-                    >
-                      Automático
-                    </button>
-                    {selectedGroup.variants.map((v) => {
-                      const isSelectedVariant =
-                        selectedResolutionMode !== 'auto' &&
-                        String(activeVariantId) === String(v.streamId);
-                      const isActiveStream = String(activeVariantId) === String(v.streamId);
-
-                      return (
-                        <button
-                          key={v.streamId}
-                          type="button"
-                          tabIndex={isDocked ? -1 : 0}
-                          data-variant-active={isSelectedVariant ? 'true' : 'false'}
-                          onClick={() => onSelectResolutionMode(v.stream)}
-                          className={`px-3 py-1 rounded-full nc-text-meta font-semibold transition-colors shrink-0 flex items-center gap-1.5 cursor-pointer ${
-                            isSelectedVariant
-                              ? 'bg-white text-black'
-                              : isActiveStream
-                                ? 'bg-white/25 text-white border border-white/30'
-                                : 'bg-white/15 text-white/85 hover:bg-white/25 hover:text-white border border-white/15'
-                          }`}
-                        >
-                          <span>{v.label}</span>
-                          {isActiveStream && selectedResolutionMode === 'auto' && (
-                            <span
-                              aria-hidden="true"
-                              className="w-1.5 h-1.5 rounded-full bg-white shrink-0"
-                            />
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Primary Hero Actions matching HeroBanner visual language */}
-              <div
-                data-nav-row={!isDocked ? 'true' : undefined}
-                className="nc-action-group flex flex-wrap items-center gap-2.5 sm:gap-3 pt-0.5"
-              >
-                <button
-                  type="button"
-                  tabIndex={isDocked ? -1 : 0}
-                  data-live-hero-play="true"
-                  data-autofocus={!isDocked ? 'true' : undefined}
-                  onClick={() => {
-                    if (playbackError) {
-                      onRetryPlayback();
-                    } else {
-                      onExpandFullscreen();
-                    }
-                  }}
-                  className={
-                    isDocked
-                      ? 'nc-tv-details-action flex items-center gap-2 bg-white hover:bg-white/90 text-black px-4 py-1.5 rounded-full font-bold nc-text-meta transition-transform active:scale-95 shadow-lg cursor-pointer'
-                      : 'nc-tv-details-action flex items-center gap-2.5 bg-white hover:bg-white/90 text-black px-5 sm:px-7 py-2.5 sm:py-3 rounded-full font-bold nc-text-subtitle transition-transform active:scale-95 shadow-lg cursor-pointer'
-                  }
-                >
-                  {playbackError ? (
-                    <>
-                      <Play className="w-4 h-4 fill-current shrink-0" />
-                      <span>Tentar novamente</span>
-                    </>
-                  ) : (
-                    <>
-                      <Maximize2 className="w-4 h-4 shrink-0" />
-                      <span>Assistir</span>
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  tabIndex={isDocked ? -1 : 0}
-                  data-live-hero-favorite="true"
-                  aria-label={
-                    isFavorited ? 'Remover canal dos favoritos' : 'Adicionar canal aos favoritos'
-                  }
-                  aria-pressed={isFavorited}
-                  onClick={() => onToggleFavorite(selectedGroup)}
-                  className={
-                    isDocked
-                      ? 'nc-tv-details-action-icon flex items-center justify-center w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-md text-white border border-white/15 transition-colors cursor-pointer'
-                      : 'nc-tv-details-action-icon flex items-center justify-center w-11 h-11 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-md text-white border border-white/15 transition-colors cursor-pointer'
-                  }
-                >
-                  <Heart
-                    className={`w-4 h-4 shrink-0 ${
-                      isFavorited ? 'fill-white text-white' : 'text-white'
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
-
-            {/* Right column: Single Embedded 16:9 Live Preview */}
+          data-hero-stage="true"
+          data-live-top-section="true"
+          className="flex flex-col w-full h-full min-h-0 overflow-hidden"
+        >
+          {/* 1. Top Fixed Area: 16:9 Live Preview + Channel Identity + Actions + Now Playing */}
+          <div className="shrink-0 p-3.5 sm:p-4 lg:p-5 flex flex-col gap-3 border-b border-white/10 bg-gradient-to-b from-[#12141d] via-[#0c0e14] to-[#08090d]">
+            {/* Permanent 16:9 Embedded Video Preview */}
             <div
               data-live-preview-wrapper="true"
-              className={
-                isDocked
-                  ? 'w-36 sm:w-48 md:w-60 shrink-0 order-1 md:order-2 flex items-center'
-                  : 'w-full md:w-[48%] lg:w-[50%] md:max-w-[34rem] shrink-0 order-1 md:order-2 flex items-center'
-              }
+              className="w-full max-w-[36rem] mx-auto shrink-0"
             >
-              <div className="w-full aspect-video rounded-xl md:rounded-2xl overflow-hidden bg-black border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.85)]">
+              <div className="w-full aspect-video rounded-xl overflow-hidden bg-black border border-white/15 shadow-[0_14px_34px_rgba(0,0,0,0.85)]">
                 <VideoPlayer
                   key={selectedGroup.groupId}
                   streamUrl={streamUrl}
@@ -450,42 +157,432 @@ export const LiveTvHero = React.memo(function LiveTvHero({
                 />
               </div>
             </div>
+
+            {/* Channel Identity + Primary Controls */}
+            <div
+              data-live-summary-col="true"
+              className="w-full flex flex-col gap-2.5 min-w-0"
+            >
+              <div className="flex items-start justify-between gap-3 min-w-0 flex-wrap sm:flex-nowrap">
+                {/* Logo + Channel Name + Badges */}
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <div className="nc-live-channel-logo w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-black/50 border border-white/15 flex items-center justify-center overflow-hidden shrink-0 p-1.5">
+                    <MediaImage
+                      src={selectedGroup.stream_icon}
+                      serverUrl={serverUrl}
+                      alt={selectedGroup.displayName}
+                      itemId={primaryStreamId}
+                      itemName={selectedGroup.displayName}
+                      priority={true}
+                      loading="eager"
+                      className="w-full h-full object-contain"
+                    />
+                  </div>
+
+                  <div className="min-w-0 flex-1 flex flex-col gap-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="nc-badge-info px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider bg-red-500/20 text-red-200 border border-red-500/35 inline-flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
+                        Ao Vivo
+                      </span>
+                      {activeStreamResolution && (
+                        <span className="nc-badge-info px-2 py-0.5 rounded text-xs font-semibold uppercase bg-white/10 text-white/90 border border-white/15">
+                          {activeStreamResolution}
+                        </span>
+                      )}
+                    </div>
+
+                    <h1 className="nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words w-full">
+                      {selectedGroup.displayName}
+                    </h1>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div
+                  data-nav-row="true"
+                  className="nc-action-group flex items-center gap-2 shrink-0"
+                >
+                  <button
+                    type="button"
+                    data-nav-item="true"
+                    data-live-hero-play="true"
+                    data-autofocus="true"
+                    onClick={() => {
+                      if (playbackError) {
+                        onRetryPlayback();
+                      } else {
+                        onExpandFullscreen();
+                      }
+                    }}
+                    className="nc-tv-details-action flex items-center gap-2 bg-white hover:bg-white/90 text-black px-4 py-2 rounded-full font-bold text-xs sm:text-sm transition-transform active:scale-95 shadow-md cursor-pointer"
+                  >
+                    {playbackError ? (
+                      <>
+                        <Play className="w-3.5 h-3.5 fill-current shrink-0" />
+                        <span>Tentar novamente</span>
+                      </>
+                    ) : (
+                      <>
+                        <Maximize2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Assistir</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    data-nav-item="true"
+                    data-live-hero-favorite="true"
+                    aria-label={
+                      isFavorited ? 'Remover canal dos favoritos' : 'Adicionar canal aos favoritos'
+                    }
+                    aria-pressed={isFavorited}
+                    onClick={() => onToggleFavorite(selectedGroup)}
+                    className="nc-tv-details-action-icon flex items-center justify-center w-9 h-9 rounded-full bg-white/15 hover:bg-white/25 text-white border border-white/15 transition-colors cursor-pointer"
+                  >
+                    <Heart
+                      className={`w-4 h-4 shrink-0 ${
+                        isFavorited ? 'fill-white text-white' : 'text-white'
+                      }`}
+                    />
+                  </button>
+
+                  {onReturnFocusToCatalog && (
+                    <button
+                      type="button"
+                      data-nav-item="true"
+                      data-live-back-to-catalog="true"
+                      aria-label="Voltar para a lista de canais"
+                      onClick={onReturnFocusToCatalog}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-white/10 hover:bg-white/20 text-white/85 hover:text-white border border-white/15 text-xs font-medium transition-colors cursor-pointer"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
+                      <span className="hidden sm:inline">Canais</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Discrete Version Selector (only when >1 version exists) */}
+              {selectedGroup.isGrouped && selectedGroup.variants.length > 0 && (
+                <div
+                  key={selectedGroup.groupId}
+                  className="nc-live-variants-bar w-full min-w-0 flex items-center gap-2"
+                >
+                  <span className="text-xs font-medium text-white/60 shrink-0">
+                    Versão:
+                  </span>
+                  <div
+                    data-nav-row="live-variants"
+                    data-live-variants-row="true"
+                    className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide min-w-0 max-w-full py-0.5 touch-pan-x"
+                  >
+                    <button
+                      type="button"
+                      data-nav-item="true"
+                      data-variant-first="true"
+                      data-variant-active={selectedResolutionMode === 'auto' ? 'true' : 'false'}
+                      onClick={() => onSelectResolutionMode('auto')}
+                      className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors shrink-0 cursor-pointer ${
+                        selectedResolutionMode === 'auto'
+                          ? 'bg-white text-black'
+                          : 'bg-white/12 text-white/85 hover:bg-white/20 hover:text-white border border-white/15'
+                      }`}
+                    >
+                      Automático
+                    </button>
+                    {selectedGroup.variants.map((v) => {
+                      const isSelectedVariant =
+                        selectedResolutionMode !== 'auto' &&
+                        String(activeVariantId) === String(v.streamId);
+                      const isActiveStream = String(activeVariantId) === String(v.streamId);
+
+                      return (
+                        <button
+                          key={v.streamId}
+                          type="button"
+                          data-nav-item="true"
+                          data-variant-active={isSelectedVariant ? 'true' : 'false'}
+                          onClick={() => onSelectResolutionMode(v.stream)}
+                          className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                            isSelectedVariant
+                              ? 'bg-white text-black'
+                              : isActiveStream
+                                ? 'bg-white/25 text-white border border-white/30'
+                                : 'bg-white/12 text-white/85 hover:bg-white/20 hover:text-white border border-white/15'
+                          }`}
+                        >
+                          <span>{v.label}</span>
+                          {isActiveStream && selectedResolutionMode === 'auto' && (
+                            <span
+                              aria-hidden="true"
+                              className="w-1.5 h-1.5 rounded-full bg-white shrink-0"
+                            />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Current Program Summary ("Passando agora") */}
+              <div
+                data-live-now-playing="true"
+                className="nc-live-now-playing w-full rounded-xl bg-white/[0.04] border border-white/10 px-3.5 py-2.5 flex flex-col gap-1"
+              >
+                {loadingEpg ? (
+                  <div
+                    data-epg-state="loading"
+                    className="flex items-center gap-2 text-xs sm:text-sm text-nc-text-secondary"
+                  >
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-white/75 shrink-0" />
+                    <span>Carregando programação...</span>
+                  </div>
+                ) : epgError ? (
+                  <p
+                    data-epg-state="error"
+                    className="text-xs sm:text-sm text-nc-text-secondary"
+                  >
+                    Programação indisponível
+                  </p>
+                ) : nowPlaying ? (
+                  <>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-xs uppercase tracking-wider font-semibold text-white/60">
+                        Passando agora
+                      </span>
+                      {nowPlaying.timeSlot && (
+                        <span className="text-xs font-mono text-white/80 shrink-0">
+                          {nowPlaying.timeSlot}
+                        </span>
+                      )}
+                    </div>
+
+                    {nowPlaying.title && (
+                      <p
+                        data-live-now-playing-title="true"
+                        className="text-xs sm:text-sm font-semibold text-white line-clamp-1 whitespace-normal break-words"
+                      >
+                        {nowPlaying.title}
+                      </p>
+                    )}
+
+                    {nowPlaying.progressPercent !== null && (
+                      <div
+                        data-live-epg-progress="true"
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={nowPlaying.progressPercent}
+                        aria-label="Progresso do programa atual"
+                        className="w-full h-1.5 rounded-full bg-white/15 overflow-hidden my-0.5"
+                      >
+                        <div
+                          className="h-full bg-white rounded-full transition-[width] duration-300"
+                          style={{ width: `${nowPlaying.progressPercent}%` }}
+                        />
+                      </div>
+                    )}
+
+                    {nowPlaying.description && (
+                      <p
+                        data-live-now-playing-desc="true"
+                        className="nc-live-now-playing-desc text-xs text-white/75 line-clamp-2 whitespace-normal break-words leading-relaxed"
+                      >
+                        {nowPlaying.description}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p
+                    data-epg-state="empty"
+                    className="text-xs sm:text-sm text-nc-text-secondary"
+                  >
+                    Programação indisponível
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
-        ) : (
-          /* Neutral fallback stage before a channel is selected, matching HeroBanner stage geometry */
+
+          {/* 2. Bottom Area: Chronological EPG Schedule List with Independent Vertical Scroll */}
           <div
-            data-live-hero-neutral="true"
-            className="relative z-10 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-6 w-full"
+            data-live-epg-list="true"
+            className="flex-1 min-h-[160px] flex flex-col overflow-hidden bg-[#08090d]"
           >
-            <div className="flex-1 min-w-0 max-w-2xl flex flex-col items-start gap-2.5">
-              <div className="flex flex-wrap items-center gap-2.5">
-                <span className="px-2.5 py-0.5 rounded-md text-xs font-bold uppercase tracking-wider bg-white/15 text-white border border-white/20 backdrop-blur-sm">
+            <div className="shrink-0 px-4 lg:px-5 py-2.5 border-b border-white/10 flex items-center justify-between gap-2 bg-[#0b0d13]">
+              <div className="flex items-center gap-2">
+                <CalendarClock className="w-4 h-4 text-white/70 shrink-0" />
+                <h2 className="text-xs sm:text-sm font-semibold text-white/90 tracking-tight">
+                  Grade de programação
+                </h2>
+              </div>
+              {scheduleItems.length > 0 && (
+                <span className="text-xs font-medium text-nc-text-secondary">
+                  {scheduleItems.length}{' '}
+                  {scheduleItems.length === 1 ? 'programa' : 'programas'}
+                </span>
+              )}
+            </div>
+
+            <div
+              data-live-epg-scroll="true"
+              data-synopsis-focus="true"
+              data-nav-item="true"
+              tabIndex={0}
+              role="region"
+              aria-label="Lista cronológica de programação do canal"
+              className="nc-tv-epg-state flex-1 min-h-0 overflow-y-auto custom-scrollbar px-4 lg:px-5 py-3 space-y-2.5 outline-none"
+            >
+              {loadingEpg ? (
+                <div className="py-8 flex flex-col items-center justify-center gap-2 text-nc-text-secondary">
+                  <Loader2 className="w-5 h-5 animate-spin text-white/60" />
+                  <span className="text-xs">Sincronizando grade de programação...</span>
+                </div>
+              ) : scheduleItems.length > 0 ? (
+                scheduleItems.map((item) => (
+                  <article
+                    key={item.id}
+                    data-epg-schedule-item="true"
+                    data-epg-item-current={item.isCurrent ? 'true' : 'false'}
+                    className={`rounded-xl border px-3.5 py-2.5 transition-colors ${
+                      item.isCurrent
+                        ? 'bg-white/[0.08] border-white/30'
+                        : 'bg-white/[0.025] border-white/10'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+                      <div className="flex items-center gap-2">
+                        {item.isCurrent && (
+                          <span className="nc-badge-info px-1.5 py-0.5 rounded text-xs font-bold uppercase tracking-wider bg-white text-black">
+                            Agora
+                          </span>
+                        )}
+                        {item.timeSlot ? (
+                          <span
+                            data-epg-item-time="true"
+                            className="text-xs font-mono font-medium text-white/80"
+                          >
+                            {item.timeSlot}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-nc-text-secondary">
+                            Horário não informado
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <h3
+                      data-epg-item-title="true"
+                      className={`text-xs sm:text-sm font-semibold leading-snug break-words ${
+                        item.isCurrent ? 'text-white' : 'text-white/90'
+                      }`}
+                    >
+                      {item.title}
+                    </h3>
+
+                    {item.isCurrent && item.progressPercent !== null && (
+                      <div className="w-full h-1 rounded-full bg-white/15 overflow-hidden mt-1.5">
+                        <div
+                          className="h-full bg-white/90 rounded-full"
+                          style={{ width: `${item.progressPercent}%` }}
+                        />
+                      </div>
+                    )}
+
+                    {item.description && (
+                      <p
+                        data-epg-item-desc="true"
+                        className="text-xs text-nc-text-secondary mt-1 leading-relaxed break-words"
+                      >
+                        {item.description}
+                      </p>
+                    )}
+                  </article>
+                ))
+              ) : (
+                <div className="py-8 flex flex-col items-center justify-center text-center gap-1.5 text-nc-text-secondary">
+                  <p className="text-xs sm:text-sm font-medium text-white/75">
+                    Programação indisponível
+                  </p>
+                  <p className="text-xs text-nc-text-secondary max-w-xs">
+                    A emissora não disponibilizou a grade de horários para este canal no momento.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Neutral Right-Column State before a channel is explicitly selected */
+        <div
+          data-hero-stage="true"
+          data-live-hero-neutral="true"
+          className="flex flex-col w-full h-full min-h-0 overflow-hidden"
+        >
+          <div className="shrink-0 p-3.5 sm:p-4 lg:p-5 flex flex-col gap-3.5 border-b border-white/10 bg-gradient-to-b from-[#12141d] via-[#0c0e14] to-[#08090d]">
+            {/* Neutral 16:9 Preview Frame */}
+            <div
+              data-live-preview-wrapper="true"
+              className="w-full max-w-[36rem] mx-auto shrink-0"
+            >
+              <div className="w-full aspect-video rounded-xl bg-black/70 border border-white/12 flex flex-col items-center justify-center gap-2.5 text-white/50 shadow-[0_14px_34px_rgba(0,0,0,0.8)] px-4 text-center">
+                {isCatalogLoading ? (
+                  <Loader2 className="w-8 h-8 animate-spin text-white/60" />
+                ) : (
+                  <TvMinimalPlay className="w-10 h-10 opacity-55" />
+                )}
+                <span className="text-xs sm:text-sm font-medium text-white/70">
+                  {isCatalogLoading ? 'Sincronizando canais...' : 'Pré-visualização 16:9 ao vivo'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col items-start gap-2">
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded text-xs font-bold uppercase tracking-wider bg-white/12 text-white border border-white/15">
                   TV ao Vivo
                 </span>
               </div>
-              <h1 className="nc-live-channel-title nc-heading-hero nc-tv-hero-title font-extrabold text-white tracking-tight drop-shadow-lg line-clamp-2 whitespace-normal break-words w-full">
+              <h1 className="nc-live-channel-title text-lg sm:text-xl lg:text-2xl font-bold text-white tracking-tight leading-snug">
                 {isCatalogLoading ? 'Carregando canais...' : 'Selecione um canal'}
               </h1>
-              <p className="nc-text-reading text-white/80 max-w-xl">
+              <p className="text-xs sm:text-sm text-nc-text-secondary leading-relaxed">
                 {isCatalogLoading
-                  ? 'Preparando a grade de canais disponíveis.'
-                  : 'Escolha um canal nas categorias abaixo para assistir ao vivo.'}
+                  ? 'Preparando a vitrine de categorias e canais disponíveis.'
+                  : 'Escolha um canal nas categorias à esquerda para iniciar a reprodução ao vivo e consultar a programação completa.'}
               </p>
             </div>
+          </div>
 
-            <div className="w-full md:w-[48%] lg:w-[50%] md:max-w-[34rem] aspect-video rounded-xl md:rounded-2xl bg-black/65 border border-white/10 flex flex-col items-center justify-center gap-2.5 text-white/45 shrink-0 shadow-[0_20px_50px_rgba(0,0,0,0.85)]">
-              {isCatalogLoading ? (
-                <Loader2 className="w-8 h-8 animate-spin text-white/60" />
-              ) : (
-                <TvMinimalPlay className="w-10 h-10 opacity-50" />
-              )}
-              <span className="nc-text-meta">
-                {isCatalogLoading ? 'Sincronizando canais' : 'Pré-visualização do canal'}
-              </span>
+          {/* Neutral Schedule Placeholder */}
+          <div
+            data-live-epg-list="true"
+            className="flex-1 min-h-[140px] flex flex-col overflow-hidden bg-[#08090d]"
+          >
+            <div className="shrink-0 px-4 lg:px-5 py-2.5 border-b border-white/10 flex items-center gap-2 bg-[#0b0d13]">
+              <CalendarClock className="w-4 h-4 text-white/60 shrink-0" />
+              <h2 className="text-xs sm:text-sm font-semibold text-white/85 tracking-tight">
+                Grade de programação
+              </h2>
+            </div>
+            <div
+              data-live-epg-scroll="true"
+              className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-4 lg:px-5 py-6 flex flex-col items-center justify-center text-center text-nc-text-secondary"
+            >
+              <p className="text-xs sm:text-sm text-white/70 font-medium">
+                Nenhum canal selecionado
+              </p>
+              <p className="text-xs text-nc-text-secondary mt-1 max-w-xs">
+                Selecione um canal no catálogo para visualizar o programa em exibição e os próximos horários.
+              </p>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </section>
   );
 });

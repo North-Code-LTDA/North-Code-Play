@@ -67,3 +67,101 @@ export function formatCategoryLabel(rawName: unknown, domain?: string): string {
   const result = text || trimmed;
   return result.toUpperCase();
 }
+
+const KNOWN_CATEGORY_ACRONYMS = new Set([
+  'TV',
+  'HBO',
+  'ESPN',
+  'CNN',
+  'HD',
+  'FHD',
+  '4K',
+  '8K',
+  'UHD',
+  'SD',
+  'BR',
+  'SP',
+  'RJ',
+  'MG',
+  'RS',
+  'PR',
+  'SC',
+  'BA',
+  'PE',
+  'CE',
+  'DF',
+  'UFC',
+  'NBA',
+  'NFL',
+  'BBB',
+  'MTV',
+  'TNT',
+  'AXN',
+  'AMC',
+  'FX',
+  'SIC',
+  'RTP',
+  'SBT',
+  'GNT',
+  'TLC',
+  'TBS',
+  'VIP',
+  'PPV',
+  'EUA',
+  'USA',
+  'UK',
+  'PT',
+  'F1',
+]);
+
+/**
+ * Formats a category title for visual presentation with natural capitalization
+ * (e.g. "Esportes ao vivo", "Canais de filmes", "Notícias", "Assistidos recentemente", "Canais favoritos"),
+ * stripping decorative symbols/redundant prefixes and preserving legitimate acronyms (TV, HBO, ESPN, CNN, HD, FHD, 4K, UHD, SD, BR, SP, RJ, UFC, NBA, NFL).
+ * Does not mutate original provider category_name or category IDs.
+ */
+export function formatLiveCategoryTitle(
+  rawName: unknown,
+  domain: 'live' | 'vod' | 'series' = 'live'
+): string {
+  const upperCleaned = formatCategoryLabel(rawName, domain);
+  if (!upperCleaned) return '';
+
+  const tokens = upperCleaned.split(/\s+/);
+  let capitalizeNextWord = true;
+
+  const formattedTokens = tokens.map((token) => {
+    if (!token) return token;
+
+    if (/^[·•|\-–—:/]+$/.test(token)) {
+      capitalizeNextWord = true;
+      return token === '|' ? '·' : token;
+    }
+
+    // Strip surrounding punctuation for acronym check while preserving it in output
+    const match = token.match(/^([^a-zA-Z0-9À-ÖØ-öø-ÿ]*)([a-zA-Z0-9À-ÖØ-öø-ÿ+]+)([^a-zA-Z0-9À-ÖØ-öø-ÿ]*)$/);
+    if (!match) {
+      return token.toLowerCase();
+    }
+
+    const [, leadingPunct, core, trailingPunct] = match;
+    const coreUpper = core.toUpperCase();
+
+    if (KNOWN_CATEGORY_ACRONYMS.has(coreUpper)) {
+      capitalizeNextWord = false;
+      return `${leadingPunct}${coreUpper}${trailingPunct}`;
+    }
+
+    const lowerCore = core.toLowerCase();
+    if (capitalizeNextWord) {
+      capitalizeNextWord = false;
+      const capitalized = lowerCore.charAt(0).toUpperCase() + lowerCore.slice(1);
+      return `${leadingPunct}${capitalized}${trailingPunct}`;
+    }
+
+    return `${leadingPunct}${lowerCore}${trailingPunct}`;
+  });
+
+  return formattedTokens.join(' ');
+}
+

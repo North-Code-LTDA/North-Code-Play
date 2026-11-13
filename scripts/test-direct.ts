@@ -20070,12 +20070,31 @@ if (args[0] === 'add' && args[1] === 'android') {
             });
             assert.strictEqual(variantBtns[4].getAttribute('data-variant-active'), 'true', `[12.23][${testDisplayMode}] Clique em 4K ativa resolução 4K`);
 
-            // Fase C (Ciclo 12.27-b): Simular rolagem abaixo do Hero (scrollTop = 260) e ativar explicitamente Canal 2:
-            // - NÃO deve rolar a página de volta ao topo (scrollTop permanece 260, smoothScrollTopCalled === false)
+            // Validar Lista Cronológica de Programação (EPG) no painel direito permanente para o Canal 1:
+            const epgListElCh1 = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-list="true"]')!;
+            const epgScrollElCh1 = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-scroll="true"]')!;
+            assert(
+              epgListElCh1 && epgScrollElCh1,
+              `[12.23][${testDisplayMode}] Painel direito permanente deve conter lista cronológica de programação com scroll próprio`
+            );
+            const scheduleItemsCh1 = Array.from(
+              epgScrollElCh1.querySelectorAll<HTMLElement>('[data-epg-schedule-item="true"]')
+            );
+            assert(
+              scheduleItemsCh1.length >= 2 &&
+                scheduleItemsCh1[0].getAttribute('data-epg-item-current') === 'true' &&
+                scheduleItemsCh1[0].textContent?.includes('Jornal da Noite — Edição 1') &&
+                scheduleItemsCh1[1].getAttribute('data-epg-item-current') === 'false' &&
+                scheduleItemsCh1[1].textContent?.includes('Debate Esportivo — Edição 2'),
+              `[12.23][${testDisplayMode}] Grade cronológica de EPG do Canal 1 deve exibir o programa atual destacado seguido dos próximos programas em ordem cronológica`
+            );
+
+            // Fase C (Ciclo 12.27-c): Simular rolagem na coluna esquerda (scrollTop = 260) e ativar explicitamente Canal 2:
+            // - NÃO deve rolar a coluna esquerda de volta ao topo (scrollTop permanece 260, smoothScrollTopCalled === false)
             // - Deve manter o foco no cartão ativado (ch2Btn)
-            // - Deve abrir o preview deslizante no topo da área visível (data-live-hero-docked="true", data-live-preview-state="open")
+            // - O painel direito permanente permanece visível (data-live-right-panel="true", data-live-preview-state="open")
             const mainScrollEl = liveEpgContainer.querySelector<HTMLElement>('main[data-scroll-container="true"]')!;
-            assert(mainScrollEl, `[12.23][${testDisplayMode}] Container principal com rolagem deve existir`);
+            assert(mainScrollEl, `[12.23][${testDisplayMode}] Coluna esquerda principal com rolagem deve existir`);
             mainScrollEl.scrollTop = 260;
             let smoothScrollTopCalled = false;
             (mainScrollEl as any).scrollTo = (opts: any) => {
@@ -20093,12 +20112,12 @@ if (args[0] === 'add' && args[1] === 'android') {
             assert.strictEqual(
               smoothScrollTopCalled,
               false,
-              `[12.23][${testDisplayMode}] Ao ativar canal estando rolado abaixo, NÃO deve rolar a página de volta para o topo`
+              `[12.23][${testDisplayMode}] Ao ativar canal estando rolado abaixo, NÃO deve rolar a coluna esquerda de volta para o topo`
             );
             assert.strictEqual(
               mainScrollEl.scrollTop,
               260,
-              `[12.23][${testDisplayMode}] O scrollTop da lista de categorias deve permanecer inalterado (260px)`
+              `[12.23][${testDisplayMode}] O scrollTop da coluna esquerda deve permanecer inalterado (260px)`
             );
             assertSameElement(
               document.activeElement,
@@ -20106,16 +20125,16 @@ if (args[0] === 'add' && args[1] === 'android') {
               `[12.23][${testDisplayMode}] O foco deve permanecer no cartão de canal selecionado`
             );
             assert.strictEqual(ch2Btn.getAttribute('data-live-channel-selected'), 'true', `[12.23][${testDisplayMode}] Canal 2 agora é o canal ativo`);
-            const dockedHeroEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-hero="true"]')!;
+            const rightPanelHeroEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-hero="true"]')!;
             assert.strictEqual(
-              dockedHeroEl.getAttribute('data-live-hero-docked'),
+              rightPanelHeroEl.getAttribute('data-live-right-panel'),
               'true',
-              `[12.23][${testDisplayMode}] Com scrollTop abaixo do Hero, 1ª ativação revela o preview deslizante (data-live-hero-docked="true")`
+              `[12.23][${testDisplayMode}] Painel direito permanente deve estar ativo (data-live-right-panel="true")`
             );
             assert.strictEqual(
-              dockedHeroEl.getAttribute('data-live-preview-state'),
+              rightPanelHeroEl.getAttribute('data-live-preview-state'),
               'open',
-              `[12.23][${testDisplayMode}] Estado do preview deslizante deve ser "open"`
+              `[12.23][${testDisplayMode}] Estado do preview no painel direito deve ser "open"`
             );
             assert.strictEqual(
               liveEpgContainer.querySelectorAll('video').length,
@@ -20123,62 +20142,49 @@ if (args[0] === 'add' && args[1] === 'android') {
               `[12.23][${testDisplayMode}] Deve existir apenas 1 instância de <video> no DOM`
             );
 
+            const nowPlayingCh2El = liveEpgContainer.querySelector<HTMLElement>('[data-live-now-playing="true"]')!;
             const emptyStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="empty"]');
             assert(
               emptyStateEl && emptyStateEl.textContent?.includes('Programação indisponível'),
-              `[12.23][${testDisplayMode}] Canal 2 com apenas programas passados/futuros deve exibir Programação indisponível`
+              `[12.23][${testDisplayMode}] Canal 2 sem programa ativo no instante atual deve exibir Programação indisponível em Passando agora`
             );
             assert(
-              !liveEpgContainer.textContent?.includes('Programa Já Encerrado') &&
-                !liveEpgContainer.textContent?.includes('Programa Futuro Ainda Não Iniciado'),
+              !nowPlayingCh2El.textContent?.includes('Programa Já Encerrado') &&
+                !nowPlayingCh2El.textContent?.includes('Programa Futuro Ainda Não Iniciado'),
               `[12.23][${testDisplayMode}] Programas encerrados ou futuros NUNCA devem ser exibidos como Passando agora`
             );
             assert.strictEqual(liveEpgContainer.querySelector('[data-live-epg-progress="true"]'), null, `[12.23][${testDisplayMode}] Canal 2 sem programa ativo em nowMs não exibe barra de progresso`);
 
-            // Estado 4 (Ciclo 12.27-b): Pressionar uma seta (ArrowRight) enquanto o preview deslizante está aberto:
-            // - Recolhe o preview deslizante (data-live-hero-docked="false", data-live-preview-state="collapsed")
-            // - A seta NÃO é consumida apenas para fechar: o foco avança normalmente para o Canal 3 na mesma tecla!
+            // Na lista cronológica do painel direito do Canal 2, o programa já encerrado foi descartado e o programa futuro aparece como próximo horário (data-epg-item-current="false")
+            const epgScrollElCh2 = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-scroll="true"]')!;
+            assert(
+              !epgScrollElCh2.textContent?.includes('Programa Já Encerrado') &&
+                epgScrollElCh2.textContent?.includes('Programa Futuro Ainda Não Iniciado'),
+              `[12.23][${testDisplayMode}] Lista cronológica de EPG do Canal 2 deve descartar programas encerrados e listar programas futuros`
+            );
+
+            // Navegar com setas na coluna esquerda (ArrowRight -> Canal 3 -> ArrowLeft -> Canal 2) mantém o painel direito aberto e estável
             await dispatchArrowKey('ArrowRight');
-            assert.strictEqual(
-              dockedHeroEl.getAttribute('data-live-hero-docked'),
-              'false',
-              `[12.23][${testDisplayMode}] Pressionar seta com preview deslizante aberto deve recolher o painel (data-live-hero-docked="false")`
-            );
-            assert.strictEqual(
-              dockedHeroEl.getAttribute('data-live-preview-state'),
-              'collapsed',
-              `[12.23][${testDisplayMode}] Estado do preview após seta deve ser "collapsed"`
-            );
             assertSameElement(
               document.activeElement,
               ch3Btn,
-              `[12.23][${testDisplayMode}] A seta pressionada com preview aberto avança o foco diretamente para o próximo cartão (Canal 3)`
+              `[12.23][${testDisplayMode}] ArrowRight avança o foco diretamente para o próximo cartão (Canal 3)`
+            );
+            assert.strictEqual(
+              rightPanelHeroEl.getAttribute('data-live-preview-state'),
+              'open',
+              `[12.23][${testDisplayMode}] Painel direito permanece visível e aberto durante navegação por setas no catálogo`
             );
             assert.strictEqual(
               mainScrollEl.scrollTop,
               260,
-              `[12.23][${testDisplayMode}] Recolher o preview ao navegar com setas preserva scrollTop=260`
+              `[12.23][${testDisplayMode}] Navegar com setas preserva scrollTop=260 na coluna esquerda`
             );
 
-            // Estado 5 -> Estado 2: Voltar o foco ao Canal 2 e ativar novamente com preview recolhido reabre o preview deslizante primeiro
             await dispatchArrowKey('ArrowLeft');
             assertSameElement(document.activeElement, ch2Btn, `[12.23][${testDisplayMode}] ArrowLeft retorna o foco ao Canal 2`);
-            await act(async () => {
-              ch2Btn.click();
-              await new Promise((r) => setTimeout(r, 20));
-            });
-            assert.strictEqual(
-              dockedHeroEl.getAttribute('data-live-hero-docked'),
-              'true',
-              `[12.23][${testDisplayMode}] Reativar o mesmo canal após o preview ter sido recolhido reabre o preview deslizante primeiro`
-            );
-            assert.strictEqual(
-              liveEpgContainer.querySelector('[data-player-container="true"][data-focus-scope="modal"]'),
-              null,
-              `[12.23][${testDisplayMode}] Reabrir preview recolhido não entra diretamente em tela cheia na 1ª ativação`
-            );
 
-            // Estado 3: Segunda ativação consecutiva no canal já ativo com preview aberto abre tela cheia preservando a mesma instância de <video>
+            // Segunda ativação consecutiva no canal já ativo (Canal 2) abre tela cheia preservando a mesma instância de <video>
             const currentVideoBeforeFs = liveEpgContainer.querySelector('video')!;
             await act(async () => {
               ch2Btn.click();
@@ -20186,7 +20192,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             });
             assert(
               liveEpgContainer.querySelector('[data-player-container="true"][data-focus-scope="modal"]') !== null,
-              `[12.23][${testDisplayMode}] 2º clique consecutivo no canal ativo com preview aberto abre tela cheia`
+              `[12.23][${testDisplayMode}] 2º clique consecutivo no canal ativo abre tela cheia`
             );
             assertSameElement(
               liveEpgContainer.querySelector('video'),
@@ -20194,7 +20200,7 @@ if (args[0] === 'add' && args[1] === 'android') {
               `[12.23][${testDisplayMode}] Entrar em tela cheia preserva o mesmo <video>`
             );
 
-            // Escape sai da tela cheia preservando Hero e focando o canal selecionado
+            // Escape sai da tela cheia preservando o painel direito e focando o canal selecionado
             await dispatchArrowKey('Escape');
             await act(async () => {
               await new Promise((r) => setTimeout(r, 20));
@@ -20202,21 +20208,9 @@ if (args[0] === 'add' && args[1] === 'android') {
             assert.strictEqual(
               liveEpgContainer.querySelector('[data-player-container="true"][data-focus-scope="modal"]'),
               null,
-              `[12.23][${testDisplayMode}] Escape sai da tela cheia mantendo o preview no Hero`
+              `[12.23][${testDisplayMode}] Escape sai da tela cheia mantendo o preview no painel direito`
             );
             assertSameElement(document.activeElement, ch2Btn, `[12.23][${testDisplayMode}] Sair da tela cheia devolve foco ao canal ativo`);
-
-            // Retornar scrollTop ao topo (0) restaura o Hero na posição natural do topo
-            await act(async () => {
-              mainScrollEl.scrollTop = 0;
-              mainScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
-              await new Promise((r) => setTimeout(r, 20));
-            });
-            assert.strictEqual(
-              dockedHeroEl.getAttribute('data-live-hero-docked'),
-              'false',
-              `[12.23][${testDisplayMode}] Voltar ao topo restaura o Hero na posição natural (data-live-hero-docked="false")`
-            );
 
             // Testar Canal 3 (EPG carregando -> resolvido vazio) e Canal 4 (EPG com erro)
             await act(async () => {
@@ -20235,17 +20229,17 @@ if (args[0] === 'add' && args[1] === 'android') {
             });
             assert(liveEpgContainer.querySelector('[data-epg-state="error"]'), `[12.23][${testDisplayMode}] Canal 4 com falha no EPG mostra Programação indisponível`);
 
-            // Verificar tokens CSS da nova arquitetura de cards largos (largura equivalente a 3 cards de filmes + 2 gaps)
+            // Verificar tokens CSS da nova arquitetura de cards horizontais compactos (16.5rem desktop / 16.5*--nc-rem TV)
             const indexCssContent = fs.readFileSync(
               path.resolve(process.cwd(), 'src/index.css'),
               'utf-8'
             );
             assert(
               indexCssContent.includes('.nc-live-wide-card') &&
-                indexCssContent.includes('--nc-tv-row-card-live-wide-w: calc(29.75 * var(--nc-rem))') &&
-                indexCssContent.includes('width: 35rem') &&
+                indexCssContent.includes('--nc-tv-row-card-live-wide-w: calc(16.5 * var(--nc-rem))') &&
+                indexCssContent.includes('width: 16.5rem') &&
                 indexCssContent.includes('--nc-tv-row-card-live-wide-h'),
-              `[12.23][${testDisplayMode}] src/index.css deve definir tokens e largura equivalente a 3 cards de filmes (35rem desktop / 29.75*--nc-rem TV) para os cards largos da TV ao Vivo`
+              `[12.23][${testDisplayMode}] src/index.css deve definir tokens compactos (16.5rem desktop / 16.5*--nc-rem TV) para os cards da TV ao Vivo`
             );
           }
 
@@ -27166,13 +27160,41 @@ if (args[0] === 'add' && args[1] === 'android') {
           }
 
           // ===================================================================
-          // 12.27-b: Reutilização de HorizontalRow na TV ao Vivo, D-Pad Vertical/Horizontal
-          // em 16 Categorias × 24 Canais e Preview Deslizante (Estados 1 a 5) sem Salto de Scroll
+          // 12.27-c: Arquitetura em Duas Colunas na TV ao Vivo (Catálogo à Esquerda + Painel
+          // Permanente de Reprodução e EPG à Direita), Cartões Compactos, Capitalização Natural
+          // e Navegação D-Pad 16×24 sem Salto de Scroll
           // ===================================================================
           {
+            const { formatLiveCategoryTitle } = await import('../src/utils/categoryLabel');
+            assert.strictEqual(
+              formatLiveCategoryTitle('ESPORTES AO VIVO', 'live'),
+              'Esportes ao vivo',
+              '[12.27-c] formatLiveCategoryTitle deve normalizar ESPORTES AO VIVO para Esportes ao vivo'
+            );
+            assert.strictEqual(
+              formatLiveCategoryTitle('CANAIS DE FILMES', 'live'),
+              'Canais de filmes',
+              '[12.27-c] formatLiveCategoryTitle deve normalizar CANAIS DE FILMES para Canais de filmes'
+            );
+            assert.strictEqual(
+              formatLiveCategoryTitle('NOTÍCIAS CNN HD', 'live'),
+              'Notícias CNN HD',
+              '[12.27-c] formatLiveCategoryTitle deve preservar siglas legítimas como CNN e HD'
+            );
+            assert.strictEqual(
+              formatLiveCategoryTitle('CANAIS | ESPORTES ESPN 4K', 'live'),
+              'Esportes ESPN 4K',
+              '[12.27-c] formatLiveCategoryTitle deve limpar prefixo CANAIS | e preservar ESPN e 4K'
+            );
+
             const live16Categories = Array.from({ length: 16 }, (_, catIdx) => ({
               category_id: `live_cat_${catIdx + 1}`,
-              category_name: `Categoria Ao Vivo ${catIdx + 1}`,
+              category_name:
+                catIdx === 0
+                  ? 'ESPORTES AO VIVO'
+                  : catIdx === 1
+                    ? 'CANAIS DE FILMES HBO'
+                    : `CATEGORIA AO VIVO ${catIdx + 1}`,
             }));
             const live16x24Streams: any[] = [];
             for (let catIdx = 0; catIdx < 16; catIdx++) {
@@ -27266,23 +27288,44 @@ if (args[0] === 'add' && args[1] === 'android') {
                 setStage1NavMode('remote');
               });
 
+              const twoColContainer = live1227bContainer.querySelector<HTMLElement>(
+                '[data-live-two-column-layout="true"]'
+              )!;
               const liveMainEl = live1227bContainer.querySelector<HTMLElement>(
-                'main[data-scroll-container="true"]'
+                'main[data-scroll-container="true"][data-live-catalog-column="true"]'
               )!;
               const liveRowsContainer = live1227bContainer.querySelector<HTMLElement>(
                 '[data-showcase-rows-container="true"]'
               )!;
-              const liveHeroSlot = live1227bContainer.querySelector<HTMLElement>(
-                '[data-live-hero-slot="true"]'
+              const liveRightCol = live1227bContainer.querySelector<HTMLElement>(
+                '[data-live-right-column="true"]'
               )!;
               assert(
-                liveMainEl && liveRowsContainer && liveHeroSlot,
-                '[12.27-b] Containers principais da vitrine de TV ao Vivo devem existir'
+                twoColContainer && liveMainEl && liveRowsContainer && liveRightCol,
+                '[12.27-c] Layout em duas colunas (coluna esquerda de catálogo + coluna direita de reprodução/EPG) deve existir'
               );
               assert.strictEqual(
                 liveRowsContainer.getAttribute('data-showcase-total-rows'),
                 '16',
-                '[12.27-b] Vitrine deve registrar 16 fileiras de categorias'
+                '[12.27-c] Vitrine na coluna esquerda deve registrar 16 fileiras de categorias'
+              );
+
+              // Verificar capitalização natural dos títulos das categorias na coluna esquerda
+              const row0Heading = liveRowsContainer.querySelector<HTMLElement>(
+                '[data-home-row-index="0"] h2'
+              );
+              const row1Heading = liveRowsContainer.querySelector<HTMLElement>(
+                '[data-home-row-index="1"] h2'
+              );
+              assert.strictEqual(
+                row0Heading?.textContent?.trim(),
+                'Esportes ao vivo',
+                '[12.27-c] Título da categoria 0 deve seguir capitalização natural (Esportes ao vivo)'
+              );
+              assert.strictEqual(
+                row1Heading?.textContent?.trim(),
+                'Canais de filmes HBO',
+                '[12.27-c] Título da categoria 1 deve seguir capitalização natural preservando sigla HBO'
               );
 
               Object.defineProperty(liveMainEl, 'clientHeight', {
@@ -27294,36 +27337,34 @@ if (args[0] === 'add' && args[1] === 'android') {
                   top: 100,
                   bottom: 900,
                   left: 0,
-                  right: 1440,
-                  width: 1440,
+                  right: 720,
+                  width: 720,
                   height: 800,
                   x: 0,
                   y: 100,
                   toJSON: () => ({}),
                 }) as DOMRect;
 
-              const HERO_SIM_HEIGHT = 480;
-              const ROW_SIM_HEIGHT = 230;
-              const CARD_SIM_WIDTH = 560;
+              liveRightCol.getBoundingClientRect = () =>
+                ({
+                  top: 100,
+                  bottom: 900,
+                  left: 720,
+                  right: 1440,
+                  width: 720,
+                  height: 800,
+                  x: 720,
+                  y: 100,
+                  toJSON: () => ({}),
+                }) as DOMRect;
+
+              const ROW_SIM_HEIGHT = 176;
+              const CARD_SIM_WIDTH = 264;
+              const CARD_SIM_HEIGHT = 88;
               const CARD_SIM_GAP = 16;
               const CARD_SIM_STEP = CARD_SIM_WIDTH + CARD_SIM_GAP;
 
               const installLiveDynamicRects = () => {
-                liveHeroSlot.getBoundingClientRect = () => {
-                  const top = 100 - (liveMainEl.scrollTop || 0);
-                  return {
-                    top,
-                    bottom: top + HERO_SIM_HEIGHT,
-                    left: 40,
-                    right: 1400,
-                    width: 1360,
-                    height: HERO_SIM_HEIGHT,
-                    x: 40,
-                    y: top,
-                    toJSON: () => ({}),
-                  } as DOMRect;
-                };
-
                 const allBlocks = Array.from(
                   liveRowsContainer.querySelectorAll<HTMLElement>('[data-scroll-block="true"]')
                 );
@@ -27332,17 +27373,17 @@ if (args[0] === 'add' && args[1] === 'android') {
                     blk.getAttribute('data-showcase-row-index') || '0',
                     10
                   );
-                  const cTop = HERO_SIM_HEIGHT + rIdx * ROW_SIM_HEIGHT;
+                  const cTop = rIdx * ROW_SIM_HEIGHT;
                   const blockRectFn = () => {
                     const vTop = 100 + cTop - (liveMainEl.scrollTop || 0);
                     return {
                       top: vTop,
                       bottom: vTop + ROW_SIM_HEIGHT,
-                      left: 40,
-                      right: 1400,
-                      width: 1360,
+                      left: 24,
+                      right: 696,
+                      width: 672,
                       height: ROW_SIM_HEIGHT,
-                      x: 40,
+                      x: 24,
                       y: vTop,
                       toJSON: () => ({}),
                     } as DOMRect;
@@ -27356,7 +27397,7 @@ if (args[0] === 'add' && args[1] === 'android') {
                   const navRow = blk.querySelector<HTMLElement>('[data-nav-row="true"]');
                   if (navRow) {
                     Object.defineProperty(navRow, 'clientWidth', {
-                      value: 1360,
+                      value: 672,
                       configurable: true,
                     });
                     Object.defineProperty(navRow, 'scrollWidth', {
@@ -27364,15 +27405,15 @@ if (args[0] === 'add' && args[1] === 'android') {
                       configurable: true,
                     });
                     navRow.getBoundingClientRect = () => {
-                      const vTop = 100 + cTop + 44 - (liveMainEl.scrollTop || 0);
+                      const vTop = 100 + cTop + 40 - (liveMainEl.scrollTop || 0);
                       return {
                         top: vTop,
-                        bottom: vTop + 148,
-                        left: 40,
-                        right: 1400,
-                        width: 1360,
-                        height: 148,
-                        x: 40,
+                        bottom: vTop + CARD_SIM_HEIGHT + 16,
+                        left: 24,
+                        right: 696,
+                        width: 672,
+                        height: CARD_SIM_HEIGHT + 16,
+                        x: 24,
                         y: vTop,
                         toJSON: () => ({}),
                       } as DOMRect;
@@ -27387,16 +27428,16 @@ if (args[0] === 'add' && args[1] === 'android') {
                         10
                       );
                       card.getBoundingClientRect = () => {
-                        const vTop = 100 + cTop + 44 - (liveMainEl.scrollTop || 0);
+                        const vTop = 100 + cTop + 40 - (liveMainEl.scrollTop || 0);
                         const sLeft = navRow.scrollLeft || 0;
-                        const left = 40 + cIdx * CARD_SIM_STEP - sLeft;
+                        const left = 24 + cIdx * CARD_SIM_STEP - sLeft;
                         return {
                           top: vTop,
-                          bottom: vTop + 132,
+                          bottom: vTop + CARD_SIM_HEIGHT,
                           left,
                           right: left + CARD_SIM_WIDTH,
                           width: CARD_SIM_WIDTH,
-                          height: 132,
+                          height: CARD_SIM_HEIGHT,
                           x: left,
                           y: vTop,
                           toJSON: () => ({}),
@@ -27435,11 +27476,11 @@ if (args[0] === 'add' && args[1] === 'android') {
                 installLiveDynamicRects();
               };
 
-              // 1. Validar reutilização de HorizontalRow e superfícies visuais na fileira 0
+              // 1. Validar reutilização de HorizontalRow e cartões compactos na fileira 0
               const row0Wrapper = liveRowsContainer.querySelector<HTMLElement>(
                 '[data-home-row-index="0"]'
               )!;
-              assert(row0Wrapper, '[12.27-b] Fileira 0 deve estar montada com data-home-row-index="0"');
+              assert(row0Wrapper, '[12.27-c] Fileira 0 deve estar montada com data-home-row-index="0"');
               const row0Card0 = row0Wrapper.querySelector<HTMLButtonElement>(
                 'button[data-live-channel-btn="true"][data-row-card-index="0"]'
               )!;
@@ -27447,17 +27488,17 @@ if (args[0] === 'add' && args[1] === 'android') {
                 row0Card0 &&
                   row0Card0.classList.contains('nc-live-wide-card') &&
                   row0Card0.classList.contains('nc-showcase-card'),
-                '[12.27-b] Cartão de canal deve usar nc-live-wide-card e nc-showcase-card dentro do HorizontalRow'
+                '[12.27-c] Cartão de canal deve usar nc-live-wide-card e nc-showcase-card dentro do HorizontalRow'
               );
               const visualLayer0 = row0Card0.querySelector<HTMLElement>('.nc-card-visual-layer')!;
               assert(
                 visualLayer0 &&
                   visualLayer0.className.includes('bg-nc-bg-card') &&
                   visualLayer0.className.includes('border-nc-border'),
-                '[12.27-b] Superfície do cartão deve usar bg-nc-bg-card e border-nc-border como Filmes e Séries'
+                '[12.27-c] Superfície do cartão deve usar bg-nc-bg-card e border-nc-border como Filmes e Séries'
               );
 
-              // 2. Navegação horizontal D-Pad por todos os 24 canais da fileira 0 (0 -> 23 -> 0)
+              // 2. Navegação horizontal D-Pad por todos os 24 canais da fileira 0 na coluna esquerda (0 -> 23 -> 0)
               await act(async () => {
                 row0Card0.focus();
               });
@@ -27468,7 +27509,7 @@ if (args[0] === 'add' && args[1] === 'android') {
                   activeEl !== null &&
                     activeEl.getAttribute('data-live-channel-btn') === 'true' &&
                     Number(activeEl.getAttribute('data-row-card-index')) === expectedIdx,
-                  `[12.27-b] ArrowRight na fileira 0 deve avançar para o canal ${expectedIdx} (obteve ${activeEl?.getAttribute('data-row-card-index')})`
+                  `[12.27-c] ArrowRight na fileira 0 deve avançar para o canal ${expectedIdx} (obteve ${activeEl?.getAttribute('data-row-card-index')})`
                 );
               }
               for (let expectedIdx = 22; expectedIdx >= 0; expectedIdx--) {
@@ -27478,11 +27519,11 @@ if (args[0] === 'add' && args[1] === 'android') {
                   activeEl !== null &&
                     activeEl.getAttribute('data-live-channel-btn') === 'true' &&
                     Number(activeEl.getAttribute('data-row-card-index')) === expectedIdx,
-                  `[12.27-b] ArrowLeft na fileira 0 deve retornar para o canal ${expectedIdx} (obteve ${activeEl?.getAttribute('data-row-card-index')})`
+                  `[12.27-c] ArrowLeft na fileira 0 deve retornar para o canal ${expectedIdx} (obteve ${activeEl?.getAttribute('data-row-card-index')})`
                 );
               }
 
-              // 3. Navegação vertical D-Pad pelas 16 categorias (0 -> 15 -> 0) sem pular fileiras e sem perder foco
+              // 3. Navegação vertical D-Pad pelas 16 categorias na coluna esquerda (0 -> 15 -> 0) sem pular fileiras e sem perder foco
               for (let expectedRow = 1; expectedRow < 16; expectedRow++) {
                 await pressLiveKey('ArrowDown');
                 const activeEl = document.activeElement as HTMLElement | null;
@@ -27493,7 +27534,7 @@ if (args[0] === 'add' && args[1] === 'android') {
                 assert.strictEqual(
                   actualRow,
                   expectedRow,
-                  `[12.27-b] ArrowDown deve avançar sequencialmente para a categoria ${expectedRow} sem pular fileiras (obteve ${actualRow})`
+                  `[12.27-c] ArrowDown deve avançar sequencialmente para a categoria ${expectedRow} sem pular fileiras (obteve ${actualRow})`
                 );
               }
               for (let expectedRow = 14; expectedRow >= 0; expectedRow--) {
@@ -27506,11 +27547,11 @@ if (args[0] === 'add' && args[1] === 'android') {
                 assert.strictEqual(
                   actualRow,
                   expectedRow,
-                  `[12.27-b] ArrowUp deve retornar sequencialmente para a categoria ${expectedRow} sem pular fileiras (obteve ${actualRow})`
+                  `[12.27-c] ArrowUp deve retornar sequencialmente para a categoria ${expectedRow} sem pular fileiras (obteve ${actualRow})`
                 );
               }
 
-              // 4. Descer até a categoria 8, avançar até o canal 4 e validar Estados 1 a 5 do preview deslizante
+              // 4. Descer até a categoria 8, avançar até o canal 4 e validar seleção no painel direito permanente sem salto de scroll
               for (let r = 1; r <= 8; r++) {
                 await pressLiveKey('ArrowDown');
               }
@@ -27524,12 +27565,11 @@ if (args[0] === 'add' && args[1] === 'android') {
               assert(
                 row8Wrapper &&
                   row8Card4.getAttribute('data-row-card-index') === '4',
-                '[12.27-b] Foco deve estar posicionado na categoria 8, canal 4'
+                '[12.27-c] Foco deve estar posicionado na categoria 8, canal 4'
               );
 
-              // Simular scrollTop da lista na altura real da categoria 8 (Hero totalmente fora da tela)
               await act(async () => {
-                liveMainEl.scrollTop = HERO_SIM_HEIGHT + 6 * ROW_SIM_HEIGHT;
+                liveMainEl.scrollTop = 6 * ROW_SIM_HEIGHT;
                 liveMainEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
                 await new Promise((r) => setTimeout(r, 20));
               });
@@ -27538,62 +27578,57 @@ if (args[0] === 'add' && args[1] === 'android') {
               const scrollTopBeforeActivate = liveMainEl.scrollTop;
               const scrollLeftBeforeActivate = row8NavRow.scrollLeft;
 
-              // Estado 2: 1ª ativação do canal 4 na categoria 8 -> abre preview deslizante sem deslocar scrollTop/scrollLeft
+              // 1ª ativação do canal 4 na categoria 8 -> atualiza painel direito permanente sem deslocar scrollTop/scrollLeft da coluna esquerda
               await act(async () => {
                 row8Card4.click();
                 await new Promise((r) => setTimeout(r, 20));
               });
-              const heroEl1227b = live1227bContainer.querySelector<HTMLElement>('[data-live-hero="true"]')!;
+              const heroEl1227c = live1227bContainer.querySelector<HTMLElement>('[data-live-hero="true"]')!;
               assert.strictEqual(
                 liveMainEl.scrollTop,
                 scrollTopBeforeActivate,
-                '[12.27-b] 1ª ativação em categoria inferior NÃO deve alterar scrollTop (deltaScrollTop === 0)'
+                '[12.27-c] Ativar canal na coluna esquerda NÃO deve alterar scrollTop da coluna esquerda (deltaScrollTop === 0)'
               );
               assert.strictEqual(
                 row8NavRow.scrollLeft,
                 scrollLeftBeforeActivate,
-                '[12.27-b] 1ª ativação NÃO deve alterar scrollLeft da fileira ativa (deltaScrollLeft === 0)'
+                '[12.27-c] Ativar canal NÃO deve alterar scrollLeft da fileira ativa (deltaScrollLeft === 0)'
               );
               assertSameElement(
                 document.activeElement,
                 row8Card4,
-                '[12.27-b] Foco deve permanecer no cartão ativado (categoria 8, canal 4)'
+                '[12.27-c] Foco deve permanecer no cartão ativado (categoria 8, canal 4)'
               );
               assert.strictEqual(
-                heroEl1227b.getAttribute('data-live-hero-docked'),
+                heroEl1227c.getAttribute('data-live-right-panel'),
                 'true',
-                '[12.27-b] Preview deslizante deve abrir (data-live-hero-docked="true")'
+                '[12.27-c] Painel direito permanente deve estar montado (data-live-right-panel="true")'
               );
               assert.strictEqual(
-                heroEl1227b.getAttribute('data-live-preview-state'),
+                heroEl1227c.getAttribute('data-live-preview-state'),
                 'open',
-                '[12.27-b] Estado do preview deve ser "open"'
+                '[12.27-c] Estado do preview no painel direito deve ser "open"'
               );
 
-              // Estado 4: Pressionar ArrowDown com preview deslizante aberto recolhe o preview E avança foco para categoria 9 na mesma tecla
+              // Pressionar ArrowDown na coluna esquerda avança foco para categoria 9 mantendo o painel direito aberto
               await pressLiveKey('ArrowDown');
               const activeAfterDown = document.activeElement as HTMLElement | null;
               const rowAfterDown = activeAfterDown
                 ?.closest<HTMLElement>('[data-home-row-index]')
                 ?.getAttribute('data-home-row-index');
               assert.strictEqual(
-                heroEl1227b.getAttribute('data-live-hero-docked'),
-                'false',
-                '[12.27-b] ArrowDown deve recolher o preview deslizante'
-              );
-              assert.strictEqual(
-                heroEl1227b.getAttribute('data-live-preview-state'),
-                'collapsed',
-                '[12.27-b] Estado do preview após ArrowDown deve ser "collapsed"'
+                heroEl1227c.getAttribute('data-live-preview-state'),
+                'open',
+                '[12.27-c] Painel direito permanente continua aberto ao navegar entre categorias na coluna esquerda'
               );
               assert.strictEqual(
                 rowAfterDown,
                 '9',
-                '[12.27-b] ArrowDown não deve ser consumida apenas para fechar: o foco deve avançar para a categoria 9 na mesma tecla'
+                '[12.27-c] ArrowDown avança o foco diretamente para a categoria 9 na coluna esquerda'
               );
 
               console.log(
-                '✅ [12.27-b] Reutilização de HorizontalRow, navegação D-Pad 16×24 e preview deslizante (Estados 1-5) aprovados!'
+                '✅ [12.27-c] Layout em duas colunas, cartões compactos, capitalização natural e navegação D-Pad 16×24 aprovados!'
               );
             } finally {
               liveDomObserver?.disconnect();

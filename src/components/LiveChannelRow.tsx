@@ -113,8 +113,8 @@ export const LiveChannelCard = React.memo(function LiveChannelCard({
             : 'bg-nc-bg-card border-nc-border'
         }`}
       >
-        {/* Left square dark visual block with centered undistorted logo matching Home live cards */}
-        <div className="h-full aspect-square bg-black/40 border-r border-white/10 flex items-center justify-center p-2.5 sm:p-3 shrink-0 overflow-hidden">
+        {/* Left square dark visual block with centered undistorted logo */}
+        <div className="h-full aspect-square bg-black/40 border-r border-white/10 flex items-center justify-center p-2 shrink-0 overflow-hidden">
           {allowImageRender ? (
             <MediaImage
               src={group.stream_icon}
@@ -131,12 +131,12 @@ export const LiveChannelCard = React.memo(function LiveChannelCard({
           )}
         </div>
 
-        {/* Right metadata column: channel name, real cached EPG title/desc or clean neutral state, valid-only progress */}
-        <div className="flex-1 min-w-0 px-3.5 sm:px-4 py-2.5 flex flex-col justify-between h-full">
-          <div className="flex items-start justify-between gap-2 min-w-0">
+        {/* Right compact metadata column: channel name (up to 2 lines), current program title (1 line), valid-only progress */}
+        <div className="flex-1 min-w-0 px-3 py-2 flex flex-col justify-between h-full">
+          <div className="flex items-start justify-between gap-1.5 min-w-0">
             <p
               data-live-channel-name="true"
-              className={`nc-tv-channel-name nc-card-title font-semibold min-w-0 flex-1 line-clamp-1 group-hover:text-white transition-colors ${
+              className={`nc-tv-channel-name text-xs sm:text-sm font-semibold leading-snug min-w-0 flex-1 line-clamp-2 group-hover:text-white transition-colors ${
                 isSelected ? 'text-white' : 'text-white/95'
               }`}
             >
@@ -145,46 +145,38 @@ export const LiveChannelCard = React.memo(function LiveChannelCard({
             {isSelected && (
               <span
                 aria-hidden="true"
-                className="w-2 h-2 rounded-full bg-red-500 mt-1.5 shrink-0"
+                className="w-2 h-2 rounded-full bg-red-500 mt-1 shrink-0"
               />
             )}
           </div>
 
-          <div className="min-w-0 flex flex-col gap-0.5 my-auto pt-0.5">
+          <div className="min-w-0 flex flex-col gap-1 mt-auto pt-0.5">
             {nowPlaying?.title ? (
-              <>
-                <p className="nc-text-meta font-medium text-white/90 line-clamp-1 whitespace-normal break-words">
-                  {nowPlaying.title}
-                </p>
-                {nowPlaying.description ? (
-                  <p className="nc-text-meta text-nc-text-secondary line-clamp-1 whitespace-normal break-words">
-                    {nowPlaying.description}
-                  </p>
-                ) : nowPlaying.timeSlot ? (
-                  <p className="nc-text-meta font-mono text-nc-text-secondary line-clamp-1">
-                    {nowPlaying.timeSlot}
-                  </p>
-                ) : null}
-              </>
+              <p
+                data-live-card-program-title="true"
+                className="nc-tv-channel-meta text-xs font-medium text-nc-text-secondary line-clamp-1"
+              >
+                {nowPlaying.title}
+              </p>
             ) : (
-              <p className="nc-text-meta text-nc-text-secondary line-clamp-1">
+              <p className="nc-tv-channel-meta text-xs text-nc-text-secondary/75 line-clamp-1">
                 Programação indisponível
               </p>
             )}
-          </div>
 
-          {nowPlaying && nowPlaying.progressPercent !== null && (
-            <div
-              data-live-card-epg-progress="true"
-              className="w-full h-1 rounded-full bg-white/15 overflow-hidden mt-1.5 shrink-0"
-              aria-hidden="true"
-            >
+            {nowPlaying && nowPlaying.progressPercent !== null && (
               <div
-                className="h-full bg-white/90 rounded-full"
-                style={{ width: `${nowPlaying.progressPercent}%` }}
-              />
-            </div>
-          )}
+                data-live-card-epg-progress="true"
+                className="w-full h-1 rounded-full bg-white/15 overflow-hidden shrink-0"
+                aria-hidden="true"
+              >
+                <div
+                  className="h-full bg-white/90 rounded-full"
+                  style={{ width: `${nowPlaying.progressPercent}%` }}
+                />
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </button>

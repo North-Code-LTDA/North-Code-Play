@@ -17,7 +17,7 @@ import { LiveChannelRow, LiveChannelCard } from '../components/LiveChannelRow';
 import { XtreamService } from '../services/xtreamService';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
-import { formatCategoryLabel } from '../utils/categoryLabel';
+import { formatCategoryLabel, formatLiveCategoryTitle } from '../utils/categoryLabel';
 import {
   groupLiveStreams,
   filterLiveChannelGroups,
@@ -28,6 +28,7 @@ import { getOrCreateLiveIndex } from '../utils/catalogIndex';
 import {
   buildEpgCacheKeys,
   resolveNowPlayingProgram,
+  resolveChronologicalEpgSchedule,
   LIVE_SHOWCASE_ROW_WINDOW_SIZE,
   EPG_CLOCK_UPDATE_INTERVAL_MS,
   getLiveEpgClockNowMs,
@@ -183,18 +184,19 @@ function estimateLiveShowcaseRowSlotHeight(title: string, viewportWidth: number)
   if (isTvMode) {
     const clampedScale = Math.max(0.5, Math.min(1.25, tvScale / 100));
     const remPx = 16 * clampedScale;
-    cardHeightPx = 8.75 * remPx;
+    cardHeightPx = 5.5 * remPx;
     headingFontSizePx = Math.min(
       1.5 * remPx,
       Math.max(1.125 * remPx, 0.98 * remPx + 0.0065 * safeVw)
     );
   } else {
-    cardHeightPx = safeVw >= 768 ? 140 : safeVw >= 640 ? 132 : 116;
+    cardHeightPx = safeVw >= 640 ? 88 : 84;
     headingFontSizePx = Math.min(24, Math.max(18, 15.68 + 0.0065 * safeVw));
   }
 
-  const horizontalPadPx = safeVw >= 768 ? 80 : safeVw >= 640 ? 48 : 32;
-  const availableTitleWidthPx = Math.max(160, safeVw - horizontalPadPx);
+  const colWidth = safeVw >= 768 ? Math.round(safeVw * 0.5) : safeVw;
+  const horizontalPadPx = safeVw >= 768 ? 48 : safeVw >= 640 ? 40 : 32;
+  const availableTitleWidthPx = Math.max(160, colWidth - horizontalPadPx);
   const titleLines = estimateTitleLineCount(title, availableTitleWidthPx, headingFontSizePx);
   const headingLineHeightPx = headingFontSizePx * 1.25;
   const headingHeightPx = titleLines * headingLineHeightPx;
@@ -426,8 +428,8 @@ interface LiveRowEntry {
 }
 
 const VIRTUAL_LIVE_CATEGORIES = [
-  { category_id: 'nc_recent', category_name: 'Assistidos Recentemente' },
-  { category_id: 'nc_fav', category_name: 'Canais Favoritos' },
+  { category_id: 'nc_recent', category_name: 'Assistidos recentemente' },
+  { category_id: 'nc_fav', category_name: 'Canais favoritos' },
 ];
 
 interface LiveChannelGridProps {
@@ -486,7 +488,7 @@ const LiveChannelGrid = React.memo(function LiveChannelGrid({
         data-nav-grid="true"
         data-virtual-container="true"
         data-virtual-total={groups.length}
-        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
+        className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3.5"
       >
         {groups.slice(gridStartIndex, gridEndIndex).map((group, localIdx) => {
           const actualIndex = gridStartIndex + localIdx;
@@ -554,19 +556,8 @@ export const LiveTvView = React.memo(function LiveTvView({
   const [isCategoriesMenuOpen, setIsCategoriesMenuOpen] = useState(false);
   const [isRetryingDomain, setIsRetryingDomain] = useState(false);
 
-  // Active Hero playback, sliding docked preview & variant states
+  // Active channel playback & variant states in permanent right-hand panel
   const [selectedGroup, setSelectedGroup] = useState<LiveChannelGroup | null>(null);
-  const [isPreviewOpen, setIsPreviewOpen] = useState<boolean>(false);
-  const isPreviewOpenRef = useRef<boolean>(false);
-  isPreviewOpenRef.current = isPreviewOpen;
-
-  const [isHeroScrolledOutOfView, setIsHeroScrolledOutOfView] = useState<boolean>(false);
-  const isHeroScrolledOutOfViewRef = useRef<boolean>(false);
-  isHeroScrolledOutOfViewRef.current = isHeroScrolledOutOfView;
-
-  const [heroSlotHeightPx, setHeroSlotHeightPx] = useState<number>(470);
-  const heroSlotHeightRef = useRef<number>(470);
-  const [dockTopPx, setDockTopPx] = useState<number>(112);
 
   const [activeVariantStream, setActiveVariantStream] = useState<any | null>(null);
   const [selectedResolutionMode, setSelectedResolutionMode] = useState<'auto' | string>('auto');
@@ -576,7 +567,7 @@ export const LiveTvView = React.memo(function LiveTvView({
   const [miniPlayerError, setMiniPlayerError] = useState<string | null>(null);
   const [miniPlayerLoading, setMiniPlayerLoading] = useState(false);
 
-  // EPG state for active channel + passive session cache for wide channel cards + shared temporal clock
+  // EPG state for active channel + passive session cache for channel cards + shared temporal clock
   const [epgData, setEpgData] = useState<any[]>([]);
   const [loadingEpg, setLoadingEpg] = useState(false);
   const [epgError, setEpgError] = useState<string | null>(null);
@@ -602,7 +593,7 @@ export const LiveTvView = React.memo(function LiveTvView({
   // Scroll & showcase vertical windowing refs (matching CatalogShowcaseView)
   const viewRootRef = useRef<HTMLDivElement>(null);
   const mainContainerRef = useRef<HTMLElement>(null);
-  const heroSlotRef = useRef<HTMLDivElement>(null);
+  const rightColumnRef = useRef<HTMLDivElement>(null);
   const categoriesTriggerRef = useRef<HTMLButtonElement>(null);
   const categoriesMenuRef = useRef<HTMLDivElement>(null);
   const showcaseRowsContainerRef = useRef<HTMLDivElement | null>(null);
@@ -733,10 +724,6 @@ export const LiveTvView = React.memo(function LiveTvView({
     heroWasExplicitlyActivatedRef.current = false;
     consumedIntentRequestIdRef.current = null;
     lastActivatedCardRef.current = null;
-    isPreviewOpenRef.current = false;
-    setIsPreviewOpen(false);
-    isHeroScrolledOutOfViewRef.current = false;
-    setIsHeroScrolledOutOfView(false);
     setSelectedGroup(null);
     setActiveVariantStream(null);
     setSelectedResolutionMode('auto');
@@ -856,7 +843,7 @@ export const LiveTvView = React.memo(function LiveTvView({
     if (recentGroups.length > 0) {
       rows.push({
         key: 'nc_recent',
-        title: 'Assistidos Recentemente',
+        title: 'Assistidos recentemente',
         groups: recentGroups,
         virtualize: true,
       });
@@ -865,7 +852,7 @@ export const LiveTvView = React.memo(function LiveTvView({
     if (favoriteGroups.length > 0) {
       rows.push({
         key: 'nc_fav',
-        title: 'Canais Favoritos',
+        title: 'Canais favoritos',
         groups: favoriteGroups,
         virtualize: true,
       });
@@ -890,13 +877,13 @@ export const LiveTvView = React.memo(function LiveTvView({
       if (groups.length === 0) continue;
       rows.push({
         key: `cat_${catId}`,
-        title: formatCategoryLabel(cat.category_name, 'live'),
+        title: formatLiveCategoryTitle(cat.category_name, 'live'),
         groups,
         virtualize: true,
       });
     }
 
-    // If categories list was empty/omitted but streams exist directly, expose a fallback "Canais Ao Vivo" row
+    // If categories list was empty/omitted but streams exist directly, expose a fallback "Canais ao vivo" row
     if (rows.length === 0) {
       const sourcePool = allLiveStreams.length > 0 ? allLiveStreams : liveStreams;
       if (sourcePool.length > 0) {
@@ -905,7 +892,7 @@ export const LiveTvView = React.memo(function LiveTvView({
         if (allGrps.length > 0) {
           rows.push({
             key: 'all_channels',
-            title: 'Canais Ao Vivo',
+            title: 'Canais ao vivo',
             groups: allGrps,
             virtualize: true,
           });
@@ -1052,10 +1039,9 @@ export const LiveTvView = React.memo(function LiveTvView({
   );
 
   // Explicit activation of a channel card (mouse click, touch tap, Enter/Space):
-  // - NEVER scrolls the page back to the top or shifts category scrollTop / row scrollLeft.
-  // - 1st activation: selects channel and opens preview (in top Hero or sliding dock if scrolled down).
-  // - 2nd consecutive activation on same channel while preview is open: expands to fullscreen.
-  // - Activation on same channel after sliding preview was collapsed: reopens preview first.
+  // - NEVER scrolls the left catalog column back to the top or shifts category scrollTop / row scrollLeft.
+  // - 1st activation: selects channel and starts playback & EPG in the permanent right-hand panel.
+  // - 2nd consecutive activation on same active channel: expands to fullscreen.
   const handleActivateGroup = useCallback(
     (group: LiveChannelGroup, cardEl?: HTMLButtonElement | null) => {
       if (!group) return;
@@ -1070,26 +1056,10 @@ export const LiveTvView = React.memo(function LiveTvView({
         }
       }
 
-      const mainEl = mainContainerRef.current;
-      const currentScrollTop = mainEl ? mainEl.scrollTop || 0 : 0;
-      const threshold = Math.max(180, Math.round(heroSlotHeightRef.current * 0.55));
-      const isScrolledOut = currentScrollTop > threshold;
-      if (isHeroScrolledOutOfViewRef.current !== isScrolledOut) {
-        isHeroScrolledOutOfViewRef.current = isScrolledOut;
-        setIsHeroScrolledOutOfView(isScrolledOut);
-      }
-      if (mainEl) {
-        const mRect = mainEl.getBoundingClientRect();
-        if (mRect.top > 0) {
-          setDockTopPx(Math.round(mRect.top));
-        }
-      }
-
-      // Estado 3: 2nd consecutive activation on the SAME channel while preview is open -> expand fullscreen immediately
+      // 2nd consecutive activation on the SAME active channel -> expand fullscreen immediately
       if (
         selectedGroup &&
         selectedGroup.groupId === group.groupId &&
-        isPreviewOpenRef.current &&
         !miniPlayerError &&
         miniPlayerUrl
       ) {
@@ -1097,87 +1067,14 @@ export const LiveTvView = React.memo(function LiveTvView({
         return;
       }
 
-      // Estado 5 -> Estado 2: Re-activating the SAME channel after its preview was collapsed -> reopen preview & resume playback
-      if (selectedGroup && selectedGroup.groupId === group.groupId && !isPreviewOpenRef.current) {
-        isPreviewOpenRef.current = true;
-        setIsPreviewOpen(true);
-        startVariantAttempt(
-          group,
-          selectedResolutionMode,
-          activeVariantStreamRef.current || undefined
-        );
-        return;
-      }
-
-      // Estado 2: 1st activation of a channel -> select channel, open preview, preserve scrollTop/scrollLeft & card focus
-      isPreviewOpenRef.current = true;
-      setIsPreviewOpen(true);
+      // 1st activation of a channel -> select channel in permanent right panel, preserve scrollTop/scrollLeft & card focus
       setSelectedGroup(group);
       setSelectedResolutionMode('auto');
       attemptedStreamIdsRef.current.clear();
       startVariantAttempt(group, 'auto');
     },
-    [
-      selectedGroup,
-      miniPlayerError,
-      miniPlayerUrl,
-      selectedResolutionMode,
-      startVariantAttempt,
-    ]
+    [selectedGroup, miniPlayerError, miniPlayerUrl, startVariantAttempt]
   );
-
-  // Close sliding dock explicitly (e.g., close button or arrow navigation while docked)
-  const handleCloseDock = useCallback(() => {
-    if (!isPreviewOpenRef.current) return;
-    isPreviewOpenRef.current = false;
-    setIsPreviewOpen(false);
-    if (fallbackTimeoutRef.current) {
-      clearTimeout(fallbackTimeoutRef.current);
-      fallbackTimeoutRef.current = null;
-    }
-  }, []);
-
-  // Estado 4: Pressing any directional arrow key while the sliding docked preview is open
-  // collapses the sliding preview AND lets the same arrow key move focus to the neighboring card/category.
-  useEffect(() => {
-    const onKeyDownCapture = (e: KeyboardEvent) => {
-      if (
-        e.key !== 'ArrowLeft' &&
-        e.key !== 'ArrowRight' &&
-        e.key !== 'ArrowUp' &&
-        e.key !== 'ArrowDown'
-      ) {
-        return;
-      }
-      if (!isHeroScrolledOutOfViewRef.current || !isPreviewOpenRef.current) {
-        return;
-      }
-      if (
-        typeof document !== 'undefined' &&
-        document.querySelector('[data-focus-scope="modal"]') !== null
-      ) {
-        return;
-      }
-      // Collapse sliding preview without consuming the arrow key so spatialNav advances focus in the same keystroke
-      isPreviewOpenRef.current = false;
-      try {
-        flushSync(() => {
-          setIsPreviewOpen(false);
-        });
-      } catch {
-        setIsPreviewOpen(false);
-      }
-      if (fallbackTimeoutRef.current) {
-        clearTimeout(fallbackTimeoutRef.current);
-        fallbackTimeoutRef.current = null;
-      }
-    };
-
-    window.addEventListener('keydown', onKeyDownCapture, true);
-    return () => {
-      window.removeEventListener('keydown', onKeyDownCapture, true);
-    };
-  }, []);
 
   // Consume launch intent from Home ("Canais Ao Vivo")
   useEffect(() => {
@@ -1195,8 +1092,6 @@ export const LiveTvView = React.memo(function LiveTvView({
     consumedIntentRequestIdRef.current = initialChannelIntent.requestId;
     onConsumeChannelIntent?.(initialChannelIntent.requestId);
     heroWasExplicitlyActivatedRef.current = true;
-    isPreviewOpenRef.current = true;
-    setIsPreviewOpen(true);
 
     const rawStreamId = initialChannelIntent.streamId;
     const targetIdStr =
@@ -1242,8 +1137,6 @@ export const LiveTvView = React.memo(function LiveTvView({
       if (mainContainerRef.current) {
         mainContainerRef.current.scrollTop = 0;
       }
-      isHeroScrolledOutOfViewRef.current = false;
-      setIsHeroScrolledOutOfView(false);
       return;
     }
 
@@ -1297,8 +1190,6 @@ export const LiveTvView = React.memo(function LiveTvView({
     (variant: any | 'auto') => {
       if (!selectedGroup) return;
       heroWasExplicitlyActivatedRef.current = true;
-      isPreviewOpenRef.current = true;
-      setIsPreviewOpen(true);
       attemptedStreamIdsRef.current.clear();
 
       if (variant === 'auto') {
@@ -1316,8 +1207,6 @@ export const LiveTvView = React.memo(function LiveTvView({
   const handleExpandFullscreen = useCallback(() => {
     if (!selectedGroup) return;
     heroWasExplicitlyActivatedRef.current = true;
-    isPreviewOpenRef.current = true;
-    setIsPreviewOpen(true);
     setFullscreenRequestTrigger((prev) => prev + 1);
   }, [selectedGroup]);
 
@@ -1388,15 +1277,48 @@ export const LiveTvView = React.memo(function LiveTvView({
   const handleRetryPlayback = useCallback(() => {
     if (!selectedGroup) return;
     heroWasExplicitlyActivatedRef.current = true;
-    isPreviewOpenRef.current = true;
-    setIsPreviewOpen(true);
     attemptedStreamIdsRef.current.clear();
     startVariantAttempt(selectedGroup, selectedResolutionMode);
   }, [selectedGroup, selectedResolutionMode, startVariantAttempt]);
 
+  const handleReturnFocusToCatalog = useCallback(() => {
+    const selectedCard =
+      (lastActivatedCardRef.current && lastActivatedCardRef.current.isConnected
+        ? lastActivatedCardRef.current
+        : null) ||
+      viewRootRef.current?.querySelector<HTMLButtonElement>(
+        'button[data-live-channel-selected="true"]'
+      ) ||
+      viewRootRef.current?.querySelector<HTMLButtonElement>(
+        'button[data-live-channel-btn="true"]'
+      );
+    if (selectedCard && selectedCard.isConnected) {
+      focusElementSafely(selectedCard);
+      return;
+    }
+    if (categoriesTriggerRef.current && isElementFocusable(categoriesTriggerRef.current)) {
+      focusElementSafely(categoriesTriggerRef.current);
+    }
+  }, []);
+
+  const handleFocusRightPanel = useCallback(() => {
+    const playBtn = rightColumnRef.current?.querySelector<HTMLButtonElement>(
+      'button[data-live-hero-play="true"]'
+    );
+    if (playBtn && isElementFocusable(playBtn)) {
+      focusElementSafely(playBtn);
+      return;
+    }
+    const epgScrollEl = rightColumnRef.current?.querySelector<HTMLElement>(
+      '[data-live-epg-scroll="true"]'
+    );
+    if (epgScrollEl && isElementFocusable(epgScrollEl)) {
+      focusElementSafely(epgScrollEl);
+    }
+  }, []);
+
   const handleBackFromHeroPlayer = useCallback(() => {
-    // Restore focus to the active channel card first (preserving the user's position in the grid),
-    // falling back to the Hero play button only if no channel card is connected.
+    // Restore focus to the active channel card first (preserving the user's position in the left catalog)
     const selectedCard =
       (lastActivatedCardRef.current && lastActivatedCardRef.current.isConnected
         ? lastActivatedCardRef.current
@@ -1483,6 +1405,11 @@ export const LiveTvView = React.memo(function LiveTvView({
     [epgData, epgClockNowMs]
   );
 
+  const heroScheduleItems = useMemo(
+    () => resolveChronologicalEpgSchedule(epgData, epgClockNowMs),
+    [epgData, epgClockNowMs]
+  );
+
   // Showcase vertical row measurement & synchronization (identical architecture to CatalogShowcaseView)
   const getRowSlotHeight = useCallback(
     (rowIndex: number): number => {
@@ -1499,25 +1426,9 @@ export const LiveTvView = React.memo(function LiveTvView({
   const measureMountedShowcaseGeometry = useCallback((): void => {
     const mainEl = mainContainerRef.current;
     const rowsContainerEl = showcaseRowsContainerRef.current;
-    if (!mainEl) return;
+    if (!mainEl || !rowsContainerEl) return;
 
     const mainRect = mainEl.getBoundingClientRect();
-    if (mainRect.top > 0) {
-      setDockTopPx(Math.round(mainRect.top));
-    }
-
-    if (heroSlotRef.current && !isHeroScrolledOutOfViewRef.current) {
-      const hRect = heroSlotRef.current.getBoundingClientRect();
-      const rawHeroH = hRect.height || heroSlotRef.current.offsetHeight;
-      if (rawHeroH > 120) {
-        const roundedH = Math.round(rawHeroH);
-        heroSlotHeightRef.current = roundedH;
-        setHeroSlotHeightPx((prev) => (Math.abs(prev - roundedH) > 1 ? roundedH : prev));
-      }
-    }
-
-    if (!rowsContainerEl) return;
-
     const scrollTop = mainEl.scrollTop || 0;
     const topSpacerEl = rowsContainerEl.querySelector<HTMLElement>(
       '[data-showcase-row-spacer="top"]'
@@ -1585,8 +1496,7 @@ export const LiveTvView = React.memo(function LiveTvView({
       if (!shouldVirtualizeShowcaseRows || totalShowcaseRows <= LIVE_SHOWCASE_ROW_WINDOW_SIZE) {
         return 0;
       }
-      const rowsStartOffsetPx =
-        measuredRowsStartOffsetRef.current ?? Math.max(320, heroSlotHeightRef.current + 16);
+      const rowsStartOffsetPx = measuredRowsStartOffsetRef.current ?? 16;
       const relativeTop = Math.max(0, scrollTop - rowsStartOffsetPx);
 
       const offsets = new Array<number>(totalShowcaseRows + 1);
@@ -1840,7 +1750,7 @@ export const LiveTvView = React.memo(function LiveTvView({
     registeredShowcaseContainerRef.current = containerEl;
   }, [totalShowcaseRows, ensureShowcaseRowMounted]);
 
-  // Track whether the natural top Hero slot is scrolled out of view & sync showcase row window on manual scroll
+  // Sync showcase row window on manual scroll in left catalog column
   useEffect(() => {
     const mainEl = mainContainerRef.current;
     if (!mainEl) return;
@@ -1862,32 +1772,10 @@ export const LiveTvView = React.memo(function LiveTvView({
     };
 
     const handleScroll = () => {
-      const currentScrollTop = Math.max(0, mainEl.scrollTop || 0);
-      const threshold = Math.max(180, Math.round(heroSlotHeightRef.current * 0.55));
-      const nextScrolledOut = currentScrollTop > threshold;
-
-      if (nextScrolledOut !== isHeroScrolledOutOfViewRef.current) {
-        isHeroScrolledOutOfViewRef.current = nextScrolledOut;
-        setIsHeroScrolledOutOfView(nextScrolledOut);
-        if (nextScrolledOut) {
-          // Estado 1: Scrolling down past the Hero naturally leaves the Hero out of view
-          // until the user explicitly activates a channel while scrolled down.
-          isPreviewOpenRef.current = false;
-          setIsPreviewOpen(false);
-          if (fallbackTimeoutRef.current) {
-            clearTimeout(fallbackTimeoutRef.current);
-            fallbackTimeoutRef.current = null;
-          }
-        } else if (selectedGroupRef.current) {
-          // Returning to the top of the page restores the top Hero preview
-          isPreviewOpenRef.current = true;
-          setIsPreviewOpen(true);
-        }
-      }
-
       if (isGridMode || !shouldVirtualizeShowcaseRows) return;
       if (isProgrammaticRowShiftRef.current || isDpadShowcaseNavActiveRef.current) return;
 
+      const currentScrollTop = Math.max(0, mainEl.scrollTop || 0);
       measureMountedShowcaseGeometry();
 
       const prevScrollTop = lastManualScrollTopRef.current;
@@ -1955,8 +1843,6 @@ export const LiveTvView = React.memo(function LiveTvView({
         if (mainContainerRef.current) {
           mainContainerRef.current.scrollTop = 0;
         }
-        isHeroScrolledOutOfViewRef.current = false;
-        setIsHeroScrolledOutOfView(false);
         if (getNavMode() === 'remote' && categoriesTriggerRef.current) {
           setTimeout(() => {
             if (categoriesTriggerRef.current) focusElementSafely(categoriesTriggerRef.current);
@@ -1969,8 +1855,6 @@ export const LiveTvView = React.memo(function LiveTvView({
       if (mainContainerRef.current) {
         mainContainerRef.current.scrollTop = 0;
       }
-      isHeroScrolledOutOfViewRef.current = false;
-      setIsHeroScrolledOutOfView(false);
 
       if (
         catId !== 'nc_recent' &&
@@ -2074,8 +1958,6 @@ export const LiveTvView = React.memo(function LiveTvView({
         if (mainContainerRef.current) {
           mainContainerRef.current.scrollTop = 0;
         }
-        isHeroScrolledOutOfViewRef.current = false;
-        setIsHeroScrolledOutOfView(false);
         setTimeout(() => {
           if (categoriesTriggerRef.current && isElementFocusable(categoriesTriggerRef.current)) {
             focusElementSafely(categoriesTriggerRef.current);
@@ -2093,7 +1975,7 @@ export const LiveTvView = React.memo(function LiveTvView({
     const vMatch = VIRTUAL_LIVE_CATEGORIES.find((vc) => vc.category_id === activeCategoryId);
     if (vMatch) return vMatch.category_name;
     const rMatch = liveCategories.find((c) => String(c.category_id) === String(activeCategoryId));
-    return rMatch ? formatCategoryLabel(rMatch.category_name, 'live') : 'Categoria';
+    return rMatch ? formatLiveCategoryTitle(rMatch.category_name, 'live') : 'Categoria';
   }, [activeCategoryId, liveCategories]);
 
   const handleRetryDomain = useCallback(async () => {
@@ -2124,13 +2006,6 @@ export const LiveTvView = React.memo(function LiveTvView({
     loadingLive ||
     (liveCategoriesStatus === 'loading' && liveCategories.length === 0);
 
-  // Estado 5: When the Hero is scrolled out of view and the sliding preview is collapsed,
-  // suspend the embedded streamUrl so hidden background video does not decode indefinitely.
-  const isHeroDockedMode = Boolean(selectedGroup && isHeroScrolledOutOfView);
-  const isDockedPreviewVisible = Boolean(isHeroDockedMode && isPreviewOpen);
-  const effectiveStreamUrl =
-    isHeroScrolledOutOfView && !isPreviewOpen ? '' : miniPlayerUrl;
-
   return (
     <div
       ref={viewRootRef}
@@ -2147,11 +2022,11 @@ export const LiveTvView = React.memo(function LiveTvView({
         </div>
       )}
 
-      {/* Domain Top Bar with "TV ao Vivo" Title & "Categorias" Selector (identical to CatalogShowcaseView) */}
+      {/* Domain Top Bar with "TV ao Vivo" Title, "Categorias" Selector, and D-Pad Bridge to Right Panel */}
       <div
         data-nav-zone="categories"
         data-showcase-categories-bar="true"
-        className="relative z-30 shrink-0 px-4 sm:px-6 md:px-10 pt-3 pb-2 flex flex-wrap items-center justify-between gap-3 bg-nc-bg"
+        className="relative z-30 shrink-0 px-4 sm:px-6 md:px-8 pt-2.5 pb-2 flex flex-wrap items-center justify-between gap-3 bg-nc-bg border-b border-white/10"
       >
         <div data-nav-row="true" className="flex flex-wrap items-center gap-3 sm:gap-4">
           <h1 className="nc-section-title font-bold text-white tracking-tight">TV ao Vivo</h1>
@@ -2167,7 +2042,7 @@ export const LiveTvView = React.memo(function LiveTvView({
               aria-haspopup="listbox"
               aria-expanded={isCategoriesMenuOpen}
               onClick={() => setIsCategoriesMenuOpen((prev) => !prev)}
-              className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-white/[0.08] hover:bg-white/[0.14] border border-white/15 text-white nc-text-subtitle font-semibold transition-colors disabled:opacity-50"
+              className="flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-white/[0.08] hover:bg-white/[0.14] border border-white/15 text-white nc-text-subtitle font-semibold transition-colors disabled:opacity-50 cursor-pointer"
             >
               <Layers className="w-4 h-4 text-nc-primary shrink-0" />
               <span>
@@ -2240,7 +2115,7 @@ export const LiveTvView = React.memo(function LiveTvView({
               {liveCategories.map((cat) => {
                 const catId = String(cat.category_id);
                 const isSelected = activeCategoryId === catId;
-                const formatted = formatCategoryLabel(cat.category_name, 'live');
+                const formatted = formatLiveCategoryTitle(cat.category_name, 'live');
                 return (
                   <button
                     key={catId}
@@ -2270,10 +2145,22 @@ export const LiveTvView = React.memo(function LiveTvView({
               type="button"
               data-back-to-showcase="true"
               onClick={() => handleSelectCategory(null)}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-nc-text-secondary hover:text-white nc-text-subtitle font-medium transition-colors"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-nc-text-secondary hover:text-white nc-text-subtitle font-medium transition-colors cursor-pointer"
             >
               <ChevronLeft className="w-4 h-4 shrink-0" />
               <span>Vitrine</span>
+            </button>
+          )}
+
+          {selectedGroup && (
+            <button
+              type="button"
+              data-live-goto-panel="true"
+              onClick={handleFocusRightPanel}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-white/85 hover:text-white text-xs sm:text-sm font-medium transition-colors cursor-pointer"
+            >
+              <TvMinimalPlay className="w-3.5 h-3.5 shrink-0" />
+              <span>Painel do canal</span>
             </button>
           )}
         </div>
@@ -2286,206 +2173,209 @@ export const LiveTvView = React.memo(function LiveTvView({
         )}
       </div>
 
-      {/* Main Scrollable Content Area (Hero + Category Carousels OR Filtered/Search Grid) */}
-      <main
-        ref={mainContainerRef as React.RefObject<HTMLElement>}
-        data-scroll-container="true"
-        data-nav-zone="content"
-        style={{ overflowAnchor: 'none' }}
-        className="flex-1 bg-nc-bg overflow-y-auto h-full"
+      {/* Two-Column Split Workspace: Left Column (Catalog Carousels/Grid) + Right Column (Permanent 16:9 Preview & Chronological EPG) */}
+      <div
+        data-live-two-column-layout="true"
+        className="flex-1 min-h-0 w-full flex flex-col md:flex-row overflow-hidden bg-nc-bg"
       >
-        {(liveCategoriesError || liveError) && (
-          <div
-            role="status"
-            data-domain-error="live"
-            className="mx-4 sm:mx-6 md:mx-10 mt-3 mb-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
-          >
-            <div className="flex items-start sm:items-center gap-2.5">
-              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
-              <span className="nc-text-subtitle text-amber-200 whitespace-normal break-words">
-                {liveError || liveCategoriesError}
-              </span>
-            </div>
-            <button
-              type="button"
-              data-domain-retry="live"
-              disabled={isRetryingDomain}
-              onClick={handleRetryDomain}
-              className="px-3.5 py-1.5 rounded-lg bg-nc-primary text-black nc-text-subtitle font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+        {/* LEFT COLUMN (~50% on >=768px): Independent Vertical Scroll for Category Carousels / Filtered Grid */}
+        <main
+          ref={mainContainerRef as React.RefObject<HTMLElement>}
+          data-scroll-container="true"
+          data-live-catalog-column="true"
+          data-nav-zone="content"
+          style={{ overflowAnchor: 'none' }}
+          className="w-full md:w-1/2 md:min-w-0 flex-1 md:flex-none md:h-full overflow-y-auto custom-scrollbar bg-nc-bg order-2 md:order-1"
+        >
+          {(liveCategoriesError || liveError) && (
+            <div
+              role="status"
+              data-domain-error="live"
+              className="mx-4 sm:mx-6 mt-3 mb-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRetryingDomain ? 'animate-spin' : ''}`} />
-              <span>Tentar novamente</span>
-            </button>
-          </div>
-        )}
-
-        <div className="pb-16">
-          {/* Natural Top Hero Slot: preserves exact measured height when Hero docks so scrollTop never shifts */}
-          <div
-            ref={heroSlotRef}
-            data-live-hero-slot="true"
-            style={
-              isHeroDockedMode
-                ? { height: `${heroSlotHeightPx}px`, overflowAnchor: 'none' }
-                : { overflowAnchor: 'none' }
-            }
-            className="w-full shrink-0"
-          >
-            <LiveTvHero
-              selectedGroup={selectedGroup}
-              activeVariantStream={activeVariantStream}
-              selectedResolutionMode={selectedResolutionMode}
-              serverUrl={credentials?.serverUrl}
-              streamUrl={effectiveStreamUrl}
-              attemptTrigger={attemptTrigger}
-              fullscreenRequestTrigger={fullscreenRequestTrigger}
-              isLoadingPlayback={miniPlayerLoading}
-              playbackError={miniPlayerError}
-              nowPlaying={heroNowPlaying}
-              loadingEpg={loadingEpg}
-              epgError={epgError}
-              isFavorited={isGroupFavorited(selectedGroup)}
-              isCatalogLoading={isCatalogLoading && totalShowcaseRows === 0}
-              isDocked={isHeroDockedMode}
-              isDockedVisible={isDockedPreviewVisible}
-              dockTopPx={dockTopPx}
-              onCloseDock={handleCloseDock}
-              onExpandFullscreen={handleExpandFullscreen}
-              onRetryPlayback={handleRetryPlayback}
-              onBackFromFullscreen={handleBackFromHeroPlayer}
-              onPlaybackSuccess={handlePlaybackSuccess}
-              onPlaybackFinalError={handlePlaybackFinalError}
-              onSelectResolutionMode={handleSelectResolutionMode}
-              onToggleFavorite={handleToggleHeroFavorite}
-            />
-          </div>
-
-          {isGridMode ? (
-            /* Virtualized Grid for Explicit Category Filter OR Search Results */
-            <div className="px-4 sm:px-6 md:px-10 pt-2 pb-12">
-              <div className="mb-4 flex items-center justify-between gap-2">
-                <h2 className="nc-subsection-title font-bold text-white whitespace-normal break-words">
-                  {hasSearch
-                    ? `Resultados em TV ao Vivo para "${searchQuery}"`
-                    : activeCategoryLabel || 'Canais'}
-                </h2>
+              <div className="flex items-start sm:items-center gap-2.5">
+                <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+                <span className="nc-text-subtitle text-amber-200 whitespace-normal break-words">
+                  {liveError || liveCategoriesError}
+                </span>
               </div>
-
-              {isCatalogLoading && displayedGridGroups.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 text-nc-text-secondary">
-                  <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
-                  <p className="nc-text-subtitle">Carregando canais...</p>
-                </div>
-              ) : displayedGridGroups.length === 0 ? (
-                <div className="text-center py-20 text-nc-text-secondary">
-                  <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                  <p className="nc-text-subtitle">
-                    {hasSearch
-                      ? `Nenhum canal encontrado para "${searchQuery}".`
-                      : activeCategoryId === 'nc_recent'
-                        ? 'Você ainda não assistiu a canais recentemente.'
-                        : activeCategoryId === 'nc_fav'
-                          ? 'Você ainda não adicionou canais aos favoritos.'
-                          : 'Nenhum canal encontrado nesta categoria.'}
-                  </p>
-                </div>
-              ) : (
-                <LiveChannelGrid
-                  groups={displayedGridGroups}
-                  mainContainerRef={mainContainerRef}
-                  resetKey={`live_${activeCategoryId ?? 'showcase'}_${normalizedQuery}`}
-                  serverUrl={credentials?.serverUrl}
-                  accountPrefix={accountPrefix}
-                  selectedGroupId={selectedGroup?.groupId ?? null}
-                  epgCache={epgCacheRef.current}
-                  epgCacheVersion={epgCacheVersion}
-                  referenceNowMs={epgClockNowMs}
-                  onActivateGroup={handleActivateGroup}
-                />
-              )}
+              <button
+                type="button"
+                data-domain-retry="live"
+                disabled={isRetryingDomain}
+                onClick={handleRetryDomain}
+                className="px-3.5 py-1.5 rounded-lg bg-nc-primary text-black nc-text-subtitle font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRetryingDomain ? 'animate-spin' : ''}`} />
+                <span>Tentar novamente</span>
+              </button>
             </div>
-          ) : (
-            /* Vertical Category Showcase Mode (HorizontalRow Carousels of Wide Channel Cards) */
-            <>
-              {isCatalogLoading && totalShowcaseRows === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 text-nc-text-secondary">
-                  <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
-                  <p className="nc-text-subtitle">Carregando canais...</p>
-                </div>
-              ) : totalShowcaseRows === 0 ? (
-                <div className="text-center py-20 text-nc-text-secondary px-6">
-                  <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                  <p className="nc-text-subtitle">Nenhum canal disponível no momento.</p>
-                </div>
-              ) : (
-                <div
-                  ref={showcaseRowsContainerCallbackRef}
-                  data-showcase-rows-container="true"
-                  data-showcase-virtualized={shouldVirtualizeShowcaseRows ? 'true' : 'false'}
-                  data-showcase-total-rows={totalShowcaseRows}
-                  style={{ overflowAnchor: 'none' }}
-                  className="mt-2 sm:mt-4 px-4 sm:px-6 md:px-10 relative z-20"
-                >
-                  <div
-                    data-showcase-row-spacer="top"
-                    aria-hidden="true"
-                    style={{ height: '0px', overflowAnchor: 'none' }}
-                  />
-                  {showcaseRowDefinitions.map((row, rowIndex) => {
-                    const isMounted =
-                      rowIndex >= effectiveRowWindowStart && rowIndex < effectiveRowWindowEnd;
-
-                    return (
-                      <div
-                        key={row.key}
-                        data-scroll-block="true"
-                        data-showcase-row-key={row.key}
-                        data-showcase-row-index={rowIndex}
-                        className="pb-6"
-                        style={{ overflowAnchor: 'none' }}
-                      >
-                        {isMounted ? (
-                          <LiveChannelRow
-                            title={row.title}
-                            groups={row.groups}
-                            rowIndex={rowIndex}
-                            serverUrl={credentials?.serverUrl}
-                            accountPrefix={accountPrefix}
-                            selectedGroupId={selectedGroup?.groupId ?? null}
-                            epgCache={epgCacheRef.current}
-                            epgCacheVersion={epgCacheVersion}
-                            referenceNowMs={epgClockNowMs}
-                            virtualize={row.virtualize}
-                            scrollContainer={mainContainerRef.current}
-                            onActivateGroup={handleActivateGroup}
-                          />
-                        ) : (
-                          <div className="w-full group" data-showcase-unmounted-row={rowIndex}>
-                            <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">
-                              {row.title}
-                            </h2>
-                            <div
-                              className="flex flex-row overflow-hidden w-full gap-4 px-2 pb-8 pt-4 pointer-events-none select-none"
-                              aria-hidden="true"
-                            >
-                              <div className="nc-live-wide-card shrink-0 rounded-xl invisible" />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  <div
-                    data-showcase-row-spacer="bottom"
-                    aria-hidden="true"
-                    style={{ height: '0px', overflowAnchor: 'none' }}
-                  />
-                </div>
-              )}
-            </>
           )}
+
+          <div className="pb-14">
+            {isGridMode ? (
+              /* Virtualized Grid for Explicit Category Filter OR Search Results */
+              <div className="px-4 sm:px-6 pt-3 pb-10">
+                <div className="mb-3.5 flex items-center justify-between gap-2">
+                  <h2 className="nc-heading-view font-semibold text-white whitespace-normal break-words">
+                    {hasSearch
+                      ? `Resultados em TV ao Vivo para "${searchQuery}"`
+                      : activeCategoryLabel || 'Canais'}
+                  </h2>
+                </div>
+
+                {isCatalogLoading && displayedGridGroups.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-nc-text-secondary">
+                    <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
+                    <p className="nc-text-subtitle">Carregando canais...</p>
+                  </div>
+                ) : displayedGridGroups.length === 0 ? (
+                  <div className="text-center py-16 text-nc-text-secondary">
+                    <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                    <p className="nc-text-subtitle">
+                      {hasSearch
+                        ? `Nenhum canal encontrado para "${searchQuery}".`
+                        : activeCategoryId === 'nc_recent'
+                          ? 'Você ainda não assistiu a canais recentemente.'
+                          : activeCategoryId === 'nc_fav'
+                            ? 'Você ainda não adicionou canais aos favoritos.'
+                            : 'Nenhum canal encontrado nesta categoria.'}
+                    </p>
+                  </div>
+                ) : (
+                  <LiveChannelGrid
+                    groups={displayedGridGroups}
+                    mainContainerRef={mainContainerRef}
+                    resetKey={`live_${activeCategoryId ?? 'showcase'}_${normalizedQuery}`}
+                    serverUrl={credentials?.serverUrl}
+                    accountPrefix={accountPrefix}
+                    selectedGroupId={selectedGroup?.groupId ?? null}
+                    epgCache={epgCacheRef.current}
+                    epgCacheVersion={epgCacheVersion}
+                    referenceNowMs={epgClockNowMs}
+                    onActivateGroup={handleActivateGroup}
+                  />
+                )}
+              </div>
+            ) : (
+              /* Vertical Category Showcase Mode (HorizontalRow Carousels of Compact Channel Cards) */
+              <>
+                {isCatalogLoading && totalShowcaseRows === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-nc-text-secondary">
+                    <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
+                    <p className="nc-text-subtitle">Carregando canais...</p>
+                  </div>
+                ) : totalShowcaseRows === 0 ? (
+                  <div className="text-center py-16 text-nc-text-secondary px-6">
+                    <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                    <p className="nc-text-subtitle">Nenhum canal disponível no momento.</p>
+                  </div>
+                ) : (
+                  <div
+                    ref={showcaseRowsContainerCallbackRef}
+                    data-showcase-rows-container="true"
+                    data-showcase-virtualized={shouldVirtualizeShowcaseRows ? 'true' : 'false'}
+                    data-showcase-total-rows={totalShowcaseRows}
+                    style={{ overflowAnchor: 'none' }}
+                    className="pt-3 px-4 sm:px-6 relative z-20"
+                  >
+                    <div
+                      data-showcase-row-spacer="top"
+                      aria-hidden="true"
+                      style={{ height: '0px', overflowAnchor: 'none' }}
+                    />
+                    {showcaseRowDefinitions.map((row, rowIndex) => {
+                      const isMounted =
+                        rowIndex >= effectiveRowWindowStart && rowIndex < effectiveRowWindowEnd;
+
+                      return (
+                        <div
+                          key={row.key}
+                          data-scroll-block="true"
+                          data-showcase-row-key={row.key}
+                          data-showcase-row-index={rowIndex}
+                          className="pb-5"
+                          style={{ overflowAnchor: 'none' }}
+                        >
+                          {isMounted ? (
+                            <LiveChannelRow
+                              title={row.title}
+                              groups={row.groups}
+                              rowIndex={rowIndex}
+                              serverUrl={credentials?.serverUrl}
+                              accountPrefix={accountPrefix}
+                              selectedGroupId={selectedGroup?.groupId ?? null}
+                              epgCache={epgCacheRef.current}
+                              epgCacheVersion={epgCacheVersion}
+                              referenceNowMs={epgClockNowMs}
+                              virtualize={row.virtualize}
+                              scrollContainer={mainContainerRef.current}
+                              onActivateGroup={handleActivateGroup}
+                            />
+                          ) : (
+                            <div className="w-full group" data-showcase-unmounted-row={rowIndex}>
+                              <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">
+                                {row.title}
+                              </h2>
+                              <div
+                                className="flex flex-row overflow-hidden w-full gap-4 px-2 pb-8 pt-4 pointer-events-none select-none"
+                                aria-hidden="true"
+                              >
+                                <div className="nc-live-wide-card shrink-0 rounded-xl invisible" />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div
+                      data-showcase-row-spacer="bottom"
+                      aria-hidden="true"
+                      style={{ height: '0px', overflowAnchor: 'none' }}
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </main>
+
+        {/* RIGHT COLUMN (~50% on >=768px): Permanent 16:9 Preview, Active Channel Identity & Chronological EPG Schedule */}
+        <div
+          ref={rightColumnRef}
+          data-live-right-column="true"
+          data-live-hero-slot="true"
+          className={`w-full md:w-1/2 md:min-w-0 shrink-0 md:h-full overflow-hidden bg-[#08090d] order-1 md:order-2 ${
+            selectedGroup ? 'max-h-[54vh] md:max-h-none' : 'max-h-[34vh] md:max-h-none'
+          }`}
+        >
+          <LiveTvHero
+            selectedGroup={selectedGroup}
+            activeVariantStream={activeVariantStream}
+            selectedResolutionMode={selectedResolutionMode}
+            serverUrl={credentials?.serverUrl}
+            streamUrl={miniPlayerUrl}
+            attemptTrigger={attemptTrigger}
+            fullscreenRequestTrigger={fullscreenRequestTrigger}
+            isLoadingPlayback={miniPlayerLoading}
+            playbackError={miniPlayerError}
+            nowPlaying={heroNowPlaying}
+            scheduleItems={heroScheduleItems}
+            loadingEpg={loadingEpg}
+            epgError={epgError}
+            isFavorited={isGroupFavorited(selectedGroup)}
+            isCatalogLoading={isCatalogLoading && totalShowcaseRows === 0}
+            onExpandFullscreen={handleExpandFullscreen}
+            onRetryPlayback={handleRetryPlayback}
+            onBackFromFullscreen={handleBackFromHeroPlayer}
+            onPlaybackSuccess={handlePlaybackSuccess}
+            onPlaybackFinalError={handlePlaybackFinalError}
+            onSelectResolutionMode={handleSelectResolutionMode}
+            onToggleFavorite={handleToggleHeroFavorite}
+            onReturnFocusToCatalog={handleReturnFocusToCatalog}
+          />
         </div>
-      </main>
+      </div>
     </div>
   );
 });
