@@ -27387,6 +27387,332 @@ if (args[0] === 'add' && args[1] === 'android') {
               console.log(
                 '✅ [12.26-b] Etapa 3.2 (Reformulação dos Detalhes de Séries e Episódios) validada com sucesso nos 26 cenários!'
               );
+
+              // ===============================================================
+              // [12.26-b.1] VALIDAÇÕES PONTUAIS: DURAÇÃO MM:SS, PROGRESSO REAL
+              //             SEM PERCENTUAL FICTÍCIO, MEMÓRIA DE FOCO E CSS=UNDEFINED
+              // ===============================================================
+              const { formatEpisodeDuration: fmtEpDur } = await import(
+                '../src/components/SeriesDetails'
+              );
+              const {
+                clearFocusMemory: clearFocusMem1226b1,
+                getFocusMemoryCount: getFocusMemCount1226b1,
+              } = await import('../src/navigation');
+
+              // B) Testes unitários direcionados de formatEpisodeDuration
+              assert.deepStrictEqual(
+                fmtEpDur('45:30'),
+                { text: '46min', totalMinutes: 46 },
+                '[12.26-b.1] "45:30" (MM:SS) deve ser tratado como minutos:segundos (46min), nunca 45h 30min'
+              );
+              assert.deepStrictEqual(
+                fmtEpDur('45:00'),
+                { text: '45min', totalMinutes: 45 },
+                '[12.26-b.1] "45:00" deve resultar em 45min'
+              );
+              assert.deepStrictEqual(
+                fmtEpDur('00:45'),
+                { text: '1min', totalMinutes: 1 },
+                '[12.26-b.1] "00:45" deve resultar em 1min'
+              );
+              assert.deepStrictEqual(
+                fmtEpDur('00:49:00'),
+                { text: '49min', totalMinutes: 49 },
+                '[12.26-b.1] "00:49:00" (HH:MM:SS) deve resultar em 49min'
+              );
+              assert.deepStrictEqual(
+                fmtEpDur('01:05:00'),
+                { text: '1h 5min', totalMinutes: 65 },
+                '[12.26-b.1] "01:05:00" deve resultar em 1h 5min'
+              );
+              assert.deepStrictEqual(
+                fmtEpDur('01:05:30'),
+                { text: '1h 6min', totalMinutes: 66 },
+                '[12.26-b.1] "01:05:30" deve arredondar para 1h 6min'
+              );
+              assert.deepStrictEqual(
+                fmtEpDur('56'),
+                { text: '56min', totalMinutes: 56 },
+                '[12.26-b.1] Minutos inteiros "56" deve resultar em 56min'
+              );
+              assert.deepStrictEqual(
+                fmtEpDur(undefined, 3120),
+                { text: '52min', totalMinutes: 52 },
+                '[12.26-b.1] durationSecs=3120 deve resultar em 52min'
+              );
+              assert.deepStrictEqual(
+                fmtEpDur('1h 15min'),
+                { text: '1h 15min', totalMinutes: 75 },
+                '[12.26-b.1] "1h 15min" deve resultar em 1h 15min (75min)'
+              );
+              for (const invalidDur of ['0', '00:00', '00:00:00', '', null, 'N/A']) {
+                assert.deepStrictEqual(
+                  fmtEpDur(invalidDur),
+                  { text: null, totalMinutes: null },
+                  `[12.26-b.1] Duração inválida/nula "${String(invalidDur)}" deve retornar { text: null, totalMinutes: null }`
+                );
+              }
+
+              // Voltar para a vitrine de Séries e preparar série com episódio em andamento SEM duração confiável
+              const triggerForShowcaseReset = stage1Container.querySelector<HTMLButtonElement>(
+                'button[data-categories-trigger="true"]'
+              )!;
+              await act(async () => {
+                triggerForShowcaseReset.click();
+              });
+              const backToShowcaseOpt = stage1Container.querySelector<HTMLButtonElement>(
+                'button[data-category-id="showcase"]'
+              )!;
+              await act(async () => {
+                backToShowcaseOpt.click();
+                await new Promise((r) => setTimeout(r, 40));
+              });
+
+              const strangerShowcaseCardB1 = Array.from(
+                stage1Container.querySelectorAll<HTMLElement>('[data-showcase-card="true"]')
+              ).find((el) => el.getAttribute('aria-label') === 'Stranger Things')!;
+              assert(
+                strangerShowcaseCardB1 !== null,
+                '[12.26-b.1] Cartão "Stranger Things" deve estar disponível na vitrine de Séries'
+              );
+
+              // Limpar progresso anterior do ep 920102 e registrar progresso em episódio sem duração (920199)
+              clearItemProgress(cycleGSearchCreds as any, 'episode', 920102);
+              recordPlaybackPosition(cycleGSearchCreds as any, {
+                id: 920199,
+                type: 'episode',
+                parentSeriesId: 920001,
+                positionSec: 720, // 12 min
+              });
+
+              (XtreamService as any).getSeriesInfo = async () => ({
+                info: {
+                  name: 'Stranger Things',
+                  plot: 'Sinopse real da série.',
+                  cover: 'http://stage2-1225g.local:8080/stranger_cover.jpg',
+                },
+                episodes: {
+                  '1': [
+                    {
+                      id: 920199,
+                      episode_num: 1,
+                      title: 'Episódio Sem Duração',
+                      container_extension: 'mp4',
+                      info: {
+                        // Sem duration e sem duration_secs
+                        plot: 'Episódio com progresso salvo e sem duração informada.',
+                      },
+                    },
+                    {
+                      id: 920200,
+                      episode_num: 2,
+                      title: 'Episódio Formato MM:SS',
+                      container_extension: 'mp4',
+                      info: {
+                        duration: '45:30',
+                      },
+                    },
+                  ],
+                  '2': [
+                    {
+                      id: 920299,
+                      episode_num: 1,
+                      title: 'Episódio T2',
+                      container_extension: 'mp4',
+                      info: { duration: '00:50:00' },
+                    },
+                  ],
+                },
+              });
+
+              // D) Garantir que o fluxo completo funcione mesmo com globalThis.CSS indefinido (ReferenceError corrigido)
+              const savedGlobalCssB1 = (globalThis as any).CSS;
+              try {
+                (globalThis as any).CSS = undefined;
+
+                // C) Zerar pilha e validar abertura -> Hero CTA -> Cancelar submodal -> Hero CTA -> VideoPlayer -> Sair Player -> Fechar Modal
+                clearFocusMem1226b1();
+                assert.strictEqual(
+                  getFocusMemCount1226b1(),
+                  0,
+                  '[12.26-b.1] Pilha de memória de foco deve iniciar vazia'
+                );
+
+                await act(async () => {
+                  strangerShowcaseCardB1.focus();
+                  strangerShowcaseCardB1.click();
+                  await new Promise((r) => setTimeout(r, 50));
+                });
+                assert.strictEqual(
+                  getFocusMemCount1226b1(),
+                  1,
+                  '[12.26-b.1] Abrir SeriesDetails deve manter exatamente 1 entrada de origem na memória de foco'
+                );
+
+                const dlgB1 = document.querySelector<HTMLElement>('[data-details-dialog="true"]')!;
+                assert(dlgB1 !== null, '[12.26-b.1] SeriesDetails deve abrir com CSS undefined');
+
+                // A) Validar progresso em minutos SEM barra percentual fictícia (no Hero e no card do episódio)
+                const heroMinutesEl = dlgB1.querySelector<HTMLElement>(
+                  '[data-series-progress-minutes="true"]'
+                );
+                assert(
+                  heroMinutesEl !== null && heroMinutesEl.textContent?.includes('12 min assistidos'),
+                  `[12.26-b.1] Sem duração confiável, o Hero deve manter o progresso real em minutos ("12 min assistidos"). Obteve: "${heroMinutesEl?.textContent}"`
+                );
+                assert.strictEqual(
+                  dlgB1.querySelector('[data-series-progress-bar="true"]'),
+                  null,
+                  '[12.26-b.1] Sem duração confiável, o Hero NÃO deve renderizar barra percentual fictícia'
+                );
+
+                const noDurEpCard = dlgB1.querySelector<HTMLElement>('[data-episode-id="920199"]')!;
+                assert(
+                  noDurEpCard !== null,
+                  '[12.26-b.1] Episódio sem duração deve ser renderizado'
+                );
+                assert.strictEqual(
+                  noDurEpCard.querySelector('[data-episode-progress-bar="true"]'),
+                  null,
+                  '[12.26-b.1] Sem duração confiável, o cartão de episódio NÃO deve renderizar barra percentual fictícia'
+                );
+                assert(
+                  noDurEpCard
+                    .querySelector('[data-episode-progress-minutes="true"]')
+                    ?.textContent?.includes('12 min assistidos'),
+                  '[12.26-b.1] Cartão de episódio sem duração deve exibir progresso real em minutos ("12 min assistidos")'
+                );
+
+                // B) Episódio 2 com "45:30" deve renderizar "46min" no DOM (não "45h 30min")
+                const mmssEpCard = dlgB1.querySelector<HTMLElement>('[data-episode-id="920200"]')!;
+                assert.strictEqual(
+                  mmssEpCard.querySelector('[data-episode-duration="true"]')?.textContent?.trim(),
+                  '46min',
+                  '[12.26-b.1] Episódio com duration="45:30" deve exibir "46min"'
+                );
+
+                // D) Abrir e fechar dropdown de temporada com CSS=undefined (usa escapeSelectorValue no foco)
+                const seasonBtnB1 = dlgB1.querySelector<HTMLButtonElement>(
+                  'button[data-season-dropdown-trigger="true"]'
+                )!;
+                await act(async () => {
+                  seasonBtnB1.click();
+                  await new Promise((r) => setTimeout(r, 20));
+                });
+                assertSameElement(
+                  document.activeElement,
+                  dlgB1.querySelector('button[data-season-option="1"]'),
+                  '[12.26-b.1] Dropdown de temporadas deve focar a opção ativa mesmo com CSS undefined'
+                );
+                await act(async () => {
+                  seasonBtnB1.click();
+                  await new Promise((r) => setTimeout(r, 20));
+                });
+
+                // C) Acionar Hero CTA -> abrir submodal Retomar -> Cancelar -> verificar pilha=1 e foco no Hero CTA
+                const heroCtaB1 = dlgB1.querySelector<HTMLButtonElement>(
+                  'button[data-series-primary-cta="true"]'
+                )!;
+                await act(async () => {
+                  heroCtaB1.focus();
+                  heroCtaB1.click();
+                  await new Promise((r) => setTimeout(r, 30));
+                });
+                assert.strictEqual(
+                  getFocusMemCount1226b1(),
+                  1,
+                  '[12.26-b.1] Acionar handlePrimaryHeroAction NÃO deve empilhar entradas extras em focusMemoryStack'
+                );
+                const cancelResumeBtnB1 = Array.from(
+                  dlgB1.querySelectorAll<HTMLButtonElement>('[data-resume-modal="true"] button')
+                ).find((b) => b.textContent?.includes('Cancelar'))!;
+                await act(async () => {
+                  cancelResumeBtnB1.click();
+                  await new Promise((r) => setTimeout(r, 30));
+                });
+                assertSameElement(
+                  document.activeElement,
+                  heroCtaB1,
+                  '[12.26-b.1] Cancelar submodal acionado pelo Hero deve devolver foco ao CTA do Hero'
+                );
+                assert.strictEqual(
+                  getFocusMemCount1226b1(),
+                  1,
+                  '[12.26-b.1] Após cancelar submodal, pilha de foco deve permanecer com 1 entrada'
+                );
+
+                // C) Clicar no episódio (com CSS undefined) -> Iniciar do início -> Sair do VideoPlayer -> foco volta ao episódio via escapeSelectorValue
+                await act(async () => {
+                  noDurEpCard.focus();
+                  noDurEpCard.click();
+                  await new Promise((r) => setTimeout(r, 30));
+                });
+                const startOverBtnB1 = Array.from(
+                  dlgB1.querySelectorAll<HTMLButtonElement>('[data-resume-modal="true"] button')
+                ).find((b) => b.textContent?.includes('Assistir do Início'))!;
+                await act(async () => {
+                  startOverBtnB1.click();
+                  await new Promise((r) => setTimeout(r, 40));
+                });
+                await act(async () => {
+                  windowInstance.dispatchEvent(
+                    new (windowInstance as any).KeyboardEvent('keydown', {
+                      key: 'Escape',
+                      bubbles: true,
+                      cancelable: true,
+                    })
+                  );
+                });
+                await waitForCondition(
+                  () => document.querySelector('[data-player-container="true"]') === null,
+                  1200,
+                  '[12.26-b.1] Saída do VideoPlayer'
+                );
+                assertSameElement(
+                  document.activeElement,
+                  noDurEpCard,
+                  '[12.26-b.1] Sair do VideoPlayer com CSS undefined deve restaurar foco ao cartão do episódio sem ReferenceError'
+                );
+                assert.strictEqual(
+                  getFocusMemCount1226b1(),
+                  1,
+                  '[12.26-b.1] Pilha de memória de foco deve continuar exatamente com 1 entrada após sair do VideoPlayer'
+                );
+
+                // C) Fechar SeriesDetails -> foco retorna ao cartão original na vitrine e pilha zera (= 0)
+                await act(async () => {
+                  windowInstance.dispatchEvent(
+                    new (windowInstance as any).KeyboardEvent('keydown', {
+                      key: 'Escape',
+                      bubbles: true,
+                      cancelable: true,
+                    })
+                  );
+                  await new Promise((r) => setTimeout(r, 40));
+                });
+                assert.strictEqual(
+                  document.querySelector('[data-details-dialog="true"]'),
+                  null,
+                  '[12.26-b.1] Escape deve fechar SeriesDetails'
+                );
+                assert.strictEqual(
+                  getFocusMemCount1226b1(),
+                  0,
+                  '[12.26-b.1] Fechar SeriesDetails deve limpar a pilha sem deixar entradas extras'
+                );
+                assertSameElement(
+                  document.activeElement,
+                  strangerShowcaseCardB1,
+                  '[12.26-b.1] Fechar SeriesDetails após Player/Submodal deve devolver foco ao cartão original'
+                );
+              } finally {
+                (globalThis as any).CSS = savedGlobalCssB1;
+              }
+
+              console.log(
+                '✅ [12.26-b.1] Validações pontuais (progresso real sem percentual fictício, MM:SS, memória de foco e CSS undefined) aprovadas!'
+              );
             } finally {
               (XtreamService as any).getSeriesInfo = savedGetSeriesInfo1226b;
             }

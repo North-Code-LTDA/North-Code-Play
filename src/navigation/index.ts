@@ -17,6 +17,8 @@ export {
   pushFocusMemory,
   popFocusMemory,
   clearFocusMemory,
+  getFocusMemoryCount,
+  peekFocusMemoryElement,
   registerVirtualContainer,
   unregisterVirtualContainer,
   registerShowcaseRowController,

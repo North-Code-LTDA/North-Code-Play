@@ -28,6 +28,7 @@ import {
   BACK_PRIORITY,
   pushFocusMemory,
   popFocusMemory,
+  peekFocusMemoryElement,
   getNavMode,
   focusElementSafely,
 } from '../navigation';
@@ -41,75 +42,95 @@ export interface SeriesDetailsProps {
   onPlay: (url: string, title: string, startAt?: number, streamId?: string | number) => void;
 }
 
-function formatEpisodeDuration(
+export function formatEpisodeDuration(
   rawDuration?: string | number | null,
   durationSecs?: number | string | null
 ): {
   text: string | null;
   totalMinutes: number | null;
 } {
-  const numericSecs =
-    typeof durationSecs === 'number'
-      ? durationSecs
-      : typeof durationSecs === 'string' && /^\d+$/.test(durationSecs.trim())
-        ? parseInt(durationSecs.trim(), 10)
-        : 0;
-
-  if (numericSecs > 0) {
-    const totalMin = Math.max(1, Math.round(numericSecs / 60));
+  const formatMinutes = (totalMin: number): { text: string; totalMinutes: number } => {
     const hours = Math.floor(totalMin / 60);
     const mins = totalMin % 60;
     return {
       text: hours > 0 ? (mins > 0 ? `${hours}h ${mins}min` : `${hours}h`) : `${totalMin}min`,
       totalMinutes: totalMin,
     };
+  };
+
+  const numericSecs =
+    typeof durationSecs === 'number'
+      ? Number.isFinite(durationSecs)
+        ? Math.round(durationSecs)
+        : 0
+      : typeof durationSecs === 'string' && /^\d+(?:\.\d+)?$/.test(durationSecs.trim())
+        ? Math.round(parseFloat(durationSecs.trim()))
+        : 0;
+
+  if (numericSecs > 0) {
+    return formatMinutes(Math.max(1, Math.round(numericSecs / 60)));
   }
 
   if (rawDuration === undefined || rawDuration === null) {
     return { text: null, totalMinutes: null };
   }
 
+  if (typeof rawDuration === 'number') {
+    if (!Number.isFinite(rawDuration) || rawDuration <= 0) {
+      return { text: null, totalMinutes: null };
+    }
+    return formatMinutes(Math.max(1, Math.round(rawDuration)));
+  }
+
   const trimmed = String(rawDuration).trim();
-  if (!trimmed || trimmed === '0' || trimmed === '00:00:00' || trimmed === '00:00') {
+  if (!trimmed || /^0+(?::0+(?:\.\d+)?)?(?:\.0+)?$/.test(trimmed)) {
     return { text: null, totalMinutes: null };
   }
 
-  const hmsMatch = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  // 3-part HH:MM:SS (e.g. "00:49:00", "01:12:30", "00:00:45")
+  const hmsMatch = trimmed.match(/^(\d{1,3}):(\d{2}):(\d{2})(?:\.\d+)?$/);
   if (hmsMatch) {
     const h = parseInt(hmsMatch[1], 10);
     const m = parseInt(hmsMatch[2], 10);
-    const totalMin = h * 60 + m;
-    if (totalMin <= 0) return { text: null, totalMinutes: null };
-    return {
-      text: h > 0 ? (m > 0 ? `${h}h ${m}min` : `${h}h`) : `${m}min`,
-      totalMinutes: totalMin,
-    };
+    const s = parseInt(hmsMatch[3], 10);
+    if (m < 60 && s < 60) {
+      const totalSecs = h * 3600 + m * 60 + s;
+      if (totalSecs <= 0) return { text: null, totalMinutes: null };
+      return formatMinutes(Math.max(1, Math.round(totalSecs / 60)));
+    }
   }
 
+  // 2-part MM:SS (e.g. "45:30" -> 46min, NOT 45h 30min)
+  const msMatch = trimmed.match(/^(\d{1,3}):(\d{2})(?:\.\d+)?$/);
+  if (msMatch) {
+    const m = parseInt(msMatch[1], 10);
+    const s = parseInt(msMatch[2], 10);
+    if (s < 60) {
+      const totalSecs = m * 60 + s;
+      if (totalSecs <= 0) return { text: null, totalMinutes: null };
+      return formatMinutes(Math.max(1, Math.round(totalSecs / 60)));
+    }
+  }
+
+  // Pure integer minutes (e.g. "56", "90")
   if (/^\d+$/.test(trimmed)) {
     const totalMin = parseInt(trimmed, 10);
     if (totalMin <= 0) return { text: null, totalMinutes: null };
-    const h = Math.floor(totalMin / 60);
-    const m = totalMin % 60;
-    return {
-      text: h > 0 ? (m > 0 ? `${h}h ${m}min` : `${h}h`) : `${totalMin}min`,
-      totalMinutes: totalMin,
-    };
+    return formatMinutes(totalMin);
   }
 
-  const minMatch = trimmed.match(/(\d+)\s*min/i);
-  const hourMatch = trimmed.match(/(\d+)\s*h/i);
+  // Human-readable hour/minute durations (e.g. "1h 15min", "45 min", "45m", "2h")
+  const hourMatch = trimmed.match(/(\d+)\s*h(?:r|rs|oras?)?/i);
+  const minMatch = trimmed.match(/(\d+)\s*(?:min(?:utos?)?|m\b)/i);
   if (hourMatch || minMatch) {
     const h = hourMatch ? parseInt(hourMatch[1], 10) : 0;
     const m = minMatch ? parseInt(minMatch[1], 10) : 0;
     const totalMin = h * 60 + m;
-    return {
-      text: trimmed,
-      totalMinutes: totalMin > 0 ? totalMin : null,
-    };
+    if (totalMin <= 0) return { text: null, totalMinutes: null };
+    return formatMinutes(totalMin);
   }
 
-  return { text: trimmed, totalMinutes: null };
+  return { text: null, totalMinutes: null };
 }
 
 function extractCleanYear(rawDate?: string | number | null): string | null {
@@ -180,6 +201,8 @@ export const SeriesDetails = React.memo(function SeriesDetails({
   const seasonMenuRef = useRef<HTMLDivElement | null>(null);
   const resumeConfirmBtnRef = useRef<HTMLButtonElement | null>(null);
   const originFocusElementRef = useRef<HTMLElement | null>(null);
+  const didPushOriginRef = useRef<boolean>(false);
+  const isClosingRef = useRef<boolean>(false);
   const lastEpisodeIdRef = useRef<string | null>(null);
   const lastTriggerWasHeroRef = useRef<boolean>(false);
   const savedEpisodeScrollTopRef = useRef<number | null>(null);
@@ -284,14 +307,34 @@ export const SeriesDetails = React.memo(function SeriesDetails({
   }, []);
 
   useEffect(() => {
+    isClosingRef.current = false;
     const active =
       typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    const topMem = peekFocusMemoryElement();
+    const topIsShowcaseCard =
+      topMem !== null &&
+      topMem.isConnected &&
+      (topMem.getAttribute('data-showcase-card') === 'true' ||
+        topMem.hasAttribute('data-virtual-index') ||
+        topMem.hasAttribute('data-row-card-index'));
+    const isActiveInput =
+      active !== null && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+
     if (active && active !== document.body && active !== document.documentElement) {
-      originFocusElementRef.current = active;
+      if (topIsShowcaseCard && isActiveInput) {
+        originFocusElementRef.current = topMem;
+      } else {
+        originFocusElementRef.current = active;
+        if (!didPushOriginRef.current) {
+          pushFocusMemory(active);
+          didPushOriginRef.current = true;
+        }
+      }
+    } else if (topMem && topMem.isConnected) {
+      originFocusElementRef.current = topMem;
     }
-    pushFocusMemory(active);
   }, [seriesId]);
 
   const sortedSeasons = useMemo(() => {
@@ -393,6 +436,8 @@ export const SeriesDetails = React.memo(function SeriesDetails({
   ]);
 
   const handleClose = useCallback(() => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
     if (restoreTimerRef.current) {
       clearTimeout(restoreTimerRef.current);
       restoreTimerRef.current = null;
@@ -635,10 +680,10 @@ export const SeriesDetails = React.memo(function SeriesDetails({
           matched.episode.info?.duration_secs || matched.episode.duration_secs
         );
         const savedMinutes = Math.max(1, Math.floor(progressSec / 60));
-        const progressPercent =
+        const progressPercent: number | null =
           durInfo.totalMinutes && durInfo.totalMinutes > 0
             ? Math.min(95, Math.max(6, Math.round((progressSec / (durInfo.totalMinutes * 60)) * 100)))
-            : 35;
+            : null;
 
         return {
           mode: 'continue' as const,
@@ -665,10 +710,10 @@ export const SeriesDetails = React.memo(function SeriesDetails({
           entry.episode.info?.duration_secs || entry.episode.duration_secs
         );
         const savedMinutes = Math.max(1, Math.floor(progressSec / 60));
-        const progressPercent =
+        const progressPercent: number | null =
           durInfo.totalMinutes && durInfo.totalMinutes > 0
             ? Math.min(95, Math.max(6, Math.round((progressSec / (durInfo.totalMinutes * 60)) * 100)))
-            : 35;
+            : null;
 
         return {
           mode: 'continue' as const,
@@ -696,7 +741,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       progressSec: 0,
       savedMinutes: 0,
       totalMinutes: null,
-      progressPercent: 0,
+      progressPercent: null,
     };
   }, [allSeriesEpisodes, historyRecords, credentials]);
 
@@ -792,9 +837,6 @@ export const SeriesDetails = React.memo(function SeriesDetails({
 
   const handlePrimaryHeroAction = () => {
     if (!primaryEpisodeTarget) return;
-    if (primaryPlayBtnRef.current) {
-      pushFocusMemory(primaryPlayBtnRef.current);
-    }
     handlePlayEpisodeClick(
       primaryEpisodeTarget.episode,
       true,
@@ -1034,16 +1076,24 @@ export const SeriesDetails = React.memo(function SeriesDetails({
 
           {primaryEpisodeTarget && primaryEpisodeTarget.mode === 'continue' && (
             <div
-              data-series-progress-bar="true"
+              data-series-progress-info="true"
               className="flex items-center gap-3 max-w-md w-full"
             >
-              <div className="flex-1 h-1 bg-white/30 rounded-full overflow-hidden">
+              {primaryEpisodeTarget.progressPercent !== null && (
                 <div
-                  className="h-full bg-[#E50914] rounded-full"
-                  style={{ width: `${primaryEpisodeTarget.progressPercent}%` }}
-                />
-              </div>
-              <span className="text-xs sm:text-sm font-bold text-white/90 shrink-0 drop-shadow">
+                  data-series-progress-bar="true"
+                  className="flex-1 h-1 bg-white/30 rounded-full overflow-hidden"
+                >
+                  <div
+                    className="h-full bg-[#E50914] rounded-full"
+                    style={{ width: `${primaryEpisodeTarget.progressPercent}%` }}
+                  />
+                </div>
+              )}
+              <span
+                data-series-progress-minutes="true"
+                className="text-xs sm:text-sm font-bold text-white/90 shrink-0 drop-shadow"
+              >
                 {primaryEpisodeTarget.totalMinutes
                   ? `${primaryEpisodeTarget.savedMinutes} de ${primaryEpisodeTarget.totalMinutes}min`
                   : `${primaryEpisodeTarget.savedMinutes} min assistidos`}
@@ -1232,30 +1282,31 @@ export const SeriesDetails = React.memo(function SeriesDetails({
               <h2 className="text-lg sm:text-2xl font-bold text-white">Episódios</h2>
 
               {sortedSeasons.length > 0 && selectedSeason && (
-                <div
-                  data-nav-row="true"
-                  data-nav-season-row="true"
-                  data-scroll-block="true"
-                  className="relative"
-                >
-                  <button
-                    ref={seasonTriggerBtnRef}
-                    type="button"
-                    aria-haspopup="listbox"
-                    aria-expanded={isSeasonMenuOpen}
-                    aria-label={`Selecionar temporada, atual Temporada ${selectedSeason}`}
-                    data-season-dropdown-trigger="true"
-                    data-season-selected="true"
-                    onClick={() => setIsSeasonMenuOpen((prev) => !prev)}
-                    className="nc-tv-season-btn min-w-[175px] sm:min-w-[210px] px-4 py-2.5 rounded-md bg-[#242424] hover:bg-[#2f2f2f] text-white font-semibold text-sm sm:text-base border border-white/25 flex items-center justify-between gap-3 transition-colors shadow-md cursor-pointer"
+                <div className="relative" data-scroll-block="true">
+                  <div
+                    data-nav-row="true"
+                    data-nav-season-row="true"
+                    data-scroll-block="true"
                   >
-                    <span>Temporada {selectedSeason}</span>
-                    <ChevronDown
-                      className={`w-4 h-4 text-white/80 transition-transform duration-200 shrink-0 ${
-                        isSeasonMenuOpen ? 'rotate-180' : ''
-                      }`}
-                    />
-                  </button>
+                    <button
+                      ref={seasonTriggerBtnRef}
+                      type="button"
+                      aria-haspopup="listbox"
+                      aria-expanded={isSeasonMenuOpen}
+                      aria-label={`Selecionar temporada, atual Temporada ${selectedSeason}`}
+                      data-season-dropdown-trigger="true"
+                      data-season-selected="true"
+                      onClick={() => setIsSeasonMenuOpen((prev) => !prev)}
+                      className="nc-tv-season-btn min-w-[175px] sm:min-w-[210px] px-4 py-2.5 rounded-md bg-[#242424] hover:bg-[#2f2f2f] text-white font-semibold text-sm sm:text-base border border-white/25 flex items-center justify-between gap-3 transition-colors shadow-md cursor-pointer"
+                    >
+                      <span>Temporada {selectedSeason}</span>
+                      <ChevronDown
+                        className={`w-4 h-4 text-white/80 transition-transform duration-200 shrink-0 ${
+                          isSeasonMenuOpen ? 'rotate-180' : ''
+                        }`}
+                      />
+                    </button>
+                  </div>
 
                   {isSeasonMenuOpen && (
                     <div
@@ -1340,20 +1391,22 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                       episode.id !== undefined && episode.id !== null
                         ? getItemProgress(credentials, 'episode', episode.id)
                         : 0;
-                    const epProgressPercent =
-                      epProgressSec > 30
-                        ? epDurationInfo.totalMinutes && epDurationInfo.totalMinutes > 0
-                          ? Math.min(
-                              95,
-                              Math.max(
-                                8,
-                                Math.round(
-                                  (epProgressSec / (epDurationInfo.totalMinutes * 60)) * 100
-                                )
+                    const epSavedMinutes =
+                      epProgressSec > 30 ? Math.max(1, Math.floor(epProgressSec / 60)) : 0;
+                    const epProgressPercent: number | null =
+                      epProgressSec > 30 &&
+                      epDurationInfo.totalMinutes &&
+                      epDurationInfo.totalMinutes > 0
+                        ? Math.min(
+                            95,
+                            Math.max(
+                              8,
+                              Math.round(
+                                (epProgressSec / (epDurationInfo.totalMinutes * 60)) * 100
                               )
                             )
-                          : 40
-                        : 0;
+                          )
+                        : null;
 
                     return (
                       <div
@@ -1412,7 +1465,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                             </div>
                           </div>
 
-                          {epProgressSec > 30 && (
+                          {epProgressPercent !== null && (
                             <div
                               data-episode-progress-bar="true"
                               className="absolute inset-x-0 bottom-0 h-1 bg-white/30 overflow-hidden"
@@ -1443,6 +1496,15 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                               </span>
                             )}
                           </div>
+
+                          {epProgressSec > 30 && epProgressPercent === null && (
+                            <span
+                              data-episode-progress-minutes="true"
+                              className="text-[11px] sm:text-xs font-semibold text-white/80"
+                            >
+                              {epSavedMinutes} min assistidos
+                            </span>
+                          )}
 
                           {epPlot && (
                             <p

@@ -335,6 +335,15 @@ export function clearFocusMemory(): void {
   cancelPendingFocusRestore();
 }
 
+export function getFocusMemoryCount(): number {
+  return focusMemoryStack.length;
+}
+
+export function peekFocusMemoryElement(): HTMLElement | null {
+  const top = focusMemoryStack[focusMemoryStack.length - 1];
+  return top ? top.element : null;
+}
+
 function setElementScrollLeftImmediate(el: HTMLElement, targetScrollLeft: number): void {
   const next = Math.max(0, targetScrollLeft);
   const prevBehavior = el.style?.scrollBehavior ?? '';
