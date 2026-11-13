@@ -30,6 +30,11 @@ import {
   resolveNowPlayingProgram,
   LIVE_SHOWCASE_ROW_WINDOW_SIZE,
   computeLiveShowcaseRowBounds,
+  EPG_CLOCK_UPDATE_INTERVAL_MS,
+  getLiveEpgClockNowMs,
+  subscribeLiveEpgClockForTest,
+  getSharedSessionEpgCache,
+  clearSharedSessionEpgCache,
 } from '../utils/epgUtils';
 import { useVirtualWindow } from '../hooks/useVirtualWindow';
 import {
@@ -292,6 +297,7 @@ interface LiveChannelGridProps {
   selectedGroupId: string | null;
   epgCache: ReadonlyMap<string, any[]>;
   epgCacheVersion: number;
+  referenceNowMs?: number;
   onActivateGroup: (group: LiveChannelGroup, el: HTMLButtonElement) => void;
 }
 
@@ -304,6 +310,7 @@ const LiveChannelGrid = React.memo(function LiveChannelGrid({
   selectedGroupId,
   epgCache,
   epgCacheVersion,
+  referenceNowMs,
   onActivateGroup,
 }: LiveChannelGridProps) {
   const gridContainerRef = useRef<HTMLDivElement>(null);
@@ -350,6 +357,7 @@ const LiveChannelGrid = React.memo(function LiveChannelGrid({
               isSelected={selectedGroupId === group.groupId}
               epgCache={epgCache}
               epgCacheVersion={epgCacheVersion}
+              referenceNowMs={referenceNowMs}
               layoutVariant="grid"
               virtualIndex={actualIndex}
               rowPriority={actualIndex < 12}
@@ -414,12 +422,13 @@ export const LiveTvView = React.memo(function LiveTvView({
   const [miniPlayerError, setMiniPlayerError] = useState<string | null>(null);
   const [miniPlayerLoading, setMiniPlayerLoading] = useState(false);
 
-  // EPG state for active channel + passive session cache for wide channel cards
+  // EPG state for active channel + passive session cache for wide channel cards + shared temporal clock
   const [epgData, setEpgData] = useState<any[]>([]);
   const [loadingEpg, setLoadingEpg] = useState(false);
   const [epgError, setEpgError] = useState<string | null>(null);
-  const epgCacheRef = useRef<Map<string, any[]>>(new Map());
+  const epgCacheRef = useRef<Map<string, any[]>>(getSharedSessionEpgCache());
   const [epgCacheVersion, setEpgCacheVersion] = useState(0);
+  const [epgClockNowMs, setEpgClockNowMs] = useState<number>(() => getLiveEpgClockNowMs());
 
   // Playback attempt & fallback refs
   const isMountedRef = useRef<boolean>(true);
@@ -433,6 +442,7 @@ export const LiveTvView = React.memo(function LiveTvView({
   selectedGroupRef.current = selectedGroup;
   const heroWasExplicitlyActivatedRef = useRef<boolean>(false);
   const consumedIntentRequestIdRef = useRef<number | null>(null);
+  const prevAccountPrefixRef = useRef<string | null>(null);
 
   // Scroll & showcase vertical windowing refs
   const viewRootRef = useRef<HTMLDivElement>(null);
@@ -478,6 +488,56 @@ export const LiveTvView = React.memo(function LiveTvView({
     };
   }, []);
 
+  // Single shared EPG clock for LiveTvView (updates every 60s + on tab visibilitychange/focus)
+  useEffect(() => {
+    const syncClock = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
+      setEpgClockNowMs(getLiveEpgClockNowMs());
+    };
+
+    const intervalId = setInterval(syncClock, EPG_CLOCK_UPDATE_INTERVAL_MS);
+
+    const handleVisibilityChange = () => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        setEpgClockNowMs(getLiveEpgClockNowMs());
+      }
+    };
+
+    const handleWindowFocus = () => {
+      setEpgClockNowMs(getLiveEpgClockNowMs());
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', handleWindowFocus);
+    }
+
+    const unsubscribeTestClock = subscribeLiveEpgClockForTest((nowMs) => {
+      try {
+        flushSync(() => {
+          setEpgClockNowMs(nowMs);
+        });
+      } catch {
+        setEpgClockNowMs(nowMs);
+      }
+    });
+
+    return () => {
+      clearInterval(intervalId);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', handleWindowFocus);
+      }
+      unsubscribeTestClock();
+    };
+  }, []);
+
   // Reset playback state, cache, and active filters when credentials switch
   useEffect(() => {
     if (fallbackTimeoutRef.current) {
@@ -487,7 +547,10 @@ export const LiveTvView = React.memo(function LiveTvView({
     attemptIdRef.current++;
     sessionSuccessfulVariantsRef.current.clear();
     attemptedStreamIdsRef.current.clear();
-    epgCacheRef.current.clear();
+    if (prevAccountPrefixRef.current !== null && prevAccountPrefixRef.current !== accountPrefix) {
+      clearSharedSessionEpgCache();
+    }
+    prevAccountPrefixRef.current = accountPrefix;
     setEpgCacheVersion((v) => v + 1);
     heroWasExplicitlyActivatedRef.current = false;
     consumedIntentRequestIdRef.current = null;
@@ -505,7 +568,7 @@ export const LiveTvView = React.memo(function LiveTvView({
     rowWindowStartRef.current = 0;
     setRowWindowStart(0);
     measuredRowHeightsRef.current.clear();
-  }, [credentials]);
+  }, [credentials, accountPrefix]);
 
   useEffect(() => {
     if (favActionError) {
@@ -837,33 +900,8 @@ export const LiveTvView = React.memo(function LiveTvView({
     [selectedGroup, miniPlayerError, miniPlayerUrl, startVariantAttempt, scrollHeroIntoViewIfScrolledDown]
   );
 
-  // Initial Hero channel auto-selection on first entry when catalog is available (and no launch intent pending)
-  useEffect(() => {
-    if (initialChannelIntent) return;
-    if (selectedGroup) return;
-    if (showcaseRowDefinitions.length === 0) return;
-
-    const preferredInitial =
-      recentGroups[0] ||
-      favoriteGroups[0] ||
-      showcaseRowDefinitions[0]?.groups[0] ||
-      null;
-
-    if (preferredInitial) {
-      heroWasExplicitlyActivatedRef.current = false;
-      setSelectedGroup(preferredInitial);
-      setSelectedResolutionMode('auto');
-      attemptedStreamIdsRef.current.clear();
-      startVariantAttempt(preferredInitial, 'auto');
-    }
-  }, [
-    initialChannelIntent,
-    selectedGroup,
-    showcaseRowDefinitions,
-    recentGroups,
-    favoriteGroups,
-    startVariantAttempt,
-  ]);
+  // Note: On normal entry (no initialChannelIntent), LiveTvView remains in the neutral Hero state
+  // until the user explicitly activates a channel card (click, tap, or Enter/OK).
 
   // Consume launch intent from Home ("Canais Ao Vivo")
   useEffect(() => {
@@ -1134,7 +1172,10 @@ export const LiveTvView = React.memo(function LiveTvView({
     };
   }, [activeStreamId, credentials, accountPrefix]);
 
-  const heroNowPlaying = useMemo(() => resolveNowPlayingProgram(epgData), [epgData]);
+  const heroNowPlaying = useMemo(
+    () => resolveNowPlayingProgram(epgData, epgClockNowMs),
+    [epgData, epgClockNowMs]
+  );
 
   // Showcase vertical row measurement & synchronization (prevents layout shifts during scrolling)
   const measureMountedShowcaseGeometry = useCallback(() => {
@@ -1774,6 +1815,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                 selectedGroupId={selectedGroup?.groupId ?? null}
                 epgCache={epgCacheRef.current}
                 epgCacheVersion={epgCacheVersion}
+                referenceNowMs={epgClockNowMs}
                 onActivateGroup={handleActivateGroup}
               />
             )}
@@ -1823,6 +1865,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                           selectedGroupId={selectedGroup?.groupId ?? null}
                           epgCache={epgCacheRef.current}
                           epgCacheVersion={epgCacheVersion}
+                          referenceNowMs={epgClockNowMs}
                           virtualize={row.virtualize}
                           onActivateGroup={handleActivateGroup}
                         />

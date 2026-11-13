@@ -143,6 +143,34 @@ export function formatEpgTimeSlot(entry: any): string | null {
   return null;
 }
 
+export const EPG_CLOCK_UPDATE_INTERVAL_MS = 60_000;
+
+let epgClockOverrideNowMs: number | null = null;
+const epgClockListeners = new Set<(nowMs: number) => void>();
+
+export function getLiveEpgClockNowMs(): number {
+  return epgClockOverrideNowMs !== null ? epgClockOverrideNowMs : Date.now();
+}
+
+export function setLiveEpgClockNowForTest(nowMs: number | null): void {
+  epgClockOverrideNowMs = nowMs;
+  const effective = getLiveEpgClockNowMs();
+  epgClockListeners.forEach((listener) => {
+    try {
+      listener(effective);
+    } catch {
+      // Ignore listener errors in test clock notifications
+    }
+  });
+}
+
+export function subscribeLiveEpgClockForTest(listener: (nowMs: number) => void): () => void {
+  epgClockListeners.add(listener);
+  return () => {
+    epgClockListeners.delete(listener);
+  };
+}
+
 /**
  * Computes progress percentage (`0..100`) ONLY when both start and end timestamps
  * are valid, `end > start`, and `nowMs` falls within `[startMs, endMs]`.
@@ -151,7 +179,7 @@ export function formatEpgTimeSlot(entry: any): string | null {
  */
 export function computeEpgProgressPercent(
   entry: any,
-  nowMs: number = Date.now()
+  nowMs: number = getLiveEpgClockNowMs()
 ): number | null {
   const startMs = parseEpgTimestampMs(entry, 'start');
   const endMs = parseEpgTimestampMs(entry, 'end');
@@ -167,35 +195,62 @@ export function computeEpgProgressPercent(
 
 /**
  * Resolves the active/current program from an array of Xtream EPG listings
- * without inventing fallback copy or fake timestamps.
+ * strictly when a program has valid start & end timestamps (`end > start`)
+ * and `nowMs` falls within its interval.
+ * Never falls back to expired, future, or untimed entries.
  */
 export function resolveNowPlayingProgram(
   listings: any[],
-  nowMs: number = Date.now()
+  nowMs: number = getLiveEpgClockNowMs()
 ): ResolvedNowPlaying | null {
   if (!Array.isArray(listings) || listings.length === 0) return null;
+  if (!Number.isFinite(nowMs)) return null;
 
   const validEntries = listings.filter(
     (item) => item !== null && typeof item === 'object' && !Array.isArray(item)
   );
   if (validEntries.length === 0) return null;
 
-  // Prefer an entry whose real timestamps bracket `nowMs`
-  const liveMatch = validEntries.find((entry) => {
+  // Prefer half-open [startMs, endMs) first so boundary transitions (A ends at T, B starts at T)
+  // immediately resolve B; fall back to inclusive [startMs, endMs] when at the exact end of the last program.
+  const activeHalfOpen = validEntries.find((entry) => {
     const startMs = parseEpgTimestampMs(entry, 'start');
     const endMs = parseEpgTimestampMs(entry, 'end');
-    return startMs !== null && endMs !== null && endMs > startMs && nowMs >= startMs && nowMs <= endMs;
+    return (
+      startMs !== null &&
+      endMs !== null &&
+      endMs > startMs &&
+      nowMs >= startMs &&
+      nowMs < endMs
+    );
   });
 
-  const target = liveMatch || validEntries[0];
-  const title = decodeEpgText(target.title) || null;
-  const description = decodeEpgText(target.description) || null;
-  const timeSlot = formatEpgTimeSlot(target);
-  const startMs = parseEpgTimestampMs(target, 'start');
-  const endMs = parseEpgTimestampMs(target, 'end');
-  const progressPercent = computeEpgProgressPercent(target, nowMs);
+  const liveMatch =
+    activeHalfOpen ||
+    validEntries.find((entry) => {
+      const startMs = parseEpgTimestampMs(entry, 'start');
+      const endMs = parseEpgTimestampMs(entry, 'end');
+      return (
+        startMs !== null &&
+        endMs !== null &&
+        endMs > startMs &&
+        nowMs >= startMs &&
+        nowMs <= endMs
+      );
+    });
 
-  if (!title && !description && !timeSlot) {
+  if (!liveMatch) {
+    return null;
+  }
+
+  const title = decodeEpgText(liveMatch.title) || null;
+  const description = decodeEpgText(liveMatch.description) || null;
+  const timeSlot = formatEpgTimeSlot(liveMatch);
+  const startMs = parseEpgTimestampMs(liveMatch, 'start');
+  const endMs = parseEpgTimestampMs(liveMatch, 'end');
+  const progressPercent = computeEpgProgressPercent(liveMatch, nowMs);
+
+  if (!title && !description) {
     return null;
   }
 
@@ -207,6 +262,29 @@ export function resolveNowPlayingProgram(
     startMs,
     endMs,
   };
+}
+
+/**
+ * Shared in-memory session EPG cache keyed by account + epg_channel_id / stream_id.
+ * Allows passive reuse across cards and view transitions without firing bulk network requests.
+ */
+const sessionEpgListingsCache = new Map<string, any[]>();
+
+export function getSharedSessionEpgCache(): Map<string, any[]> {
+  return sessionEpgListingsCache;
+}
+
+export function clearSharedSessionEpgCache(accountPrefix?: string): void {
+  if (!accountPrefix) {
+    sessionEpgListingsCache.clear();
+    return;
+  }
+  const prefixWithSep = `${accountPrefix}::`;
+  for (const key of Array.from(sessionEpgListingsCache.keys())) {
+    if (key.startsWith(prefixWithSep)) {
+      sessionEpgListingsCache.delete(key);
+    }
+  }
 }
 
 /**

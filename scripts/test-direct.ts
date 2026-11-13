@@ -2812,18 +2812,28 @@ async function runLiveTvSdPriorityAndFallbackTests() {
     docCatBtn.click();
   });
 
-  // Localizar cartão do canal agrupado Discovery Channel (já inicializado no Hero em SD)
+  // Localizar cartão do canal agrupado Discovery Channel (Hero permanece neutro até ativação explícita)
   const channelBtn = container.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
   assert(channelBtn, 'Cartão do canal Discovery Channel encontrado');
-
-  const videoEl = container.querySelector('video') as HTMLVideoElement;
-  assert(videoEl, 'Elemento <video> montado no Hero com canal inicial em SD');
-  assert(
-    container.textContent?.includes('SD'),
-    'Player deve iniciar automaticamente na variante SD'
+  assert.strictEqual(
+    container.querySelector('video'),
+    null,
+    'Antes da ativação explícita do canal, nenhum <video> deve iniciar automaticamente no Hero'
   );
 
-  // Confirmar que OK/clique no canal já ativo no Hero solicita tela cheia sem desmontar <video> nem reiniciar tentativa
+  // 1º OK/clique explícito: seleciona o canal e inicia o preview no Hero na variante SD
+  await act(async () => {
+    channelBtn.click();
+  });
+
+  const videoEl = container.querySelector('video') as HTMLVideoElement;
+  assert(videoEl, 'Elemento <video> montado no Hero após 1º clique explícito no canal em SD');
+  assert(
+    container.textContent?.includes('SD'),
+    'Player deve iniciar na variante SD após ativação explícita'
+  );
+
+  // Confirmar que 2º OK/clique no canal já ativo no Hero solicita tela cheia sem desmontar <video> nem reiniciar tentativa
   currentFullscreenElement = null;
   const loadCountBeforeSecondOk = videoLoadCallCount;
 
@@ -2832,15 +2842,15 @@ async function runLiveTvSdPriorityAndFallbackTests() {
   });
 
   const videoElAfterSecondOk = container.querySelector('video') as HTMLVideoElement;
-  assertSameElement(videoElAfterSecondOk, videoEl, 'OK no mesmo canal NÃO deve desmontar o elemento <video>');
+  assertSameElement(videoElAfterSecondOk, videoEl, '2º OK no mesmo canal NÃO deve desmontar o elemento <video>');
   assert.strictEqual(
     videoLoadCallCount,
     loadCountBeforeSecondOk,
-    'OK no mesmo canal NÃO deve recarregar a transmissão'
+    '2º OK no mesmo canal NÃO deve recarregar a transmissão'
   );
   assert(
     currentFullscreenElement !== null,
-    'OK no mesmo canal já em reprodução deve abrir tela cheia no player'
+    '2º OK no mesmo canal já em reprodução deve abrir tela cheia no player'
   );
 
   await act(async () => {
@@ -3797,8 +3807,9 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Ativar TV ao Vivo no cabeçalho deve encaminhar o foco uma única vez para o controle Categorias'
   );
   assert(
-    container.querySelector('[data-live-hero="true"] video') !== null,
-    'Na primeira entrada em TV ao Vivo, o Hero seleciona um canal inicial e exibe preview embutido'
+    container.querySelector('[data-live-hero-neutral="true"]') !== null &&
+      container.querySelector('[data-live-hero="true"] video') === null,
+    'Na entrada normal em TV ao Vivo sem initialChannelIntent, o Hero permanece neutro e não monta <video> automaticamente'
   );
 
   // Critério 1: Filtrar categoria A (Abertos, id=1) pelo botão da categoria no menu Categorias
@@ -3856,16 +3867,21 @@ async function runDpadNavigationAndBackPolicyTests() {
   const channelButtons = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
   assert(channelButtons.length >= 2, 'Vitrine de TV ao Vivo exibe os carrosséis horizontais de canais');
 
-  // Apenas focar com setas no segundo canal NÃO deve alterar o canal ativo no Hero
-  const initialSelectedCard = container.querySelector('button[data-live-channel-selected="true"]') as HTMLButtonElement | null;
-  const secondChannelBtn = channelButtons.find((b) => b.getAttribute('data-live-channel-selected') !== 'true') || channelButtons[1];
+  // Apenas focar com setas nos canais NÃO deve selecionar nenhum canal nem iniciar vídeo no Hero
+  const secondChannelBtn = channelButtons[1];
   await act(async () => {
+    channelButtons[0].focus();
     secondChannelBtn.focus();
   });
-  assertSameElement(
+  assert.strictEqual(
     container.querySelector('button[data-live-channel-selected="true"]'),
-    initialSelectedCard,
-    'Apenas mover o foco com setas para outro card NÃO troca o canal ativo do Hero'
+    null,
+    'Apenas mover o foco com setas para outro card NÃO seleciona canal no Hero'
+  );
+  assert.strictEqual(
+    container.querySelector('[data-live-hero="true"] video'),
+    null,
+    'Apenas mover o foco com setas para outro card NÃO inicia reprodução no Hero'
   );
 
   // 1º Enter no segundo canal: ativa o canal no Hero
@@ -19517,55 +19533,95 @@ if (args[0] === 'add' && args[1] === 'android') {
         assert.strictEqual(mobileMetrics.topSectionDirection, 'column');
         assert(Math.abs(mobileMetrics.previewAspectRatio - 16 / 9) < 0.03);
 
-        // 2. Teste integrado com LiveTvView real + navegação espacial real (default e tv)
+        // 2. Teste integrado com LiveTvView real + navegação espacial real + relógio EPG compartilhado (default e tv)
+        const {
+          setLiveEpgClockNowForTest,
+          clearSharedSessionEpgCache,
+        } = await import('../src/utils/epgUtils');
+
         const encodeB64 = (txt: string) =>
           Buffer.from(encodeURIComponent(txt).replace(/%([0-9A-F]{2})/g, (_, p1) => String.fromCharCode(parseInt(p1, 16))), 'binary').toString('base64');
 
-        const nowSecLiveTest = Math.floor(Date.now() / 1000);
+        const nowSecLiveTest = 1762980000;
+        const initialClockMs = (nowSecLiveTest + 900) * 1000; // 50% de epg_1 [nowSec, nowSec + 1800]
+        setLiveEpgClockNowForTest(initialClockMs);
+
         const sixPrograms = [
           {
             id: 'epg_1',
             start: '18:00',
-            end: '19:00',
-            start_timestamp: nowSecLiveTest - 1500,
-            stop_timestamp: nowSecLiveTest + 2100,
+            end: '18:30',
+            start_timestamp: nowSecLiveTest,
+            stop_timestamp: nowSecLiveTest + 1800,
             title: encodeB64('Jornal da Noite — Edição 1'),
             description: encodeB64('Resumo das principais notícias do dia.'),
           },
           {
             id: 'epg_2',
-            start: '2026-11-08 19:00:00',
-            end: '2026-11-08 20:00:00',
+            start: '18:30',
+            end: '19:30',
+            start_timestamp: nowSecLiveTest + 1800,
+            stop_timestamp: nowSecLiveTest + 5400,
             title: encodeB64('Debate Esportivo — Edição 2'),
             description: encodeB64('Análise da rodada e entrevistas ao vivo.'),
           },
           {
             id: 'epg_3',
-            start: '2026-11-08 20:00:00',
-            end: '2026-11-08 21:00:00',
+            start: '19:30',
+            end: '20:30',
+            start_timestamp: nowSecLiveTest + 5400,
+            stop_timestamp: nowSecLiveTest + 9000,
             title: encodeB64('Documentário Ciência — Edição 3'),
             description: encodeB64('Exploração espacial e novas descobertas.'),
           },
           {
             id: 'epg_4',
-            start: '2026-11-08 21:00:00',
-            end: '2026-11-08 22:00:00',
+            start: '20:30',
+            end: '21:30',
+            start_timestamp: nowSecLiveTest + 9000,
+            stop_timestamp: nowSecLiveTest + 12600,
             title: encodeB64('Sessão Cinema — Edição 4'),
             description: encodeB64('Suspense inédito na grade principal.'),
           },
           {
             id: 'epg_5',
-            start: '2026-11-08 22:00:00',
-            end: '2026-11-08 23:00:00',
+            start: '21:30',
+            end: '22:30',
+            start_timestamp: nowSecLiveTest + 12600,
+            stop_timestamp: nowSecLiveTest + 16200,
             title: encodeB64('Mesa Redonda — Edição 5'),
             description: encodeB64('Bastidores e gols da semana.'),
           },
           {
             id: 'epg_6',
-            start: '2026-11-08 23:00:00',
-            end: '2026-11-09 00:00:00',
+            start: '22:30',
+            end: '23:30',
+            start_timestamp: nowSecLiveTest + 16200,
+            stop_timestamp: nowSecLiveTest + 19800,
             title: encodeB64('Plantão da Madrugada — Edição 6'),
             description: encodeB64('Últimas atualizações internacionais.'),
+          },
+        ];
+
+        // Programas encerrados/futuros sem intervalo ativo em initialClockMs (para validar rejeição de EPG expirado/futuro na UI)
+        const expiredAndFutureOnlyPrograms = [
+          {
+            id: 'epg_past',
+            start: '16:00',
+            end: '17:00',
+            start_timestamp: nowSecLiveTest - 7200,
+            stop_timestamp: nowSecLiveTest - 3600,
+            title: encodeB64('Programa Já Encerrado'),
+            description: encodeB64('Não deve aparecer como Passando agora.'),
+          },
+          {
+            id: 'epg_future',
+            start: '21:00',
+            end: '22:00',
+            start_timestamp: nowSecLiveTest + 10800,
+            stop_timestamp: nowSecLiveTest + 14400,
+            title: encodeB64('Programa Futuro Ainda Não Iniciado'),
+            description: encodeB64('Não deve aparecer como Passando agora.'),
           },
         ];
 
@@ -19585,7 +19641,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             return { epg_listings: sixPrograms };
           }
           if (key === '502') {
-            return { epg_listings: [] };
+            return { epg_listings: expiredAndFutureOnlyPrograms };
           }
           if (key === '503') {
             return new Promise((resolve) => {
@@ -19624,6 +19680,10 @@ if (args[0] === 'add' && args[1] === 'android') {
         try {
           for (const testDisplayMode of ['default', 'tv'] as const) {
             epgCallsByStreamId = {};
+            localStorage.clear();
+            clearSharedSessionEpgCache();
+            setLiveEpgClockNowForTest(initialClockMs);
+
             if (testDisplayMode === 'tv') {
               document.documentElement.setAttribute('data-display-mode', 'tv');
               document.documentElement.style.setProperty('--nc-ui-scale', '0.9');
@@ -19636,7 +19696,7 @@ if (args[0] === 'add' && args[1] === 'android') {
 
             const liveTestCreds: XtreamCredentials = {
               serverUrl: 'http://epg-audit.local:8080',
-              username: 'epg_user',
+              username: `epg_user_${testDisplayMode}`,
               password: 'epg_password',
             };
 
@@ -19766,7 +19826,66 @@ if (args[0] === 'add' && args[1] === 'android') {
               await new Promise((r) => setTimeout(r, 30));
             });
 
-            // Verificar canal inicial no Hero, EPG válido com barra de progresso real e preview 16:9
+            // Verificar os 4 cartões horizontais largos no carrossel da vitrine
+            const chBtns = Array.from(
+              liveEpgContainer.querySelectorAll<HTMLButtonElement>('button[data-live-channel-btn="true"]')
+            );
+            assert.strictEqual(chBtns.length, 4, `[12.23][${testDisplayMode}] Carrossel deve exibir os 4 canais da categoria`);
+            const ch1Btn = chBtns[0];
+            const ch2Btn = chBtns[1];
+            const ch3Btn = chBtns[2];
+            const ch4Btn = chBtns[3];
+
+            // Problema A: Entrada normal sem initialChannelIntent deve manter Hero neutro, sem <video> e sem consultar EPG
+            const neutralHeroEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-hero-neutral="true"]');
+            assert(
+              neutralHeroEl !== null && neutralHeroEl.textContent?.includes('Selecione um canal'),
+              `[12.23][${testDisplayMode}] Entrada normal na TV ao Vivo deve exibir estado neutro "Selecione um canal"`
+            );
+            assert.strictEqual(
+              liveEpgContainer.querySelector('video'),
+              null,
+              `[12.23][${testDisplayMode}] Entrada normal NÃO deve montar <video> automaticamente`
+            );
+            assert.strictEqual(
+              liveEpgContainer.querySelector('button[data-live-channel-selected="true"]'),
+              null,
+              `[12.23][${testDisplayMode}] Nenhum cartão deve iniciar marcado como selecionado na entrada normal`
+            );
+            assert.strictEqual(
+              Object.keys(epgCallsByStreamId).length,
+              0,
+              `[12.23][${testDisplayMode}] Entrada normal NÃO deve disparar chamadas de EPG`
+            );
+
+            // Mover foco com setas pelos cards com Hero neutro NÃO deve ativar canal nem disparar vídeo/EPG
+            const loadCountBeforeExplicitActivation = videoLoadCallCount;
+            await act(async () => {
+              ch1Btn.focus();
+            });
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(document.activeElement, ch2Btn, `[12.23][${testDisplayMode}] ArrowRight foca Canal 2`);
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(document.activeElement, ch3Btn, `[12.23][${testDisplayMode}] ArrowRight foca Canal 3`);
+            assert.strictEqual(
+              liveEpgContainer.querySelector('video'),
+              null,
+              `[12.23][${testDisplayMode}] Mover foco pelos cards com Hero neutro NÃO monta <video>`
+            );
+            assert.strictEqual(
+              Object.keys(epgCallsByStreamId).length,
+              0,
+              `[12.23][${testDisplayMode}] Mover foco pelos cards com Hero neutro NÃO consulta EPG`
+            );
+
+            // Ativar explicitamente o Canal 1 com clique/Enter
+            await act(async () => {
+              ch1Btn.focus();
+              ch1Btn.click();
+              await new Promise((r) => setTimeout(r, 25));
+            });
+
+            // Verificar canal ativo no Hero, EPG válido com barra de progresso real e preview 16:9
             const heroEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-hero="true"]');
             const selectedChannelTitleEl = liveEpgContainer.querySelector<HTMLElement>('h1.nc-live-channel-title');
             const nowPlayingEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-now-playing="true"]');
@@ -19777,7 +19896,12 @@ if (args[0] === 'add' && args[1] === 'android') {
 
             assert(
               heroEl && selectedChannelTitleEl && nowPlayingEl && heroProgressEl && heroPlayBtn && heroFavBtn && previewVideoEl,
-              `[12.23][${testDisplayMode}] Hero da TV ao Vivo deve renderizar título, bloco EPG com progresso real, botões e <video> embutido`
+              `[12.23][${testDisplayMode}] Após ativação explícita, Hero da TV ao Vivo deve renderizar título, bloco EPG com progresso real, botões e <video> embutido`
+            );
+            assert.strictEqual(
+              ch1Btn.getAttribute('data-live-channel-selected'),
+              'true',
+              `[12.23][${testDisplayMode}] Canal 1 marcado como selecionado após ativação explícita`
             );
             assert(
               selectedChannelTitleEl.classList.contains('line-clamp-2') &&
@@ -19787,9 +19911,98 @@ if (args[0] === 'add' && args[1] === 'android') {
               `[12.23][${testDisplayMode}] h1.nc-live-channel-title deve manter line-clamp-2 e quebra segura sem block`
             );
             assert(
-              nowPlayingEl.textContent?.includes('Passando agora'),
-              `[12.23][${testDisplayMode}] EPG válido deve exibir Passando agora`
+              nowPlayingEl.textContent?.includes('Passando agora') &&
+                nowPlayingEl.textContent?.includes('Jornal da Noite — Edição 1'),
+              `[12.23][${testDisplayMode}] EPG válido deve exibir Passando agora e o programa atual em exibição`
             );
+            assert.strictEqual(
+              heroProgressEl.getAttribute('aria-valuenow'),
+              '50',
+              `[12.23][${testDisplayMode}] Progresso inicial do EPG no Hero deve ser 50%`
+            );
+            assert(
+              ch1Btn.textContent?.includes('Jornal da Noite — Edição 1') &&
+                ch1Btn.querySelector('[data-live-card-epg-progress="true"]') !== null,
+              `[12.23][${testDisplayMode}] Cartão do Canal 1 deve exibir título e barra de progresso a partir do cache de EPG`
+            );
+
+            // Problema C: Avanço do relógio compartilhado de EPG atualiza progresso, troca para próximo programa e expira sem reiniciar <video> nem refazer fetch
+            const videoLoadsBeforeClock = videoLoadCallCount;
+            const epgCallsBeforeClock = epgCallsByStreamId['501'] || 0;
+            assert.strictEqual(epgCallsBeforeClock, 1, `[12.23][${testDisplayMode}] Ativação explícita do Canal 1 consultou EPG 1 vez`);
+
+            // C.1: Avançar relógio para 75% do Programa 1 (nowSec + 1350s)
+            await act(async () => {
+              setLiveEpgClockNowForTest((nowSecLiveTest + 1350) * 1000);
+            });
+            assert.strictEqual(
+              liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-progress="true"]')?.getAttribute('aria-valuenow'),
+              '75',
+              `[12.23][${testDisplayMode}] Avanço do relógio compartilhado deve atualizar progresso no Hero de 50% para 75%`
+            );
+            const ch1CardBar = ch1Btn.querySelector<HTMLElement>('[data-live-card-epg-progress="true"] > div');
+            assert.strictEqual(
+              ch1CardBar?.style.width,
+              '75%',
+              `[12.23][${testDisplayMode}] Avanço do relógio compartilhado deve atualizar barra de progresso do cartão para 75%`
+            );
+
+            // C.2: Avançar relógio para 50% do Programa 2 (nowSec + 3600s) -> transição automática para "Debate Esportivo — Edição 2"
+            await act(async () => {
+              setLiveEpgClockNowForTest((nowSecLiveTest + 3600) * 1000);
+            });
+            assert(
+              nowPlayingEl.textContent?.includes('Debate Esportivo — Edição 2'),
+              `[12.23][${testDisplayMode}] Quando o Programa 1 termina, o Hero deve transicionar para o Programa 2 do cache`
+            );
+            assert(
+              ch1Btn.textContent?.includes('Debate Esportivo — Edição 2'),
+              `[12.23][${testDisplayMode}] Cartão do Canal 1 também deve transicionar para o Programa 2`
+            );
+            assert.strictEqual(
+              liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-progress="true"]')?.getAttribute('aria-valuenow'),
+              '50',
+              `[12.23][${testDisplayMode}] Progresso do Programa 2 deve ser calculado como 50%`
+            );
+
+            // C.3: Avançar relógio após o término de todos os programas -> estado neutro "Programação indisponível" sem barra
+            await act(async () => {
+              setLiveEpgClockNowForTest((nowSecLiveTest + 25000) * 1000);
+            });
+            assert(
+              liveEpgContainer.querySelector('[data-epg-state="empty"]')?.textContent?.includes('Programação indisponível'),
+              `[12.23][${testDisplayMode}] Quando todos os programas do cache expiram, o Hero deve exibir Programação indisponível`
+            );
+            assert.strictEqual(
+              liveEpgContainer.querySelector('[data-live-epg-progress="true"]'),
+              null,
+              `[12.23][${testDisplayMode}] Barra de progresso do Hero deve ser removida quando a programação expira`
+            );
+            assert(
+              ch1Btn.textContent?.includes('Programação indisponível') &&
+                ch1Btn.querySelector('[data-live-card-epg-progress="true"]') === null,
+              `[12.23][${testDisplayMode}] Cartão do Canal 1 deve exibir Programação indisponível e remover barra quando expira`
+            );
+            assertSameElement(
+              liveEpgContainer.querySelector('video'),
+              previewVideoEl,
+              `[12.23][${testDisplayMode}] Atualizações do relógio de EPG NÃO devem desmontar o elemento <video>`
+            );
+            assert.strictEqual(
+              videoLoadCallCount,
+              videoLoadsBeforeClock,
+              `[12.23][${testDisplayMode}] Atualizações do relógio de EPG NÃO devem reiniciar o stream`
+            );
+            assert.strictEqual(
+              epgCallsByStreamId['501'],
+              epgCallsBeforeClock,
+              `[12.23][${testDisplayMode}] Atualizações do relógio de EPG NÃO devem disparar novas requisições de rede`
+            );
+
+            // Restaurar relógio para initialClockMs para continuar as demais verificações
+            await act(async () => {
+              setLiveEpgClockNowForTest(initialClockMs);
+            });
 
             // Verificar que controles do player embutido NÃO são candidatos de foco por setas, mas aceitam clique
             const focusableInPreview = getLiveFocusableElements();
@@ -19818,23 +20031,8 @@ if (args[0] === 'add' && args[1] === 'android') {
             });
             assert.strictEqual(previewVideoEl.paused, false, `[12.23][${testDisplayMode}] Segundo clique retoma o vídeo`);
 
-            // Verificar os 4 cartões horizontais largos no carrossel da vitrine
-            const chBtns = Array.from(
-              liveEpgContainer.querySelectorAll<HTMLButtonElement>('button[data-live-channel-btn="true"]')
-            );
-            assert.strictEqual(chBtns.length, 4, `[12.23][${testDisplayMode}] Carrossel deve exibir os 4 canais da categoria`);
-            const ch1Btn = chBtns[0];
-            const ch2Btn = chBtns[1];
-            const ch3Btn = chBtns[2];
-            const ch4Btn = chBtns[3];
-
-            // Validar seleção inicial automática no Canal 1
-            const initialActiveId = liveEpgContainer.querySelector<HTMLButtonElement>('button[data-live-channel-selected="true"]')?.getAttribute('data-live-channel-id');
-            assert.strictEqual(initialActiveId, ch1Btn.getAttribute('data-live-channel-id'), `[12.23][${testDisplayMode}] Canal 1 inicial selecionado no Hero`);
-
             const loadCountBeforeNav = videoLoadCallCount;
             const epgCallsBeforeNav = epgCallsByStreamId['501'] || 0;
-            assert.strictEqual(epgCallsBeforeNav, 1, `[12.23][${testDisplayMode}] Seleção inicial do Canal 1 deve consultar EPG 1 vez`);
 
             // Mover foco com setas para Canal 2, 3, 4 e faixa de versões NÃO troca canal ativo nem dispara vídeo/EPG
             await act(async () => {
@@ -19872,7 +20070,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             });
             assert.strictEqual(variantBtns[4].getAttribute('data-variant-active'), 'true', `[12.23][${testDisplayMode}] Clique em 4K ativa resolução 4K`);
 
-            // Simular rolagem abaixo de 20px e ativar explicitamente Canal 2 (sem programação -> estado honesto Programação indisponível)
+            // Problema B na UI: Simular rolagem abaixo de 20px e ativar explicitamente Canal 2 (cujo EPG contém apenas programas passados e futuros -> deve exibir Programação indisponível)
             const mainScrollEl = liveEpgContainer.querySelector<HTMLElement>('main[data-scroll-container="true"]')!;
             assert(mainScrollEl, `[12.23][${testDisplayMode}] Container principal com rolagem deve existir`);
             mainScrollEl.scrollTop = 260;
@@ -19892,8 +20090,16 @@ if (args[0] === 'add' && args[1] === 'android') {
             assert.strictEqual(smoothScrollTopCalled, true, `[12.23][${testDisplayMode}] Ao ativar novo canal estando rolado abaixo, rola suavemente para o Hero`);
             assert.strictEqual(ch2Btn.getAttribute('data-live-channel-selected'), 'true', `[12.23][${testDisplayMode}] Canal 2 agora é o canal ativo`);
             const emptyStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="empty"]');
-            assert(emptyStateEl && emptyStateEl.textContent?.includes('Programação indisponível'), `[12.23][${testDisplayMode}] Canal 2 sem EPG mostra Programação indisponível sem dados fabricados`);
-            assert.strictEqual(liveEpgContainer.querySelector('[data-live-epg-progress="true"]'), null, `[12.23][${testDisplayMode}] Canal 2 sem EPG não inventa barra de progresso`);
+            assert(
+              emptyStateEl && emptyStateEl.textContent?.includes('Programação indisponível'),
+              `[12.23][${testDisplayMode}] Canal 2 com apenas programas passados/futuros deve exibir Programação indisponível`
+            );
+            assert(
+              !liveEpgContainer.textContent?.includes('Programa Já Encerrado') &&
+                !liveEpgContainer.textContent?.includes('Programa Futuro Ainda Não Iniciado'),
+              `[12.23][${testDisplayMode}] Programas encerrados ou futuros NUNCA devem ser exibidos como Passando agora`
+            );
+            assert.strictEqual(liveEpgContainer.querySelector('[data-live-epg-progress="true"]'), null, `[12.23][${testDisplayMode}] Canal 2 sem programa ativo em nowMs não exibe barra de progresso`);
 
             // Segundo clique no canal já ativo abre tela cheia preservando a mesma instância de <video>
             const currentVideoBeforeFs = liveEpgContainer.querySelector('video')!;
@@ -19954,14 +20160,15 @@ if (args[0] === 'add' && args[1] === 'android') {
           }
 
           console.log(
-            `📊 [Métricas 12.23 — Etapa 4.1: Hero da TV ao Vivo, Cards Horizontais Largos e EPG Honesto]\n` +
-              `   • Hero 16:9 + EPG válido ("Passando agora", progresso real) + fallback honesto ("Programação indisponível", sem barra inventada)\n` +
-              `   • Faixa "Versão" (Automático / FHD / HD / SD / 4K): troca explícita preservada sem reiniciar por simples foco\n` +
-              `   • Carrossel largo (.nc-live-wide-card): mover foco NÃO troca canal nem consulta EPG; ativar canal rola ao Hero; 2º clique abre tela cheia com mesmo <video>\n` +
-              `   • Exclusão de foco nos controles do preview embutido: ativa (clique/toque preservados; Escape devolve foco ao canal ativo)\n` +
+            `📊 [Métricas 12.23 — Hotfix 12.27-a.1: Hero Neutro Inicial, EPG Estrito em Exibição e Relógio Compartilhado]\n` +
+              `   • Entrada normal sem initialChannelIntent: Hero neutro ("Selecione um canal"), 0 <video> montado, 0 chamadas de EPG\n` +
+              `   • EPG estrito: rejeita programas encerrados/futuros/sem horário e exibe apenas [startMs, endMs] contendo nowMs\n` +
+              `   • Relógio compartilhado (60s + focus/visibility): atualiza progresso, avança para próximo programa e expira sem remontar <video>\n` +
               `   • Layout 961×541: ${layoutSummaryLines.join(' | ')}`
           );
         } finally {
+          setLiveEpgClockNowForTest(null);
+          clearSharedSessionEpgCache();
           (XtreamService as any).getShortEpg = savedGetShortEpgLiveTest;
           if (prevDocDisplayMode !== null) {
             document.documentElement.setAttribute('data-display-mode', prevDocDisplayMode);

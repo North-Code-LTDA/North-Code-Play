@@ -105,6 +105,7 @@ export interface LiveChannelCardProps {
   isSelected: boolean;
   epgCache: ReadonlyMap<string, any[]>;
   epgCacheVersion: number;
+  referenceNowMs?: number;
   layoutVariant?: 'row' | 'grid';
   rowCardIndex?: number;
   virtualIndex?: number;
@@ -120,6 +121,7 @@ export const LiveChannelCard = React.memo(function LiveChannelCard({
   isSelected,
   epgCache,
   epgCacheVersion,
+  referenceNowMs,
   layoutVariant = 'row',
   rowCardIndex,
   virtualIndex,
@@ -136,11 +138,18 @@ export const LiveChannelCard = React.memo(function LiveChannelCard({
     for (const k of keys) {
       const listings = epgCache.get(k);
       if (listings && listings.length > 0) {
-        return resolveNowPlayingProgram(listings);
+        return resolveNowPlayingProgram(listings, referenceNowMs);
       }
     }
+    const inlineListings =
+      group.primaryStream?.epg_listings ||
+      group.allStreams?.find((s: any) => Array.isArray(s?.epg_listings) && s.epg_listings.length > 0)
+        ?.epg_listings;
+    if (Array.isArray(inlineListings) && inlineListings.length > 0) {
+      return resolveNowPlayingProgram(inlineListings, referenceNowMs);
+    }
     return null;
-  }, [group, accountPrefix, epgCache, epgCacheVersion]);
+  }, [group, accountPrefix, epgCache, epgCacheVersion, referenceNowMs]);
 
   const cardDimensionClass =
     layoutVariant === 'grid' ? 'nc-live-wide-card-grid' : 'nc-live-wide-card';
@@ -261,6 +270,7 @@ export interface LiveChannelRowProps {
   selectedGroupId: string | null;
   epgCache: ReadonlyMap<string, any[]>;
   epgCacheVersion: number;
+  referenceNowMs?: number;
   virtualize?: boolean;
   onActivateGroup: (group: LiveChannelGroup, el: HTMLButtonElement) => void;
 }
@@ -274,6 +284,7 @@ export const LiveChannelRow = React.memo(function LiveChannelRow({
   selectedGroupId,
   epgCache,
   epgCacheVersion,
+  referenceNowMs,
   virtualize = true,
   onActivateGroup,
 }: LiveChannelRowProps) {
@@ -442,6 +453,7 @@ export const LiveChannelRow = React.memo(function LiveChannelRow({
                   isSelected={selectedGroupId === group.groupId}
                   epgCache={epgCache}
                   epgCacheVersion={epgCacheVersion}
+                  referenceNowMs={referenceNowMs}
                   layoutVariant="row"
                   rowCardIndex={actualIndex}
                   virtualIndex={isVirtualized ? actualIndex : undefined}

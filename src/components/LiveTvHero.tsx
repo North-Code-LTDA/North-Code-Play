@@ -333,7 +333,10 @@ export const LiveTvHero = React.memo(function LiveTvHero({
           </div>
         ) : (
           /* Neutral fallback stage before a channel is available or selected */
-          <div className="relative z-10 flex flex-col md:flex-row items-center gap-6 p-6 sm:p-8 min-h-[14rem]">
+          <div
+            data-live-hero-neutral="true"
+            className="relative z-10 flex flex-col md:flex-row items-center gap-6 p-6 sm:p-8 min-h-[14rem]"
+          >
             <div className="flex-1 min-w-0 flex flex-col items-start gap-2">
               <span className="nc-text-meta uppercase tracking-wider text-white/55 font-semibold">
                 TV ao Vivo
