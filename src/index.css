@@ -189,6 +189,8 @@ html[data-display-mode="tv"] {
   --nc-tv-section-pad: calc(1 * var(--nc-rem));
   --nc-tv-card-min: calc(8.75 * var(--nc-rem));
   --nc-tv-row-card-live-w: calc(15.5 * var(--nc-rem));
+  --nc-tv-row-card-live-wide-w: calc(25.5 * var(--nc-rem));
+  --nc-tv-row-card-live-wide-h: calc(8.75 * var(--nc-rem));
   --nc-tv-row-card-poster-w: calc(9.25 * var(--nc-rem));
   --nc-tv-hero-min-h: calc(15.5 * var(--nc-rem));
   --nc-tv-hero-title-font: calc(1.85 * var(--nc-rem));
@@ -538,6 +540,51 @@ html[data-display-mode="tv"] .nc-tv-row-card-live {
 
 html[data-display-mode="tv"] .nc-tv-row-card-poster {
   width: var(--nc-tv-row-card-poster-w) !important;
+}
+
+.nc-live-wide-card {
+  width: 19rem;
+  height: 7.25rem;
+}
+
+@media (min-width: 640px) {
+  .nc-live-wide-card {
+    width: 22.5rem;
+    height: 8.25rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .nc-live-wide-card {
+    width: 26.5rem;
+    height: 8.75rem;
+  }
+}
+
+.nc-live-wide-card-grid {
+  width: 100%;
+  height: 7.5rem;
+}
+
+@media (min-width: 640px) {
+  .nc-live-wide-card-grid {
+    height: 8.25rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .nc-live-wide-card-grid {
+    height: 8.75rem;
+  }
+}
+
+html[data-display-mode="tv"] .nc-live-wide-card {
+  width: var(--nc-tv-row-card-live-wide-w) !important;
+  height: var(--nc-tv-row-card-live-wide-h) !important;
+}
+
+html[data-display-mode="tv"] .nc-live-wide-card-grid {
+  height: var(--nc-tv-row-card-live-wide-h) !important;
 }
 
 html[data-display-mode="tv"] .nc-tv-hero {

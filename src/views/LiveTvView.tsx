@@ -1,9 +1,19 @@
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { TvMinimalPlay, Loader2, Heart, ArrowLeft, Calendar, AlertCircle, RefreshCw, X, Layers } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { flushSync } from 'react-dom';
+import {
+  TvMinimalPlay,
+  Loader2,
+  AlertCircle,
+  RefreshCw,
+  Layers,
+  ChevronDown,
+  ChevronLeft,
+  Check,
+} from 'lucide-react';
 import { useXtreamCredentials, useXtreamLive } from '../context/XtreamContext';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
-import { VideoPlayer } from '../components/VideoPlayer';
-import { MediaImage } from '../components/MediaImage';
+import { LiveTvHero } from '../components/LiveTvHero';
+import { LiveChannelRow, LiveChannelCard } from '../components/LiveChannelRow';
 import { XtreamService } from '../services/xtreamService';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
@@ -11,17 +21,25 @@ import { formatCategoryLabel } from '../utils/categoryLabel';
 import {
   groupLiveStreams,
   filterLiveChannelGroups,
-  parseChannelVariantSuffix,
   LiveChannelGroup,
   ResolutionQuality,
 } from '../utils/liveChannelGroups';
 import { getOrCreateLiveIndex } from '../utils/catalogIndex';
+import {
+  buildEpgCacheKeys,
+  resolveNowPlayingProgram,
+  LIVE_SHOWCASE_ROW_WINDOW_SIZE,
+  computeLiveShowcaseRowBounds,
+} from '../utils/epgUtils';
 import { useVirtualWindow } from '../hooks/useVirtualWindow';
 import {
   useBackHandler,
   BACK_PRIORITY,
   getNavMode,
   focusElementSafely,
+  isElementFocusable,
+  registerShowcaseRowController,
+  unregisterShowcaseRowController,
 } from '../navigation';
 
 export const AUTO_RESOLUTION_PRIORITY: ResolutionQuality[] = ['SD', 'HD', 'FHD', '4K'];
@@ -59,20 +77,20 @@ export function selectChannelVariantForAttempt(
     return attemptedSet.has(sId) ? null : group.primaryStream;
   }
 
-  // 1. Manual mode handling:
+  // 1. Manual mode handling
   if (targetMode !== 'auto') {
     const selectedVariant = group.variants.find(
       (v) => String(v.streamId) === targetMode || v.label === targetMode || v.resolution === targetMode
     );
 
-    const targetResolution = selectedVariant ? selectedVariant.resolution : (targetMode as ResolutionQuality);
+    const targetResolution = selectedVariant
+      ? selectedVariant.resolution
+      : (targetMode as ResolutionQuality);
 
-    // First priority in manual mode: try the specific chosen stream if not yet attempted
     if (selectedVariant && !attemptedSet.has(selectedVariant.streamId)) {
       return selectedVariant.stream;
     }
 
-    // Second priority: try other untried streams of the SAME chosen resolution in original order
     const sameResVariants = group.variants.filter((v) => v.resolution === targetResolution);
     for (const v of sameResVariants) {
       if (!attemptedSet.has(v.streamId)) {
@@ -80,7 +98,6 @@ export function selectChannelVariantForAttempt(
       }
     }
 
-    // Third priority: fallback to other resolutions in automatic priority order SD > HD > FHD > 4K
     for (const res of AUTO_RESOLUTION_PRIORITY) {
       if (res === targetResolution) continue;
       const otherVariants = group.variants.filter((v) => v.resolution === res);
@@ -115,7 +132,6 @@ export function selectChannelVariantForAttempt(
     }
   }
 
-  // Pick any remaining untried variant in group
   for (const v of group.variants) {
     if (!attemptedSet.has(v.streamId)) {
       return v.stream;
@@ -184,88 +200,46 @@ export function computeLiveTvLayoutMetrics({
   const effectiveScale = displayMode === 'tv' ? Math.max(0.5, Math.min(1.25, uiScale)) : 1;
   const remPx = 16 * effectiveScale;
 
-  const sidebarWidth = isMobile
-    ? 0
-    : displayMode === 'tv'
-      ? Math.round(12.75 * remPx)
-      : viewportWidth >= 1024
-        ? 256
-        : 80;
-  const contentAreaWidth = Math.max(320, viewportWidth - sidebarWidth);
-  const categoryPaneWidth = isMobile
-    ? 0
-    : displayMode === 'tv'
-      ? Math.min(Math.round(viewportWidth * 0.42), Math.round(16.25 * remPx))
-      : Math.round(contentAreaWidth * (viewportWidth >= 1024 ? 0.3 : 0.35));
-
-  const rightPaneWidth = isMobile
-    ? viewportWidth
-    : Math.max(300, contentAreaWidth - categoryPaneWidth);
+  const rightPaneWidth = Math.max(300, viewportWidth);
   const safeBottomPx =
     displayMode === 'tv' ? Math.min(28, Math.max(10, Math.round(viewportHeight * 0.022))) : 0;
   const rightPaneHeight = Math.max(240, viewportHeight - safeBottomPx);
 
   const topSectionDirection: 'row' | 'column' = isMobile ? 'column' : 'row';
   const topPadY =
-    displayMode === 'tv'
-      ? Math.round(1.1 * remPx)
-      : isShortLandscape
-        ? 16
-        : 20;
+    displayMode === 'tv' ? Math.round(1.5 * remPx) : isShortLandscape ? 16 : 24;
   const topPadX =
-    displayMode === 'tv'
-      ? Math.round(1.7 * remPx)
-      : isShortLandscape
-        ? 24
-        : 24;
+    displayMode === 'tv' ? Math.round(2 * remPx) : isShortLandscape ? 32 : 48;
 
   const innerTopWidth = Math.max(240, rightPaneWidth - topPadX);
   let previewWidth: number;
   if (isMobile) {
     previewWidth = innerTopWidth;
   } else if (displayMode === 'tv') {
-    previewWidth = Math.round(
-      Math.max(11 * remPx, Math.min(viewportWidth * 0.23, 15 * remPx))
-    );
-  } else if (isShortLandscape) {
-    previewWidth = Math.round(Math.max(176, Math.min(viewportWidth * 0.23, 232)));
+    previewWidth = Math.round(Math.min(innerTopWidth * 0.48, 34 * remPx));
   } else {
-    previewWidth = Math.round(Math.min(innerTopWidth * 0.4, viewportWidth >= 1024 ? 320 : 248));
+    previewWidth = Math.round(Math.min(innerTopWidth * 0.48, 544));
   }
   const previewHeight = Math.round((previewWidth * 9) / 16);
   const previewAspectRatio = Number((previewWidth / Math.max(1, previewHeight)).toFixed(4));
 
-  const logoRowHeight = Math.round(
-    (displayMode === 'tv' || isShortLandscape ? 2.5 : 2.75) * remPx
-  );
-  const variantsHeight = isGrouped ? Math.round(2.05 * remPx) : 0;
-  const nowPlayingHeight = hasNowPlaying
-    ? Math.round((displayMode === 'tv' || isShortLandscape ? 3.85 : 4.25) * remPx)
-    : 0;
-  const summaryGaps =
-    (variantsHeight > 0 ? Math.round(0.45 * remPx) : 0) +
-    (nowPlayingHeight > 0 ? Math.round(0.45 * remPx) : 0);
+  const logoRowHeight = Math.round((displayMode === 'tv' ? 3 : 3.5) * remPx);
+  const variantsHeight = isGrouped ? Math.round(2.25 * remPx) : 0;
+  const nowPlayingHeight = hasNowPlaying ? Math.round(4.75 * remPx) : 0;
+  const summaryGaps = Math.round(1.5 * remPx);
   const summaryHeight = logoRowHeight + variantsHeight + nowPlayingHeight + summaryGaps;
 
-  const mobileBackHeight = isMobile ? 44 : 0;
   const topSectionHeight =
     topSectionDirection === 'row'
       ? Math.max(previewHeight, summaryHeight) + topPadY
-      : mobileBackHeight + previewHeight + summaryHeight + topPadY + 10;
+      : previewHeight + summaryHeight + topPadY + 12;
 
-  const epgHeaderHeight = Math.round(
-    (displayMode === 'tv' || isShortLandscape ? 2.25 : 2.5) * remPx
-  );
-  const epgSectionHeight = isMobile
-    ? Math.max(220, rightPaneHeight - topSectionHeight)
-    : Math.max(120, rightPaneHeight - topSectionHeight);
-  const epgScrollViewportHeight = Math.max(84, epgSectionHeight - epgHeaderHeight);
-
-  const epgCardHeight = Math.round(
-    (displayMode === 'tv' || isShortLandscape ? 4.35 : 4.65) * remPx
-  );
-  const epgGap = Math.round(0.6 * remPx);
-  const epgPadY = Math.round(1.1 * remPx);
+  const epgHeaderHeight = Math.round(2.5 * remPx);
+  const epgSectionHeight = Math.max(180, rightPaneHeight - topSectionHeight);
+  const epgScrollViewportHeight = Math.max(120, epgSectionHeight - epgHeaderHeight);
+  const epgCardHeight = Math.round((displayMode === 'tv' ? 8.75 : 8.75) * remPx);
+  const epgGap = Math.round(1 * remPx);
+  const epgPadY = Math.round(1.5 * remPx);
   const epgTotalContentHeight =
     epgCount > 0
       ? epgCount * epgCardHeight + Math.max(0, epgCount - 1) * epgGap + epgPadY
@@ -297,43 +271,157 @@ export function computeLiveTvLayoutMetrics({
   };
 }
 
+interface LiveRowEntry {
+  key: string;
+  title: string;
+  groups: LiveChannelGroup[];
+  virtualize: boolean;
+}
+
+const VIRTUAL_LIVE_CATEGORIES = [
+  { category_id: 'nc_recent', category_name: 'Assistidos Recentemente' },
+  { category_id: 'nc_fav', category_name: 'Canais Favoritos' },
+];
+
+interface LiveChannelGridProps {
+  groups: LiveChannelGroup[];
+  mainContainerRef: React.RefObject<HTMLElement | null>;
+  resetKey: string;
+  serverUrl?: string;
+  accountPrefix: string;
+  selectedGroupId: string | null;
+  epgCache: ReadonlyMap<string, any[]>;
+  epgCacheVersion: number;
+  onActivateGroup: (group: LiveChannelGroup, el: HTMLButtonElement) => void;
+}
+
+const LiveChannelGrid = React.memo(function LiveChannelGrid({
+  groups,
+  mainContainerRef,
+  resetKey,
+  serverUrl,
+  accountPrefix,
+  selectedGroupId,
+  epgCache,
+  epgCacheVersion,
+  onActivateGroup,
+}: LiveChannelGridProps) {
+  const gridContainerRef = useRef<HTMLDivElement>(null);
+
+  const {
+    startIndex: gridStartIndex,
+    endIndex: gridEndIndex,
+    topSpacerPx: gridTopSpacerPx,
+    bottomSpacerPx: gridBottomSpacerPx,
+    virtualContainerCallbackRef: gridVirtualCallbackRef,
+  } = useVirtualWindow({
+    totalCount: groups.length,
+    mode: 'grid',
+    scrollContainerRef: mainContainerRef as React.RefObject<HTMLDivElement | null>,
+    virtualContainerRef: gridContainerRef,
+    resetKey,
+    maxWindowItems: 72,
+  });
+
+  return (
+    <>
+      {gridTopSpacerPx > 0 && (
+        <div
+          data-virtual-spacer="top"
+          aria-hidden="true"
+          style={{ height: `${gridTopSpacerPx}px` }}
+        />
+      )}
+      <div
+        ref={gridVirtualCallbackRef}
+        data-nav-grid="true"
+        data-virtual-container="true"
+        data-virtual-total={groups.length}
+        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
+      >
+        {groups.slice(gridStartIndex, gridEndIndex).map((group, localIdx) => {
+          const actualIndex = gridStartIndex + localIdx;
+          return (
+            <LiveChannelCard
+              key={group.groupId}
+              group={group}
+              serverUrl={serverUrl}
+              accountPrefix={accountPrefix}
+              isSelected={selectedGroupId === group.groupId}
+              epgCache={epgCache}
+              epgCacheVersion={epgCacheVersion}
+              layoutVariant="grid"
+              virtualIndex={actualIndex}
+              rowPriority={actualIndex < 12}
+              allowImageRender={true}
+              onActivate={onActivateGroup}
+            />
+          );
+        })}
+      </div>
+      {gridBottomSpacerPx > 0 && (
+        <div
+          data-virtual-spacer="bottom"
+          aria-hidden="true"
+          style={{ height: `${gridBottomSpacerPx}px` }}
+        />
+      )}
+    </>
+  );
+});
+
 export const LiveTvView = React.memo(function LiveTvView({
   searchQuery = '',
   initialChannelIntent = null,
   onConsumeChannelIntent,
 }: LiveTvViewProps) {
   const { credentials } = useXtreamCredentials();
-  const { 
-    liveCategories, liveStreams, allLiveStreams, fetchLiveStreams, 
-    loadingLive, liveError, liveCategoriesError, liveCategoriesStatus,
-    liveCatalogStatus, fetchLiveCategories 
+  const {
+    liveCategories,
+    liveStreams,
+    allLiveStreams,
+    fetchLiveStreams,
+    loadingLive,
+    liveError,
+    liveCategoriesError,
+    liveCategoriesStatus,
+    liveCatalogStatus,
+    fetchLiveCategories,
   } = useXtreamLive();
-  
-  // Navigation states
-  const [leftPaneView, setLeftPaneView] = useState<'categories' | 'channels'>('categories');
-  const [isMobilePlayerOpen, setIsMobilePlayerOpen] = useState(false);
 
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>('nc_recent');
-  const [loadingCategoryId, setLoadingCategoryId] = useState<string | null>(null);
-  
-  // Group selection & variant selection state
+  const {
+    favorites,
+    isFavorite,
+    toggleFavorite,
+    toggleGroupFavorites,
+    favoriteError,
+    clearFavoriteError,
+  } = useFavorites();
+  const [favActionError, setFavActionError] = useState<string | null>(null);
+  const historyRecords = useAccountPlaybackHistory(credentials);
+
+  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
+  const [isCategoriesMenuOpen, setIsCategoriesMenuOpen] = useState(false);
+  const [isRetryingDomain, setIsRetryingDomain] = useState(false);
+
+  // Active Hero playback & variant states
   const [selectedGroup, setSelectedGroup] = useState<LiveChannelGroup | null>(null);
   const [activeVariantStream, setActiveVariantStream] = useState<any | null>(null);
   const [selectedResolutionMode, setSelectedResolutionMode] = useState<'auto' | string>('auto');
   const [attemptTrigger, setAttemptTrigger] = useState(0);
   const [fullscreenRequestTrigger, setFullscreenRequestTrigger] = useState(0);
-  
-  // States for EPG
+  const [miniPlayerUrl, setMiniPlayerUrl] = useState<string>('');
+  const [miniPlayerError, setMiniPlayerError] = useState<string | null>(null);
+  const [miniPlayerLoading, setMiniPlayerLoading] = useState(false);
+
+  // EPG state for active channel + passive session cache for wide channel cards
   const [epgData, setEpgData] = useState<any[]>([]);
   const [loadingEpg, setLoadingEpg] = useState(false);
   const [epgError, setEpgError] = useState<string | null>(null);
+  const epgCacheRef = useRef<Map<string, any[]>>(new Map());
+  const [epgCacheVersion, setEpgCacheVersion] = useState(0);
 
-  const { favorites, isFavorite, toggleFavorite, toggleGroupFavorites, favoriteError, clearFavoriteError } = useFavorites();
-  const [favActionError, setFavActionError] = useState<string | null>(null);
-
-  const historyRecords = useAccountPlaybackHistory(credentials);
-
-  // References for playback attempt tracking and session fallback
+  // Playback attempt & fallback refs
   const isMountedRef = useRef<boolean>(true);
   const sessionSuccessfulVariantsRef = useRef<Map<string, string | number>>(new Map());
   const attemptedStreamIdsRef = useRef<Set<string | number>>(new Set());
@@ -341,27 +429,39 @@ export const LiveTvView = React.memo(function LiveTvView({
   const fallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeVariantStreamRef = useRef<any | null>(null);
   activeVariantStreamRef.current = activeVariantStream;
-
-  // References for D-pad focus and scroll preservation between categories, channels, preview, and EPG
-  const viewRootRef = useRef<HTMLDivElement>(null);
-  const categoriesListRef = useRef<HTMLDivElement>(null);
-  const channelsScrollRef = useRef<HTMLDivElement>(null);
-  const channelsListRef = useRef<HTMLDivElement>(null);
-  const epgScrollRef = useRef<HTMLDivElement>(null);
-  const isEpgFocusedRef = useRef<boolean>(false);
-  const originChannelGroupIdRef = useRef<string | null>(null);
-  const originChannelIndexRef = useRef<number>(-1);
-  const categoriesScrollTopRef = useRef<number>(0);
-  const originCategoryIdRef = useRef<string>('nc_recent');
-  const lastPointerDownTimeRef = useRef<number>(0);
-  const pendingChannelEntryCategoryRef = useRef<string | null>(null);
-  const pendingCategoryRestoreFocusRef = useRef<string | null>(null);
-  const pendingChannelRestoreFocusRef = useRef<string | null>(null);
+  const selectedGroupRef = useRef<LiveChannelGroup | null>(null);
+  selectedGroupRef.current = selectedGroup;
+  const heroWasExplicitlyActivatedRef = useRef<boolean>(false);
   const consumedIntentRequestIdRef = useRef<number | null>(null);
+
+  // Scroll & showcase vertical windowing refs
+  const viewRootRef = useRef<HTMLDivElement>(null);
+  const mainContainerRef = useRef<HTMLElement>(null);
+  const categoriesTriggerRef = useRef<HTMLButtonElement>(null);
+  const categoriesMenuRef = useRef<HTMLDivElement>(null);
+  const showcaseRowsContainerRef = useRef<HTMLDivElement | null>(null);
+  const registeredShowcaseContainerRef = useRef<HTMLDivElement | null>(null);
+  const rowWindowStartRef = useRef<number>(0);
+  const [rowWindowStart, setRowWindowStart] = useState(0);
+  const measuredRowHeightsRef = useRef<Map<number, number>>(new Map());
+  const defaultEstimatedRowHeightRef = useRef<number>(216);
+  const showcaseRowsOffsetTopRef = useRef<number>(420);
+  const isDpadShowcaseNavActiveRef = useRef<boolean>(false);
+  const isProgrammaticRowShiftRef = useRef<boolean>(false);
+  const lastManualScrollTopRef = useRef<number | null>(null);
+
+  const accountPrefix = useMemo(() => {
+    if (!credentials?.serverUrl && !credentials?.username) return '';
+    return `${credentials?.serverUrl || ''}|${credentials?.username || ''}`;
+  }, [credentials?.serverUrl, credentials?.username]);
 
   const liveIndex = useMemo(() => getOrCreateLiveIndex(allLiveStreams), [allLiveStreams]);
 
-  // Cancel fallbackTimeoutRef and invalidate active attempt on unmount
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const hasSearch = normalizedQuery.length > 0;
+  const isGridMode = hasSearch || activeCategoryId !== null;
+
+  // Cancel timers on unmount
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -371,10 +471,14 @@ export const LiveTvView = React.memo(function LiveTvView({
         fallbackTimeoutRef.current = null;
       }
       attemptIdRef.current++;
+      if (registeredShowcaseContainerRef.current) {
+        unregisterShowcaseRowController(registeredShowcaseContainerRef.current);
+        registeredShowcaseContainerRef.current = null;
+      }
     };
   }, []);
 
-  // Reset active attempt and memory when active credentials change
+  // Reset playback state, cache, and active filters when credentials switch
   useEffect(() => {
     if (fallbackTimeoutRef.current) {
       clearTimeout(fallbackTimeoutRef.current);
@@ -383,10 +487,24 @@ export const LiveTvView = React.memo(function LiveTvView({
     attemptIdRef.current++;
     sessionSuccessfulVariantsRef.current.clear();
     attemptedStreamIdsRef.current.clear();
+    epgCacheRef.current.clear();
+    setEpgCacheVersion((v) => v + 1);
+    heroWasExplicitlyActivatedRef.current = false;
+    consumedIntentRequestIdRef.current = null;
     setSelectedGroup(null);
     setActiveVariantStream(null);
+    setSelectedResolutionMode('auto');
     setMiniPlayerUrl('');
     setMiniPlayerError(null);
+    setMiniPlayerLoading(false);
+    setEpgData([]);
+    setEpgError(null);
+    setLoadingEpg(false);
+    setActiveCategoryId(null);
+    setIsCategoriesMenuOpen(false);
+    rowWindowStartRef.current = 0;
+    setRowWindowStart(0);
+    measuredRowHeightsRef.current.clear();
   }, [credentials]);
 
   useEffect(() => {
@@ -399,426 +517,355 @@ export const LiveTvView = React.memo(function LiveTvView({
     }
   }, [favActionError, clearFavoriteError]);
 
-  const handleToggleFavorite = (item: FavoriteItem) => {
-    const success = toggleFavorite(item);
-    if (!success) {
-      setFavActionError('Não foi possível salvar os favoritos neste dispositivo. Tente novamente.');
-    } else {
-      setFavActionError(null);
-    }
-  };
+  const isGroupFavorited = useCallback(
+    (group: LiveChannelGroup | null): boolean => {
+      if (!group) return false;
+      return group.allStreams.some((s) => isFavorite(s.stream_id || s.id, 'live'));
+    },
+    [isFavorite]
+  );
 
-  // Handle group favorite toggle
-  const handleToggleGroupFavorite = (group: LiveChannelGroup) => {
-    const groupFavIds = group.allStreams
-      .map((s) => String(s.stream_id || s.id))
-      .filter((id) => isFavorite(id, 'live'));
+  const handleToggleHeroFavorite = useCallback(
+    (group: LiveChannelGroup) => {
+      if (!group) return;
+      if (group.isGrouped) {
+        const groupFavIds = group.allStreams
+          .map((s) => String(s.stream_id || s.id))
+          .filter((id) => isFavorite(id, 'live'));
 
-    if (groupFavIds.length > 0) {
-      // Remove all favorited stream IDs belonging to this group in a single atomic operation
-      const ok = toggleGroupFavorites(groupFavIds);
-      if (!ok) {
-        setFavActionError('Não foi possível salvar os favoritos neste dispositivo. Tente novamente.');
+        if (groupFavIds.length > 0) {
+          const ok = toggleGroupFavorites(groupFavIds);
+          if (!ok) {
+            setFavActionError('Não foi possível salvar os favoritos neste dispositivo.');
+          } else {
+            setFavActionError(null);
+          }
+        } else {
+          const repStream = group.primaryStream;
+          const repId = repStream.stream_id || repStream.id;
+          const ok = toggleGroupFavorites([], {
+            id: repId,
+            name: group.displayName,
+            cover: group.stream_icon || '',
+            type: 'live',
+          });
+          if (!ok) {
+            setFavActionError('Não foi possível salvar os favoritos neste dispositivo.');
+          } else {
+            setFavActionError(null);
+          }
+        }
       } else {
-        setFavActionError(null);
+        const primaryId = group.primaryStream?.stream_id || group.primaryStream?.id;
+        const item: FavoriteItem = {
+          id: primaryId,
+          name: group.displayName,
+          cover: group.stream_icon || '',
+          type: 'live',
+        };
+        const ok = toggleFavorite(item);
+        if (!ok) {
+          setFavActionError('Não foi possível salvar os favoritos neste dispositivo.');
+        } else {
+          setFavActionError(null);
+        }
       }
-    } else {
-      // Add one representative favorite
-      const repStream = group.primaryStream;
-      const repId = repStream.stream_id || repStream.id;
-      const ok = toggleGroupFavorites([], {
-        id: repId,
-        name: group.displayName,
-        cover: group.stream_icon || '',
-        type: 'live',
-      });
-      if (!ok) {
-        setFavActionError('Não foi possível salvar os favoritos neste dispositivo. Tente novamente.');
-      } else {
-        setFavActionError(null);
-      }
-    }
-  };
+    },
+    [isFavorite, toggleFavorite, toggleGroupFavorites]
+  );
 
-  const favoriteChannels = useMemo(() => {
-    return favorites
+  // Favorite and recently watched Live groups
+  const favoriteGroups = useMemo(() => {
+    const matchedStreams = favorites
       .filter((f) => f.type === 'live')
       .map((f) => liveIndex.getById(f.id))
       .filter(Boolean);
+    if (matchedStreams.length === 0) return [];
+    return groupLiveStreams(matchedStreams);
   }, [favorites, liveIndex]);
 
-  const recentChannels = useMemo(() => {
+  const recentGroups = useMemo(() => {
     if (!allLiveStreams || allLiveStreams.length === 0) return [];
     const liveRecords = historyRecords.filter((r) => r.type === 'live');
+    const seenIds = new Set<string>();
+    const streams: any[] = [];
+    for (const rec of liveRecords) {
+      const stream = liveIndex.getById(rec.id);
+      if (stream) {
+        const idStr = String(stream.stream_id ?? stream.id);
+        if (!seenIds.has(idStr)) {
+          seenIds.add(idStr);
+          streams.push(stream);
+        }
+      }
+    }
+    return groupLiveStreams(streams);
+  }, [historyRecords, allLiveStreams, liveIndex]);
 
-    const result: any[] = [];
-    const seenIds = new Set<string | number>();
+  // All showcase category rows (Recentes -> Favoritos -> Real Live Categories)
+  const showcaseRowDefinitions = useMemo<LiveRowEntry[]>(() => {
+    const rows: LiveRowEntry[] = [];
 
-    for (const record of liveRecords) {
-      const item = liveIndex.getById(record.id);
-      if (item) {
-        const itemId = item.stream_id || item.id;
-        if (!seenIds.has(itemId)) {
-          seenIds.add(itemId);
-          result.push(item);
+    if (recentGroups.length > 0) {
+      rows.push({
+        key: 'nc_recent',
+        title: 'Assistidos Recentemente',
+        groups: recentGroups,
+        virtualize: recentGroups.length > 18,
+      });
+    }
+
+    if (favoriteGroups.length > 0) {
+      rows.push({
+        key: 'nc_fav',
+        title: 'Canais Favoritos',
+        groups: favoriteGroups,
+        virtualize: favoriteGroups.length > 18,
+      });
+    }
+
+    const useAllIndex = allLiveStreams.length > 0;
+    const fallbackGroupsByCat = new Map<string, LiveChannelGroup[]>();
+    if (!useAllIndex && liveStreams.length > 0) {
+      for (const grp of groupLiveStreams(liveStreams)) {
+        const cid = String(grp.category_id ?? '');
+        const existing = fallbackGroupsByCat.get(cid);
+        if (existing) existing.push(grp);
+        else fallbackGroupsByCat.set(cid, [grp]);
+      }
+    }
+
+    for (const cat of liveCategories) {
+      const catId = String(cat.category_id);
+      const groups = useAllIndex
+        ? liveIndex.getGroupsByCategory(catId)
+        : fallbackGroupsByCat.get(catId) || [];
+      if (groups.length === 0) continue;
+      rows.push({
+        key: `cat_${catId}`,
+        title: formatCategoryLabel(cat.category_name, 'live'),
+        groups,
+        virtualize: groups.length > 18,
+      });
+    }
+
+    // If categories list was empty/omitted but streams exist directly, expose a fallback "Canais Ao Vivo" row
+    if (rows.length === 0) {
+      const sourcePool = allLiveStreams.length > 0 ? allLiveStreams : liveStreams;
+      if (sourcePool.length > 0) {
+        const allGrps =
+          allLiveStreams.length > 0 ? liveIndex.getAllGroups() : groupLiveStreams(sourcePool);
+        if (allGrps.length > 0) {
+          rows.push({
+            key: 'all_channels',
+            title: 'Canais Ao Vivo',
+            groups: allGrps,
+            virtualize: allGrps.length > 18,
+          });
         }
       }
     }
 
-    return result;
-  }, [historyRecords, allLiveStreams.length, liveIndex]);
+    return rows;
+  }, [recentGroups, favoriteGroups, liveCategories, allLiveStreams, liveStreams, liveIndex]);
 
-  const extendedCategories = useMemo(() => {
-    const virtualCats = [
-      { category_id: 'nc_recent', category_name: 'Assistidos Recentemente' },
-      { category_id: 'nc_fav', category_name: 'Canais Favoritos' },
-    ];
-    return [...virtualCats, ...liveCategories];
-  }, [liveCategories]);
+  const totalShowcaseRows = showcaseRowDefinitions.length;
+  const shouldVirtualizeShowcaseRows =
+    !isGridMode && totalShowcaseRows > LIVE_SHOWCASE_ROW_WINDOW_SIZE;
+  const maxRowWindowStart = Math.max(0, totalShowcaseRows - LIVE_SHOWCASE_ROW_WINDOW_SIZE);
+  const effectiveRowWindowStart = shouldVirtualizeShowcaseRows
+    ? Math.max(0, Math.min(rowWindowStart, maxRowWindowStart))
+    : 0;
+  const effectiveRowWindowEnd = shouldVirtualizeShowcaseRows
+    ? Math.min(totalShowcaseRows, effectiveRowWindowStart + LIVE_SHOWCASE_ROW_WINDOW_SIZE)
+    : totalShowcaseRows;
 
-  // Default to first category
-  useEffect(() => {
-    if (extendedCategories.length > 0 && selectedCategoryId === undefined) {
-      setSelectedCategoryId(extendedCategories[0].category_id);
+  // Grid groups for search OR explicit category filter from "Categorias" dropdown
+  const displayedGridGroups = useMemo<LiveChannelGroup[]>(() => {
+    if (hasSearch) {
+      const poolGroups =
+        allLiveStreams.length > 0 ? liveIndex.getAllGroups() : groupLiveStreams(liveStreams);
+      return filterLiveChannelGroups(poolGroups, searchQuery);
     }
-  }, [extendedCategories, selectedCategoryId]);
 
-  // Load streams when category is selected
-  useEffect(() => {
-    let isCurrent = true;
-    if (selectedCategoryId && selectedCategoryId !== 'nc_recent' && selectedCategoryId !== 'nc_fav') {
-      const targetCat = String(selectedCategoryId);
-      setLoadingCategoryId(targetCat);
-      Promise.resolve(fetchLiveStreams(selectedCategoryId))
-        .catch(() => {})
-        .finally(() => {
-          if (isCurrent) {
-            setLoadingCategoryId((prev) => (prev === targetCat ? null : prev));
-          }
-        });
-    } else {
-      setLoadingCategoryId(null);
+    if (activeCategoryId === 'nc_recent') {
+      return recentGroups;
     }
-    if (channelsScrollRef.current) {
-      channelsScrollRef.current.scrollTop = 0;
+    if (activeCategoryId === 'nc_fav') {
+      return favoriteGroups;
     }
-    return () => {
-      isCurrent = false;
-    };
-  }, [selectedCategoryId, fetchLiveStreams]);
-
-  // Handle Search query override
-  useEffect(() => {
-    if (searchQuery) {
-      setLeftPaneView('channels');
-      if (channelsScrollRef.current) {
-        channelsScrollRef.current.scrollTop = 0;
+    if (activeCategoryId !== null) {
+      const catIdStr = String(activeCategoryId);
+      if (allLiveStreams.length > 0) {
+        const indexedGroups = liveIndex.getGroupsByCategory(catIdStr);
+        if (indexedGroups.length > 0) return indexedGroups;
       }
+      return groupLiveStreams(
+        liveStreams.filter((s) => s && String(s.category_id) === catIdStr)
+      );
     }
-  }, [searchQuery]);
-
-  // Strictly filter streams by selectedCategoryId for real categories using O(1) index when allLiveStreams is available
-  const rawFilteredStreams = useMemo(() => {
-    if (!selectedCategoryId) return [];
-    if (selectedCategoryId === 'nc_recent') return recentChannels;
-    if (selectedCategoryId === 'nc_fav') return favoriteChannels;
-
-    const targetCatId = String(selectedCategoryId);
-    if (allLiveStreams.length > 0) {
-      const indexed = liveIndex.getByCategory(targetCatId);
-      if (indexed.length > 0) {
-        return indexed;
-      }
-    }
-    const matchingFromLive = liveStreams.filter(
-      (s) => s && String(s.category_id) === targetCatId
-    );
-    return matchingFromLive;
-  }, [selectedCategoryId, recentChannels, favoriteChannels, liveStreams, allLiveStreams.length, liveIndex]);
-
-  const isRealCategory = Boolean(
-    selectedCategoryId &&
-      selectedCategoryId !== 'nc_recent' &&
-      selectedCategoryId !== 'nc_fav'
-  );
-
-  const isCategoryChannelsLoading = Boolean(
-    !searchQuery &&
-      isRealCategory &&
-      rawFilteredStreams.length === 0 &&
-      (loadingCategoryId === String(selectedCategoryId) ||
-        loadingLive ||
-        liveCatalogStatus === 'loading' ||
-        liveCatalogStatus === 'idle')
-  );
-
-  // Groups streams using cached category/catalog group index
-  const groupedChannels = useMemo(() => {
-    if (searchQuery && searchQuery.trim().length > 0) {
-      const allGroups = liveIndex.getAllGroups();
-      return filterLiveChannelGroups(allGroups, searchQuery);
-    }
-
-    if (selectedCategoryId === 'nc_recent' || selectedCategoryId === 'nc_fav') {
-      return rawFilteredStreams.map((stream) => {
-        const sId = stream.stream_id || stream.id;
-        return {
-          groupId: `single_virtual_${sId}`,
-          displayName: stream.name || 'Sem nome',
-          category_id: stream.category_id,
-          epg_channel_id: stream.epg_channel_id,
-          stream_icon: stream.stream_icon,
-          isGrouped: false,
-          variants: [],
-          primaryStream: stream,
-          allStreams: [stream],
-        } as LiveChannelGroup;
-      });
-    }
-
-    if (selectedCategoryId && allLiveStreams.length > 0) {
-      const cachedCatGroups = liveIndex.getGroupsByCategory(selectedCategoryId);
-      if (cachedCatGroups.length > 0) {
-        return cachedCatGroups;
-      }
-    }
-
-    return groupLiveStreams(rawFilteredStreams);
-  }, [rawFilteredStreams, allLiveStreams.length, liveIndex, selectedCategoryId, searchQuery]);
-
-  const {
-    startIndex: channelStartIndex,
-    endIndex: channelEndIndex,
-    topSpacerPx: channelTopSpacerPx,
-    bottomSpacerPx: channelBottomSpacerPx,
-    ensureIndexMounted: ensureChannelIndexMounted,
-    scrollContainerCallbackRef: channelsScrollCallbackRef,
-    virtualContainerCallbackRef: channelsListCallbackRef,
-  } = useVirtualWindow({
-    totalCount: groupedChannels.length,
-    mode: 'list',
-    scrollContainerRef: channelsScrollRef,
-    virtualContainerRef: channelsListRef,
-    resetKey: `${selectedCategoryId ?? ''}__${searchQuery}__${leftPaneView}`,
-    maxWindowItems: 80,
-  });
-
-  const displayedGroups = useMemo(
-    () => groupedChannels.slice(channelStartIndex, channelEndIndex),
-    [groupedChannels, channelStartIndex, channelEndIndex]
-  );
-
-  // Mini-player states
-  const [miniPlayerUrl, setMiniPlayerUrl] = useState<string>('');
-  const [miniPlayerError, setMiniPlayerError] = useState<string | null>(null);
-  const [miniPlayerLoading, setMiniPlayerLoading] = useState(false);
+    return [];
+  }, [
+    hasSearch,
+    searchQuery,
+    activeCategoryId,
+    allLiveStreams.length,
+    liveStreams,
+    liveIndex,
+    recentGroups,
+    favoriteGroups,
+  ]);
 
   // Helper to pick next variant in group (SD -> HD -> FHD -> 4K automatic priority)
-  const pickVariantForGroup = useCallback((
-    group: LiveChannelGroup,
-    targetMode: string,
-    attemptedSet: Set<string | number>
-  ): any | null => {
-    const successfulId = group ? sessionSuccessfulVariantsRef.current.get(group.groupId) : undefined;
-    return selectChannelVariantForAttempt(group, targetMode, attemptedSet, successfulId);
-  }, []);
-
-  // Execute an attempt for a stream/variant
-  const startVariantAttempt = useCallback((
-    group: LiveChannelGroup,
-    targetMode: string,
-    forcedStream?: any
-  ) => {
-    if (!isMountedRef.current) {
-      return;
-    }
-    if (fallbackTimeoutRef.current) {
-      clearTimeout(fallbackTimeoutRef.current);
-      fallbackTimeoutRef.current = null;
-    }
-
-    const currentAttemptId = ++attemptIdRef.current;
-    const targetStream = forcedStream || pickVariantForGroup(group, targetMode, attemptedStreamIdsRef.current);
-
-    if (!targetStream) {
-      setMiniPlayerError('Não foi possível carregar nenhuma versão do canal. Verifique a conexão com o servidor.');
-      setMiniPlayerLoading(false);
-      return;
-    }
-
-    setActiveVariantStream(targetStream);
-    setMiniPlayerLoading(true);
-    setMiniPlayerError(null);
-    setAttemptTrigger(currentAttemptId);
-
-    const streamId = targetStream.stream_id || targetStream.id;
-
-    try {
-      const url = buildDirectMediaUrl(credentials, {
-        type: 'live',
-        streamId,
-        allowedOutputFormats: credentials?.allowed_output_formats,
-      });
-
-      if (isMountedRef.current && attemptIdRef.current === currentAttemptId) {
-        setMiniPlayerUrl(url);
-
-        // Fallback timeout (default 28 seconds) if playback doesn't start
-        const timeoutMs = getLiveFallbackTimeoutMs();
-        fallbackTimeoutRef.current = setTimeout(() => {
-          fallbackTimeoutRef.current = null;
-          if (!isMountedRef.current || attemptIdRef.current !== currentAttemptId) return;
-          attemptedStreamIdsRef.current.add(streamId);
-          const nextStream = pickVariantForGroup(group, targetMode, attemptedStreamIdsRef.current);
-          if (nextStream) {
-            startVariantAttempt(group, targetMode, nextStream);
-          } else {
-            setMiniPlayerError('Não foi possível carregar nenhuma versão do canal (Tempo limite esgotado).');
-            setMiniPlayerLoading(false);
-          }
-        }, timeoutMs);
-      }
-    } catch (err: any) {
-      if (isMountedRef.current && attemptIdRef.current === currentAttemptId) {
-        attemptedStreamIdsRef.current.add(streamId);
-        setMiniPlayerUrl('');
-        setMiniPlayerError(err.message || 'Falha ao conectar à transmissão do canal.');
-        setMiniPlayerLoading(false);
-      }
-    }
-  }, [credentials, pickVariantForGroup]);
-
-  const syncOriginChannelDomAttribute = useCallback((groupId: string | null) => {
-    const listRoot = channelsListRef.current;
-    if (!listRoot) return;
-    const channelBtns = listRoot.querySelectorAll<HTMLButtonElement>(
-      'button[data-live-channel-btn="true"]'
-    );
-    channelBtns.forEach((btn) => {
-      const isMatch = groupId !== null && btn.getAttribute('data-live-channel-id') === groupId;
-      btn.setAttribute('data-live-channel-origin', isMatch ? 'true' : 'false');
-    });
-  }, []);
-
-  const handleChannelRowFocus = useCallback(
-    (groupId: string, actualIndex: number) => {
-      originChannelGroupIdRef.current = groupId;
-      originChannelIndexRef.current = actualIndex;
-      syncOriginChannelDomAttribute(groupId);
+  const pickVariantForGroup = useCallback(
+    (
+      group: LiveChannelGroup,
+      targetMode: string,
+      attemptedSet: Set<string | number>
+    ): any | null => {
+      const successfulId = group ? sessionSuccessfulVariantsRef.current.get(group.groupId) : undefined;
+      return selectChannelVariantForAttempt(group, targetMode, attemptedSet, successfulId);
     },
-    [syncOriginChannelDomAttribute]
+    []
   );
 
-  // Handle group click: 1st OK starts channel in preview; 2nd OK on already-selected active channel expands to fullscreen without restarting stream
-  const handleSelectGroup = useCallback((group: LiveChannelGroup) => {
-    // Prevent starting a channel from a stale category when a real category is active
-    if (
-      !searchQuery &&
-      selectedCategoryId &&
-      selectedCategoryId !== 'nc_recent' &&
-      selectedCategoryId !== 'nc_fav' &&
-      group.category_id !== undefined &&
-      String(group.category_id) !== String(selectedCategoryId)
-    ) {
-      return;
-    }
+  // Execute a playback attempt for a channel variant
+  const startVariantAttempt = useCallback(
+    (group: LiveChannelGroup, targetMode: string, forcedStream?: any) => {
+      if (!isMountedRef.current) return;
 
-    originChannelGroupIdRef.current = group.groupId;
-    const groupIdx = groupedChannels.findIndex((g) => g.groupId === group.groupId);
-    if (groupIdx >= 0) {
-      originChannelIndexRef.current = groupIdx;
-    }
-    syncOriginChannelDomAttribute(group.groupId);
+      if (fallbackTimeoutRef.current) {
+        clearTimeout(fallbackTimeoutRef.current);
+        fallbackTimeoutRef.current = null;
+      }
 
-    if (selectedGroup && selectedGroup.groupId === group.groupId && !miniPlayerError && miniPlayerUrl) {
-      setIsMobilePlayerOpen(true);
-      setFullscreenRequestTrigger((prev) => prev + 1);
-      return;
-    }
-    setSelectedGroup(group);
-    setSelectedResolutionMode('auto');
-    attemptedStreamIdsRef.current.clear();
-    setIsMobilePlayerOpen(true);
-    startVariantAttempt(group, 'auto');
-  }, [searchQuery, selectedCategoryId, groupedChannels, syncOriginChannelDomAttribute, selectedGroup, miniPlayerError, miniPlayerUrl, startVariantAttempt]);
+      const currentAttemptId = ++attemptIdRef.current;
+      const targetStream =
+        forcedStream || pickVariantForGroup(group, targetMode, attemptedStreamIdsRef.current);
 
-  // Handle manual resolution mode change
-  const handleSelectResolutionMode = useCallback((variant: any | 'auto') => {
-    if (!selectedGroup) return;
-    attemptedStreamIdsRef.current.clear();
-
-    if (variant === 'auto') {
-      setSelectedResolutionMode('auto');
-      startVariantAttempt(selectedGroup, 'auto');
-    } else {
-      const vId = String(variant.stream_id || variant.id || variant.streamId);
-      setSelectedResolutionMode(vId);
-      startVariantAttempt(selectedGroup, vId, variant);
-    }
-  }, [selectedGroup, startVariantAttempt]);
-
-  // Handle playback success callback
-  const handlePlaybackSuccess = useCallback((attemptId?: number) => {
-    if (!isMountedRef.current || attemptId === undefined || attemptId !== attemptIdRef.current) {
-      return; // Discard absent or stale callback
-    }
-
-    if (fallbackTimeoutRef.current) {
-      clearTimeout(fallbackTimeoutRef.current);
-      fallbackTimeoutRef.current = null;
-    }
-    setMiniPlayerLoading(false);
-    setMiniPlayerError(null);
-
-    if (selectedGroup && activeVariantStream) {
-      const streamId = activeVariantStream.stream_id || activeVariantStream.id;
-      sessionSuccessfulVariantsRef.current.set(selectedGroup.groupId, streamId);
-      recordPlaybackPosition(credentials, { id: streamId, type: 'live' });
-    }
-  }, [selectedGroup, activeVariantStream, credentials]);
-
-  // Handle playback final error callback
-  const handlePlaybackFinalError = useCallback((errorMsg: string, attemptId?: number) => {
-    if (!isMountedRef.current || attemptId === undefined || attemptId !== attemptIdRef.current) {
-      return; // Discard absent or stale callback
-    }
-
-    if (fallbackTimeoutRef.current) {
-      clearTimeout(fallbackTimeoutRef.current);
-      fallbackTimeoutRef.current = null;
-    }
-
-    if (activeVariantStream) {
-      const streamId = activeVariantStream.stream_id || activeVariantStream.id;
-      attemptedStreamIdsRef.current.add(streamId);
-    }
-
-    if (selectedGroup) {
-      const nextStream = pickVariantForGroup(selectedGroup, selectedResolutionMode, attemptedStreamIdsRef.current);
-      if (nextStream) {
-        startVariantAttempt(selectedGroup, selectedResolutionMode, nextStream);
+      if (!targetStream) {
+        setMiniPlayerError(
+          'Não foi possível carregar nenhuma versão do canal. Verifique a conexão com o servidor.'
+        );
+        setMiniPlayerLoading(false);
         return;
       }
+
+      setActiveVariantStream(targetStream);
+      setMiniPlayerLoading(true);
+      setMiniPlayerError(null);
+      setAttemptTrigger(currentAttemptId);
+
+      const streamId = targetStream.stream_id || targetStream.id;
+
+      try {
+        const url = buildDirectMediaUrl(credentials, {
+          type: 'live',
+          streamId,
+          allowedOutputFormats: credentials?.allowed_output_formats,
+        });
+
+        if (isMountedRef.current && attemptIdRef.current === currentAttemptId) {
+          setMiniPlayerUrl(url);
+
+          const timeoutMs = getLiveFallbackTimeoutMs();
+          fallbackTimeoutRef.current = setTimeout(() => {
+            fallbackTimeoutRef.current = null;
+            if (!isMountedRef.current || attemptIdRef.current !== currentAttemptId) return;
+            attemptedStreamIdsRef.current.add(streamId);
+            const nextStream = pickVariantForGroup(
+              group,
+              targetMode,
+              attemptedStreamIdsRef.current
+            );
+            if (nextStream) {
+              startVariantAttempt(group, targetMode, nextStream);
+            } else {
+              setMiniPlayerError(
+                'Não foi possível carregar nenhuma versão do canal (Tempo limite esgotado).'
+              );
+              setMiniPlayerLoading(false);
+            }
+          }, timeoutMs);
+        }
+      } catch (err: any) {
+        if (isMountedRef.current && attemptIdRef.current === currentAttemptId) {
+          attemptedStreamIdsRef.current.add(streamId);
+          setMiniPlayerUrl('');
+          setMiniPlayerError(err?.message || 'Falha ao conectar à transmissão do canal.');
+          setMiniPlayerLoading(false);
+        }
+      }
+    },
+    [credentials, pickVariantForGroup]
+  );
+
+  // Smoothly scroll Hero into view ONLY when user was already scrolled down when activating a channel
+  const scrollHeroIntoViewIfScrolledDown = useCallback(() => {
+    const mainEl = mainContainerRef.current;
+    if (!mainEl) return;
+    if ((mainEl.scrollTop || 0) > 20) {
+      if (typeof mainEl.scrollTo === 'function') {
+        try {
+          mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+        } catch {
+          mainEl.scrollTop = 0;
+        }
+      } else {
+        mainEl.scrollTop = 0;
+      }
     }
-
-    setMiniPlayerError('Não foi possível carregar nenhuma versão do canal. ' + (errorMsg || ''));
-    setMiniPlayerLoading(false);
-  }, [activeVariantStream, selectedGroup, selectedResolutionMode, pickVariantForGroup, startVariantAttempt]);
-
-  // Handle retry
-  const handleRetry = useCallback(() => {
-    if (!selectedGroup) return;
-    attemptedStreamIdsRef.current.clear();
-    startVariantAttempt(selectedGroup, selectedResolutionMode);
-  }, [selectedGroup, selectedResolutionMode, startVariantAttempt]);
-
-  const shouldApplyProgrammaticFocus = useCallback(() => {
-    const isRecentPointer =
-      getNavMode() === 'pointer' && Date.now() - lastPointerDownTimeRef.current < 250;
-    return !isRecentPointer;
   }, []);
 
-  // Consume launch intent from Home ("Canais Ao Vivo" row) exactly once per requestId
+  // Explicit activation of a channel card (mouse click, touch tap, Enter/Space)
+  const handleActivateGroup = useCallback(
+    (group: LiveChannelGroup) => {
+      if (!group) return;
+      heroWasExplicitlyActivatedRef.current = true;
+
+      if (selectedGroup && selectedGroup.groupId === group.groupId && !miniPlayerError && miniPlayerUrl) {
+        setFullscreenRequestTrigger((prev) => prev + 1);
+        return;
+      }
+
+      setSelectedGroup(group);
+      setSelectedResolutionMode('auto');
+      attemptedStreamIdsRef.current.clear();
+      startVariantAttempt(group, 'auto');
+      scrollHeroIntoViewIfScrolledDown();
+    },
+    [selectedGroup, miniPlayerError, miniPlayerUrl, startVariantAttempt, scrollHeroIntoViewIfScrolledDown]
+  );
+
+  // Initial Hero channel auto-selection on first entry when catalog is available (and no launch intent pending)
+  useEffect(() => {
+    if (initialChannelIntent) return;
+    if (selectedGroup) return;
+    if (showcaseRowDefinitions.length === 0) return;
+
+    const preferredInitial =
+      recentGroups[0] ||
+      favoriteGroups[0] ||
+      showcaseRowDefinitions[0]?.groups[0] ||
+      null;
+
+    if (preferredInitial) {
+      heroWasExplicitlyActivatedRef.current = false;
+      setSelectedGroup(preferredInitial);
+      setSelectedResolutionMode('auto');
+      attemptedStreamIdsRef.current.clear();
+      startVariantAttempt(preferredInitial, 'auto');
+    }
+  }, [
+    initialChannelIntent,
+    selectedGroup,
+    showcaseRowDefinitions,
+    recentGroups,
+    favoriteGroups,
+    startVariantAttempt,
+  ]);
+
+  // Consume launch intent from Home ("Canais Ao Vivo")
   useEffect(() => {
     if (!initialChannelIntent) return;
     if (consumedIntentRequestIdRef.current === initialChannelIntent.requestId) return;
@@ -833,6 +880,7 @@ export const LiveTvView = React.memo(function LiveTvView({
 
     consumedIntentRequestIdRef.current = initialChannelIntent.requestId;
     onConsumeChannelIntent?.(initialChannelIntent.requestId);
+    heroWasExplicitlyActivatedRef.current = true;
 
     const rawStreamId = initialChannelIntent.streamId;
     const targetIdStr =
@@ -840,22 +888,18 @@ export const LiveTvView = React.memo(function LiveTvView({
 
     const sourcePool = allLiveStreams.length > 0 ? allLiveStreams : liveStreams;
     const matchedStream = targetIdStr
-      ? (allLiveStreams.length > 0
-          ? liveIndex.getById(targetIdStr) || null
-          : sourcePool.find((s: any) => s && String(s.stream_id ?? s.id) === targetIdStr))
+      ? allLiveStreams.length > 0
+        ? liveIndex.getById(targetIdStr) || null
+        : sourcePool.find((s: any) => s && String(s.stream_id ?? s.id) === targetIdStr)
       : null;
 
     if (matchedStream) {
-      const catId = matchedStream.category_id ? String(matchedStream.category_id) : 'nc_recent';
-      originCategoryIdRef.current = catId;
-      setSelectedCategoryId(catId);
-      setLeftPaneView('channels');
-
+      const catId = matchedStream.category_id ? String(matchedStream.category_id) : '';
       const groupsInCat =
-        catId !== 'nc_recent' && catId !== 'nc_fav' && allLiveStreams.length > 0
+        catId && allLiveStreams.length > 0
           ? liveIndex.getGroupsByCategory(catId)
           : groupLiveStreams(
-              catId !== 'nc_recent' && catId !== 'nc_fav'
+              catId
                 ? sourcePool.filter((s) => s && String(s.category_id) === catId)
                 : [matchedStream]
             );
@@ -875,38 +919,22 @@ export const LiveTvView = React.memo(function LiveTvView({
           allStreams: [matchedStream],
         } as LiveChannelGroup);
 
-      pendingChannelEntryCategoryRef.current = null;
-      if (shouldApplyProgrammaticFocus()) {
-        pendingChannelRestoreFocusRef.current = targetGroup.groupId;
-      }
-
       setSelectedGroup(targetGroup);
       setSelectedResolutionMode('auto');
       attemptedStreamIdsRef.current.clear();
-      setIsMobilePlayerOpen(true);
       startVariantAttempt(targetGroup, 'auto');
+      if (mainContainerRef.current) {
+        mainContainerRef.current.scrollTop = 0;
+      }
       return;
     }
 
-    // Invalid stream_id or stream not found in account catalog: open recoverable error state in LiveTvView preview
-    const fallbackCatId =
-      initialChannelIntent.categoryId &&
-      liveCategories.some((c) => String(c.category_id) === String(initialChannelIntent.categoryId))
-        ? String(initialChannelIntent.categoryId)
-        : liveCategories[0]?.category_id
-          ? String(liveCategories[0].category_id)
-          : 'nc_recent';
-
-    originCategoryIdRef.current = fallbackCatId;
-    setSelectedCategoryId(fallbackCatId);
-    setLeftPaneView('channels');
-    pendingChannelEntryCategoryRef.current = null;
-
+    // Stream ID invalid / absent -> show clean recoverable error in Hero
     const snap = initialChannelIntent.streamSnapshot || {};
     const fallbackGroup: LiveChannelGroup = {
       groupId: `invalid_intent_${initialChannelIntent.requestId}`,
       displayName: snap.name || 'Canal Indisponível',
-      category_id: snap.category_id || fallbackCatId,
+      category_id: snap.category_id || '',
       epg_channel_id: snap.epg_channel_id,
       stream_icon: snap.stream_icon || '',
       isGrouped: false,
@@ -928,7 +956,6 @@ export const LiveTvView = React.memo(function LiveTvView({
     setActiveVariantStream(fallbackGroup.primaryStream);
     setSelectedResolutionMode('auto');
     attemptedStreamIdsRef.current.clear();
-    setIsMobilePlayerOpen(true);
     setMiniPlayerUrl('');
     setMiniPlayerLoading(false);
     setMiniPlayerError(
@@ -941,209 +968,113 @@ export const LiveTvView = React.memo(function LiveTvView({
     allLiveStreams,
     liveStreams,
     liveIndex,
-    liveCategories,
     liveCatalogStatus,
     loadingLive,
     onConsumeChannelIntent,
-    shouldApplyProgrammaticFocus,
     startVariantAttempt,
   ]);
 
-  // Close channel/player
-  const handleCloseChannel = useCallback(() => {
-    const closedGroupId = selectedGroup?.groupId || null;
-    if (fallbackTimeoutRef.current) {
-      clearTimeout(fallbackTimeoutRef.current);
-      fallbackTimeoutRef.current = null;
-    }
-    attemptIdRef.current++;
-    setSelectedGroup(null);
-    setActiveVariantStream(null);
-    setMiniPlayerUrl('');
-    setMiniPlayerLoading(false);
-    setMiniPlayerError(null);
-    setIsMobilePlayerOpen(false);
+  // Manual resolution switch
+  const handleSelectResolutionMode = useCallback(
+    (variant: any | 'auto') => {
+      if (!selectedGroup) return;
+      heroWasExplicitlyActivatedRef.current = true;
+      attemptedStreamIdsRef.current.clear();
 
-    if (closedGroupId && shouldApplyProgrammaticFocus()) {
-      pendingChannelRestoreFocusRef.current = closedGroupId;
-      const root = viewRootRef.current || document.body;
-      const channelBtns = Array.from(
-        root.querySelectorAll('button[data-live-channel-id]')
-      ) as HTMLButtonElement[];
-      const targetBtn =
-        channelBtns.find((b) => b.getAttribute('data-live-channel-id') === closedGroupId) ||
-        channelBtns[0];
-      if (targetBtn) {
-        focusElementSafely(targetBtn);
-        pendingChannelRestoreFocusRef.current = null;
+      if (variant === 'auto') {
+        setSelectedResolutionMode('auto');
+        startVariantAttempt(selectedGroup, 'auto');
+      } else {
+        const vId = String(variant.stream_id || variant.id || variant.streamId);
+        setSelectedResolutionMode(vId);
+        startVariantAttempt(selectedGroup, vId, variant);
       }
-    }
-  }, [selectedGroup, shouldApplyProgrammaticFocus]);
-
-  const handleReturnToCategories = useCallback(() => {
-    pendingChannelEntryCategoryRef.current = null;
-    if (shouldApplyProgrammaticFocus()) {
-      pendingCategoryRestoreFocusRef.current =
-        originCategoryIdRef.current || String(selectedCategoryId || 'nc_recent');
-    }
-    setLeftPaneView('categories');
-  }, [selectedCategoryId, shouldApplyProgrammaticFocus]);
-
-  // Focus first channel of the active category (or "Voltar às Categorias" while loading/empty) after entering channels view
-  useEffect(() => {
-    if (leftPaneView !== 'channels') return;
-
-    if (pendingChannelRestoreFocusRef.current) {
-      if (!shouldApplyProgrammaticFocus()) {
-        pendingChannelRestoreFocusRef.current = null;
-        return;
-      }
-      const targetId = pendingChannelRestoreFocusRef.current;
-      const targetIdx = groupedChannels.findIndex((g) => g.groupId === targetId);
-      if (targetIdx >= 0) {
-        ensureChannelIndexMounted(targetIdx);
-      }
-      const root = viewRootRef.current || document.body;
-      const channelBtns = Array.from(
-        root.querySelectorAll('button[data-live-channel-id]')
-      ) as HTMLButtonElement[];
-      const targetBtn =
-        channelBtns.find((b) => b.getAttribute('data-live-channel-id') === targetId) ||
-        channelBtns[0];
-      if (targetBtn) {
-        focusElementSafely(targetBtn);
-        pendingChannelRestoreFocusRef.current = null;
-        return;
-      }
-      if (!isCategoryChannelsLoading && liveCatalogStatus !== 'loading' && liveCatalogStatus !== 'idle') {
-        const backToCatsBtn = root.querySelector(
-          'button[data-live-back-to-categories="true"]'
-        ) as HTMLButtonElement | null;
-        if (backToCatsBtn) {
-          focusElementSafely(backToCatsBtn);
-        }
-        pendingChannelRestoreFocusRef.current = null;
-      }
-    }
-
-    if (!pendingChannelEntryCategoryRef.current) return;
-
-    if (!shouldApplyProgrammaticFocus()) {
-      pendingChannelEntryCategoryRef.current = null;
-      return;
-    }
-
-    const currentCatStr = String(selectedCategoryId || '');
-    if (pendingChannelEntryCategoryRef.current !== currentCatStr) {
-      // Category changed (e.g. rapid A -> B): replace stale A focus target with B
-      pendingChannelEntryCategoryRef.current = currentCatStr;
-    }
-
-    const root = viewRootRef.current || document.body;
-    const activeEl = document.activeElement as HTMLElement | null;
-
-    // If user already deliberately moved focus away (e.g. to another control, channel, sidebar, or header), do not steal focus
-    if (
-      activeEl &&
-      activeEl !== document.body &&
-      activeEl !== document.documentElement &&
-      activeEl.getAttribute('data-live-back-to-categories') !== 'true' &&
-      !activeEl.hasAttribute('data-live-category-id')
-    ) {
-      pendingChannelEntryCategoryRef.current = null;
-      return;
-    }
-
-    const channelBtns = Array.from(
-      root.querySelectorAll('button[data-live-channel-btn="true"]')
-    ) as HTMLButtonElement[];
-    const firstMatchingChannelBtn = isRealCategory
-      ? channelBtns.find(
-          (btn) => btn.getAttribute('data-live-channel-category-id') === currentCatStr
-        )
-      : channelBtns[0];
-
-    if (firstMatchingChannelBtn) {
-      focusElementSafely(firstMatchingChannelBtn);
-      pendingChannelEntryCategoryRef.current = null;
-      return;
-    }
-
-    const isStillLoading =
-      isCategoryChannelsLoading ||
-      liveCatalogStatus === 'loading' ||
-      liveCatalogStatus === 'idle';
-
-    const backToCatsBtn = root.querySelector(
-      'button[data-live-back-to-categories="true"]'
-    ) as HTMLButtonElement | null;
-    if (backToCatsBtn && (!activeEl || activeEl === document.body || !root.contains(activeEl))) {
-      focusElementSafely(backToCatsBtn);
-    }
-
-    if (!isStillLoading) {
-      if (backToCatsBtn) {
-        focusElementSafely(backToCatsBtn);
-      }
-      pendingChannelEntryCategoryRef.current = null;
-    }
-  }, [
-    leftPaneView,
-    selectedCategoryId,
-    isRealCategory,
-    groupedChannels,
-    displayedGroups,
-    ensureChannelIndexMounted,
-    isCategoryChannelsLoading,
-    liveCatalogStatus,
-    selectedGroup,
-    shouldApplyProgrammaticFocus,
-  ]);
-
-  // Restore categories scrollTop and origin category button focus when returning to categories view
-  useEffect(() => {
-    if (leftPaneView !== 'categories') return;
-
-    if (categoriesListRef.current) {
-      categoriesListRef.current.scrollTop = categoriesScrollTopRef.current;
-    }
-
-    if (pendingCategoryRestoreFocusRef.current) {
-      const targetCatId = pendingCategoryRestoreFocusRef.current;
-      pendingCategoryRestoreFocusRef.current = null;
-      const root = categoriesListRef.current || viewRootRef.current || document.body;
-      const catBtns = Array.from(
-        root.querySelectorAll('button[data-live-category-id]')
-      ) as HTMLButtonElement[];
-      const targetBtn =
-        catBtns.find((b) => b.getAttribute('data-live-category-id') === targetCatId) || catBtns[0];
-      if (targetBtn) {
-        const savedScroll = categoriesScrollTopRef.current;
-        focusElementSafely(targetBtn);
-        if (categoriesListRef.current) {
-          categoriesListRef.current.scrollTop = savedScroll;
-        }
-      }
-    }
-  }, [leftPaneView, extendedCategories.length]);
-
-  // Register LiveTvView internal Back handler (close active channel preview or return from channels to categories)
-  useBackHandler(
-    'livetv-internal',
-    BACK_PRIORITY.VIEW_INTERNAL,
-    () => {
-      if (selectedGroup) {
-        handleCloseChannel();
-        return true;
-      }
-      if (leftPaneView === 'channels' && !searchQuery) {
-        handleReturnToCategories();
-        return true;
-      }
-      return false;
     },
-    Boolean(selectedGroup || (leftPaneView === 'channels' && !searchQuery))
+    [selectedGroup, startVariantAttempt]
   );
+
+  const handleExpandFullscreen = useCallback(() => {
+    if (!selectedGroup) return;
+    heroWasExplicitlyActivatedRef.current = true;
+    setFullscreenRequestTrigger((prev) => prev + 1);
+  }, [selectedGroup]);
+
+  const handlePlaybackSuccess = useCallback(
+    (attemptId?: number) => {
+      if (!isMountedRef.current || attemptId === undefined || attemptId !== attemptIdRef.current) {
+        return;
+      }
+
+      if (fallbackTimeoutRef.current) {
+        clearTimeout(fallbackTimeoutRef.current);
+        fallbackTimeoutRef.current = null;
+      }
+      setMiniPlayerLoading(false);
+      setMiniPlayerError(null);
+
+      if (selectedGroup && activeVariantStream) {
+        const streamId = activeVariantStream.stream_id || activeVariantStream.id;
+        sessionSuccessfulVariantsRef.current.set(selectedGroup.groupId, streamId);
+        if (heroWasExplicitlyActivatedRef.current) {
+          recordPlaybackPosition(credentials, { id: streamId, type: 'live' });
+        }
+      }
+    },
+    [selectedGroup, activeVariantStream, credentials]
+  );
+
+  const handlePlaybackFinalError = useCallback(
+    (errorMsg: string, attemptId?: number) => {
+      if (!isMountedRef.current || attemptId === undefined || attemptId !== attemptIdRef.current) {
+        return;
+      }
+
+      if (fallbackTimeoutRef.current) {
+        clearTimeout(fallbackTimeoutRef.current);
+        fallbackTimeoutRef.current = null;
+      }
+
+      if (activeVariantStream) {
+        const streamId = activeVariantStream.stream_id || activeVariantStream.id;
+        attemptedStreamIdsRef.current.add(streamId);
+      }
+
+      if (selectedGroup) {
+        const nextStream = pickVariantForGroup(
+          selectedGroup,
+          selectedResolutionMode,
+          attemptedStreamIdsRef.current
+        );
+        if (nextStream) {
+          startVariantAttempt(selectedGroup, selectedResolutionMode, nextStream);
+          return;
+        }
+      }
+
+      setMiniPlayerError('Não foi possível carregar nenhuma versão do canal. ' + (errorMsg || ''));
+      setMiniPlayerLoading(false);
+    },
+    [activeVariantStream, selectedGroup, selectedResolutionMode, pickVariantForGroup, startVariantAttempt]
+  );
+
+  const handleRetryPlayback = useCallback(() => {
+    if (!selectedGroup) return;
+    heroWasExplicitlyActivatedRef.current = true;
+    attemptedStreamIdsRef.current.clear();
+    startVariantAttempt(selectedGroup, selectedResolutionMode);
+  }, [selectedGroup, selectedResolutionMode, startVariantAttempt]);
+
+  const handleBackFromHeroPlayer = useCallback(() => {
+    // Embedded Hero stays mounted; if fullscreen was exited VideoPlayer restores focus cleanly
+    if (getNavMode() === 'remote') {
+      const heroPlayBtn = viewRootRef.current?.querySelector<HTMLButtonElement>(
+        'button[data-live-hero-play="true"]'
+      );
+      if (heroPlayBtn && isElementFocusable(heroPlayBtn)) {
+        focusElementSafely(heroPlayBtn);
+      }
+    }
+  }, []);
 
   const activeStreamId = useMemo(() => {
     if (!activeVariantStream) return '';
@@ -1151,21 +1082,18 @@ export const LiveTvView = React.memo(function LiveTvView({
     return rawId !== undefined && rawId !== null ? String(rawId) : '';
   }, [activeVariantStream]);
 
-  // Fetch EPG only when the active variant stream ID actually changes (never on focus movements)
+  // Fetch EPG ONLY when active stream changes (never on card focus/hover)
   useEffect(() => {
-    let isMounted = true;
+    let isCurrent = true;
     if (!activeStreamId || !credentials) {
       setEpgData([]);
       setLoadingEpg(false);
       setEpgError(null);
       return () => {
-        isMounted = false;
+        isCurrent = false;
       };
     }
 
-    if (epgScrollRef.current) {
-      epgScrollRef.current.scrollTop = 0;
-    }
     setLoadingEpg(true);
     setEpgError(null);
     setEpgData([]);
@@ -1175,745 +1103,750 @@ export const LiveTvView = React.memo(function LiveTvView({
 
     XtreamService.getShortEpg(credentials, sId, 10)
       .then((data) => {
-        if (isMounted) {
-          const rawListings = Array.isArray(data?.epg_listings) ? data.epg_listings : [];
-          const validListings = rawListings.filter(
-            (item: any) => item !== null && typeof item === 'object' && !Array.isArray(item)
-          );
-          setEpgData(validListings);
-          setEpgError(null);
-          setLoadingEpg(false);
+        if (!isCurrent) return;
+        const rawListings = Array.isArray(data?.epg_listings) ? data.epg_listings : [];
+        const validListings = rawListings.filter(
+          (item: any) => item !== null && typeof item === 'object' && !Array.isArray(item)
+        );
+        setEpgData(validListings);
+        setEpgError(null);
+        setLoadingEpg(false);
+
+        const groupSnapshot = selectedGroupRef.current;
+        if (groupSnapshot && validListings.length > 0) {
+          const cacheKeys = buildEpgCacheKeys(groupSnapshot, accountPrefix);
+          for (const k of cacheKeys) {
+            epgCacheRef.current.set(k, validListings);
+          }
+          setEpgCacheVersion((v) => v + 1);
         }
       })
       .catch((err) => {
-        if (isMounted) {
-          console.error('EPG fetch error:', err);
-          setEpgData([]);
-          setEpgError('Não foi possível carregar a programação deste canal no momento.');
-          setLoadingEpg(false);
-        }
+        if (!isCurrent) return;
+        console.error('EPG fetch error:', err);
+        setEpgData([]);
+        setEpgError('Programação indisponível');
+        setLoadingEpg(false);
       });
 
     return () => {
-      isMounted = false;
+      isCurrent = false;
     };
-  }, [activeStreamId, credentials]);
+  }, [activeStreamId, credentials, accountPrefix]);
 
-  // Preserve focus inside EPG section if user focused the loading state before EPG resolved
-  useEffect(() => {
-    if (loadingEpg || !isEpgFocusedRef.current) return;
-    const scrollEl = epgScrollRef.current;
-    if (!scrollEl) return;
-    const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
-    if (!activeEl || activeEl === document.body || !scrollEl.contains(activeEl)) {
-      const primaryEpgTarget = scrollEl.querySelector<HTMLElement>('[data-epg-primary="true"]');
-      if (primaryEpgTarget) {
-        focusElementSafely(primaryEpgTarget);
+  const heroNowPlaying = useMemo(() => resolveNowPlayingProgram(epgData), [epgData]);
+
+  // Showcase vertical row measurement & synchronization (prevents layout shifts during scrolling)
+  const measureMountedShowcaseGeometry = useCallback(() => {
+    const rowsContainer = showcaseRowsContainerRef.current;
+    const mainEl = mainContainerRef.current;
+    if (!rowsContainer || !mainEl) return;
+
+    const mainTop = mainEl.getBoundingClientRect().top;
+    const containerTop = rowsContainer.getBoundingClientRect().top;
+    if (Number.isFinite(mainTop) && Number.isFinite(containerTop)) {
+      showcaseRowsOffsetTopRef.current = Math.max(
+        0,
+        containerTop - mainTop + (mainEl.scrollTop || 0)
+      );
+    }
+
+    const rowWrappers = rowsContainer.querySelectorAll<HTMLElement>('[data-showcase-row-index]');
+    const measuredValues: number[] = [];
+    rowWrappers.forEach((wrapper) => {
+      const idx = parseInt(wrapper.getAttribute('data-showcase-row-index') || '-1', 10);
+      if (isNaN(idx) || idx < 0) return;
+      const rect = wrapper.getBoundingClientRect();
+      const h = rect.height || wrapper.offsetHeight;
+      if (h > 40) {
+        measuredRowHeightsRef.current.set(idx, h);
+        measuredValues.push(h);
       }
-    }
-  }, [loadingEpg, epgData.length, epgError]);
+    });
 
-  const ensureEpgItemVisible = useCallback((idx: number, itemEl: HTMLElement | null) => {
-    const container = epgScrollRef.current;
-    if (!container || !itemEl) return;
-
-    if (idx === 0) {
-      container.scrollTop = 0;
-      return;
-    }
-
-    const padY = 10;
-    const containerRect = container.getBoundingClientRect();
-    const itemRect = itemEl.getBoundingClientRect();
-
-    if (containerRect.height > 0 && itemRect.height > 0) {
-      if (itemRect.bottom > containerRect.bottom - padY) {
-        container.scrollTop += itemRect.bottom - (containerRect.bottom - padY);
-      } else if (itemRect.top < containerRect.top + padY) {
-        container.scrollTop = Math.max(
-          0,
-          container.scrollTop - (containerRect.top + padY - itemRect.top)
-        );
+    if (measuredValues.length > 0) {
+      const avg = measuredValues.reduce((sum, v) => sum + v, 0) / measuredValues.length;
+      if (avg > 40) {
+        defaultEstimatedRowHeightRef.current = Math.round(avg);
       }
-      return;
-    }
-
-    const containerHeight = container.clientHeight || 220;
-    const itemHeight = itemEl.offsetHeight || 68;
-    const itemTop = itemEl.offsetTop || idx * (itemHeight + 10);
-    const itemBottom = itemTop + itemHeight;
-    if (itemBottom > container.scrollTop + containerHeight - padY) {
-      container.scrollTop = itemBottom - containerHeight + padY;
-    } else if (itemTop < container.scrollTop + padY) {
-      container.scrollTop = Math.max(0, itemTop - padY);
     }
   }, []);
 
-  const handleRightPaneKeyDownCapture = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (e.key !== 'ArrowLeft') return;
-      const targetId = originChannelGroupIdRef.current || selectedGroup?.groupId || null;
-      if (!targetId) return;
-      const targetIdx =
-        originChannelIndexRef.current >= 0
-          ? originChannelIndexRef.current
-          : groupedChannels.findIndex((g) => g.groupId === targetId);
-      if (targetIdx >= 0) {
-        ensureChannelIndexMounted(targetIdx);
+  const getEstimatedRowHeight = useCallback((rowIdx: number): number => {
+    return measuredRowHeightsRef.current.get(rowIdx) ?? defaultEstimatedRowHeightRef.current;
+  }, []);
+
+  const computeShowcaseRowStartFromScroll = useCallback(
+    (scrollTop: number, curStart: number): number => {
+      if (!shouldVirtualizeShowcaseRows || totalShowcaseRows <= LIVE_SHOWCASE_ROW_WINDOW_SIZE) {
+        return 0;
       }
-      syncOriginChannelDomAttribute(targetId);
+      const rowsTop = Math.max(0, showcaseRowsOffsetTopRef.current);
+      if (scrollTop <= rowsTop) {
+        return 0;
+      }
+      const relTop = scrollTop - rowsTop;
+      let acc = 0;
+      let topVisibleIdx = 0;
+      for (let i = 0; i < totalShowcaseRows; i++) {
+        const h = getEstimatedRowHeight(i);
+        if (acc + h * 0.7 > relTop) {
+          topVisibleIdx = i;
+          break;
+        }
+        acc += h;
+        topVisibleIdx = i;
+      }
+
+      const desired = Math.max(0, Math.min(maxRowWindowStart, topVisibleIdx - 2));
+      const curEnd = Math.min(totalShowcaseRows, curStart + LIVE_SHOWCASE_ROW_WINDOW_SIZE);
+      if (topVisibleIdx >= curStart + 1 && topVisibleIdx < curEnd - 2) {
+        return curStart;
+      }
+      return desired;
     },
-    [selectedGroup, groupedChannels, ensureChannelIndexMounted, syncOriginChannelDomAttribute]
+    [shouldVirtualizeShowcaseRows, totalShowcaseRows, maxRowWindowStart, getEstimatedRowHeight]
   );
 
-  // Helpers to decode Base64 and format EPG time
-  const decodeBase64 = (val: unknown): string => {
-    if (typeof val !== 'string') return '';
+  const ensureShowcaseRowMounted = useCallback(
+    (targetRowIndex: number, preserveRowIndex?: number): boolean => {
+      isDpadShowcaseNavActiveRef.current = true;
+      if (!shouldVirtualizeShowcaseRows || totalShowcaseRows <= LIVE_SHOWCASE_ROW_WINDOW_SIZE) {
+        return false;
+      }
+      const clampedTarget = Math.max(0, Math.min(totalShowcaseRows - 1, Math.floor(targetRowIndex)));
+      const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
+      const curEnd = Math.min(totalShowcaseRows, curStart + LIVE_SHOWCASE_ROW_WINDOW_SIZE);
+
+      const hasTopMargin = curStart === 0 || clampedTarget >= curStart + 1;
+      const hasBottomMargin = curEnd >= totalShowcaseRows || clampedTarget < curEnd - 1;
+      if (clampedTarget >= curStart && clampedTarget < curEnd && hasTopMargin && hasBottomMargin) {
+        return false;
+      }
+
+      let desiredStart: number;
+      if (
+        typeof preserveRowIndex === 'number' &&
+        preserveRowIndex >= 0 &&
+        preserveRowIndex < totalShowcaseRows
+      ) {
+        if (clampedTarget < preserveRowIndex) {
+          desiredStart = clampedTarget <= 3 ? 0 : clampedTarget - 1;
+        } else {
+          desiredStart = clampedTarget - LIVE_SHOWCASE_ROW_WINDOW_SIZE + 2;
+        }
+      } else {
+        desiredStart = clampedTarget - Math.floor(LIVE_SHOWCASE_ROW_WINDOW_SIZE / 2);
+      }
+
+      const bounds = computeLiveShowcaseRowBounds(
+        totalShowcaseRows,
+        desiredStart,
+        LIVE_SHOWCASE_ROW_WINDOW_SIZE
+      );
+      if (bounds.start === curStart) return false;
+
+      isProgrammaticRowShiftRef.current = true;
+      rowWindowStartRef.current = bounds.start;
+      try {
+        flushSync(() => {
+          setRowWindowStart(bounds.start);
+        });
+      } catch {
+        setRowWindowStart(bounds.start);
+      } finally {
+        isProgrammaticRowShiftRef.current = false;
+      }
+      return true;
+    },
+    [shouldVirtualizeShowcaseRows, totalShowcaseRows, maxRowWindowStart]
+  );
+
+  const latestControllerRef = useRef({
+    totalRows: totalShowcaseRows,
+    ensureRowMounted: ensureShowcaseRowMounted,
+  });
+  latestControllerRef.current = {
+    totalRows: totalShowcaseRows,
+    ensureRowMounted: ensureShowcaseRowMounted,
+  };
+
+  const showcaseRowsContainerCallbackRef = useCallback((node: HTMLDivElement | null) => {
+    const prevNode = registeredShowcaseContainerRef.current;
+    if (prevNode && prevNode !== node) {
+      unregisterShowcaseRowController(prevNode);
+      registeredShowcaseContainerRef.current = null;
+    }
+    showcaseRowsContainerRef.current = node;
+    if (node && latestControllerRef.current.totalRows > 0) {
+      registerShowcaseRowController(node, {
+        totalRows: latestControllerRef.current.totalRows,
+        ensureRowMounted: (targetRowIndex, preserveRowIndex) =>
+          latestControllerRef.current.ensureRowMounted(targetRowIndex, preserveRowIndex),
+      });
+      registeredShowcaseContainerRef.current = node;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const containerEl = showcaseRowsContainerRef.current;
+    if (!containerEl || totalShowcaseRows === 0) {
+      if (registeredShowcaseContainerRef.current) {
+        unregisterShowcaseRowController(registeredShowcaseContainerRef.current);
+        registeredShowcaseContainerRef.current = null;
+      }
+      return;
+    }
+    registerShowcaseRowController(containerEl, {
+      totalRows: totalShowcaseRows,
+      ensureRowMounted: ensureShowcaseRowMounted,
+    });
+    registeredShowcaseContainerRef.current = containerEl;
+  }, [totalShowcaseRows, ensureShowcaseRowMounted]);
+
+  // Manual scroll listener syncing vertical showcase window cleanly
+  useEffect(() => {
+    const mainEl = mainContainerRef.current;
+    if (!mainEl || isGridMode || !shouldVirtualizeShowcaseRows) {
+      isDpadShowcaseNavActiveRef.current = false;
+      lastManualScrollTopRef.current = null;
+      return;
+    }
+
+    const releaseDpad = () => {
+      isDpadShowcaseNavActiveRef.current = false;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const activeEl = document.activeElement as HTMLElement | null;
+        if (activeEl && mainEl.contains(activeEl)) {
+          isDpadShowcaseNavActiveRef.current = true;
+        }
+      }
+    };
+    const onScroll = () => {
+      if (isProgrammaticRowShiftRef.current || isDpadShowcaseNavActiveRef.current) return;
+      measureMountedShowcaseGeometry();
+      const curTop = Math.max(0, mainEl.scrollTop || 0);
+      const prevTop = lastManualScrollTopRef.current;
+      if (prevTop !== null && Math.abs(curTop - prevTop) < 0.5) return;
+      lastManualScrollTopRef.current = curTop;
+
+      const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
+      let nextStart = computeShowcaseRowStartFromScroll(curTop, curStart);
+      if (prevTop !== null) {
+        if (curTop > prevTop && nextStart < curStart) nextStart = curStart;
+        else if (curTop < prevTop && nextStart > curStart) nextStart = curStart;
+      }
+      if (nextStart !== curStart) {
+        rowWindowStartRef.current = nextStart;
+        try {
+          flushSync(() => {
+            setRowWindowStart(nextStart);
+          });
+        } catch {
+          setRowWindowStart(nextStart);
+        }
+      }
+    };
+
+    mainEl.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('wheel', releaseDpad, { passive: true });
+    window.addEventListener('touchstart', releaseDpad, { passive: true });
+    window.addEventListener('pointerdown', releaseDpad, { passive: true });
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      mainEl.removeEventListener('scroll', onScroll);
+      window.removeEventListener('wheel', releaseDpad);
+      window.removeEventListener('touchstart', releaseDpad);
+      window.removeEventListener('pointerdown', releaseDpad);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [
+    isGridMode,
+    shouldVirtualizeShowcaseRows,
+    maxRowWindowStart,
+    measureMountedShowcaseGeometry,
+    computeShowcaseRowStartFromScroll,
+  ]);
+
+  // Category dropdown selection
+  const handleSelectCategory = useCallback(
+    (catId: string | null) => {
+      setIsCategoriesMenuOpen(false);
+      if (catId === 'showcase' || catId === null) {
+        rowWindowStartRef.current = 0;
+        setRowWindowStart(0);
+        setActiveCategoryId(null);
+        if (mainContainerRef.current) {
+          mainContainerRef.current.scrollTop = 0;
+        }
+        if (getNavMode() === 'remote' && categoriesTriggerRef.current) {
+          setTimeout(() => {
+            if (categoriesTriggerRef.current) focusElementSafely(categoriesTriggerRef.current);
+          }, 0);
+        }
+        return;
+      }
+
+      setActiveCategoryId(catId);
+      if (mainContainerRef.current) {
+        mainContainerRef.current.scrollTop = 0;
+      }
+
+      if (
+        catId !== 'nc_recent' &&
+        catId !== 'nc_fav' &&
+        allLiveStreams.length === 0 &&
+        fetchLiveStreams
+      ) {
+        Promise.resolve(fetchLiveStreams(catId)).catch(() => {});
+      }
+
+      if (getNavMode() === 'remote' && categoriesTriggerRef.current) {
+        setTimeout(() => {
+          if (categoriesTriggerRef.current) focusElementSafely(categoriesTriggerRef.current);
+        }, 0);
+      }
+    },
+    [allLiveStreams.length, fetchLiveStreams]
+  );
+
+  // Focus first item when Categories dropdown opens
+  useEffect(() => {
+    if (!isCategoriesMenuOpen) return;
+    const menuEl = categoriesMenuRef.current;
+    if (!menuEl) return;
+    const targetBtn =
+      menuEl.querySelector<HTMLButtonElement>('button[data-category-selected="true"]') ||
+      menuEl.querySelector<HTMLButtonElement>('button[data-category-id]');
+    if (targetBtn) {
+      focusElementSafely(targetBtn);
+    }
+  }, [isCategoriesMenuOpen]);
+
+  // Outside click closes Categories dropdown
+  useEffect(() => {
+    if (!isCategoriesMenuOpen) return;
+    const onPointerDown = (e: PointerEvent | MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (categoriesMenuRef.current?.contains(target)) return;
+      if (categoriesTriggerRef.current?.contains(target)) return;
+      setIsCategoriesMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+  }, [isCategoriesMenuOpen]);
+
+  const handleCategoriesMenuKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Tab') {
+      setIsCategoriesMenuOpen(false);
+    }
+  }, []);
+
+  // Back handler 1: Close open Categories dropdown menu
+  useBackHandler(
+    'livetv-categories-menu',
+    BACK_PRIORITY.CATEGORY_MENU,
+    () => {
+      if (isCategoriesMenuOpen) {
+        setIsCategoriesMenuOpen(false);
+        if (categoriesTriggerRef.current) {
+          focusElementSafely(categoriesTriggerRef.current);
+        }
+        return true;
+      }
+      return false;
+    },
+    isCategoriesMenuOpen
+  );
+
+  // Back handler 2: Exit filtered category grid back to showcase
+  useBackHandler(
+    'livetv-filtered-grid',
+    BACK_PRIORITY.VIEW_INTERNAL,
+    () => {
+      if (activeCategoryId !== null && !hasSearch) {
+        rowWindowStartRef.current = 0;
+        setRowWindowStart(0);
+        setActiveCategoryId(null);
+        if (mainContainerRef.current) {
+          mainContainerRef.current.scrollTop = 0;
+        }
+        setTimeout(() => {
+          if (categoriesTriggerRef.current && isElementFocusable(categoriesTriggerRef.current)) {
+            focusElementSafely(categoriesTriggerRef.current);
+          }
+        }, 0);
+        return true;
+      }
+      return false;
+    },
+    activeCategoryId !== null && !hasSearch
+  );
+
+  const activeCategoryLabel = useMemo(() => {
+    if (!activeCategoryId) return null;
+    const vMatch = VIRTUAL_LIVE_CATEGORIES.find((vc) => vc.category_id === activeCategoryId);
+    if (vMatch) return vMatch.category_name;
+    const rMatch = liveCategories.find((c) => String(c.category_id) === String(activeCategoryId));
+    return rMatch ? formatCategoryLabel(rMatch.category_name, 'live') : 'Categoria';
+  }, [activeCategoryId, liveCategories]);
+
+  const handleRetryDomain = useCallback(async () => {
+    setIsRetryingDomain(true);
     try {
-      return decodeURIComponent(escape(atob(val)));
-    } catch {
-      return val;
+      const tasks: Promise<any>[] = [];
+      if (liveCategoriesStatus === 'error' || liveCategoriesError) {
+        if (fetchLiveCategories) tasks.push(fetchLiveCategories());
+      }
+      if (liveCatalogStatus === 'error' || liveError || tasks.length === 0) {
+        if (fetchLiveStreams) tasks.push(fetchLiveStreams());
+      }
+      await Promise.all(tasks);
+    } finally {
+      setIsRetryingDomain(false);
     }
-  };
+  }, [
+    liveCategoriesStatus,
+    liveCategoriesError,
+    liveCatalogStatus,
+    liveError,
+    fetchLiveCategories,
+    fetchLiveStreams,
+  ]);
 
-  const formatEpgTime = (val: unknown): string | null => {
-    if (typeof val !== 'string') return null;
-    const trimmed = val.trim();
-    if (!trimmed) return null;
-    const parts = trimmed.split(/\s+/);
-    const timePart = parts.length > 1 ? parts[1] : parts[0];
-    if (!timePart) return null;
-    const timeSub = timePart.substring(0, 5);
-    if (/^\d{1,2}:\d{2}$/.test(timeSub)) {
-      return timeSub.padStart(5, '0');
-    }
-    return null;
-  };
-
-  const activeCategory = extendedCategories.find(c => c.category_id === selectedCategoryId);
+  const isCatalogLoading =
+    liveCatalogStatus === 'loading' ||
+    loadingLive ||
+    (liveCategoriesStatus === 'loading' && liveCategories.length === 0);
 
   return (
     <div
       ref={viewRootRef}
-      onPointerDownCapture={() => {
-        lastPointerDownTimeRef.current = Date.now();
-        pendingChannelEntryCategoryRef.current = null;
-      }}
-      className="flex flex-col md:flex-row flex-1 w-full h-auto md:h-full min-h-0 overflow-y-auto md:overflow-hidden bg-nc-bg"
+      data-showcase-section="live"
+      className="flex-1 flex flex-col w-full h-full overflow-hidden relative bg-nc-bg"
     >
-      {/* Left Pane: Categories or Channels */}
-      <div
-        data-nav-zone="categories"
-        className={`nc-tv-category-pane w-full md:w-[35%] lg:w-[30%] flex-col border-r border-nc-border/50 bg-nc-bg-card/20 h-full shrink-0 flex ${isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}
-      >
-        
-        {/* Categories View */}
-        {leftPaneView === 'categories' && (
-          <div className="flex flex-col h-full overflow-hidden">
-            <div className="p-4 border-b border-nc-border/50 bg-nc-bg shrink-0">
-              <h2 className="nc-heading-section font-semibold text-white uppercase tracking-wider">CATEGORIAS DE TV</h2>
-            </div>
-            <div
-              ref={categoriesListRef}
-              data-scroll-container="true"
-              onScroll={(e) => {
-                categoriesScrollTopRef.current = e.currentTarget.scrollTop;
-              }}
-              className="flex-1 overflow-y-auto px-2 py-2 space-y-1 custom-scrollbar"
-            >
-              {liveCategoriesError && liveCategories.length === 0 && (
-                <div className="p-3 mb-2 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-2">
-                  <p className="nc-text-meta text-red-400 break-words">{liveCategoriesError}</p>
-                  <button
-                    onClick={() => fetchLiveCategories()}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg nc-text-meta font-medium transition-colors"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5 shrink-0" />
-                    <span>Tentar novamente</span>
-                  </button>
-                </div>
-              )}
-              {liveCategoriesStatus === 'loading' && extendedCategories.length === 2 ? (
-                 <div className="flex items-center justify-center py-10">
-                   <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
-                 </div>
-              ) : (
-                extendedCategories.map((cat) => (
-                  <button
-                    key={cat.category_id}
-                    type="button"
-                    data-live-category-id={String(cat.category_id)}
-                    data-category-selected={selectedCategoryId === cat.category_id ? 'true' : 'false'}
-                    onClick={() => {
-                      if (categoriesListRef.current) {
-                        categoriesScrollTopRef.current = categoriesListRef.current.scrollTop;
-                      }
-                      const targetCatId = String(cat.category_id);
-                      originCategoryIdRef.current = targetCatId;
-                      if (shouldApplyProgrammaticFocus()) {
-                        pendingChannelEntryCategoryRef.current = targetCatId;
-                      } else {
-                        pendingChannelEntryCategoryRef.current = null;
-                      }
-                      setSelectedCategoryId(cat.category_id);
-                      setLeftPaneView('channels');
-                    }}
-                    className="nc-tv-category-btn w-full text-left px-4 py-2.5 rounded-xl text-sm transition-colors line-clamp-2 whitespace-normal break-words leading-snug text-nc-text-secondary hover:bg-nc-bg-input hover:text-white"
-                  >
-                    {formatCategoryLabel(cat.category_name, 'live')}
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Channels View */}
-        {leftPaneView === 'channels' && (
-          <div className="flex flex-col h-full overflow-hidden">
-            <div className="p-4 border-b border-nc-border/50 bg-nc-bg shrink-0 flex flex-col gap-2">
-              {!searchQuery && (
-                <button 
-                  type="button"
-                  data-live-back-to-categories="true"
-                  onClick={handleReturnToCategories}
-                  className="flex items-center gap-2 text-nc-text-secondary hover:text-white nc-text-subtitle w-fit transition-colors"
-                >
-                  <ArrowLeft className="w-4 h-4 shrink-0" /> <span>Voltar às Categorias</span>
-                </button>
-              )}
-              <h2 className="nc-heading-section font-semibold text-white line-clamp-2 whitespace-normal break-words">
-                {searchQuery ? `BUSCA: ${searchQuery.toUpperCase()}` : formatCategoryLabel(activeCategory?.category_name, 'live')}
-              </h2>
-            </div>
-            
-            <div ref={channelsScrollCallbackRef} data-scroll-container="true" className="flex-1 overflow-y-auto p-2 custom-scrollbar">
-              {liveError && rawFilteredStreams.length === 0 ? (
-                <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col items-center justify-center text-center gap-3 my-4">
-                  <p className="text-sm text-red-400">{liveError}</p>
-                  <button
-                    onClick={() => fetchLiveStreams(selectedCategoryId)}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg text-xs font-medium transition-colors"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    Tentar novamente
-                  </button>
-                </div>
-              ) : (isCategoryChannelsLoading || liveCatalogStatus === 'loading') && rawFilteredStreams.length === 0 ? (
-                 <div className="flex items-center justify-center py-10">
-                   <Loader2 className="w-6 h-6 animate-spin text-nc-text-secondary" />
-                 </div>
-              ) : !isCategoryChannelsLoading && liveCatalogStatus === 'ready' && !liveError && groupedChannels.length === 0 ? (
-                 <div className="flex flex-col items-center justify-center py-10 text-nc-text-secondary">
-                   <TvMinimalPlay className="w-12 h-12 mb-4 opacity-20" />
-                   <p className="text-sm">Nenhum canal encontrado.</p>
-                 </div>
-              ) : (
-                <div ref={channelsListCallbackRef} data-virtual-container="true" className="space-y-2">
-                  {channelTopSpacerPx > 0 && (
-                    <div
-                      aria-hidden="true"
-                      data-virtual-spacer="top"
-                      style={{ height: `${channelTopSpacerPx}px` }}
-                    />
-                  )}
-                  {displayedGroups.map((group, idx) => {
-                    const actualIndex = channelStartIndex + idx;
-                    const isSelected = selectedGroup?.groupId === group.groupId;
-                    const isOrigin = originChannelGroupIdRef.current
-                      ? originChannelGroupIdRef.current === group.groupId
-                      : isSelected;
-                    const primaryStream = group.primaryStream;
-                    const primaryId = primaryStream.stream_id || primaryStream.id;
-                    const groupFav = group.allStreams.some((s) => isFavorite(s.stream_id || s.id, 'live'));
-
-                    return (
-                      <div
-                        key={group.groupId}
-                        data-nav-row="true"
-                        data-scroll-block="true"
-                        data-virtual-index={actualIndex}
-                        className={`nc-tv-channel-row w-full flex items-center gap-1 rounded-xl transition-colors border ${
-                          isSelected
-                            ? 'bg-nc-primary/10 border-nc-primary/30'
-                            : 'bg-transparent border-transparent hover:bg-nc-bg-input'
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          data-live-channel-btn="true"
-                          data-live-channel-id={group.groupId}
-                          data-live-channel-category-id={String(group.category_id ?? '')}
-                          data-live-channel-selected={isSelected ? 'true' : 'false'}
-                          data-live-channel-origin={isOrigin ? 'true' : 'false'}
-                          onFocus={() => handleChannelRowFocus(group.groupId, actualIndex)}
-                          onClick={(e) => {
-                            if (shouldApplyProgrammaticFocus()) {
-                              focusElementSafely(e.currentTarget);
-                            }
-                            handleSelectGroup(group);
-                          }}
-                          className="nc-tv-channel-btn w-full flex items-center gap-3 p-2 rounded-xl transition-colors flex-1 min-w-0 text-left"
-                        >
-                          <div className="nc-tv-channel-logo w-16 h-12 bg-black/40 rounded-lg shrink-0 flex items-center justify-center overflow-hidden relative">
-                            <MediaImage
-                              src={group.stream_icon}
-                              serverUrl={credentials?.serverUrl}
-                              alt={group.displayName}
-                              itemId={primaryId}
-                              itemName={group.displayName}
-                              priority={actualIndex < 15}
-                              loading={actualIndex < 15 ? 'eager' : 'lazy'}
-                              className="w-full h-full object-contain p-1"
-                            />
-                          </div>
-
-                          <div className="nc-tv-channel-info flex-1 min-w-0 text-left flex flex-col gap-0.5">
-                            <p
-                              data-live-channel-name="true"
-                              className={`nc-tv-channel-name font-medium text-sm ${isSelected ? 'text-nc-primary' : 'text-white'}`}
-                            >
-                              {group.displayName}
-                            </p>
-                            {group.isGrouped && (
-                              <div className="nc-tv-channel-meta nc-text-meta flex items-center gap-1.5 text-nc-text-secondary overflow-hidden">
-                                <span className="inline-flex items-center gap-1 font-semibold text-nc-primary/90 bg-nc-primary/10 px-1.5 py-0.5 rounded border border-nc-primary/20 shrink-0">
-                                  <Layers className="w-3 h-3 shrink-0" />
-                                  {group.variants.length} versões
-                                </span>
-                                <span className="truncate opacity-80">
-                                  {group.variants.map((v) => v.label).join(' · ')}
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        </button>
-
-                        <button
-                          type="button"
-                          data-live-channel-fav="true"
-                          data-live-channel-id={group.groupId}
-                          aria-label={groupFav ? 'Remover canal dos favoritos' : 'Favoritar canal'}
-                          title={groupFav ? 'Remover dos favoritos' : 'Favoritar canal'}
-                          onFocus={() => handleChannelRowFocus(group.groupId, actualIndex)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (group.isGrouped) {
-                              handleToggleGroupFavorite(group);
-                            } else {
-                              handleToggleFavorite({ id: primaryId, name: group.displayName, cover: group.stream_icon || '', type: 'live' });
-                            }
-                          }}
-                          className="nc-tv-channel-fav p-2.5 mr-1 rounded-xl shrink-0 text-nc-text-secondary hover:text-white transition-colors"
-                        >
-                          <Heart className={`w-4 h-4 ${groupFav ? 'fill-nc-primary text-nc-primary' : ''}`} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                  {channelBottomSpacerPx > 0 && (
-                    <div
-                      aria-hidden="true"
-                      data-virtual-spacer="bottom"
-                      style={{ height: `${channelBottomSpacerPx}px` }}
-                    />
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Right Pane: Player & EPG */}
-      <div
-        data-nav-zone="content"
-        onKeyDownCapture={handleRightPaneKeyDownCapture}
-        className={`nc-live-right-pane flex-1 min-w-0 flex-col w-full h-auto md:h-full min-h-0 overflow-y-auto md:overflow-hidden bg-nc-bg flex touch-pan-y ${!isMobilePlayerOpen ? 'hidden md:flex' : 'flex'}`}
-      >
-        {selectedGroup ? (
-          <div
-            data-live-content-stack="true"
-            className="nc-live-content-stack flex flex-col w-full h-auto md:h-full md:min-h-0 overflow-visible md:overflow-hidden"
-          >
-            {/* Mobile Back Button */}
-            <div className="md:hidden px-3 py-2.5 shrink-0 border-b border-nc-border/50 flex items-center bg-nc-bg">
-              <button
-                type="button"
-                onClick={handleCloseChannel}
-                className="flex items-center gap-2 text-nc-text-secondary hover:text-white transition-colors text-sm font-medium"
-              >
-                <ArrowLeft className="w-5 h-5" /> Voltar aos Canais
-              </button>
-            </div>
-
-            {/* Top Section (Compact Summary + 16:9 Mini-Player side by side on md+) */}
-            <div
-              data-live-top-section="true"
-              className="nc-live-top-section flex flex-col md:flex-row items-stretch md:items-start gap-2.5 lg:gap-4 px-3 py-2.5 lg:p-3.5 shrink-0 border-b border-nc-border/15 bg-nc-bg"
-            >
-              {/* Left child: Channel Info, Version Selector & Current Program Summary */}
-              <div
-                data-live-summary-col="true"
-                className="nc-live-summary-col flex-1 min-w-0 flex flex-col items-start gap-2 order-2 md:order-1"
-              >
-                <div className="flex items-center gap-2.5 lg:gap-3 w-full min-w-0">
-                  <div className="nc-live-channel-logo w-11 h-11 lg:w-14 lg:h-14 bg-nc-bg-card rounded-xl flex items-center justify-center overflow-hidden shrink-0 border border-nc-border/50 p-1.5 shadow-md">
-                    <MediaImage
-                      src={selectedGroup.stream_icon}
-                      serverUrl={credentials?.serverUrl}
-                      alt={selectedGroup.displayName}
-                      itemId={selectedGroup.primaryStream?.stream_id || selectedGroup.primaryStream?.id}
-                      itemName={selectedGroup.displayName}
-                      priority={true}
-                      loading="eager"
-                      className="w-full h-full object-contain"
-                    />
-                  </div>
-                  <div className="overflow-hidden min-w-0 flex-1">
-                    <h1 className="nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words w-full">
-                      {selectedGroup.displayName}
-                    </h1>
-                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                      <span className="nc-badge-info inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-500/10 text-red-400 font-medium border border-red-500/20">
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0"></span>
-                        AO VIVO
-                      </span>
-                      {activeVariantStream?.name && parseChannelVariantSuffix(activeVariantStream.name).resolution && (
-                        <span className="nc-badge-info inline-flex items-center px-2 py-0.5 rounded-full bg-nc-primary/20 text-nc-primary border border-nc-primary/30 font-bold">
-                          {parseChannelVariantSuffix(activeVariantStream.name).resolution}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Version Selector for Grouped Channels */}
-                {selectedGroup.isGrouped && selectedGroup.variants.length > 0 && (
-                  <div
-                    key={selectedGroup.groupId}
-                    className="nc-live-variants-bar w-full min-w-0 overflow-hidden px-2.5 py-1.5 bg-nc-bg-card/70 border border-nc-border/50 rounded-xl flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 shadow-sm"
-                  >
-                    <span className="nc-text-meta font-semibold text-white/90 shrink-0">Versão do canal:</span>
-                    <div
-                      data-nav-row="true"
-                      data-live-variants-row="true"
-                      className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar min-w-0 w-auto max-w-full touch-pan-x"
-                    >
-                      <button
-                        type="button"
-                        data-variant-active={selectedResolutionMode === 'auto' ? 'true' : 'false'}
-                        onClick={() => handleSelectResolutionMode('auto')}
-                        className={`px-2.5 py-1 rounded-lg nc-text-meta font-medium transition-colors shrink-0 ${
-                          selectedResolutionMode === 'auto'
-                            ? 'bg-nc-primary text-black font-bold shadow-md'
-                            : 'bg-nc-bg-input hover:bg-nc-border/60 text-nc-text-secondary hover:text-white'
-                        }`}
-                      >
-                        Automático
-                      </button>
-                      {selectedGroup.variants.map((v) => {
-                        const activeId = activeVariantStream?.stream_id || activeVariantStream?.id;
-                        const isCurrentActive = String(activeId) === String(v.streamId);
-                        return (
-                          <button
-                            type="button"
-                            key={v.streamId}
-                            data-variant-active={
-                              isCurrentActive && selectedResolutionMode !== 'auto' ? 'true' : 'false'
-                            }
-                            onClick={() => handleSelectResolutionMode(v.stream)}
-                            className={`px-2.5 py-1 rounded-lg nc-text-meta font-medium transition-colors shrink-0 flex items-center gap-1 ${
-                              isCurrentActive
-                                ? 'bg-nc-primary/20 text-nc-primary border border-nc-primary/50 font-bold'
-                                : 'bg-nc-bg-input hover:bg-nc-border/60 text-nc-text-secondary hover:text-white'
-                            }`}
-                          >
-                            <span>{v.label}</span>
-                            {isCurrentActive && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-nc-primary animate-pulse shrink-0" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Current Program Info */}
-                {epgData && epgData.length > 0 && epgData[0] && (
-                  <div
-                    data-live-now-playing="true"
-                    className="nc-live-now-playing w-full px-3 py-2 bg-nc-bg-card/50 rounded-xl border border-nc-border/50 flex flex-col gap-0.5"
-                  >
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <p className="nc-text-meta text-nc-primary font-semibold uppercase tracking-wider">
-                        Passando Agora
-                      </p>
-                      {(() => {
-                        const startStr = formatEpgTime(epgData[0].start);
-                        const endStr = formatEpgTime(epgData[0].end);
-                        if (startStr && endStr) {
-                          return (
-                            <p className="nc-text-meta text-nc-text-secondary font-mono shrink-0">
-                              {startStr} - {endStr}
-                            </p>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </div>
-                    {decodeBase64(epgData[0].title) && (
-                      <p className="nc-text-subtitle text-white font-medium line-clamp-2 whitespace-normal break-words">
-                        {decodeBase64(epgData[0].title)}
-                      </p>
-                    )}
-                    {decodeBase64(epgData[0].description) && (
-                      <p className="nc-live-now-playing-desc nc-text-meta text-nc-text-secondary line-clamp-1 lg:line-clamp-2 break-words">
-                        {decodeBase64(epgData[0].description)}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Right child: Mini-Player (preserves 16:9 aspect-video) */}
-              <div
-                data-live-preview-wrapper="true"
-                className="nc-live-preview-box w-full md:w-[40%] lg:w-[42%] md:max-w-[15.5rem] lg:max-w-[20rem] xl:max-w-md shrink-0 order-1 md:order-2 shadow-2xl"
-              >
-                <VideoPlayer
-                  key={selectedGroup.groupId}
-                  streamUrl={miniPlayerUrl}
-                  title={selectedGroup.displayName}
-                  channelName={selectedGroup.displayName}
-                  programTitle={
-                    epgData && epgData.length > 0 && epgData[0]
-                      ? decodeBase64(epgData[0].title) || undefined
-                      : undefined
-                  }
-                  contentType="live"
-                  streamId={
-                    activeVariantStream?.stream_id || activeVariantStream?.id || selectedGroup.groupId
-                  }
-                  attemptTrigger={attemptTrigger}
-                  fullscreenRequestTrigger={fullscreenRequestTrigger}
-                  onBack={handleCloseChannel}
-                  embedded={true}
-                  disableEmbeddedControlsFocus={true}
-                  isLoading={miniPlayerLoading}
-                  errorMessage={miniPlayerError}
-                  onRetry={handleRetry}
-                  onPlaybackSuccess={handlePlaybackSuccess}
-                  onPlaybackFinalError={handlePlaybackFinalError}
-                />
-              </div>
-            </div>
-
-            {/* EPG Section (Pinned Header + Single Scrollable EPG Container) */}
-            <div
-              data-live-epg-section="true"
-              className="nc-live-epg-section flex-1 flex flex-col w-full h-auto md:h-full min-h-[12rem] md:min-h-0 overflow-visible md:overflow-hidden bg-nc-bg"
-            >
-              <div
-                data-live-epg-header="true"
-                className="nc-live-epg-header px-3.5 py-2 lg:px-4 lg:py-2.5 shrink-0 border-b border-nc-border/40 bg-nc-bg flex items-center justify-between gap-2 flex-wrap"
-              >
-                <h3 className="nc-heading-section font-semibold text-white flex items-center gap-2">
-                  <Calendar className="w-4 h-4 sm:w-5 sm:h-5 text-nc-primary shrink-0" /> Programação
-                </h3>
-                {!loadingEpg && !epgError && epgData.length > 0 && (
-                  <span className="nc-text-meta text-nc-text-secondary font-mono">
-                    {epgData.length} {epgData.length === 1 ? 'programa' : 'programas'}
-                  </span>
-                )}
-              </div>
-
-              <div
-                ref={epgScrollRef}
-                data-epg-scroll="true"
-                data-scroll-container="true"
-                onFocusCapture={() => {
-                  isEpgFocusedRef.current = true;
-                }}
-                onBlurCapture={(e) => {
-                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-                    isEpgFocusedRef.current = false;
-                  }
-                }}
-                className="nc-live-epg-scroll flex-1 w-full h-auto md:h-full min-h-[10rem] md:min-h-0 overflow-visible md:overflow-y-auto px-3.5 py-2.5 lg:p-4 custom-scrollbar bg-nc-bg touch-pan-y"
-              >
-                {loadingEpg ? (
-                  <div
-                    tabIndex={0}
-                    role="status"
-                    aria-label="Carregando grade de programação"
-                    data-nav-item="true"
-                    data-epg-state="loading"
-                    data-epg-primary="true"
-                    className="nc-tv-epg-state flex flex-col items-center justify-center py-8 px-4 bg-nc-bg-card/20 rounded-xl border border-nc-border/40 text-center outline-none cursor-default"
-                  >
-                    <Loader2 className="w-7 h-7 animate-spin text-nc-primary mb-2" />
-                    <p className="text-xs sm:text-sm text-nc-text-secondary">
-                      Carregando programação...
-                    </p>
-                  </div>
-                ) : epgError ? (
-                  <div
-                    tabIndex={0}
-                    role="status"
-                    aria-label="Programação indisponível"
-                    data-nav-item="true"
-                    data-epg-state="error"
-                    data-epg-primary="true"
-                    className="nc-tv-epg-state text-center py-8 px-4 bg-red-500/10 rounded-xl border border-red-500/30 outline-none cursor-default"
-                  >
-                    <p className="text-xs sm:text-sm text-red-300">{epgError}</p>
-                  </div>
-                ) : epgData && epgData.length > 0 ? (
-                  <div
-                    data-epg-timeline="true"
-                    className="nc-tv-epg-timeline space-y-2.5 relative before:absolute before:inset-0 before:ml-[1.25rem] before:-translate-x-px before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-nc-border/50 before:to-transparent pb-4"
-                  >
-                    {epgData.map((prog: any, idx: number) => {
-                      const startStr = formatEpgTime(prog?.start);
-                      const endStr = formatEpgTime(prog?.end);
-                      const title = decodeBase64(prog?.title);
-                      const description = decodeBase64(prog?.description);
-                      const isFirst = idx === 0;
-
-                      return (
-                        <div
-                          key={prog?.id ?? `${idx}_${startStr ?? ''}_${title ?? ''}`}
-                          className="nc-tv-epg-row relative flex items-start justify-start group is-active"
-                        >
-                          {/* Timeline Marker */}
-                          <div
-                            className={`nc-tv-epg-marker flex items-center justify-center w-6 h-6 rounded-full border-2 bg-nc-bg shrink-0 shadow absolute left-[1.25rem] -translate-x-1/2 top-3.5 transition-colors ${
-                              isFirst
-                                ? 'border-nc-primary text-nc-primary'
-                                : 'border-nc-border/50 text-nc-text-secondary'
-                            }`}
-                          >
-                            <div
-                              className={`w-2 h-2 rounded-full ${
-                                isFirst ? 'bg-nc-primary' : 'bg-transparent'
-                              }`}
-                            />
-                          </div>
-
-                          {/* Focusable Non-Button EPG Card */}
-                          <div
-                            role="article"
-                            tabIndex={0}
-                            data-nav-item="true"
-                            data-epg-item="true"
-                            data-epg-index={idx}
-                            data-epg-primary={isFirst ? 'true' : undefined}
-                            data-scroll-block="true"
-                            onFocus={(e) => ensureEpgItemVisible(idx, e.currentTarget)}
-                            className={`nc-tv-epg-card w-[calc(100%-2.5rem)] ml-[2.5rem] px-3.5 py-2.5 rounded-xl border transition-all cursor-default outline-none ${
-                              isFirst
-                                ? 'border-nc-primary/40 bg-nc-primary/[0.07]'
-                                : 'border-nc-border/50 bg-nc-bg-card hover:bg-nc-bg-input'
-                            }`}
-                          >
-                            <div className="flex flex-col gap-0.5">
-                              <div className="flex items-center justify-between gap-2 flex-wrap">
-                                {startStr && endStr && (
-                                  <div
-                                    data-epg-time="true"
-                                    className={`nc-text-meta font-semibold uppercase tracking-wider font-mono ${
-                                      isFirst ? 'text-nc-primary' : 'text-nc-text-secondary'
-                                    }`}
-                                  >
-                                    {startStr} - {endStr}
-                                  </div>
-                                )}
-                                {isFirst && (
-                                  <span className="nc-badge-info inline-flex items-center px-2 py-0.5 rounded-full bg-nc-primary/20 text-nc-primary font-bold uppercase tracking-wider">
-                                    Agora
-                                  </span>
-                                )}
-                              </div>
-                              {title && (
-                                <h4
-                                  data-epg-title="true"
-                                  className={`font-medium text-sm sm:text-base leading-snug break-words ${
-                                    isFirst ? 'text-white font-semibold' : 'text-white/85'
-                                  }`}
-                                >
-                                  {title}
-                                </h4>
-                              )}
-                              {description && (
-                                <p
-                                  data-epg-description="true"
-                                  className="text-xs sm:text-sm text-nc-text-secondary line-clamp-2 mt-0.5 leading-snug break-words"
-                                >
-                                  {description}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div
-                    tabIndex={0}
-                    role="status"
-                    aria-label="Nenhuma programação disponível (EPG Vazio)"
-                    data-nav-item="true"
-                    data-epg-state="empty"
-                    data-epg-primary="true"
-                    className="nc-tv-epg-state text-center py-8 px-4 bg-nc-bg-card/30 rounded-xl border border-nc-border/50 outline-none cursor-default"
-                  >
-                    <p className="text-xs sm:text-sm text-nc-text-secondary">
-                      Nenhuma programação disponível (EPG Vazio).
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="flex-col h-full flex items-center justify-center p-6 text-center text-nc-text-secondary bg-nc-bg">
-            <div className="w-24 h-24 rounded-full bg-nc-bg-card flex items-center justify-center mb-6 shadow-xl">
-              <TvMinimalPlay className="w-12 h-12 text-nc-text-secondary/50" />
-            </div>
-            <h2 className="text-xl md:text-2xl font-bold text-white mb-2">Selecione um Canal</h2>
-            <p className="max-w-md">
-              Escolha um canal na lista à esquerda para assistir e visualizar sua grade de programação ao vivo.
-            </p>
-          </div>
-        )}
-      </div>
-
       {(favActionError || favoriteError) && (
         <div
           role="alert"
-          className="fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[110] bg-red-600/90 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2"
+          className="fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[100] bg-red-600/95 text-white nc-text-subtitle px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center gap-3"
         >
-          <div className="flex items-center gap-2 min-w-0">
-            <AlertCircle className="w-5 h-5 text-white shrink-0" />
-            <span className="whitespace-normal break-words">
-              {favActionError || favoriteError}
-            </span>
-          </div>
-          <button
-            onClick={() => {
-              setFavActionError(null);
-              clearFavoriteError();
-            }}
-            className="p-1 hover:bg-white/20 rounded-lg text-white/80 hover:text-white shrink-0 transition-colors"
-            aria-label="Fechar aviso"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <AlertCircle className="w-5 h-5 text-white shrink-0" />
+          <span className="whitespace-normal break-words">{favActionError || favoriteError}</span>
         </div>
       )}
+
+      {/* Domain Top Bar with "TV ao Vivo" Title & "Categorias" Selector */}
+      <div
+        data-nav-zone="categories"
+        data-showcase-categories-bar="true"
+        className="relative z-30 shrink-0 px-4 sm:px-6 md:px-10 pt-3 pb-2 flex flex-wrap items-center justify-between gap-3 bg-nc-bg"
+      >
+        <div data-nav-row="true" className="flex flex-wrap items-center gap-3 sm:gap-4">
+          <h2 className="nc-section-title font-bold text-white tracking-tight">TV ao Vivo</h2>
+
+          <div className="relative">
+            <button
+              ref={categoriesTriggerRef}
+              type="button"
+              data-categories-trigger="true"
+              data-category-id="all"
+              data-category-selected="true"
+              disabled={liveCategoriesStatus === 'loading' && liveCategories.length === 0}
+              aria-haspopup="listbox"
+              aria-expanded={isCategoriesMenuOpen}
+              onClick={() => setIsCategoriesMenuOpen((prev) => !prev)}
+              className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-white/[0.08] hover:bg-white/[0.14] border border-white/15 text-white nc-text-subtitle font-semibold transition-colors disabled:opacity-50"
+            >
+              <Layers className="w-4 h-4 text-nc-primary shrink-0" />
+              <span>
+                {activeCategoryLabel ? `Categorias: ${activeCategoryLabel}` : 'Categorias'}
+              </span>
+              <ChevronDown
+                className={`w-4 h-4 text-white/75 transition-transform duration-200 ${
+                  isCategoriesMenuOpen ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+
+            <div
+              ref={categoriesMenuRef}
+              role="listbox"
+              aria-label="Categorias de TV ao Vivo"
+              data-categories-menu="true"
+              data-focus-scope={isCategoriesMenuOpen ? 'modal' : undefined}
+              data-nav-zone={isCategoriesMenuOpen ? 'modal' : undefined}
+              hidden={!isCategoriesMenuOpen}
+              inert={!isCategoriesMenuOpen ? true : undefined}
+              aria-hidden={!isCategoriesMenuOpen ? 'true' : undefined}
+              onKeyDown={handleCategoriesMenuKeyDown}
+              className="absolute left-0 top-full mt-2 w-72 sm:w-80 max-h-[65vh] overflow-y-auto rounded-2xl bg-[#12131a]/98 backdrop-blur-xl border border-white/15 shadow-[0_24px_60px_rgba(0,0,0,0.85)] p-2 z-50 flex flex-col gap-1"
+            >
+              {activeCategoryId !== null && (
+                <>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={false}
+                    data-category-id="showcase"
+                    onClick={() => handleSelectCategory(null)}
+                    className="w-full text-left px-3.5 py-2.5 rounded-xl nc-text-subtitle font-semibold text-nc-primary hover:bg-white/[0.08] flex items-center justify-between gap-2 transition-colors"
+                  >
+                    <span>Voltar à vitrine de TV ao Vivo</span>
+                  </button>
+                  <div role="separator" className="my-1 border-t border-white/10" />
+                </>
+              )}
+
+              {VIRTUAL_LIVE_CATEGORIES.map((vc) => {
+                const isSelected = activeCategoryId === vc.category_id;
+                return (
+                  <button
+                    key={vc.category_id}
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    data-category-id={vc.category_id}
+                    data-live-category-id={vc.category_id}
+                    data-category-selected={isSelected ? 'true' : 'false'}
+                    onClick={() => handleSelectCategory(vc.category_id)}
+                    className={`w-full text-left px-3.5 py-2.5 rounded-xl nc-text-subtitle font-medium flex items-center justify-between gap-2 transition-colors ${
+                      isSelected
+                        ? 'bg-nc-primary text-black font-bold'
+                        : 'text-white/90 hover:bg-white/[0.08]'
+                    }`}
+                  >
+                    <span className="whitespace-normal break-words">{vc.category_name}</span>
+                    {isSelected && <Check className="w-4 h-4 shrink-0" />}
+                  </button>
+                );
+              })}
+
+              {liveCategories.length > 0 && (
+                <div role="separator" className="my-1 border-t border-white/10" />
+              )}
+
+              {liveCategories.map((cat) => {
+                const catId = String(cat.category_id);
+                const isSelected = activeCategoryId === catId;
+                const formatted = formatCategoryLabel(cat.category_name, 'live');
+                return (
+                  <button
+                    key={catId}
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    data-category-id={catId}
+                    data-live-category-id={catId}
+                    data-category-selected={isSelected ? 'true' : 'false'}
+                    onClick={() => handleSelectCategory(catId)}
+                    className={`w-full text-left px-3.5 py-2.5 rounded-xl nc-text-subtitle font-medium flex items-center justify-between gap-2 transition-colors ${
+                      isSelected
+                        ? 'bg-nc-primary text-black font-bold'
+                        : 'text-white/85 hover:bg-white/[0.08]'
+                    }`}
+                  >
+                    <span className="whitespace-normal break-words">{formatted}</span>
+                    {isSelected && <Check className="w-4 h-4 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {activeCategoryId !== null && !hasSearch && (
+            <button
+              type="button"
+              data-back-to-showcase="true"
+              onClick={() => handleSelectCategory(null)}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-nc-text-secondary hover:text-white nc-text-subtitle font-medium transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4 shrink-0" />
+              <span>Vitrine</span>
+            </button>
+          )}
+        </div>
+
+        {(isGridMode || hasSearch) && (
+          <span className="nc-text-meta text-nc-text-secondary font-medium">
+            {displayedGridGroups.length}{' '}
+            {displayedGridGroups.length === 1 ? 'canal' : 'canais'}
+          </span>
+        )}
+      </div>
+
+      {/* Main Scrollable Content Area (Hero + Category Carousels OR Filtered/Search Grid) */}
+      <main
+        ref={mainContainerRef as React.RefObject<HTMLElement>}
+        data-scroll-container="true"
+        data-nav-zone="content"
+        style={{ overflowAnchor: 'none' }}
+        className="flex-1 bg-nc-bg overflow-y-auto h-full pb-16"
+      >
+        {(liveCategoriesError || liveError) && (
+          <div
+            role="status"
+            data-domain-error="live"
+            className="mx-4 sm:mx-6 md:mx-10 mt-2 mb-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+          >
+            <div className="flex items-start sm:items-center gap-2.5">
+              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+              <span className="nc-text-subtitle text-amber-200 whitespace-normal break-words">
+                {liveError || liveCategoriesError}
+              </span>
+            </div>
+            <button
+              type="button"
+              data-domain-retry="live"
+              disabled={isRetryingDomain}
+              onClick={handleRetryDomain}
+              className="px-3.5 py-1.5 rounded-lg bg-nc-primary text-black nc-text-subtitle font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isRetryingDomain ? 'animate-spin' : ''}`} />
+              <span>Tentar novamente</span>
+            </button>
+          </div>
+        )}
+
+        {/* Live TV Hero Stage (always scrollable at top, never sticky) */}
+        <LiveTvHero
+          selectedGroup={selectedGroup}
+          activeVariantStream={activeVariantStream}
+          selectedResolutionMode={selectedResolutionMode}
+          serverUrl={credentials?.serverUrl}
+          streamUrl={miniPlayerUrl}
+          attemptTrigger={attemptTrigger}
+          fullscreenRequestTrigger={fullscreenRequestTrigger}
+          isLoadingPlayback={miniPlayerLoading}
+          playbackError={miniPlayerError}
+          nowPlaying={heroNowPlaying}
+          loadingEpg={loadingEpg}
+          epgError={epgError}
+          isFavorited={isGroupFavorited(selectedGroup)}
+          isCatalogLoading={isCatalogLoading && totalShowcaseRows === 0}
+          onExpandFullscreen={handleExpandFullscreen}
+          onRetryPlayback={handleRetryPlayback}
+          onBackFromFullscreen={handleBackFromHeroPlayer}
+          onPlaybackSuccess={handlePlaybackSuccess}
+          onPlaybackFinalError={handlePlaybackFinalError}
+          onSelectResolutionMode={handleSelectResolutionMode}
+          onToggleFavorite={handleToggleHeroFavorite}
+        />
+
+        {isGridMode ? (
+          /* Virtualized Grid for Explicit Category Filter OR Search Results */
+          <div className="px-4 sm:px-6 md:px-10 pt-2 pb-12">
+            <div className="mb-4 flex items-center justify-between gap-2">
+              <h2 className="nc-heading-view font-semibold text-white whitespace-normal break-words">
+                {hasSearch
+                  ? `Resultados em TV ao Vivo para "${searchQuery}"`
+                  : activeCategoryLabel || 'Canais'}
+              </h2>
+            </div>
+
+            {isCatalogLoading && displayedGridGroups.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-nc-text-secondary">
+                <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-3" />
+                <p className="nc-text-subtitle">Carregando canais...</p>
+              </div>
+            ) : displayedGridGroups.length === 0 ? (
+              <div className="text-center py-16 text-nc-text-secondary">
+                <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                <p className="nc-text-subtitle">
+                  {hasSearch
+                    ? `Nenhum canal encontrado para "${searchQuery}".`
+                    : activeCategoryId === 'nc_recent'
+                      ? 'Você ainda não assistiu a canais recentemente.'
+                      : activeCategoryId === 'nc_fav'
+                        ? 'Você ainda não adicionou canais aos favoritos.'
+                        : 'Nenhum canal encontrado nesta categoria.'}
+                </p>
+              </div>
+            ) : (
+              <LiveChannelGrid
+                groups={displayedGridGroups}
+                mainContainerRef={mainContainerRef}
+                resetKey={`live_${activeCategoryId ?? 'showcase'}_${normalizedQuery}`}
+                serverUrl={credentials?.serverUrl}
+                accountPrefix={accountPrefix}
+                selectedGroupId={selectedGroup?.groupId ?? null}
+                epgCache={epgCacheRef.current}
+                epgCacheVersion={epgCacheVersion}
+                onActivateGroup={handleActivateGroup}
+              />
+            )}
+          </div>
+        ) : (
+          /* Vertical Category Showcase Mode (Horizontal Carousels of Wide Channel Cards) */
+          <>
+            {isCatalogLoading && totalShowcaseRows === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-nc-text-secondary">
+                <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-3" />
+                <p className="nc-text-subtitle">Carregando canais...</p>
+              </div>
+            ) : totalShowcaseRows === 0 ? (
+              <div className="text-center py-16 text-nc-text-secondary px-6">
+                <TvMinimalPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                <p className="nc-text-subtitle">Nenhum canal disponível no momento.</p>
+              </div>
+            ) : (
+              <div
+                ref={showcaseRowsContainerCallbackRef}
+                data-showcase-rows-container="true"
+                data-showcase-virtualized={shouldVirtualizeShowcaseRows ? 'true' : 'false'}
+                data-showcase-total-rows={totalShowcaseRows}
+                style={{ overflowAnchor: 'none' }}
+                className="mt-1 px-4 sm:px-6 md:px-10 relative z-20"
+              >
+                {showcaseRowDefinitions.map((row, rowIndex) => {
+                  const isMounted =
+                    rowIndex >= effectiveRowWindowStart && rowIndex < effectiveRowWindowEnd;
+
+                  return (
+                    <div
+                      key={row.key}
+                      data-scroll-block="true"
+                      data-showcase-row-key={row.key}
+                      data-showcase-row-index={rowIndex}
+                      className="pb-6"
+                      style={{ overflowAnchor: 'none' }}
+                    >
+                      {isMounted ? (
+                        <LiveChannelRow
+                          title={row.title}
+                          groups={row.groups}
+                          rowIndex={rowIndex}
+                          serverUrl={credentials?.serverUrl}
+                          accountPrefix={accountPrefix}
+                          selectedGroupId={selectedGroup?.groupId ?? null}
+                          epgCache={epgCacheRef.current}
+                          epgCacheVersion={epgCacheVersion}
+                          virtualize={row.virtualize}
+                          onActivateGroup={handleActivateGroup}
+                        />
+                      ) : (
+                        <div className="w-full" data-showcase-unmounted-row={rowIndex}>
+                          <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">
+                            {row.title}
+                          </h2>
+                          <div
+                            className="flex flex-row overflow-hidden w-full gap-4 px-2 pb-8 pt-4 pointer-events-none select-none"
+                            aria-hidden="true"
+                          >
+                            <div className="nc-live-wide-card shrink-0 rounded-xl invisible" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </main>
     </div>
   );
 });
