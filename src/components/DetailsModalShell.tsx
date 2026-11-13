@@ -50,6 +50,7 @@ export const DetailsModalShell = React.memo(function DetailsModalShell({
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2, ease: 'easeOut' }}
       data-focus-scope="modal"
+      data-nav-zone="main"
       data-details-modal={modalType}
       data-details-backdrop="true"
       role="dialog"
@@ -82,6 +83,7 @@ export const DetailsModalShell = React.memo(function DetailsModalShell({
               <button
                 type="button"
                 aria-label={closeButtonLabel}
+                title={closeButtonLabel}
                 data-details-close="true"
                 data-scroll-top-anchor="true"
                 onClick={onClose}

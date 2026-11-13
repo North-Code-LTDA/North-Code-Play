@@ -3570,12 +3570,16 @@ async function runDpadNavigationAndBackPolicyTests() {
   assert(seriesModalScope, 'SeriesDetails aberto deve expor data-focus-scope="modal"');
 
   const seriesDetailsScroll = seriesModalScope.querySelector('[data-scroll-container="true"]') as HTMLElement;
+  const seriesPrimaryBtn = seriesModalScope.querySelector('button[data-series-primary-cta="true"]') as HTMLButtonElement;
+  const seriesFavBtn = seriesModalScope.querySelector('button[data-series-favorite-btn="true"]') as HTMLButtonElement;
   const seriesSynopsisEl = seriesModalScope.querySelector('[role="region"][aria-label="Sinopse da série"]') as HTMLElement;
-  const seriesFavBtn = seriesModalScope.querySelector('button[data-scroll-block="true"]') as HTMLButtonElement;
-  const seriesBackBtn = seriesModalScope.querySelector('[data-scroll-top-anchor="true"] button') as HTMLButtonElement;
+  const seriesSeasonBtn = seriesModalScope.querySelector('button[data-season-dropdown-trigger="true"]') as HTMLButtonElement;
+  const seriesBackBtn = seriesModalScope.querySelector('button[data-details-close="true"]') as HTMLButtonElement;
   assert(seriesDetailsScroll, 'SeriesDetails deve possuir container rolável com data-scroll-container="true"');
+  assert(seriesPrimaryBtn, 'Botão principal Assistir/Continuar em SeriesDetails deve existir no Hero');
+  assert(seriesFavBtn, 'Botão circular Favoritar em SeriesDetails deve existir no Hero');
   assert(seriesSynopsisEl, 'Sinopse da série deve ser uma região focável com aria-label="Sinopse da série"');
-  assert(seriesFavBtn, 'Botão Favoritar em SeriesDetails deve existir como bloco abaixo da sinopse');
+  assert(seriesSeasonBtn, 'Seletor de temporada (data-season-dropdown-trigger="true") deve existir abaixo da sinopse');
   assert(
     !seriesSynopsisEl.className.includes('line-clamp'),
     'A sinopse em SeriesDetails NÃO deve ter truncamento permanente line-clamp-3'
@@ -3621,7 +3625,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   // Simular que o container externo também rolou parcialmente
   seriesDetailsScroll.scrollTop = 140;
 
-  // 4º ArrowDown (já no limite 350): passa o foco para o botão Adicionar aos Favoritos SEM resetar scrollTop para 0
+  // 4º ArrowDown (já no limite 350): passa o foco para o seletor de temporada abaixo da sinopse SEM resetar scrollTop para 0
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
@@ -3629,12 +3633,12 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
   assertSameElement(
     document.activeElement,
-    seriesFavBtn,
-    'Após chegar ao fim da sinopse da série, o próximo ArrowDown deve mover o foco para o botão Favoritar'
+    seriesSeasonBtn,
+    'Após chegar ao fim da sinopse da série, o próximo ArrowDown deve mover o foco para o seletor de temporada'
   );
   assert(
     seriesDetailsScroll.scrollTop >= 140,
-    `Mover o foco da sinopse para Favoritar NÃO deve resetar seriesDetailsScroll.scrollTop para 0 prematuramente (atual: ${seriesDetailsScroll.scrollTop})`
+    `Mover o foco da sinopse para o seletor de temporada NÃO deve resetar seriesDetailsScroll.scrollTop para 0 prematuramente (atual: ${seriesDetailsScroll.scrollTop})`
   );
 
   // Subir de volta para a sinopse e testar subida gradual com ArrowUp (350 -> 230 -> 110 -> 0)
@@ -3667,7 +3671,17 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(document.activeElement, seriesSynopsisEl, '3º ArrowUp ao atingir o topo 0 ainda mantém foco na sinopse');
   assert.strictEqual(seriesSynopsisEl.scrollTop, 0, '3º ArrowUp deve atingir scrollTop = 0');
 
-  // 4º ArrowUp (já em scrollTop === 0): entrega o foco para o botão Voltar no cabeçalho
+  // 4º ArrowUp (já em scrollTop === 0): entrega o foco para o botão principal Assistir no Hero e mais um ArrowUp alcança o botão Fechar (X)
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+    );
+  });
+  assertSameElement(
+    document.activeElement,
+    seriesPrimaryBtn,
+    'Quando scrollTop da sinopse chega a 0, o próximo ArrowUp deve mover o foco para a ação principal no Hero'
+  );
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
@@ -3676,7 +3690,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     seriesBackBtn,
-    'Quando scrollTop da sinopse chega a 0, o próximo ArrowUp deve mover o foco para o botão Voltar no topo'
+    'ArrowUp a partir da ação principal do Hero deve mover o foco para o botão Fechar (X) no topo'
   );
 
   // Navegar até a lista de episódios abaixo e simular rolagem para baixo
@@ -3688,12 +3702,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
   seriesDetailsScroll.scrollTop = 420;
 
-  // Subir com ArrowUp desde o primeiro episódio: deve passar pela temporada, favoritar e chegar à sinopse zerando scrollTop = 0
-  await act(async () => {
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
-    );
-  });
+  // Subir com ArrowUp desde o primeiro episódio: deve passar pelo seletor de temporada, sinopse e chegar à ação principal do Hero zerando scrollTop = 0
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
@@ -3708,7 +3717,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     seriesSynopsisEl,
-    'Subir com ArrowUp em SeriesDetails a partir dos episódios deve focar a sinopse no topo'
+    'Subir com ArrowUp em SeriesDetails a partir dos episódios deve passar pelo seletor de temporada e focar a sinopse'
   );
   assert.strictEqual(
     seriesDetailsScroll.scrollTop,
@@ -26400,6 +26409,987 @@ if (args[0] === 'add' && args[1] === 'android') {
             console.log(
               '✅ [12.26-a] Etapa 3.1 (Reformulação dos Detalhes de Filmes + DetailsModalShell) validada com sucesso nos 18 cenários!'
             );
+
+            // =================================================================
+            // [12.26-b] ETAPA 3.2 — REFORMULAÇÃO DOS DETALHES DE SÉRIES E EPISÓDIOS
+            // =================================================================
+            const savedGetSeriesInfo1226b = (XtreamService as any).getSeriesInfo;
+            try {
+              const s1226Series = [
+                {
+                  series_id: 920001,
+                  name: 'Stranger Things',
+                  category_id: 'cat_series_scifi_1226',
+                  category_name: 'Séries de ficção científica',
+                  year: '2025',
+                  rating: '8.9',
+                  cover: 'http://stage2-1225g.local:8080/stranger_cover.jpg',
+                },
+                {
+                  series_id: 920002,
+                  name: 'Série Sem Episódios',
+                  category_id: 'cat_series_vazia_1226',
+                  category_name: 'Séries Raras',
+                  year: '2021',
+                  rating: '0',
+                  cover: '',
+                },
+              ];
+
+              let seriesInfoShouldFail = false;
+              let getSeriesInfoCallsCount = 0;
+
+              (XtreamService as any).getSeriesCategories = async () => [
+                {
+                  category_id: 'cat_series_scifi_1226',
+                  category_name: 'Séries de ficção científica',
+                },
+                { category_id: 'cat_series_vazia_1226', category_name: 'Séries Raras' },
+              ];
+              (XtreamService as any).getSeries = async () => s1226Series;
+              (XtreamService as any).getSeriesInfo = async (_c: any, sId: any) => {
+                getSeriesInfoCallsCount++;
+                if (seriesInfoShouldFail) {
+                  throw new Error('Falha simulada de rede em getSeriesInfo');
+                }
+                const idNum = Number(sId);
+                if (idNum === 920001) {
+                  // Temporadas propositalmente fora de ordem lexicográfica: "1", "10", "11", "2", "3"
+                  return {
+                    info: {
+                      name: 'Stranger Things',
+                      plot: 'Quando um garoto desaparece, a cidade toda participa nas buscas. Mas o que encontram são segredos, forças sobrenaturais e uma menina.',
+                      director: 'The Duffer Brothers',
+                      cast: 'Winona Ryder, David Harbour, Millie Bobby Brown, Finn Wolfhard',
+                      genre: 'Séries dramáticas, Séries de ficção científica, Séries teen',
+                      releasedate: '2025-07-15',
+                      rating: '8.9',
+                      backdrop_path: ['http://stage2-1225g.local:8080/stranger_backdrop.jpg'],
+                      cover: 'http://stage2-1225g.local:8080/stranger_cover.jpg',
+                    },
+                    episodes: {
+                      '1': [
+                        {
+                          id: 920101,
+                          episode_num: 1,
+                          title: 'Capítulo um: O desaparecimento de Will Byers',
+                          container_extension: 'mp4',
+                          info: {
+                            duration: '00:49:00',
+                            plot: 'No caminho de volta para casa, Will é aterrorizado por alguma coisa. Não longe dali, um laboratório secreto guarda um segredo sinistro.',
+                            movie_image: 'http://stage2-1225g.local:8080/st_s1e1.jpg',
+                          },
+                        },
+                        {
+                          id: 920102,
+                          episode_num: 2,
+                          title: 'Capítulo dois: A estranha da Maple Street',
+                          container_extension: 'mp4',
+                          info: {
+                            duration: '56',
+                            plot: 'Lucas, Mike e Dustin tentam conversar com a menina que encontram. Hopper tem perguntas para uma Joyce extremamente ansiosa.',
+                            movie_image: 'http://stage2-1225g.local:8080/st_s1e2.jpg',
+                          },
+                        },
+                        {
+                          id: 920103,
+                          episode_num: 3,
+                          title: 'Capítulo três: Caramba',
+                          container_extension: 'mp4',
+                          info: {
+                            duration_secs: 3120, // 52min
+                            // Sem plot individual e sem movie_image para testar omissão limpa de sinopse e fallback de thumbnail
+                          },
+                        },
+                      ],
+                      '10': [
+                        {
+                          id: 921001,
+                          episode_num: 1,
+                          title: 'Episódio Especial 10.1',
+                          container_extension: 'mp4',
+                          info: { duration: '01:05:00' },
+                        },
+                      ],
+                      '11': [
+                        {
+                          id: 921101,
+                          episode_num: 1,
+                          title: 'Episódio Especial 11.1',
+                          container_extension: 'mp4',
+                          info: { duration: '01:10:00' },
+                        },
+                      ],
+                      '2': [
+                        {
+                          id: 920201,
+                          episode_num: 1,
+                          title: 'Capítulo um: MADMAX',
+                          container_extension: 'mp4',
+                          info: {
+                            duration: '00:48:00',
+                            plot: 'Enquanto a cidade se prepara para o Halloween, um rival faz pontuação alta no fliperama e Hopper inspeciona um campo de abóboras apodrecidas.',
+                            movie_image: 'http://stage2-1225g.local:8080/st_s2e1.jpg',
+                          },
+                        },
+                        {
+                          id: 920202,
+                          episode_num: 2,
+                          title: 'Capítulo dois: Gostouas ou travessuras, aberração',
+                          container_extension: 'mp4',
+                          info: {
+                            duration: '00:56:00',
+                            plot: 'Depois que Will vê algo terrível na noite de gostosuras ou travessuras, Mike se pergunta se Eleven ainda está por aí.',
+                          },
+                        },
+                      ],
+                      '3': [
+                        {
+                          id: 920301,
+                          episode_num: 1,
+                          title: 'Capítulo um: Está me ouvindo, Suzie?',
+                          container_extension: 'mp4',
+                          info: { duration: '00:50:00' },
+                        },
+                      ],
+                    },
+                  };
+                }
+                if (idNum === 920002) {
+                  // Série sem backdrop, sem capa, sem elenco, sem direção, rating '0' e sem episódios
+                  return {
+                    info: {
+                      name: 'Série Sem Episódios',
+                      plot: 'Uma minissérie anunciada que ainda não possui episódios publicados.',
+                      rating: '0',
+                      backdrop_path: [],
+                      cover: '',
+                    },
+                    episodes: {},
+                  };
+                }
+                return {
+                  info: { name: `Série #${idNum}`, plot: 'Sinopse teste' },
+                  episodes: {},
+                };
+              };
+
+              // Re-montar a aplicação limpa para o cenário 12.26-b
+              await act(async () => {
+                stage1Root.render(React.createElement('div', null));
+              });
+              await act(async () => {
+                stage1Root.render(
+                  React.createElement(
+                    MemoryRouter,
+                    { initialEntries: ['/home'] },
+                    React.createElement(
+                      Stage1NavProvider,
+                      null,
+                      React.createElement(RealHomeApp)
+                    )
+                  )
+                );
+                await new Promise((r) => setTimeout(r, 80));
+              });
+
+              // ---------------------------------------------------------------
+              // 1) Abrir SeriesDetails a partir de Início (vitrine) e validar DetailsModalShell (modalType="series")
+              // ---------------------------------------------------------------
+              const inicioMain1226b = getActiveMainScroll();
+              inicioMain1226b.scrollTop = 210;
+              const inicioSeriesCard = stage1Container.querySelector<HTMLElement>(
+                '[data-showcase-row-key="featured_series"] [data-nav-item="true"]'
+              )!;
+              assert(
+                inicioSeriesCard !== null,
+                '[12.26-b] Cartão de série em Séries em Destaque no Início deve existir'
+              );
+              await act(async () => {
+                inicioSeriesCard.focus();
+                inicioSeriesCard.click();
+                await new Promise((r) => setTimeout(r, 50));
+              });
+
+              const seriesBackdropEl = document.querySelector<HTMLElement>(
+                '[data-details-backdrop="true"][data-details-modal="series"][data-focus-scope="modal"]'
+              )!;
+              const seriesDialogEl = document.querySelector<HTMLElement>(
+                '[data-details-dialog="true"]'
+              )!;
+              assert(
+                seriesBackdropEl !== null && seriesDialogEl !== null,
+                '[12.26-b] SeriesDetails deve abrir dentro do DetailsModalShell com data-details-modal="series"'
+              );
+              assert.strictEqual(
+                seriesBackdropEl.getAttribute('role'),
+                'dialog',
+                '[12.26-b] Modal de série deve expor role="dialog"'
+              );
+              assert.strictEqual(
+                seriesBackdropEl.getAttribute('aria-modal'),
+                'true',
+                '[12.26-b] Modal de série deve expor aria-modal="true"'
+              );
+              assert.strictEqual(
+                document.querySelectorAll('.z-\\[60\\]').length,
+                0,
+                '[12.26-b] O antigo container fullscreen .z-[60] de SeriesDetails não deve mais existir'
+              );
+              assert(
+                stage1Container.querySelector('main[data-scroll-container="true"]') !== null,
+                '[12.26-b] A tela de fundo (main) deve permanecer montada sob o backdrop do modal de série'
+              );
+
+              // Fechar pelo botão circular X no topo direito e verificar restauração de foco e scrollTop=210 no Início
+              const seriesCloseXBtn = seriesBackdropEl.querySelector<HTMLButtonElement>(
+                'button[data-details-close="true"]'
+              )!;
+              assert(
+                seriesCloseXBtn !== null,
+                '[12.26-b] Botão circular X (data-details-close="true") deve existir no topo direito do modal de série'
+              );
+              await act(async () => {
+                seriesCloseXBtn.click();
+                await new Promise((r) => setTimeout(r, 40));
+              });
+              assert.strictEqual(
+                document.querySelector('[data-details-dialog="true"]'),
+                null,
+                '[12.26-b] Clicar no botão X deve fechar SeriesDetails'
+              );
+              assert.strictEqual(
+                getActiveMainScroll().scrollTop,
+                210,
+                '[12.26-b] Fechar SeriesDetails pelo botão X no Início deve preservar scrollTop=210'
+              );
+              assertSameElement(
+                document.activeElement,
+                inicioSeriesCard,
+                '[12.26-b] Fechar SeriesDetails pelo botão X no Início deve restaurar foco ao cartão da série'
+              );
+
+              // ---------------------------------------------------------------
+              // 2) Abrir SeriesDetails pela vitrine de Séries e validar Hero, 2 Colunas,
+              //    Seletor de Temporada (ordenação numérica 1, 2, 3, 10, 11), Episódios enriquecidos,
+              //    Seção Sobre [nome da série] e ausência de metadados fabricados
+              // ---------------------------------------------------------------
+              const navSeriesBtn = stage1Container.querySelector<HTMLButtonElement>(
+                'button[data-header-nav-id="series"]'
+              )!;
+              await act(async () => {
+                navSeriesBtn.focus();
+                navSeriesBtn.click();
+                await new Promise((r) => setTimeout(r, 50));
+              });
+
+              const seriesShowcaseMain = getActiveMainScroll();
+              seriesShowcaseMain.scrollTop = 165;
+              const strangerCard = Array.from(
+                stage1Container.querySelectorAll<HTMLElement>('[data-showcase-card="true"]')
+              ).find((el) => el.getAttribute('aria-label') === 'Stranger Things')!;
+              assert(
+                strangerCard !== null,
+                '[12.26-b] Cartão "Stranger Things" deve estar montado na vitrine de Séries'
+              );
+
+              getSeriesInfoCallsCount = 0;
+              await act(async () => {
+                strangerCard.focus();
+                strangerCard.click();
+                await new Promise((r) => setTimeout(r, 50));
+              });
+              assert.strictEqual(
+                getSeriesInfoCallsCount,
+                1,
+                '[12.26-b] Abrir SeriesDetails deve chamar getSeriesInfo exatamente 1 vez'
+              );
+
+              const stDialog = document.querySelector<HTMLElement>('[data-details-dialog="true"]')!;
+              const stScrollEl = stDialog.querySelector<HTMLElement>(
+                '[data-scroll-container="true"]'
+              )!;
+              const stHeroEl = stDialog.querySelector<HTMLElement>(
+                '[data-series-hero-region="true"]'
+              )!;
+              const stPrimaryCta = stDialog.querySelector<HTMLButtonElement>(
+                'button[data-series-primary-cta="true"]'
+              )!;
+              const stFavBtn = stDialog.querySelector<HTMLButtonElement>(
+                'button[data-series-favorite-btn="true"]'
+              )!;
+
+              assert(
+                stHeroEl !== null && stPrimaryCta !== null && stFavBtn !== null,
+                '[12.26-b] Hero de SeriesDetails deve conter título, botão principal contextual e botão circular Favoritar'
+              );
+              assertSameElement(
+                document.activeElement,
+                stPrimaryCta,
+                '[12.26-b] Ao abrir SeriesDetails em modo controle remoto, o foco inicial deve ir para o botão principal do Hero'
+              );
+              assert(
+                stPrimaryCta.textContent?.includes('Assistir T1:E1'),
+                `[12.26-b] Sem histórico prévio, o botão principal do Hero deve exibir "Assistir T1:E1". Obteve: "${stPrimaryCta.textContent}"`
+              );
+
+              // Validar linha de metadados reais e ausência de selos inventados
+              const stMetaLine = stDialog.querySelector<HTMLElement>(
+                '[data-series-meta-line="true"]'
+              )!;
+              assert(
+                stMetaLine !== null &&
+                  stMetaLine.textContent?.includes('2025') &&
+                  stMetaLine.textContent?.includes('5 temporadas') &&
+                  stMetaLine.textContent?.includes('★ 8.9'),
+                `[12.26-b] Linha de metadados deve exibir ano (2025), contagem real (5 temporadas) e nota (★ 8.9). Obteve: "${stMetaLine?.textContent}"`
+              );
+              const fullSeriesModalText = stDialog.textContent || '';
+              assert(
+                !fullSeriesModalText.includes('% Relevância') &&
+                  !fullSeriesModalText.includes('Áudio Espacial') &&
+                  !fullSeriesModalText.includes('Não recomendado para menores'),
+                '[12.26-b] SeriesDetails NUNCA deve exibir selos fabricados (% Relevância, Áudio Espacial, classificação etária falsa)'
+              );
+
+              // Validar coluna direita (Elenco, Gêneros, Direção) e seção inferior Sobre Stranger Things
+              const stSideCredits = stDialog.querySelector<HTMLElement>(
+                '[data-series-side-credits="true"]'
+              )!;
+              assert(
+                stSideCredits !== null &&
+                  stSideCredits.textContent?.includes('Winona Ryder') &&
+                  stSideCredits.textContent?.includes('Séries de ficção científica') &&
+                  stSideCredits.textContent?.includes('The Duffer Brothers'),
+                '[12.26-b] Coluna lateral direita deve exibir Elenco, Gêneros e Direção reais'
+              );
+              const stAboutSection = stDialog.querySelector<HTMLElement>(
+                '[data-about-series-section="true"]'
+              )!;
+              assert(
+                stAboutSection !== null &&
+                  stAboutSection.textContent?.includes('Sobre Stranger Things') &&
+                  stAboutSection.textContent?.includes('The Duffer Brothers') &&
+                  stAboutSection.textContent?.includes('5 temporadas'),
+                '[12.26-b] Seção inferior "Sobre Stranger Things" deve apresentar a ficha técnica consolidada'
+              );
+
+              // ---------------------------------------------------------------
+              // 3) Validar cartões de episódios enriquecidos (número, miniatura 16:9, título, duração e sinopse)
+              // ---------------------------------------------------------------
+              const s1EpisodeCards = Array.from(
+                stDialog.querySelectorAll<HTMLElement>('[data-nav-zone="episodes"] [data-episode-id]')
+              );
+              assert.strictEqual(
+                s1EpisodeCards.length,
+                3,
+                '[12.26-b] Temporada 1 deve renderizar seus 3 cartões de episódios'
+              );
+              assert.strictEqual(
+                s1EpisodeCards[0].querySelector('[data-episode-number="true"]')?.textContent?.trim(),
+                '1',
+                '[12.26-b] 1º episódio deve exibir número 1 à esquerda'
+              );
+              assert(
+                s1EpisodeCards[0].querySelector('[data-episode-thumbnail="true"]') !== null,
+                '[12.26-b] Episódio deve exibir miniatura horizontal 16:9'
+              );
+              assert.strictEqual(
+                s1EpisodeCards[0].querySelector('[data-episode-title="true"]')?.textContent?.trim(),
+                'Capítulo um: O desaparecimento de Will Byers',
+                '[12.26-b] 1º episódio deve exibir título completo'
+              );
+              assert.strictEqual(
+                s1EpisodeCards[0].querySelector('[data-episode-duration="true"]')?.textContent?.trim(),
+                '49min',
+                '[12.26-b] 1º episódio deve exibir duração formatada "49min"'
+              );
+              assert(
+                s1EpisodeCards[0]
+                  .querySelector('[data-episode-synopsis="true"]')
+                  ?.textContent?.includes('laboratório secreto guarda um segredo sinistro'),
+                '[12.26-b] 1º episódio deve exibir sua sinopse individual real'
+              );
+              // O 3º episódio tem duration_secs=3120 (52min) e não tem plot individual
+              assert.strictEqual(
+                s1EpisodeCards[2].querySelector('[data-episode-duration="true"]')?.textContent?.trim(),
+                '52min',
+                '[12.26-b] 3º episódio (duration_secs=3120) deve exibir duração "52min"'
+              );
+              assert.strictEqual(
+                s1EpisodeCards[2].querySelector('[data-episode-synopsis="true"]'),
+                null,
+                '[12.26-b] Episódio sem sinopse individual deve omitir o parágrafo de sinopse sem inventar texto'
+              );
+
+              // ---------------------------------------------------------------
+              // 4) Validar Seletor de Temporada Dropdown:
+              //    - Ordenação numérica ("1", "2", "3", "10", "11") com contagem de episódios
+              //    - Navegação por ArrowDown / ArrowUp dentro do menu aberto
+              //    - Escape fecha APENAS o dropdown e devolve foco ao botão seletor
+              //    - Seleção de temporada troca os episódios sem nova chamada a getSeriesInfo e sem zerar scrollTop
+              // ---------------------------------------------------------------
+              const seasonTriggerBtn = stDialog.querySelector<HTMLButtonElement>(
+                'button[data-season-dropdown-trigger="true"]'
+              )!;
+              assert.strictEqual(
+                seasonTriggerBtn.getAttribute('aria-expanded'),
+                'false',
+                '[12.26-b] Dropdown de temporadas deve iniciar fechado (aria-expanded="false")'
+              );
+              assert(
+                seasonTriggerBtn.textContent?.includes('Temporada 1'),
+                '[12.26-b] Botão seletor deve iniciar exibindo "Temporada 1"'
+              );
+
+              // Abrir dropdown de temporadas
+              await act(async () => {
+                seasonTriggerBtn.focus();
+                seasonTriggerBtn.click();
+                await new Promise((r) => setTimeout(r, 30));
+              });
+              assert.strictEqual(
+                seasonTriggerBtn.getAttribute('aria-expanded'),
+                'true',
+                '[12.26-b] Clicar no seletor deve abrir o menu dropdown (aria-expanded="true")'
+              );
+
+              const seasonMenuEl = stDialog.querySelector<HTMLElement>(
+                '[data-season-dropdown-menu="true"]'
+              )!;
+              assert(seasonMenuEl !== null, '[12.26-b] Menu listbox de temporadas deve estar montado');
+              const seasonOptions = Array.from(
+                seasonMenuEl.querySelectorAll<HTMLButtonElement>('button[data-season-option]')
+              );
+              assert.deepStrictEqual(
+                seasonOptions.map((o) => o.getAttribute('data-season-option')),
+                ['1', '2', '3', '10', '11'],
+                '[12.26-b] Temporadas numéricas devem ser ordenadas numericamente (1, 2, 3, 10, 11) e nunca lexicograficamente (1, 10, 11, 2, 3)'
+              );
+              assert(
+                seasonOptions[0].textContent?.includes('Temporada 1') &&
+                  seasonOptions[0].textContent?.includes('(3 episódios)') &&
+                  seasonOptions[1].textContent?.includes('Temporada 2') &&
+                  seasonOptions[1].textContent?.includes('(2 episódios)') &&
+                  seasonOptions[2].textContent?.includes('Temporada 3') &&
+                  seasonOptions[2].textContent?.includes('(1 episódio)'),
+                '[12.26-b] Opções do dropdown devem exibir a contagem exata de episódios no singular/plural'
+              );
+
+              // Navegar com ArrowDown e ArrowUp dentro do menu dropdown aberto
+              assertSameElement(
+                document.activeElement,
+                seasonOptions[0],
+                '[12.26-b] Ao abrir o dropdown, o foco deve posicionar-se na temporada ativa (Temporada 1)'
+              );
+              await stepSearchDpadKey('ArrowDown');
+              assertSameElement(
+                document.activeElement,
+                seasonOptions[1],
+                '[12.26-b] ArrowDown dentro do dropdown de temporadas deve focar Temporada 2'
+              );
+              await stepSearchDpadKey('ArrowUp');
+              assertSameElement(
+                document.activeElement,
+                seasonOptions[0],
+                '[12.26-b] ArrowUp dentro do dropdown de temporadas deve retornar para Temporada 1'
+              );
+
+              // Pressionar Escape com o dropdown aberto -> deve fechar APENAS o dropdown e restaurar foco ao gatilho
+              await act(async () => {
+                windowInstance.dispatchEvent(
+                  new (windowInstance as any).KeyboardEvent('keydown', {
+                    key: 'Escape',
+                    bubbles: true,
+                    cancelable: true,
+                  })
+                );
+                await new Promise((r) => setTimeout(r, 30));
+              });
+              assert.strictEqual(
+                stDialog.querySelector('[data-season-dropdown-menu="true"]'),
+                null,
+                '[12.26-b] Escape com dropdown aberto deve fechar o menu de temporadas'
+              );
+              assert(
+                document.querySelector('[data-details-dialog="true"]') !== null,
+                '[12.26-b] Escape com dropdown aberto NÃO deve fechar SeriesDetails'
+              );
+              assertSameElement(
+                document.activeElement,
+                seasonTriggerBtn,
+                '[12.26-b] Fechar o dropdown com Escape deve devolver o foco ao botão seletor de temporada'
+              );
+
+              // Abrir novamente e selecionar Temporada 2 com scrollTop=280
+              stScrollEl.scrollTop = 280;
+              await act(async () => {
+                seasonTriggerBtn.click();
+                await new Promise((r) => setTimeout(r, 20));
+              });
+              const s2OptionBtn = stDialog.querySelector<HTMLButtonElement>(
+                'button[data-season-option="2"]'
+              )!;
+              await act(async () => {
+                s2OptionBtn.click();
+                await new Promise((r) => setTimeout(r, 30));
+              });
+              assert.strictEqual(
+                getSeriesInfoCallsCount,
+                1,
+                '[12.26-b] Trocar de temporada NÃO deve disparar nova chamada de rede a getSeriesInfo'
+              );
+              assert.strictEqual(
+                stScrollEl.scrollTop,
+                280,
+                '[12.26-b] Trocar de temporada NÃO deve resetar scrollTop do modal para 0'
+              );
+              assert(
+                seasonTriggerBtn.textContent?.includes('Temporada 2'),
+                '[12.26-b] Botão seletor deve atualizar para "Temporada 2"'
+              );
+              const s2EpisodeCards = Array.from(
+                stDialog.querySelectorAll<HTMLElement>('[data-nav-zone="episodes"] [data-episode-id]')
+              );
+              assert.strictEqual(
+                s2EpisodeCards.length,
+                2,
+                '[12.26-b] Lista de episódios deve atualizar para os 2 episódios da Temporada 2'
+              );
+              assert(
+                s2EpisodeCards[0].textContent?.includes('Capítulo um: MADMAX'),
+                '[12.26-b] 1º episódio da Temporada 2 deve ser "Capítulo um: MADMAX"'
+              );
+
+              // Voltar para a Temporada 1 para testar navegação D-Pad completa e reprodução
+              await act(async () => {
+                seasonTriggerBtn.click();
+                await new Promise((r) => setTimeout(r, 20));
+              });
+              const s1OptionBtn = stDialog.querySelector<HTMLButtonElement>(
+                'button[data-season-option="1"]'
+              )!;
+              await act(async () => {
+                s1OptionBtn.click();
+                await new Promise((r) => setTimeout(r, 30));
+              });
+
+              // ---------------------------------------------------------------
+              // 5) Validar navegação D-Pad vertical/horizontal entre zonas do SeriesDetails
+              // ---------------------------------------------------------------
+              await act(async () => {
+                stPrimaryCta.focus();
+              });
+              await stepSearchDpadKey('ArrowRight');
+              assertSameElement(
+                document.activeElement,
+                stFavBtn,
+                '[12.26-b] ArrowRight a partir da ação principal do Hero deve focar o botão circular Favoritar'
+              );
+              await stepSearchDpadKey('ArrowLeft');
+              assertSameElement(
+                document.activeElement,
+                stPrimaryCta,
+                '[12.26-b] ArrowLeft a partir de Favoritar deve retornar à ação principal do Hero'
+              );
+              await stepSearchDpadKey('ArrowUp');
+              assertSameElement(
+                document.activeElement,
+                stDialog.querySelector('button[data-details-close="true"]'),
+                '[12.26-b] ArrowUp a partir do Hero deve alcançar o botão X no topo direito'
+              );
+              await stepSearchDpadKey('ArrowDown');
+              assertSameElement(
+                document.activeElement,
+                stPrimaryCta,
+                '[12.26-b] ArrowDown a partir do botão X deve retornar à ação principal do Hero'
+              );
+              await stepSearchDpadKey('ArrowDown');
+              const stSynopsisEl = stDialog.querySelector<HTMLElement>(
+                '[data-synopsis-focus="true"]'
+              )!;
+              assertSameElement(
+                document.activeElement,
+                stSynopsisEl,
+                '[12.26-b] ArrowDown a partir do Hero deve focar a sinopse da série'
+              );
+              await stepSearchDpadKey('ArrowDown');
+              assertSameElement(
+                document.activeElement,
+                seasonTriggerBtn,
+                '[12.26-b] ArrowDown a partir da sinopse deve focar o botão seletor de temporada'
+              );
+
+              const currentS1Cards = Array.from(
+                stDialog.querySelectorAll<HTMLElement>('[data-nav-zone="episodes"] [data-episode-id]')
+              );
+              await stepSearchDpadKey('ArrowDown');
+              assertSameElement(
+                document.activeElement,
+                currentS1Cards[0],
+                '[12.26-b] ArrowDown a partir do seletor de temporada deve focar o 1º episódio'
+              );
+              await stepSearchDpadKey('ArrowDown');
+              assertSameElement(
+                document.activeElement,
+                currentS1Cards[1],
+                '[12.26-b] ArrowDown no 1º episódio deve focar o 2º episódio'
+              );
+              await stepSearchDpadKey('ArrowDown');
+              assertSameElement(
+                document.activeElement,
+                currentS1Cards[2],
+                '[12.26-b] ArrowDown no 2º episódio deve focar o 3º episódio'
+              );
+              await stepSearchDpadKey('ArrowDown');
+              const stAboutFocusEl = stDialog.querySelector<HTMLElement>(
+                '[data-about-series-focus="true"]'
+              )!;
+              assertSameElement(
+                document.activeElement,
+                stAboutFocusEl,
+                '[12.26-b] ArrowDown no último episódio deve alcançar a seção inferior "Sobre Stranger Things"'
+              );
+
+              // ---------------------------------------------------------------
+              // 6) Reprodução de episódio (VideoPlayer), próximo/anterior episódio e retorno com foco/scroll preservados
+              // ---------------------------------------------------------------
+              stScrollEl.scrollTop = 310;
+              await act(async () => {
+                currentS1Cards[0].focus();
+                currentS1Cards[0].click();
+                await new Promise((r) => setTimeout(r, 50));
+              });
+              const playerEl = document.querySelector<HTMLElement>(
+                '[data-player-container="true"][data-focus-scope="modal"]'
+              )!;
+              assert(
+                playerEl !== null,
+                '[12.26-b] Clicar em um episódio sem progresso prévio deve abrir o VideoPlayer imediatamente'
+              );
+              assert(
+                playerEl.textContent?.includes('Stranger Things - S1E1'),
+                '[12.26-b] VideoPlayer deve exibir o título "Stranger Things - S1E1"'
+              );
+
+              // Testar botão "Próximo Episódio" dentro do VideoPlayer
+              const nextEpBtn = Array.from(playerEl.querySelectorAll<HTMLButtonElement>('button')).find(
+                (b) =>
+                  b.getAttribute('aria-label')?.toLowerCase().includes('próximo') ||
+                  b.getAttribute('title')?.toLowerCase().includes('próximo')
+              );
+              if (nextEpBtn) {
+                await act(async () => {
+                  nextEpBtn.click();
+                  await new Promise((r) => setTimeout(r, 40));
+                });
+                assert(
+                  document
+                    .querySelector('[data-player-container="true"]')
+                    ?.textContent?.includes('Stranger Things - S1E2'),
+                  '[12.26-b] Acionar Próximo Episódio no VideoPlayer deve avançar para S1E2'
+                );
+              }
+
+              // Fechar VideoPlayer com Escape -> deve manter SeriesDetails aberto e restaurar foco ao episódio e scrollTop
+              await act(async () => {
+                windowInstance.dispatchEvent(
+                  new (windowInstance as any).KeyboardEvent('keydown', {
+                    key: 'Escape',
+                    bubbles: true,
+                    cancelable: true,
+                  })
+                );
+              });
+              await waitForCondition(
+                () => document.querySelector('[data-player-container="true"]') === null,
+                1200,
+                '[12.26-b] Desmontagem do VideoPlayer após Escape'
+              );
+              assert(
+                document.querySelector('[data-details-dialog="true"]') !== null,
+                '[12.26-b] Sair do VideoPlayer NÃO deve fechar SeriesDetails'
+              );
+
+              // ---------------------------------------------------------------
+              // 7) Progresso salvo em episódio (>30s):
+              //    - Barra de progresso no episódio e no Hero ("Continuar T1:E2")
+              //    - Submodal "Continuar Assistindo?" (Escape fecha só o submodal)
+              // ---------------------------------------------------------------
+              recordPlaybackPosition(cycleGSearchCreds as any, {
+                id: 920102,
+                type: 'episode',
+                parentSeriesId: 920001,
+                positionSec: 1680, // 28 min
+              });
+
+              // Forçar re-render ou reabrir para verificar estado contextual reativo
+              await act(async () => {
+                await new Promise((r) => setTimeout(r, 30));
+              });
+
+              const updatedCtaText = stPrimaryCta.textContent || '';
+              assert(
+                updatedCtaText.includes('Continuar T1:E2'),
+                `[12.26-b] Com progresso > 30s no episódio 2 da T1, o botão principal do Hero deve exibir "Continuar T1:E2". Obteve: "${updatedCtaText}"`
+              );
+              assert(
+                stDialog.querySelector('[data-series-progress-bar="true"]') !== null,
+                '[12.26-b] Hero deve exibir barra de progresso do episódio em andamento'
+              );
+              const ep2CardAfterProgress = stDialog.querySelector<HTMLElement>(
+                '[data-episode-id="920102"]'
+              )!;
+              assert(
+                ep2CardAfterProgress.querySelector('[data-episode-progress-bar="true"]') !== null,
+                '[12.26-b] Miniatura do episódio 2 deve exibir barra de progresso vermelha na base'
+              );
+
+              // Clicar no episódio 2 (com progresso > 30s) -> deve abrir submodal "Continuar Assistindo?"
+              await act(async () => {
+                ep2CardAfterProgress.click();
+                await new Promise((r) => setTimeout(r, 30));
+              });
+              const epResumeModal = stDialog.querySelector<HTMLElement>(
+                '[data-resume-modal="true"]'
+              )!;
+              assert(
+                epResumeModal !== null &&
+                  epResumeModal.textContent?.includes('Continuar Assistindo?') &&
+                  epResumeModal.textContent?.includes('Retomar de 28 min'),
+                '[12.26-b] Clicar em episódio com progresso > 30s deve abrir o submodal "Continuar Assistindo?" com "Retomar de 28 min"'
+              );
+
+              // Escape fecha apenas o submodal de retomada
+              await act(async () => {
+                windowInstance.dispatchEvent(
+                  new (windowInstance as any).KeyboardEvent('keydown', {
+                    key: 'Escape',
+                    bubbles: true,
+                    cancelable: true,
+                  })
+                );
+                await new Promise((r) => setTimeout(r, 30));
+              });
+              assert.strictEqual(
+                stDialog.querySelector('[data-resume-modal="true"]'),
+                null,
+                '[12.26-b] 1º Escape deve fechar apenas o submodal "Continuar Assistindo?"'
+              );
+              assert(
+                document.querySelector('[data-details-dialog="true"]') !== null,
+                '[12.26-b] 1º Escape no submodal NÃO deve fechar SeriesDetails'
+              );
+
+              // Favoritar a série no Hero
+              await act(async () => {
+                stFavBtn.click();
+              });
+              assert.strictEqual(
+                stFavBtn.getAttribute('title'),
+                'Remover dos Favoritos',
+                '[12.26-b] Clicar no botão Favoritar do Hero deve adicionar a série aos favoritos'
+              );
+
+              // Fechar SeriesDetails clicando no backdrop externo e verificar preservação de scrollTop=165 e foco no cartão
+              const currentSeriesBackdrop = document.querySelector<HTMLElement>(
+                '[data-details-backdrop="true"]'
+              )!;
+              await act(async () => {
+                currentSeriesBackdrop.dispatchEvent(
+                  new (windowInstance as any).MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                  })
+                );
+                await new Promise((r) => setTimeout(r, 40));
+              });
+              assert.strictEqual(
+                document.querySelector('[data-details-dialog="true"]'),
+                null,
+                '[12.26-b] Clicar no backdrop externo deve fechar SeriesDetails'
+              );
+              assert.strictEqual(
+                getActiveMainScroll().scrollTop,
+                165,
+                '[12.26-b] Fechar SeriesDetails pelo backdrop deve preservar scrollTop=165 da vitrine de Séries'
+              );
+              assertSameElement(
+                document.activeElement,
+                strangerCard,
+                '[12.26-b] Fechar SeriesDetails pelo backdrop deve restaurar o foco ao cartão original da série'
+              );
+
+              // ---------------------------------------------------------------
+              // 8) Abrir SeriesDetails a partir de Favoritos e a partir da Pesquisa
+              // ---------------------------------------------------------------
+              const favHeaderBtn = stage1Container.querySelector<HTMLButtonElement>(
+                'button[data-header-nav-id="favorites"]'
+              )!;
+              await act(async () => {
+                favHeaderBtn.focus();
+                favHeaderBtn.click();
+                await new Promise((r) => setTimeout(r, 80));
+              });
+              await waitForCondition(
+                () =>
+                  stage1Container.querySelector(
+                    '[data-nav-item="true"][aria-label="Stranger Things"]'
+                  ) !== null,
+                1200,
+                '[12.26-b] Série favoritada deve aparecer em Favoritos'
+              );
+              const favSeriesCard = stage1Container.querySelector<HTMLElement>(
+                '[data-nav-item="true"][aria-label="Stranger Things"]'
+              )!;
+              await act(async () => {
+                favSeriesCard.click();
+                await new Promise((r) => setTimeout(r, 50));
+              });
+              assert(
+                document.querySelector('[data-details-modal="series"]') !== null,
+                '[12.26-b] Clicar na série em Favoritos deve abrir o novo modal SeriesDetails'
+              );
+              await act(async () => {
+                windowInstance.dispatchEvent(
+                  new (windowInstance as any).KeyboardEvent('keydown', {
+                    key: 'Escape',
+                    bubbles: true,
+                    cancelable: true,
+                  })
+                );
+                await new Promise((r) => setTimeout(r, 40));
+              });
+
+              // Voltar para Séries e testar categoria filtrada ("Séries Raras" -> "Série Sem Episódios"),
+              // fallback sem imagem, omissão do botão Assistir quando não há episódios, responsividade e estado de erro
+              const navSeriesBtn2 = stage1Container.querySelector<HTMLButtonElement>(
+                'button[data-header-nav-id="series"]'
+              )!;
+              await act(async () => {
+                navSeriesBtn2.focus();
+                navSeriesBtn2.click();
+                await new Promise((r) => setTimeout(r, 50));
+              });
+              const seriesCatTrigger = stage1Container.querySelector<HTMLButtonElement>(
+                'button[data-categories-trigger="true"]'
+              )!;
+              await act(async () => {
+                seriesCatTrigger.click();
+              });
+              const rareSeriesCatBtn = stage1Container.querySelector<HTMLButtonElement>(
+                'button[data-category-id="cat_series_vazia_1226"]'
+              )!;
+              await act(async () => {
+                rareSeriesCatBtn.click();
+                await new Promise((r) => setTimeout(r, 40));
+              });
+
+              const emptySeriesCard = stage1Container.querySelector<HTMLElement>(
+                '[data-nav-grid="true"] [data-virtual-index="0"]'
+              )!;
+              await act(async () => {
+                emptySeriesCard.focus();
+                emptySeriesCard.click();
+                await new Promise((r) => setTimeout(r, 50));
+              });
+
+              const emptySeriesDialog = document.querySelector<HTMLElement>(
+                '[data-details-dialog="true"]'
+              )!;
+              assert(
+                emptySeriesDialog.querySelector('[data-series-hero-fallback="true"]') !== null,
+                '[12.26-b] Série sem backdrop e sem capa deve renderizar o fallback escuro elegante no Hero'
+              );
+              assert.strictEqual(
+                emptySeriesDialog.querySelector('button[data-series-primary-cta="true"]'),
+                null,
+                '[12.26-b] Série sem episódios disponíveis deve omitir o botão principal de reprodução para não exibir ação morta'
+              );
+              assert(
+                emptySeriesDialog.textContent?.includes('Não há episódios disponíveis.'),
+                '[12.26-b] Série sem episódios deve exibir mensagem clara "Não há episódios disponíveis."'
+              );
+
+              // Validar responsividade em Mobile (390x844) e Android TV (961x541 @ 50%..125%)
+              await act(async () => {
+                (windowInstance as any).innerWidth = 390;
+                (windowInstance as any).innerHeight = 844;
+                windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+              });
+              assert(
+                emptySeriesDialog.querySelector('button[data-details-close="true"]') !== null &&
+                  emptySeriesDialog.querySelector('button[data-series-favorite-btn="true"]') !== null,
+                '[12.26-b] Em Mobile 390x844, botão X e ações do Hero devem continuar visíveis e acessíveis'
+              );
+
+              document.documentElement.setAttribute('data-display-mode', 'tv');
+              await act(async () => {
+                (windowInstance as any).innerWidth = 961;
+                (windowInstance as any).innerHeight = 541;
+                windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+              });
+              for (const tvScale of ['0.5', '0.85', '0.9', '1', '1.25']) {
+                document.documentElement.style.setProperty('--nc-ui-scale', tvScale);
+                assert(
+                  emptySeriesDialog.classList.contains('nc-tv-details-dialog') &&
+                    emptySeriesDialog.querySelector('.nc-tv-details-title') !== null,
+                  `[12.26-b] Em Android TV 961x541 @ ${Number(tvScale) * 100}%, SeriesDetails deve aplicar classes adaptativas de TV`
+                );
+              }
+              document.documentElement.removeAttribute('data-display-mode');
+              document.documentElement.style.removeProperty('--nc-ui-scale');
+              await act(async () => {
+                (windowInstance as any).innerWidth = 1280;
+                (windowInstance as any).innerHeight = 720;
+                windowInstance.dispatchEvent(new windowInstance.Event('resize') as any);
+              });
+
+              // Fechar modal e testar falha de getSeriesInfo (estado de erro amigável)
+              await act(async () => {
+                windowInstance.dispatchEvent(
+                  new (windowInstance as any).KeyboardEvent('keydown', {
+                    key: 'Escape',
+                    bubbles: true,
+                    cancelable: true,
+                  })
+                );
+                await new Promise((r) => setTimeout(r, 40));
+              });
+
+              seriesInfoShouldFail = true;
+              await act(async () => {
+                emptySeriesCard.focus();
+                emptySeriesCard.click();
+                await new Promise((r) => setTimeout(r, 50));
+              });
+              const errSeriesDialog = document.querySelector<HTMLElement>(
+                '[data-details-dialog="true"]'
+              )!;
+              assert(
+                errSeriesDialog.querySelector('[data-series-error-state="true"]') !== null &&
+                  errSeriesDialog.textContent?.includes('Ops, algo deu errado'),
+                '[12.26-b] Quando getSeriesInfo falha, SeriesDetails deve exibir estado de erro amigável dentro do modal'
+              );
+              seriesInfoShouldFail = false;
+
+              await act(async () => {
+                windowInstance.dispatchEvent(
+                  new (windowInstance as any).KeyboardEvent('keydown', {
+                    key: 'Escape',
+                    bubbles: true,
+                    cancelable: true,
+                  })
+                );
+                await new Promise((r) => setTimeout(r, 40));
+              });
+
+              console.log(
+                '✅ [12.26-b] Etapa 3.2 (Reformulação dos Detalhes de Séries e Episódios) validada com sucesso nos 26 cenários!'
+              );
+            } finally {
+              (XtreamService as any).getSeriesInfo = savedGetSeriesInfo1226b;
+            }
           }
         } finally {
           useDelayedSeriesCategories = false;

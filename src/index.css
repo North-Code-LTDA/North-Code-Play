@@ -799,7 +799,8 @@ html[data-display-mode="tv"] .nc-tv-details-scroll {
   min-height: 0 !important;
 }
 
-html[data-display-mode="tv"] [data-details-modal="movie"] .nc-tv-details-scroll {
+html[data-display-mode="tv"] [data-details-modal="movie"] .nc-tv-details-scroll,
+html[data-display-mode="tv"] [data-details-modal="series"] .nc-tv-details-scroll {
   padding: 0 !important;
 }
 
@@ -811,7 +812,8 @@ html[data-display-mode="tv"] .nc-tv-details-hero {
   min-height: calc(14 * var(--nc-rem)) !important;
 }
 
-html[data-display-mode="tv"] .nc-tv-movie-hero {
+html[data-display-mode="tv"] .nc-tv-movie-hero,
+html[data-display-mode="tv"] .nc-tv-series-hero {
   min-height: calc(14 * var(--nc-rem)) !important;
   max-height: calc(22 * var(--nc-rem)) !important;
 }
@@ -833,7 +835,8 @@ html[data-display-mode="tv"] .nc-tv-details-synopsis {
 }
 
 html[data-display-mode="tv"] .nc-tv-details-synopsis p,
-html[data-display-mode="tv"] .nc-tv-movie-synopsis p {
+html[data-display-mode="tv"] .nc-tv-movie-synopsis p,
+html[data-display-mode="tv"] .nc-tv-series-synopsis p {
   font-size: var(--nc-tv-synopsis-font) !important;
   line-height: 1.45 !important;
 }
