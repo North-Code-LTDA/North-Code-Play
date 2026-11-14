@@ -463,28 +463,41 @@ export function ensureElementScrolledIntoView(
   const rowContainer = el.closest<HTMLElement>('[data-nav-row="true"]');
   if (rowContainer && rowContainer !== el) {
     const virtualController = virtualControllers.get(rowContainer);
-    if (virtualController && rowContainer.getAttribute('data-virtual-container') === 'true') {
-      // Virtualized horizontal rows manage their own immediate scroll + window sync via ensureIndexMounted / ensureItemKeyMounted.
-      // Only when entering vertically (up/down) might a card need alignment via the controller.
-      if (direction === 'up' || direction === 'down') {
+    const isVirtualRow = Boolean(
+      virtualController && rowContainer.getAttribute('data-virtual-container') === 'true'
+    );
+    const isLiveCategoryRow =
+      rowContainer.getAttribute('data-live-category-row-scroll') === 'true';
+
+    if (isVirtualRow && virtualController) {
+      if (isLiveCategoryRow || direction === 'up' || direction === 'down') {
         const rawIdx =
-          el.getAttribute('data-virtual-index') ?? el.getAttribute('data-row-card-index');
+          el.getAttribute('data-virtual-index') ??
+          el.getAttribute('data-row-card-index') ??
+          el.getAttribute('data-row-fav-index');
         const parsedIdx = rawIdx !== null ? parseInt(rawIdx, 10) : -1;
         if (parsedIdx >= 0 && parsedIdx < virtualController.totalCount) {
           virtualController.ensureIndexMounted(parsedIdx);
         }
       }
-    } else {
+    }
+
+    if (!isVirtualRow || isLiveCategoryRow) {
+      const horizTargetEl = isLiveCategoryRow
+        ? el.closest<HTMLElement>('[data-live-channel-card="true"]') || el
+        : el;
       spatialPerfStats.boundingRectCalls += 2;
       const rowRect = rowContainer.getBoundingClientRect();
-      const elRect = el.getBoundingClientRect();
+      const elRect = horizTargetEl.getBoundingClientRect();
       if (rowRect.width > 0 && elRect.width > 0) {
         const isLiveVariantsRow = rowContainer.getAttribute('data-live-variants-row') === 'true';
         const padX = isLiveVariantsRow
           ? Math.min(16, Math.max(0, Math.floor((rowRect.width - elRect.width) / 2)))
-          : 16;
+          : isLiveCategoryRow
+            ? Math.min(8, Math.max(0, Math.floor((rowRect.width - elRect.width) / 2)))
+            : 16;
         const maxScrollLeft =
-          isLiveVariantsRow &&
+          (isLiveVariantsRow || isLiveCategoryRow) &&
           rowContainer.scrollWidth > rowContainer.clientWidth &&
           rowContainer.clientWidth > 0
             ? Math.max(0, rowContainer.scrollWidth - rowContainer.clientWidth)
@@ -508,9 +521,19 @@ export function ensureElementScrolledIntoView(
         }
       } else if (direction === 'left' || direction === 'right') {
         const rowItems = Array.from(
-          rowContainer.querySelectorAll<HTMLElement>('[data-nav-item="true"], button')
+          rowContainer.querySelectorAll<HTMLElement>(
+            isLiveCategoryRow
+              ? 'button[data-live-channel-btn="true"]'
+              : '[data-nav-item="true"], button'
+          )
         );
-        const idx = rowItems.indexOf(el);
+        const refEl =
+          isLiveCategoryRow && el.getAttribute('data-live-channel-fav') === 'true'
+            ? el
+                .closest<HTMLElement>('[data-live-channel-card="true"]')
+                ?.querySelector<HTMLElement>('button[data-live-channel-btn="true"]') || el
+            : el;
+        const idx = rowItems.indexOf(refEl);
         if (idx === 0) {
           setElementScrollLeftImmediate(rowContainer, 0);
         } else if (idx > 0) {
@@ -2038,26 +2061,13 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
 
       if (rowController && rowController.totalCount > 0 && currentVirtualIdx >= 0) {
         if (direction === 'right') {
-          if (
-            isLiveCategoryRow &&
-            activeEl.getAttribute('data-live-channel-btn') === 'true'
-          ) {
-            const sameCardFav = currentRow.querySelector<HTMLElement>(
-              `[data-row-fav-index="${currentVirtualIdx}"]`
-            );
-            if (sameCardFav && isElementFocusable(sameCardFav)) {
-              focusElementSafely(sameCardFav, direction);
-              return sameCardFav;
-            }
-          }
-
           const nextLogicalIdx = currentVirtualIdx + 1;
           if (nextLogicalIdx < rowController.totalCount) {
             const targetSelector = isLiveCategoryRow
               ? `[data-row-card-index="${nextLogicalIdx}"][data-live-channel-btn="true"]`
               : `[data-virtual-index="${nextLogicalIdx}"], [data-row-card-index="${nextLogicalIdx}"]`;
             let nextEl = currentRow.querySelector<HTMLElement>(targetSelector);
-            if (!nextEl) {
+            if (!nextEl || isLiveCategoryRow) {
               const expanded = rowController.ensureIndexMounted(nextLogicalIdx, currentVirtualIdx);
               if (expanded) {
                 spatialPerfStats.virtualWindowExpansions++;
@@ -2100,24 +2110,16 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
           if (currentVirtualIdx > 0) {
             const prevLogicalIdx = currentVirtualIdx - 1;
             const prevSelector = isLiveCategoryRow
-              ? `[data-row-fav-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"][data-live-channel-btn="true"]`
+              ? `[data-row-card-index="${prevLogicalIdx}"][data-live-channel-btn="true"]`
               : `[data-virtual-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"]`;
             let prevEl = currentRow.querySelector<HTMLElement>(prevSelector);
-            if (!prevEl) {
+            if (!prevEl || isLiveCategoryRow) {
               const expanded = rowController.ensureIndexMounted(prevLogicalIdx, currentVirtualIdx);
               if (expanded) {
                 spatialPerfStats.virtualWindowExpansions++;
                 invalidateCandidateCache();
               }
               prevEl = currentRow.querySelector<HTMLElement>(prevSelector);
-            }
-            if (isLiveCategoryRow && prevEl) {
-              const prevFav = currentRow.querySelector<HTMLElement>(
-                `[data-row-fav-index="${prevLogicalIdx}"]`
-              );
-              if (prevFav && isElementFocusable(prevFav)) {
-                prevEl = prevFav;
-              }
             }
             if (prevEl && isElementFocusable(prevEl)) {
               focusElementSafely(prevEl, direction);
@@ -2152,8 +2154,32 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
         }
       }
 
-      const rowItems = candidates.filter((c) => getLogicalRow(c, ctx) === currentRow);
-      const idxInRow = rowItems.indexOf(activeEl);
+      if (
+        isLiveCategoryRow &&
+        direction === 'left' &&
+        activeEl.getAttribute('data-live-channel-fav') === 'true'
+      ) {
+        const sameCardMain = activeEl
+          .closest<HTMLElement>('[data-live-channel-card="true"]')
+          ?.querySelector<HTMLElement>('button[data-live-channel-btn="true"]');
+        if (sameCardMain && isElementFocusable(sameCardMain)) {
+          focusElementSafely(sameCardMain, direction);
+          return sameCardMain;
+        }
+      }
+
+      const rowItems = candidates.filter(
+        (c) =>
+          getLogicalRow(c, ctx) === currentRow &&
+          (!isLiveCategoryRow || c.getAttribute('data-live-channel-btn') === 'true')
+      );
+      const activeRowItem =
+        isLiveCategoryRow && activeEl.getAttribute('data-live-channel-fav') === 'true'
+          ? activeEl
+              .closest<HTMLElement>('[data-live-channel-card="true"]')
+              ?.querySelector<HTMLElement>('button[data-live-channel-btn="true"]') || activeEl
+          : activeEl;
+      const idxInRow = rowItems.indexOf(activeRowItem);
 
       if (direction === 'right') {
         if (idxInRow >= 0 && idxInRow < rowItems.length - 1) {

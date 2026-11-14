@@ -458,6 +458,67 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
       : 'Programação indisponível';
 
   const logoSrc = group.stream_icon || primaryStream?.stream_icon;
+  const enterHoldStartRef = useRef<number | null>(null);
+  const longPressConsumedRef = useRef<boolean>(false);
+
+  const isShortcutBlockedByActiveScope = useCallback((targetEl: HTMLElement | null): boolean => {
+    if (typeof document === 'undefined') return false;
+    if (document.querySelector('[data-focus-scope="modal"], [data-player-fullscreen="true"]')) {
+      return true;
+    }
+    const el = targetEl ?? (document.activeElement as HTMLElement | null);
+    if (!el) return false;
+    const tag = el.tagName?.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable) {
+      return true;
+    }
+    return Boolean(el.closest('[data-focus-scope="modal"], [data-player-fullscreen="true"]'));
+  }, []);
+
+  const handleCardShortcutKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      const key = e.key;
+      if (
+        key === 'f' ||
+        key === 'F' ||
+        key === 'ContextMenu' ||
+        key === 'Menu' ||
+        key === 'MediaTopMenu' ||
+        key === 'ColorF0Red'
+      ) {
+        if (isShortcutBlockedByActiveScope(e.currentTarget)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onToggleFavorite(group);
+        return;
+      }
+
+      if (key === 'Enter') {
+        if (isShortcutBlockedByActiveScope(e.currentTarget)) return;
+        if (!e.repeat) {
+          enterHoldStartRef.current = performance.now();
+          longPressConsumedRef.current = false;
+        } else if (
+          enterHoldStartRef.current !== null &&
+          !longPressConsumedRef.current &&
+          performance.now() - enterHoldStartRef.current >= 550
+        ) {
+          longPressConsumedRef.current = true;
+          e.preventDefault();
+          e.stopPropagation();
+          onToggleFavorite(group);
+        }
+      }
+    },
+    [group, isShortcutBlockedByActiveScope, onToggleFavorite]
+  );
+
+  const handleCardKeyUp = useCallback((e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === 'Enter') {
+      enterHoldStartRef.current = null;
+    }
+  }, []);
 
   return (
     <div
@@ -486,12 +547,26 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
           data-live-category-id={cardIndex === 0 ? categoryId : undefined}
           data-live-channel-selected={isSelected ? 'true' : 'false'}
           data-live-channel-origin={isOrigin ? 'true' : undefined}
-          onClick={() => onSelectGroup(group, categoryId, rowIndex, cardIndex)}
+          onClick={(e) => {
+            if (longPressConsumedRef.current) {
+              longPressConsumedRef.current = false;
+              e.preventDefault();
+              e.stopPropagation();
+              return;
+            }
+            onSelectGroup(group, categoryId, rowIndex, cardIndex);
+          }}
+          onKeyDown={handleCardShortcutKeyDown}
+          onKeyUp={handleCardKeyUp}
           onFocus={() => {
             setIsFocused(true);
             onFocusCard(group.groupId, categoryId, rowIndex, cardIndex);
           }}
-          onBlur={() => setIsFocused(false)}
+          onBlur={() => {
+            enterHoldStartRef.current = null;
+            longPressConsumedRef.current = false;
+            setIsFocused(false);
+          }}
           className="flex-1 min-w-0 h-full flex items-center gap-3 pl-2.5 pr-1 py-2 text-left rounded-l-xl focus:outline-none"
         >
           <div className="nc-tv-channel-logo relative w-12 h-12 shrink-0 rounded-lg bg-black/60 border border-white/10 flex items-center justify-center overflow-hidden p-1">
@@ -540,6 +615,7 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
             e.stopPropagation();
             onToggleFavorite(group);
           }}
+          onKeyDown={handleCardShortcutKeyDown}
           onFocus={() => {
             setIsFocused(true);
             onFocusCard(group.groupId, categoryId, rowIndex, cardIndex);
@@ -568,10 +644,80 @@ const HORIZ_VIRTUAL_THRESHOLD = 24;
 const HORIZ_VIRTUAL_OVERSCAN = 4;
 const HORIZ_WINDOW_MIN_ITEMS = 18;
 
+interface LiveHorizRowMetrics {
+  rowWidth: number;
+  cardWidth: number;
+  gap: number;
+  stride: number;
+}
+
+function resolveLiveHorizRowMetrics(rowEl: HTMLElement | null): LiveHorizRowMetrics {
+  let remPx = 16;
+  if (
+    typeof document !== 'undefined' &&
+    document.documentElement?.getAttribute('data-display-mode') === 'tv'
+  ) {
+    const inlineScale = parseFloat(
+      document.documentElement.style.getPropertyValue('--nc-ui-scale') || ''
+    );
+    const scaleRatio =
+      Number.isFinite(inlineScale) && inlineScale > 0 ? inlineScale : 0.85;
+    remPx = 16 * Math.max(0.5, Math.min(1.25, scaleRatio));
+  }
+
+  const isSmUp =
+    typeof window === 'undefined' ||
+    typeof window.innerWidth !== 'number' ||
+    window.innerWidth === 0 ||
+    window.innerWidth >= 640;
+
+  let cardWidth = Math.round((isSmUp ? 16.75 : 15.75) * remPx * 100) / 100;
+  let gap = Math.round(0.75 * remPx * 100) / 100;
+  let rowWidth = 640;
+
+  if (rowEl) {
+    const rowRect = rowEl.getBoundingClientRect();
+    if (rowEl.clientWidth > 0) {
+      rowWidth = rowEl.clientWidth;
+    } else if (rowRect.width > 0) {
+      rowWidth = rowRect.width;
+    }
+
+    const cards = rowEl.querySelectorAll<HTMLElement>('[data-live-channel-card="true"]');
+    if (cards.length > 0) {
+      const c0 = cards[0];
+      const c0Rect = c0.getBoundingClientRect();
+      if (c0.offsetWidth > 0) {
+        cardWidth = c0.offsetWidth;
+      } else if (c0Rect.width > 0) {
+        cardWidth = c0Rect.width;
+      }
+      if (cards.length > 1) {
+        const c1Rect = cards[1].getBoundingClientRect();
+        const measuredStride = c1Rect.left - c0Rect.left;
+        if (measuredStride > cardWidth) {
+          gap = Math.max(0, Math.round((measuredStride - cardWidth) * 100) / 100);
+        }
+      }
+    }
+  }
+
+  const safeCardWidth = Math.max(1, cardWidth);
+  const safeGap = Math.max(0, gap);
+  return {
+    rowWidth: Math.max(1, rowWidth),
+    cardWidth: safeCardWidth,
+    gap: safeGap,
+    stride: Math.max(1, safeCardWidth + safeGap),
+  };
+}
+
 function computeHorizWindow(
   totalCount: number,
   scrollLeft: number,
-  rowWidth: number
+  rowWidth: number,
+  metrics?: Partial<LiveHorizRowMetrics>,
+  pinnedRange?: { minIndex: number; maxIndex: number } | null
 ): { startIndex: number; endIndex: number; leftSpacerPx: number; rightSpacerPx: number } {
   if (totalCount <= HORIZ_VIRTUAL_THRESHOLD) {
     return {
@@ -582,19 +728,49 @@ function computeHorizWindow(
     };
   }
 
-  const effectiveWidth = rowWidth > 0 ? rowWidth : 640;
-  const visibleSlots = Math.max(4, Math.ceil(effectiveWidth / HORIZ_CARD_STRIDE_PX));
-  const windowSize = Math.min(totalCount, Math.max(HORIZ_WINDOW_MIN_ITEMS, visibleSlots + HORIZ_VIRTUAL_OVERSCAN * 2));
-  const rawFirst = Math.floor(Math.max(0, scrollLeft) / HORIZ_CARD_STRIDE_PX);
+  const cardWidth = metrics?.cardWidth || HORIZ_CARD_WIDTH_PX;
+  const gap = metrics?.gap ?? HORIZ_CARD_GAP_PX;
+  const stride = metrics?.stride || cardWidth + gap || HORIZ_CARD_STRIDE_PX;
+  const effectiveWidth = rowWidth > 0 ? rowWidth : metrics?.rowWidth || 640;
+  const visibleSlots = Math.max(4, Math.ceil(effectiveWidth / stride));
+  const windowSize = Math.min(
+    totalCount,
+    Math.max(HORIZ_WINDOW_MIN_ITEMS, visibleSlots + HORIZ_VIRTUAL_OVERSCAN * 2)
+  );
+  const rawFirst = Math.floor(Math.max(0, scrollLeft) / stride);
   const maxStart = Math.max(0, totalCount - windowSize);
-  const startIndex = Math.max(0, Math.min(maxStart, rawFirst - HORIZ_VIRTUAL_OVERSCAN));
-  const endIndex = Math.min(totalCount, startIndex + windowSize);
+  let startIndex = Math.max(0, Math.min(maxStart, rawFirst - HORIZ_VIRTUAL_OVERSCAN));
+  let endIndex = Math.min(totalCount, startIndex + windowSize);
+
+  if (pinnedRange) {
+    const minPin = Math.max(0, Math.min(totalCount - 1, pinnedRange.minIndex));
+    const maxPin = Math.max(minPin, Math.min(totalCount - 1, pinnedRange.maxIndex));
+    const pinSpan = maxPin - minPin + 1;
+    if (pinSpan <= windowSize) {
+      if (minPin < startIndex) {
+        startIndex = minPin;
+        endIndex = Math.min(totalCount, startIndex + windowSize);
+      } else if (maxPin >= endIndex) {
+        endIndex = Math.min(totalCount, maxPin + 1);
+        startIndex = Math.max(0, endIndex - windowSize);
+      }
+    } else {
+      startIndex = minPin;
+      endIndex = Math.min(totalCount, maxPin + 1);
+    }
+  }
+
+  const leftSpacerPx =
+    startIndex > 0 ? Math.max(0, Math.round(startIndex * stride - gap)) : 0;
+  const remainingRight = Math.max(0, totalCount - endIndex);
+  const rightSpacerPx =
+    remainingRight > 0 ? Math.max(0, Math.round(remainingRight * stride - gap)) : 0;
 
   return {
     startIndex,
     endIndex,
-    leftSpacerPx: startIndex * HORIZ_CARD_STRIDE_PX,
-    rightSpacerPx: Math.max(0, (totalCount - endIndex) * HORIZ_CARD_STRIDE_PX),
+    leftSpacerPx,
+    rightSpacerPx,
   };
 }
 
@@ -647,9 +823,9 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
   // Reset horizontal window if channel count drops or category changes
   useEffect(() => {
     const el = rowElRef.current;
-    const width = el?.clientWidth || 640;
+    const metrics = resolveLiveHorizRowMetrics(el);
     const scrollLeft = el?.scrollLeft || 0;
-    const next = computeHorizWindow(totalCount, scrollLeft, width);
+    const next = computeHorizWindow(totalCount, scrollLeft, metrics.rowWidth, metrics);
     horizWindowRef.current = next;
     setHorizWindow(next);
   }, [row.id, totalCount]);
@@ -688,64 +864,113 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
 
   const ensureIndexMounted = useCallback(
     (targetIndex: number, preserveIndex?: number): boolean => {
-      if (!shouldVirtualizeHoriz || totalCount <= 0) return false;
+      if (totalCount <= 0) return false;
       const clamped = Math.max(0, Math.min(totalCount - 1, Math.floor(targetIndex)));
-      const cur = horizWindowRef.current;
-      const margin = 2;
-
-      if (
-        clamped >= cur.startIndex &&
-        clamped < cur.endIndex &&
-        (cur.startIndex === 0 || clamped >= cur.startIndex + margin) &&
-        (cur.endIndex >= totalCount || clamped < cur.endIndex - margin)
-      ) {
-        return false;
-      }
-
-      const rowWidth = rowElRef.current?.clientWidth || 640;
-      const span = Math.max(HORIZ_WINDOW_MIN_ITEMS, cur.endIndex - cur.startIndex);
-      let nextStart = Math.max(0, Math.min(Math.max(0, totalCount - span), clamped - Math.floor(span / 2)));
-
-      if (typeof preserveIndex === 'number' && preserveIndex >= 0 && preserveIndex < totalCount) {
-        if (Math.abs(clamped - preserveIndex) < span) {
-          if (nextStart > preserveIndex) nextStart = preserveIndex;
-          if (nextStart + span - 1 < preserveIndex) nextStart = Math.max(0, preserveIndex - span + 1);
-          if (nextStart > clamped) nextStart = clamped;
-          if (nextStart + span - 1 < clamped) nextStart = Math.max(0, clamped - span + 1);
-        }
-      }
-
-      const nextEnd = Math.min(totalCount, nextStart + span);
-      const nextWindow = {
-        startIndex: nextStart,
-        endIndex: nextEnd,
-        leftSpacerPx: nextStart * HORIZ_CARD_STRIDE_PX,
-        rightSpacerPx: Math.max(0, (totalCount - nextEnd) * HORIZ_CARD_STRIDE_PX),
-      };
-
-      if (nextWindow.startIndex === cur.startIndex && nextWindow.endIndex === cur.endIndex) {
-        return false;
-      }
-
-      horizWindowRef.current = nextWindow;
-      try {
-        flushSync(() => {
-          setHorizWindow(nextWindow);
-        });
-      } catch {
-        setHorizWindow(nextWindow);
-      }
-
       const el = rowElRef.current;
-      if (el) {
-        const targetScrollLeft = Math.max(0, clamped * HORIZ_CARD_STRIDE_PX - Math.round(rowWidth / 2) + Math.round(HORIZ_CARD_WIDTH_PX / 2));
+      const metrics = resolveLiveHorizRowMetrics(el);
+      const { rowWidth, cardWidth, gap, stride } = metrics;
+      const totalContentWidth =
+        totalCount * cardWidth + Math.max(0, totalCount - 1) * gap;
+      const maxScrollLeft = Math.max(0, totalContentWidth - rowWidth);
+      const padX = Math.min(8, Math.max(0, Math.floor((rowWidth - cardWidth) / 2)));
+
+      let desiredScrollLeft = el ? el.scrollLeft || 0 : 0;
+      const cardLeft = clamped * stride;
+      const cardRight = cardLeft + cardWidth;
+
+      if (clamped === 0) {
+        desiredScrollLeft = 0;
+      } else if (clamped === totalCount - 1) {
+        desiredScrollLeft = maxScrollLeft;
+      } else if (cardLeft < desiredScrollLeft + padX) {
+        desiredScrollLeft = Math.max(0, cardLeft - padX);
+      } else if (cardRight > desiredScrollLeft + rowWidth - padX) {
+        desiredScrollLeft = Math.min(maxScrollLeft, cardRight - rowWidth + padX);
+      }
+
+      if (el && Math.abs((el.scrollLeft || 0) - desiredScrollLeft) > 0.5) {
         const prevBehavior = el.style.scrollBehavior;
         el.style.scrollBehavior = 'auto';
-        el.scrollLeft = targetScrollLeft;
+        el.scrollLeft = desiredScrollLeft;
         el.style.scrollBehavior = prevBehavior;
       }
 
-      return true;
+      let windowChanged = false;
+      if (shouldVirtualizeHoriz) {
+        const pinnedRange =
+          typeof preserveIndex === 'number' && preserveIndex >= 0 && preserveIndex < totalCount
+            ? {
+                minIndex: Math.min(clamped, preserveIndex),
+                maxIndex: Math.max(clamped, preserveIndex),
+              }
+            : {
+                minIndex: clamped,
+                maxIndex: clamped,
+              };
+
+        const nextWindow = computeHorizWindow(
+          totalCount,
+          desiredScrollLeft,
+          rowWidth,
+          metrics,
+          pinnedRange
+        );
+        const cur = horizWindowRef.current;
+        windowChanged =
+          nextWindow.startIndex !== cur.startIndex ||
+          nextWindow.endIndex !== cur.endIndex ||
+          Math.abs(nextWindow.leftSpacerPx - cur.leftSpacerPx) > 1 ||
+          Math.abs(nextWindow.rightSpacerPx - cur.rightSpacerPx) > 1;
+
+        if (windowChanged) {
+          horizWindowRef.current = nextWindow;
+          try {
+            flushSync(() => {
+              setHorizWindow(nextWindow);
+            });
+          } catch {
+            setHorizWindow(nextWindow);
+          }
+        }
+      }
+
+      if (el) {
+        if (Math.abs((el.scrollLeft || 0) - desiredScrollLeft) > 0.5) {
+          const prevBehavior = el.style.scrollBehavior;
+          el.style.scrollBehavior = 'auto';
+          el.scrollLeft = desiredScrollLeft;
+          el.style.scrollBehavior = prevBehavior;
+        }
+        const cardEl = el.querySelector<HTMLElement>(
+          `[data-live-channel-card="true"][data-virtual-index="${clamped}"]`
+        );
+        if (cardEl) {
+          const rowRect = el.getBoundingClientRect();
+          const cardRect = cardEl.getBoundingClientRect();
+          if (rowRect.width > 0 && cardRect.width > 0) {
+            let fineScrollLeft = el.scrollLeft || 0;
+            if (cardRect.left < rowRect.left + padX) {
+              fineScrollLeft = Math.max(
+                0,
+                fineScrollLeft + (cardRect.left - rowRect.left) - padX
+              );
+            } else if (cardRect.right > rowRect.right - padX) {
+              fineScrollLeft = Math.min(
+                maxScrollLeft,
+                Math.max(0, fineScrollLeft + (cardRect.right - rowRect.right) + padX)
+              );
+            }
+            if (Math.abs(fineScrollLeft - (el.scrollLeft || 0)) > 0.5) {
+              const prevBehavior = el.style.scrollBehavior;
+              el.style.scrollBehavior = 'auto';
+              el.scrollLeft = fineScrollLeft;
+              el.style.scrollBehavior = prevBehavior;
+            }
+          }
+        }
+      }
+
+      return windowChanged;
     },
     [shouldVirtualizeHoriz, totalCount]
   );
@@ -770,10 +995,18 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
     if (!el) return;
     notifyContainerScrollForFallback(el);
     if (!shouldVirtualizeHoriz) return;
-    const next = computeHorizWindow(totalCount, el.scrollLeft || 0, el.clientWidth || 640);
+    const metrics = resolveLiveHorizRowMetrics(el);
+    const next = computeHorizWindow(
+      totalCount,
+      el.scrollLeft || 0,
+      metrics.rowWidth,
+      metrics
+    );
     if (
       next.startIndex !== horizWindowRef.current.startIndex ||
-      next.endIndex !== horizWindowRef.current.endIndex
+      next.endIndex !== horizWindowRef.current.endIndex ||
+      Math.abs(next.leftSpacerPx - horizWindowRef.current.leftSpacerPx) > 1 ||
+      Math.abs(next.rightSpacerPx - horizWindowRef.current.rightSpacerPx) > 1
     ) {
       horizWindowRef.current = next;
       setHorizWindow(next);
@@ -1754,11 +1987,11 @@ export const LiveTvView = React.memo(function LiveTvView({
               {/* Channel Metadata + Variant Selector + Now Playing Summary */}
               <div
                 data-live-info-column="true"
-                className="flex-1 min-w-0 flex flex-col gap-2.5 w-full"
+                className="flex-1 min-w-0 flex flex-col gap-3 w-full"
               >
-                <div className="flex items-start gap-3 min-w-0">
-                  <div className="nc-live-channel-logo relative w-11 h-11 shrink-0 rounded-lg bg-black/60 border border-white/10 flex items-center justify-center overflow-hidden p-1">
-                    <Tv className="w-5 h-5 text-white/25" aria-hidden="true" />
+                <div className="flex items-start gap-3.5 min-w-0">
+                  <div className="nc-live-channel-logo relative w-14 h-14 shrink-0 rounded-xl bg-black/60 border border-white/10 flex items-center justify-center overflow-hidden p-1.5">
+                    <Tv className="w-6 h-6 text-white/25" aria-hidden="true" />
                     {rightPanePrimaryLogo && (
                       <MediaImage
                         src={rightPanePrimaryLogo}
@@ -1777,15 +2010,15 @@ export const LiveTvView = React.memo(function LiveTvView({
                         {selectedGroup.displayName}
                       </h1>
                     </div>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                       {activeResolutionBadge && (
-                        <span className="nc-badge-info px-2 py-0.5 rounded bg-white/15 text-white/90">
+                        <span className="nc-badge-info text-xs font-semibold px-2.5 py-0.5 rounded bg-white/15 text-white/90">
                           {activeResolutionBadge}
                         </span>
                       )}
                       <span
                         data-live-badge="true"
-                        className="nc-badge-info inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20"
+                        className="nc-badge-info text-xs font-semibold inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20"
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" aria-hidden="true" />
                         <span>AO VIVO</span>
@@ -1796,8 +2029,13 @@ export const LiveTvView = React.memo(function LiveTvView({
 
                 {/* Variant Selector Row (only rendered when multiple resolutions exist) */}
                 {selectedGroup.isGrouped && Array.isArray(selectedGroup.variants) && selectedGroup.variants.length > 1 && (
-                  <div className="space-y-1 min-w-0">
-                    <span className="nc-text-meta text-white/50 block">Versão do canal</span>
+                  <div className="space-y-1.5 min-w-0">
+                    <span
+                      data-live-variant-label="true"
+                      className="nc-live-variant-label text-sm font-medium text-white/65 block"
+                    >
+                      Versão do canal
+                    </span>
                     <div
                       data-nav-row="true"
                       data-live-variants-row="true"
@@ -1808,7 +2046,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                         data-nav-item="true"
                         data-variant-active={selectedVariantIdOrAuto === 'auto' ? 'true' : 'false'}
                         onClick={() => handleSelectVariant('auto')}
-                        className={`shrink-0 px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                        className={`shrink-0 px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
                           selectedVariantIdOrAuto === 'auto'
                             ? 'bg-white text-black'
                             : 'bg-white/10 text-white/80 hover:bg-white/20 hover:text-white'
@@ -1826,7 +2064,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                             data-nav-item="true"
                             data-variant-active={isActive ? 'true' : 'false'}
                             onClick={() => handleSelectVariant(vIdStr)}
-                            className={`shrink-0 px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                            className={`shrink-0 px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
                               isActive
                                 ? 'bg-white text-black'
                                 : 'bg-white/10 text-white/80 hover:bg-white/20 hover:text-white'
@@ -1842,19 +2080,28 @@ export const LiveTvView = React.memo(function LiveTvView({
 
                 {/* Now Playing Summary Card */}
                 {currentEpgProgram && (
-                  <div className="nc-live-now-playing rounded-lg bg-white/[0.04] border border-white/10 p-2.5 min-w-0">
-                    <div className="flex items-center justify-between gap-2 text-xs text-white/60">
-                      <span className="font-semibold text-white/90 truncate">
+                  <div className="nc-live-now-playing rounded-lg bg-white/[0.04] border border-white/10 p-3 min-w-0">
+                    <div className="flex items-baseline justify-between gap-2.5 text-[0.8125rem] sm:text-sm text-white/70">
+                      <span
+                        data-live-now-playing-title="true"
+                        className="nc-live-now-playing-title text-[0.9375rem] sm:text-base font-semibold text-white/95 truncate"
+                      >
                         {currentEpgProgram.title}
                       </span>
                       {(currentEpgProgram.startLabel || currentEpgProgram.endLabel) && (
-                        <span className="shrink-0 tabular-nums">
+                        <span
+                          data-live-now-playing-time="true"
+                          className="nc-live-now-playing-time text-[0.8125rem] sm:text-sm text-white/70 shrink-0 tabular-nums"
+                        >
                           {currentEpgProgram.startLabel} - {currentEpgProgram.endLabel}
                         </span>
                       )}
                     </div>
                     {currentEpgProgram.description && (
-                      <p className="nc-live-now-playing-desc nc-text-meta text-white/55 mt-1 line-clamp-2">
+                      <p
+                        data-live-now-playing-desc="true"
+                        className="nc-live-now-playing-desc text-[0.8125rem] sm:text-sm text-white/65 mt-1.5 line-clamp-2 leading-relaxed"
+                      >
                         {currentEpgProgram.description}
                       </p>
                     )}

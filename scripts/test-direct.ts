@@ -3842,12 +3842,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     'ArrowUp deve retornar ao primeiro canal de Abertos (id=1)'
   );
 
-  // Na fileira horizontal de Abertos: ArrowRight -> favorito do 1º canal -> ArrowRight -> 2º canal de Abertos
-  await act(async () => {
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
-    );
-  });
+  // Na fileira horizontal de Abertos: ArrowRight vai diretamente do 1º canal para o 2º canal (sem parar no botão de favorito)
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
@@ -3856,7 +3851,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     channelButtonsCatA[1],
-    'Navegação horizontal na fileira de Abertos deve focar o segundo canal'
+    'Navegação horizontal na fileira de Abertos deve focar diretamente o segundo canal sem parar no coração de favorito'
   );
 
   // 1º Enter no segundo canal: abre o preview lateral mantendo foco no canal
@@ -19985,20 +19980,12 @@ if (args[0] === 'add' && args[1] === 'android') {
               `[12.23][${testDisplayMode}] Seleção do Canal 1 deve disparar exatamente 1 consulta de EPG`
             );
 
-            // 1º ArrowRight: Canal 1 -> Favorito do Canal 1
-            await dispatchArrowKey('ArrowRight');
-            assertSameElement(
-              document.activeElement,
-              fav1Btn,
-              `[12.23][${testDisplayMode}] 1º ArrowRight deve mover o foco do canal para a estrela de favorito`
-            );
-
-            // 2º ArrowRight: Favorito do Canal 1 -> 1º item da grade de programação (sem parar nos controles do preview!)
+            // 1º ArrowRight no último canal da fileira (Canal 1): entra direto no 1º item da grade de programação (sem parar no coração de favorito nem nos controles do preview!)
             await dispatchArrowKey('ArrowRight');
             assertSameElement(
               document.activeElement,
               epgItems[0],
-              `[12.23][${testDisplayMode}] 2º ArrowRight deve entrar direto no 1º programa da grade (sem parar no player)`
+              `[12.23][${testDisplayMode}] 1º ArrowRight no último canal da fileira deve entrar direto no 1º programa da grade (sem parar no coração nem no player)`
             );
 
             // ArrowDown percorrendo todos os 6 programas até o último (índice 5)
@@ -20053,14 +20040,8 @@ if (args[0] === 'add' && args[1] === 'android') {
             await dispatchArrowKey('ArrowRight');
             assertSameElement(
               document.activeElement,
-              fav2Btn,
-              `[12.23][${testDisplayMode}] ArrowRight no Canal 2 foca o favorito do Canal 2`
-            );
-            await dispatchArrowKey('ArrowRight');
-            assertSameElement(
-              document.activeElement,
               epgItems[0],
-              `[12.23][${testDisplayMode}] ArrowRight no favorito do Canal 2 entra na programação`
+              `[12.23][${testDisplayMode}] ArrowRight no Canal 2 entra diretamente na programação (sem parar no coração de favorito)`
             );
             await dispatchArrowKey('ArrowLeft');
             assertSameElement(
@@ -20557,12 +20538,10 @@ if (args[0] === 'add' && args[1] === 'android') {
             const emptyStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="empty"]');
             assert(emptyStateEl, `[12.23][${testDisplayMode}] Canal 2 sem programação deve exibir estado vazio`);
             await dispatchArrowKey('ArrowRight');
-            assertSameElement(document.activeElement, fav2Btn, `[12.23][${testDisplayMode}] Canal 2 -> Favorito 2`);
-            await dispatchArrowKey('ArrowRight');
             assertSameElement(
               document.activeElement,
               emptyStateEl,
-              `[12.23][${testDisplayMode}] Favorito 2 -> Estado de grade vazia`
+              `[12.23][${testDisplayMode}] Canal 2 -> Estado de grade vazia (direto, sem parar em favorito)`
             );
             await dispatchArrowKey('ArrowLeft');
             assertSameElement(
@@ -20579,11 +20558,10 @@ if (args[0] === 'add' && args[1] === 'android') {
             const loadingStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="loading"]');
             assert(loadingStateEl, `[12.23][${testDisplayMode}] Canal 3 com EPG pendente deve exibir estado carregando`);
             await dispatchArrowKey('ArrowRight');
-            await dispatchArrowKey('ArrowRight');
             assertSameElement(
               document.activeElement,
               loadingStateEl,
-              `[12.23][${testDisplayMode}] Favorito 3 -> Estado carregando do EPG`
+              `[12.23][${testDisplayMode}] Canal 3 -> Estado carregando do EPG (direto)`
             );
             await act(async () => {
               resolvePendingCh3Epg?.({ epg_listings: [] });
@@ -20611,11 +20589,10 @@ if (args[0] === 'add' && args[1] === 'android') {
             const errorStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="error"]');
             assert(errorStateEl, `[12.23][${testDisplayMode}] Canal 4 com falha no EPG deve exibir estado indisponível`);
             await dispatchArrowKey('ArrowRight');
-            await dispatchArrowKey('ArrowRight');
             assertSameElement(
               document.activeElement,
               errorStateEl,
-              `[12.23][${testDisplayMode}] Favorito 4 -> Estado indisponível do EPG`
+              `[12.23][${testDisplayMode}] Canal 4 -> Estado indisponível do EPG (direto)`
             );
             await dispatchArrowKey('ArrowLeft');
             assertSameElement(
@@ -29168,7 +29145,848 @@ async function runCycle1227LiveTvAndEpgTests() {
     resetLiveEpgCacheForTest();
   }
 
-  console.log('✅ Todos os testes do Ciclo 12.27-a / 12.27-a.2 / 12.27-a.3 (TV ao Vivo 50/50, D-Pad Vertical, Virtualização, Mouse vs D-Pad, Preview e EPG) aprovados!');
+  // ---------------------------------------------------------------------------
+  // 13.12 Ciclo 12.27-a.4 — Testes A a G:
+  //   A. Navegação horizontal direta sem parar em favoritos (0..5 e 5..0)
+  //   B. Rolagem horizontal em categorias não virtualizadas (10 e 24 canais)
+  //   C. Rolagem horizontal em categorias virtualizadas (25, 60 e 120 canais)
+  //   D. Escalas de Android TV (50%, 85%, 100%, 125%)
+  //   E. Favoritar por mouse e por atalho ('F' / 'ContextMenu') sem parada obrigatória
+  //   F. Transição para painel direito no último canal e retorno por ArrowLeft
+  //   G. Legibilidade do bloco de informações (data-live-info-column="true")
+  // ---------------------------------------------------------------------------
+  {
+    const { moveSpatialFocus } = await import('../src/navigation/spatialNav');
+    const container1312 = document.createElement('div');
+    document.body.appendChild(container1312);
+    const root1312 = createRoot(container1312);
+
+    const catDefs1312 = [
+      { category_id: 'cat_1312_10', category_name: 'CANAIS | ABERTOS (10)', count: 10 },
+      { category_id: 'cat_1312_24', category_name: 'CANAIS | ESPORTES (24)', count: 24 },
+      { category_id: 'cat_1312_25', category_name: 'CANAIS | FILMES (25)', count: 25 },
+      { category_id: 'cat_1312_60', category_name: 'CANAIS | GLOBO (60)', count: 60 },
+      { category_id: 'cat_1312_120', category_name: 'CANAIS | VARIEDADES (120)', count: 120 },
+    ];
+
+    const cats1312: any[] = catDefs1312.map((c, idx) => ({
+      category_id: c.category_id,
+      category_name: c.category_name,
+      parent_id: idx + 1,
+    }));
+
+    const streams1312: any[] = [];
+    let nextStreamId1312 = 91000;
+    catDefs1312.forEach((cat) => {
+      for (let i = 0; i < cat.count; i++) {
+        nextStreamId1312++;
+        streams1312.push({
+          num: nextStreamId1312,
+          name: `Canal ${cat.category_id} #${i + 1} FHD`,
+          stream_type: 'live',
+          stream_id: nextStreamId1312,
+          stream_icon: `http://127.0.0.1:9/logo_${nextStreamId1312}.png`,
+          epg_channel_id: `epg_${cat.category_id}_${i + 1}`,
+          added: '1700000000',
+          category_id: cat.category_id,
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        });
+      }
+      // Adicionar variante HD para o primeiro canal da primeira categoria para testar "Versão do canal" (Teste G)
+      if (cat.category_id === 'cat_1312_10') {
+        nextStreamId1312++;
+        streams1312.push({
+          num: nextStreamId1312,
+          name: `Canal ${cat.category_id} #1 HD`,
+          stream_type: 'live',
+          stream_id: nextStreamId1312,
+          stream_icon: `http://127.0.0.1:9/logo_${nextStreamId1312}.png`,
+          epg_channel_id: `epg_${cat.category_id}_1`,
+          added: '1700000000',
+          category_id: cat.category_id,
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        });
+      }
+    });
+
+    resetLiveEpgCacheForTest();
+    setLiveEpgClockForTest(() => nowMs);
+    const nowSec1312 = Math.floor(nowMs / 1000);
+    (XtreamService as any).getShortEpg = async (_creds: any, streamId: string | number) => ({
+      epg_listings: [
+        {
+          id: `epg_1312_${streamId}_now`,
+          title: `Jornal Principal #${streamId}`,
+          description: `Resumo completo da programação ao vivo do canal ${streamId}.`,
+          start: new Date((nowSec1312 - 900) * 1000).toISOString(),
+          end: new Date((nowSec1312 + 2700) * 1000).toISOString(),
+          start_timestamp: String(nowSec1312 - 900),
+          stop_timestamp: String(nowSec1312 + 2700),
+        },
+        {
+          id: `epg_1312_${streamId}_next`,
+          title: `Sessão Especial #${streamId}`,
+          description: `Próximo programa da grade.`,
+          start: new Date((nowSec1312 + 2700) * 1000).toISOString(),
+          end: new Date((nowSec1312 + 6300) * 1000).toISOString(),
+          start_timestamp: String(nowSec1312 + 2700),
+          stop_timestamp: String(nowSec1312 + 6300),
+        },
+      ],
+    });
+
+    const ctx1312: any = {
+      credentials: {
+        serverUrl: 'http://dpad-1312.tv:8080',
+        username: 'dpadUser1312',
+        password: 'dpadPassword1312',
+        allowed_output_formats: ['m3u8'],
+      },
+      liveCategories: cats1312,
+      liveStreams: streams1312,
+      allLiveStreams: streams1312,
+      vodCategories: [],
+      vodStreams: [],
+      allVodStreams: [],
+      seriesCategories: [],
+      seriesStreams: [],
+      allSeriesStreams: [],
+      loadingLive: false,
+      loadingVod: false,
+      loadingSeries: false,
+      liveCatalogStatus: 'ready',
+      liveCategoriesStatus: 'ready',
+      error: null,
+      fetchLiveStreams: async () => {},
+      fetchVodStreams: async () => {},
+      fetchSeriesStreams: async () => {},
+      fetchLiveCategories: async () => {},
+    };
+
+    // Helper que instala geometria horizontal realista nas fileiras de canais
+    const attachRealisticHorizontalRowGeometry = (
+      rootEl: HTMLElement,
+      scaleFactor: number = 1
+    ): (() => void) => {
+      const remPx = 16 * scaleFactor;
+      const cardWidth = Math.round(16.75 * remPx * 100) / 100;
+      const gap = Math.round(0.75 * remPx * 100) / 100;
+      const stride = cardWidth + gap;
+      const rowWidth = 640;
+      const origGetBCR = windowInstance.HTMLElement.prototype.getBoundingClientRect;
+
+      const installRowProps = () => {
+        const rows = rootEl.querySelectorAll<HTMLElement>('[data-live-category-row-scroll="true"]');
+        rows.forEach((rEl) => {
+          Object.defineProperty(rEl, 'clientWidth', {
+            value: rowWidth,
+            configurable: true,
+          });
+          const cards = rEl.querySelectorAll<HTMLElement>('[data-live-channel-card="true"]');
+          cards.forEach((cEl) => {
+            Object.defineProperty(cEl, 'offsetWidth', {
+              value: cardWidth,
+              configurable: true,
+            });
+          });
+        });
+      };
+
+      installRowProps();
+
+      windowInstance.HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+        if (!rootEl.contains(this)) {
+          return origGetBCR.call(this);
+        }
+        if (this.getAttribute('data-live-category-row-scroll') === 'true') {
+          const secEl = this.closest<HTMLElement>('section[data-virtual-index]');
+          const rIdx = secEl ? parseInt(secEl.getAttribute('data-virtual-index') || '0', 10) : 0;
+          const top = rIdx * 132;
+          return {
+            left: 0,
+            top,
+            right: rowWidth,
+            bottom: top + 92,
+            width: rowWidth,
+            height: 92,
+            x: 0,
+            y: top,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+
+        const cardEl =
+          this.getAttribute('data-live-channel-card') === 'true'
+            ? this
+            : this.closest<HTMLElement>('[data-live-channel-card="true"]');
+        if (cardEl) {
+          const rowEl = cardEl.closest<HTMLElement>('[data-live-category-row-scroll="true"]');
+          if (rowEl) {
+            const secEl = rowEl.closest<HTMLElement>('section[data-virtual-index]');
+            const rIdx = secEl ? parseInt(secEl.getAttribute('data-virtual-index') || '0', 10) : 0;
+            const top = rIdx * 132 + 4;
+            const mountedCards = Array.from(
+              rowEl.querySelectorAll<HTMLElement>('[data-live-channel-card="true"]')
+            );
+            const posInSlice = mountedCards.indexOf(cardEl);
+            const leftSpacerEl = rowEl.querySelector<HTMLElement>('[data-virtual-spacer="left"]');
+            const spacerWidth = leftSpacerEl
+              ? parseFloat(leftSpacerEl.style.width || '0') || 0
+              : 0;
+            const sliceStartOffset = spacerWidth > 0 ? spacerWidth + gap : 0;
+            const scrollLeft = rowEl.scrollLeft || 0;
+            const cardLeft = sliceStartOffset + Math.max(0, posInSlice) * stride - scrollLeft;
+
+            if (this === cardEl) {
+              return {
+                left: cardLeft,
+                top,
+                right: cardLeft + cardWidth,
+                bottom: top + 82,
+                width: cardWidth,
+                height: 82,
+                x: cardLeft,
+                y: top,
+                toJSON: () => ({}),
+              } as DOMRect;
+            }
+            if (this.getAttribute('data-live-channel-btn') === 'true') {
+              const btnW = Math.max(40, cardWidth - 40);
+              return {
+                left: cardLeft,
+                top,
+                right: cardLeft + btnW,
+                bottom: top + 82,
+                width: btnW,
+                height: 82,
+                x: cardLeft,
+                y: top,
+                toJSON: () => ({}),
+              } as DOMRect;
+            }
+            if (this.getAttribute('data-live-channel-fav') === 'true') {
+              const favLeft = cardLeft + cardWidth - 40;
+              return {
+                left: favLeft,
+                top: top + 20,
+                right: cardLeft + cardWidth,
+                bottom: top + 60,
+                width: 40,
+                height: 40,
+                x: favLeft,
+                y: top + 20,
+                toJSON: () => ({}),
+              } as DOMRect;
+            }
+          }
+        }
+        return origGetBCR.call(this);
+      };
+
+      return () => {
+        windowInstance.HTMLElement.prototype.getBoundingClientRect = origGetBCR;
+      };
+    };
+
+    try {
+      await act(async () => {
+        confirmDisplayPreferences('default', 100);
+        root1312.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              XtreamMockProvider,
+              { value: ctx1312 },
+              React.createElement(LiveTvView, { onPlay: () => {} })
+            )
+          )
+        );
+        await new Promise((r) => setTimeout(r, 100));
+      });
+
+      const restoreGeomDefault = attachRealisticHorizontalRowGeometry(container1312, 1);
+
+      try {
+        const getRowBySectionIndex = (secIdx: number): HTMLElement => {
+          const sec = container1312.querySelector<HTMLElement>(
+            `section[data-virtual-index="${secIdx}"]`
+          );
+          assert(sec, `[13.12] Seção da fileira ${secIdx} deve estar montada`);
+          const rowEl = sec!.querySelector<HTMLElement>('[data-live-category-row-scroll="true"]');
+          assert(rowEl, `[13.12] Container de rolagem horizontal da fileira ${secIdx} deve existir`);
+          return rowEl!;
+        };
+
+        const getRowByCategoryId = (catId: string): HTMLElement => {
+          const btn = container1312.querySelector<HTMLElement>(
+            `button[data-live-channel-category-id="${catId}"]`
+          );
+          assert(btn, `[13.12] Botão da categoria ${catId} deve estar montado`);
+          const rowEl = btn!.closest<HTMLElement>('[data-live-category-row-scroll="true"]');
+          assert(rowEl, `[13.12] Container de rolagem horizontal da categoria ${catId} deve existir`);
+          return rowEl!;
+        };
+
+        // =====================================================================
+        // Teste A — Navegação horizontal direta sem parar em favoritos (0..5 e 5..0)
+        // =====================================================================
+        const row0El = getRowBySectionIndex(0);
+        const row0Btn0 = row0El.querySelector<HTMLButtonElement>(
+          'button[data-live-channel-btn="true"][data-row-card-index="0"]'
+        )!;
+        assert(row0Btn0, '[13.12-A] Botão do canal 0 deve existir');
+
+        await act(async () => {
+          row0Btn0.focus();
+          await new Promise((r) => setTimeout(r, 15));
+        });
+
+        const forwardSeqA: number[] = [
+          Number((document.activeElement as HTMLElement)?.getAttribute('data-row-card-index')),
+        ];
+        for (let step = 1; step <= 5; step++) {
+          await act(async () => {
+            moveSpatialFocus('right');
+            await new Promise((r) => setTimeout(r, 10));
+          });
+          const active = document.activeElement as HTMLElement | null;
+          assert(
+            active?.getAttribute('data-live-channel-fav') !== 'true',
+            `[13.12-A] Passo ArrowRight #${step}: nunca deve parar em data-live-channel-fav="true"`
+          );
+          assert.strictEqual(
+            active?.getAttribute('data-live-channel-btn'),
+            'true',
+            `[13.12-A] Passo ArrowRight #${step}: deve focar diretamente button[data-live-channel-btn="true"]`
+          );
+          forwardSeqA.push(Number(active?.getAttribute('data-row-card-index')));
+        }
+        assert.deepStrictEqual(
+          forwardSeqA,
+          [0, 1, 2, 3, 4, 5],
+          `[13.12-A] 5 ArrowRight a partir do canal 0 devem produzir exatamente [0, 1, 2, 3, 4, 5], obteve ${JSON.stringify(forwardSeqA)}`
+        );
+
+        const backwardSeqA: number[] = [];
+        for (let step = 1; step <= 5; step++) {
+          await act(async () => {
+            moveSpatialFocus('left');
+            await new Promise((r) => setTimeout(r, 10));
+          });
+          const active = document.activeElement as HTMLElement | null;
+          assert(
+            active?.getAttribute('data-live-channel-fav') !== 'true',
+            `[13.12-A] Passo ArrowLeft #${step}: nunca deve parar em data-live-channel-fav="true"`
+          );
+          assert.strictEqual(
+            active?.getAttribute('data-live-channel-btn'),
+            'true',
+            `[13.12-A] Passo ArrowLeft #${step}: deve focar diretamente button[data-live-channel-btn="true"]`
+          );
+          backwardSeqA.push(Number(active?.getAttribute('data-row-card-index')));
+        }
+        assert.deepStrictEqual(
+          backwardSeqA,
+          [4, 3, 2, 1, 0],
+          `[13.12-A] 5 ArrowLeft a partir do canal 5 devem produzir exatamente [4, 3, 2, 1, 0], obteve ${JSON.stringify(backwardSeqA)}`
+        );
+
+        // =====================================================================
+        // Teste B — Rolagem horizontal em categorias não virtualizadas (10 e 24 canais)
+        // =====================================================================
+        for (const [secIdx, expectedTotal] of [
+          [0, 10],
+          [1, 24],
+        ] as const) {
+          const rowEl = getRowBySectionIndex(secIdx);
+          assert.strictEqual(
+            rowEl.getAttribute('data-virtual-container'),
+            null,
+            `[13.12-B] Categoria com ${expectedTotal} canais (<= 24) não deve ativar virtualização horizontal`
+          );
+          const firstBtn = rowEl.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-btn="true"][data-row-card-index="0"]'
+          )!;
+          await act(async () => {
+            rowEl.scrollLeft = 0;
+            firstBtn.focus();
+            await new Promise((r) => setTimeout(r, 10));
+          });
+
+          for (let targetIdx = 1; targetIdx < expectedTotal; targetIdx++) {
+            await act(async () => {
+              moveSpatialFocus('right');
+              await new Promise((r) => setTimeout(r, 5));
+            });
+            const active = document.activeElement as HTMLElement | null;
+            assert.strictEqual(
+              Number(active?.getAttribute('data-row-card-index')),
+              targetIdx,
+              `[13.12-B][${expectedTotal} canais] Passo ${targetIdx}: canal focado deve ser ${targetIdx}`
+            );
+            const cardEl = active?.closest<HTMLElement>('[data-live-channel-card="true"]')!;
+            const rowRect = rowEl.getBoundingClientRect();
+            const cardRect = cardEl.getBoundingClientRect();
+            assert(
+              cardRect.left >= rowRect.left - 1 && cardRect.right <= rowRect.right + 1,
+              `[13.12-B][${expectedTotal} canais] Canal ${targetIdx} deve estar visível na viewport da fileira (card=[${cardRect.left}, ${cardRect.right}], row=[${rowRect.left}, ${rowRect.right}], scrollLeft=${rowEl.scrollLeft})`
+            );
+          }
+
+          assert(
+            rowEl.scrollLeft > 0,
+            `[13.12-B][${expectedTotal} canais] scrollLeft deve ter avançado até o último canal (scrollLeft=${rowEl.scrollLeft})`
+          );
+
+          // Retornar até o canal 0
+          for (let targetIdx = expectedTotal - 2; targetIdx >= 0; targetIdx--) {
+            await act(async () => {
+              moveSpatialFocus('left');
+              await new Promise((r) => setTimeout(r, 5));
+            });
+            const active = document.activeElement as HTMLElement | null;
+            assert.strictEqual(
+              Number(active?.getAttribute('data-row-card-index')),
+              targetIdx,
+              `[13.12-B][${expectedTotal} canais] Retorno para ${targetIdx}`
+            );
+            const cardEl = active?.closest<HTMLElement>('[data-live-channel-card="true"]')!;
+            const rowRect = rowEl.getBoundingClientRect();
+            const cardRect = cardEl.getBoundingClientRect();
+            assert(
+              cardRect.left >= rowRect.left - 1 && cardRect.right <= rowRect.right + 1,
+              `[13.12-B][${expectedTotal} canais] Retorno: canal ${targetIdx} deve estar visível na viewport da fileira`
+            );
+          }
+          assert.strictEqual(
+            rowEl.scrollLeft,
+            0,
+            `[13.12-B][${expectedTotal} canais] Ao retornar ao canal 0, scrollLeft deve voltar a 0`
+          );
+        }
+
+        // =====================================================================
+        // Teste C — Rolagem horizontal em categorias virtualizadas (25, 60 e 120 canais)
+        // =====================================================================
+        for (const [secIdx, expectedTotal, targetSteps] of [
+          [2, 25, 24],
+          [3, 60, 40],
+          [4, 120, 45],
+        ] as const) {
+          const rowEl = getRowBySectionIndex(secIdx);
+          assert.strictEqual(
+            rowEl.getAttribute('data-virtual-container'),
+            'true',
+            `[13.12-C] Categoria com ${expectedTotal} canais (> 24) deve ativar virtualização horizontal`
+          );
+          const firstBtn = rowEl.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-btn="true"][data-row-card-index="0"]'
+          )!;
+          await act(async () => {
+            rowEl.scrollLeft = 0;
+            rowEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+            firstBtn.focus();
+            await new Promise((r) => setTimeout(r, 15));
+          });
+
+          for (let targetIdx = 1; targetIdx <= targetSteps; targetIdx++) {
+            await act(async () => {
+              moveSpatialFocus('right');
+              await new Promise((r) => setTimeout(r, 5));
+            });
+            const active = document.activeElement as HTMLElement | null;
+            assert.strictEqual(
+              Number(active?.getAttribute('data-row-card-index')),
+              targetIdx,
+              `[13.12-C][${expectedTotal} canais] Passo ${targetIdx}: canal focado deve ser ${targetIdx}`
+            );
+            assert(
+              active?.getAttribute('data-live-channel-fav') !== 'true',
+              `[13.12-C][${expectedTotal} canais] Passo ${targetIdx}: nunca deve focar botão de favorito`
+            );
+            const cardEl = active?.closest<HTMLElement>('[data-live-channel-card="true"]');
+            assert(
+              cardEl && rowEl.contains(cardEl),
+              `[13.12-C][${expectedTotal} canais] Passo ${targetIdx}: cartão deve estar montado no DOM`
+            );
+            const rowRect = rowEl.getBoundingClientRect();
+            const cardRect = cardEl!.getBoundingClientRect();
+            assert(
+              cardRect.left >= rowRect.left - 1 && cardRect.right <= rowRect.right + 1,
+              `[13.12-C][${expectedTotal} canais] Passo ${targetIdx}: cartão deve estar visível dentro de rowRect (card=[${Math.round(cardRect.left)}, ${Math.round(cardRect.right)}], row=[${rowRect.left}, ${rowRect.right}], scrollLeft=${rowEl.scrollLeft})`
+            );
+          }
+
+          if (expectedTotal >= 60) {
+            const leftSpacerEl = rowEl.querySelector<HTMLElement>('[data-virtual-spacer="left"]');
+            const leftSpacerWidth = leftSpacerEl
+              ? parseFloat(leftSpacerEl.style.width || '0') || 0
+              : 0;
+            assert(
+              leftSpacerWidth > 0,
+              `[13.12-C][${expectedTotal} canais] Após avançar até o índice ${targetSteps}, leftSpacerPx deve ser > 0 (obteve ${leftSpacerWidth})`
+            );
+          }
+
+          // Retornar ao início com ArrowLeft e confirmar sincronia da janela virtual
+          for (let targetIdx = targetSteps - 1; targetIdx >= 0; targetIdx--) {
+            await act(async () => {
+              moveSpatialFocus('left');
+              await new Promise((r) => setTimeout(r, 4));
+            });
+            const active = document.activeElement as HTMLElement | null;
+            assert.strictEqual(
+              Number(active?.getAttribute('data-row-card-index')),
+              targetIdx,
+              `[13.12-C][${expectedTotal} canais] Retorno ArrowLeft para índice ${targetIdx}`
+            );
+          }
+          assert.strictEqual(
+            rowEl.scrollLeft,
+            0,
+            `[13.12-C][${expectedTotal} canais] Ao retornar ao índice 0, scrollLeft deve ser 0`
+          );
+        }
+
+        // =====================================================================
+        // Teste F — Transição para painel direito no último canal e retorno por ArrowLeft
+        // =====================================================================
+        {
+          const row0Initial = getRowByCategoryId('cat_1312_10');
+          const ch0BtnForPreview = row0Initial.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-btn="true"][data-row-card-index="0"]'
+          )!;
+          assert(ch0BtnForPreview, '[13.12-F] Primeiro canal da categoria cat_1312_10 deve existir');
+          await act(async () => {
+            ch0BtnForPreview.click();
+            await new Promise((r) => setTimeout(r, 30));
+          });
+
+          const row0 = getRowByCategoryId('cat_1312_10');
+          const lastIdx0 = 9; // 10 canais -> último índice é 9
+          const lastBtn0 = row0.querySelector<HTMLButtonElement>(
+            `button[data-live-channel-btn="true"][data-row-card-index="${lastIdx0}"]`
+          )!;
+          assert(lastBtn0, '[13.12-F] Último canal (índice 9) da categoria cat_1312_10 deve existir');
+          await act(async () => {
+            lastBtn0.focus();
+            await new Promise((r) => setTimeout(r, 15));
+          });
+          await act(async () => {
+            moveSpatialFocus('right');
+            await new Promise((r) => setTimeout(r, 15));
+          });
+          const activeInRightPane = document.activeElement as HTMLElement | null;
+          assert(
+            activeInRightPane?.getAttribute('data-live-channel-fav') !== 'true',
+            '[13.12-F] ArrowRight no último canal nunca deve parar no botão de favorito'
+          );
+          assert(
+            Boolean(activeInRightPane?.closest('[data-nav-zone="content"]')),
+            '[13.12-F] ArrowRight no último canal deve mover o foco para o painel direito (data-nav-zone="content")'
+          );
+
+          await act(async () => {
+            moveSpatialFocus('left');
+            await new Promise((r) => setTimeout(r, 15));
+          });
+          assertSameElement(
+            document.activeElement,
+            lastBtn0,
+            '[13.12-F] ArrowLeft a partir do painel direito deve devolver o foco ao canal de origem (índice 9)'
+          );
+        }
+
+        // =====================================================================
+        // Teste E — Favoritar por mouse e por atalho ('F' e 'ContextMenu') sem parada obrigatória
+        // =====================================================================
+        {
+          const row0 = getRowByCategoryId('cat_1312_10');
+          const ch0Btn = row0.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-btn="true"][data-row-card-index="0"]'
+          )!;
+          const ch2Btn = row0.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-btn="true"][data-row-card-index="2"]'
+          )!;
+          const ch2FavBtn = row0.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-fav="true"][data-row-fav-index="2"]'
+          )!;
+          assert(ch0Btn && ch2Btn && ch2FavBtn, '[13.12-E] Botões dos canais 0 e 2 devem existir');
+
+          assert.strictEqual(
+            ch0Btn.getAttribute('data-live-channel-selected'),
+            'true',
+            '[13.12-E] Canal 0 deve estar selecionado inicialmente'
+          );
+          assert.strictEqual(
+            ch2FavBtn.getAttribute('aria-pressed'),
+            'false',
+            '[13.12-E] Canal 2 não deve iniciar como favorito'
+          );
+
+          // 1. Clique com mouse em button[data-live-channel-fav="true"]
+          await act(async () => {
+            ch2FavBtn.click();
+            await new Promise((r) => setTimeout(r, 25));
+          });
+          const rowAfterMouse = getRowByCategoryId('cat_1312_10');
+          const ch2FavAfterMouse = rowAfterMouse.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-fav="true"][data-row-fav-index="2"]'
+          )!;
+          assert.strictEqual(
+            ch2FavAfterMouse?.getAttribute('aria-pressed'),
+            'true',
+            '[13.12-E] Clique com mouse no coração deve favoritar o canal 2 (e exibir a fileira Favoritos no topo)'
+          );
+
+          // 2. Focar button[data-live-channel-btn="true"] do canal 2 e pressionar tecla 'f'
+          const ch2BtnAfterFavRow = rowAfterMouse.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-btn="true"][data-row-card-index="2"]'
+          )!;
+          await act(async () => {
+            ch2BtnAfterFavRow.focus();
+            await new Promise((r) => setTimeout(r, 15));
+          });
+          await act(async () => {
+            ch2BtnAfterFavRow.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'f',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 25));
+          });
+
+          const rowAfterUnfav = getRowByCategoryId('cat_1312_10');
+          const ch2BtnAfterUnfav = rowAfterUnfav.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-btn="true"][data-row-card-index="2"]'
+          )!;
+          const ch2FavAfterUnfav = rowAfterUnfav.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-fav="true"][data-row-fav-index="2"]'
+          )!;
+          assert.strictEqual(
+            ch2FavAfterUnfav.getAttribute('aria-pressed'),
+            'false',
+            '[13.12-E] Tecla "f" no botão do canal focado deve remover dos favoritos'
+          );
+          assertSameElement(
+            document.activeElement,
+            ch2BtnAfterUnfav,
+            '[13.12-E] Foco deve permanecer em button[data-live-channel-btn="true"] após atalho "f"'
+          );
+          assert.strictEqual(
+            ch2BtnAfterUnfav.getAttribute('data-live-channel-selected'),
+            'false',
+            '[13.12-E] Atalho "f" não deve alterar o canal selecionado no preview'
+          );
+
+          // 3. Pressionar ContextMenu (controle Android TV) para favoritar novamente
+          await act(async () => {
+            ch2BtnAfterUnfav.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'ContextMenu',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 25));
+          });
+          const rowAfterCtx = getRowByCategoryId('cat_1312_10');
+          const ch2FavAfterCtx = rowAfterCtx.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-fav="true"][data-row-fav-index="2"]'
+          )!;
+          assert.strictEqual(
+            ch2FavAfterCtx?.getAttribute('aria-pressed'),
+            'true',
+            '[13.12-E] Tecla "ContextMenu" (Android TV) deve favoritar o canal focado'
+          );
+
+          // Limpar favorito do canal 2 usando 'F' maiúsculo
+          const ch2BtnCleanup = rowAfterCtx.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-btn="true"][data-row-card-index="2"]'
+          )!;
+          await act(async () => {
+            ch2BtnCleanup.focus();
+            ch2BtnCleanup.dispatchEvent(
+              new (windowInstance as any).KeyboardEvent('keydown', {
+                key: 'F',
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            await new Promise((r) => setTimeout(r, 25));
+          });
+          const rowFinal = getRowByCategoryId('cat_1312_10');
+          const ch2FavFinal = rowFinal.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-fav="true"][data-row-fav-index="2"]'
+          )!;
+          assert.strictEqual(
+            ch2FavFinal.getAttribute('aria-pressed'),
+            'false',
+            '[13.12-E] Tecla "F" deve desfavoritar o canal 2'
+          );
+        }
+
+        // =====================================================================
+        // Teste G — Legibilidade do bloco de informações (data-live-info-column="true")
+        // =====================================================================
+        {
+          const topSectionEl = container1312.querySelector<HTMLElement>(
+            '[data-live-top-section="true"]'
+          )!;
+          const infoColEl = container1312.querySelector<HTMLElement>(
+            '[data-live-info-column="true"]'
+          )!;
+          const previewColEl = container1312.querySelector<HTMLElement>(
+            '[data-live-preview-column="true"]'
+          )!;
+          assert(
+            topSectionEl && infoColEl && previewColEl,
+            '[13.12-G] Colunas de informação e preview devem existir em data-live-top-section="true"'
+          );
+          const topChildren = Array.from(topSectionEl.children);
+          assert(
+            topChildren.indexOf(infoColEl) < topChildren.indexOf(previewColEl),
+            '[13.12-G] data-live-info-column="true" deve aparecer antes de data-live-preview-column="true"'
+          );
+
+          const logoBoxEl = infoColEl.querySelector<HTMLElement>('.nc-live-channel-logo')!;
+          assert(
+            logoBoxEl && logoBoxEl.classList.contains('w-14') && logoBoxEl.classList.contains('h-14'),
+            '[13.12-G] Logo do canal (.nc-live-channel-logo) deve ter tamanho ampliado w-14 h-14 (~56x56px)'
+          );
+
+          const titleEl = infoColEl.querySelector<HTMLElement>('h1.nc-live-channel-title')!;
+          assert(
+            titleEl &&
+              titleEl.classList.contains('line-clamp-2') &&
+              titleEl.classList.contains('whitespace-normal') &&
+              titleEl.classList.contains('break-words'),
+            '[13.12-G] h1.nc-live-channel-title deve manter line-clamp-2, whitespace-normal e break-words'
+          );
+
+          const liveBadgeEl = infoColEl.querySelector<HTMLElement>('[data-live-badge="true"]')!;
+          assert(
+            liveBadgeEl && (liveBadgeEl.textContent || '').includes('AO VIVO'),
+            '[13.12-G] Badge [data-live-badge="true"] deve conter "AO VIVO"'
+          );
+
+          const variantLabelEl = infoColEl.querySelector<HTMLElement>('[data-live-variant-label="true"]')!;
+          const variantButtons = Array.from(
+            infoColEl.querySelectorAll<HTMLButtonElement>('[data-live-variants-row="true"] button')
+          );
+          assert(
+            variantLabelEl && variantLabelEl.classList.contains('text-sm'),
+            '[13.12-G] Rótulo "Versão do canal" deve usar text-sm (~14px)'
+          );
+          assert(
+            variantButtons.length >= 2 && variantButtons.every((b) => b.classList.contains('text-sm')),
+            '[13.12-G] Botões de versão do canal (Automático / FHD / HD) devem usar text-sm (~14px)'
+          );
+
+          const nowPlayingTitleEl = infoColEl.querySelector<HTMLElement>(
+            '[data-live-now-playing-title="true"]'
+          )!;
+          const nowPlayingDescEl = infoColEl.querySelector<HTMLElement>(
+            '[data-live-now-playing-desc="true"]'
+          )!;
+          assert(
+            nowPlayingTitleEl &&
+              nowPlayingTitleEl.classList.contains('nc-live-now-playing-title') &&
+              nowPlayingDescEl &&
+              nowPlayingDescEl.classList.contains('nc-live-now-playing-desc'),
+            '[13.12-G] Card de programa atual deve exibir título e descrição com classes de legibilidade ampliada'
+          );
+        }
+      } finally {
+        restoreGeomDefault();
+      }
+
+      // =====================================================================
+      // Teste D — Escalas de Android TV (50%, 85%, 100%, 125%)
+      // =====================================================================
+      const prevDisplayMode = document.documentElement.getAttribute('data-display-mode');
+      const prevUiScale = document.documentElement.style.getPropertyValue('--nc-ui-scale');
+      try {
+        document.documentElement.setAttribute('data-display-mode', 'tv');
+        for (const tvScalePct of [50, 85, 100, 125] as const) {
+          const scaleFactor = tvScalePct / 100;
+          document.documentElement.style.setProperty('--nc-ui-scale', String(scaleFactor));
+          const restoreScaleGeom = attachRealisticHorizontalRowGeometry(container1312, scaleFactor);
+          try {
+            const btn60 = container1312.querySelector<HTMLElement>(
+              'button[data-live-channel-category-id="cat_1312_60"]'
+            )!;
+            const row60El = btn60.closest<HTMLElement>('[data-live-category-row-scroll="true"]')!;
+            await act(async () => {
+              row60El.scrollLeft = 0;
+              row60El.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+              await new Promise((r) => setTimeout(r, 15));
+            });
+            const btn0 = row60El.querySelector<HTMLButtonElement>(
+              'button[data-live-channel-btn="true"][data-row-card-index="0"]'
+            )!;
+            assert(btn0, `[13.12-D][TV scale=${tvScalePct}%] Canal 0 deve estar montado após reset de scrollLeft`);
+            await act(async () => {
+              btn0.focus();
+              await new Promise((r) => setTimeout(r, 10));
+            });
+
+            for (let step = 1; step <= 28; step++) {
+              await act(async () => {
+                moveSpatialFocus('right');
+                await new Promise((r) => setTimeout(r, 4));
+              });
+              const active = document.activeElement as HTMLElement | null;
+              assert.strictEqual(
+                Number(active?.getAttribute('data-row-card-index')),
+                step,
+                `[13.12-D][TV scale=${tvScalePct}%] Passo ${step}: deve focar o canal ${step}`
+              );
+              const cardEl = active?.closest<HTMLElement>('[data-live-channel-card="true"]')!;
+              const rowRect = row60El.getBoundingClientRect();
+              const cardRect = cardEl.getBoundingClientRect();
+              assert(
+                cardRect.left >= rowRect.left - 1 && cardRect.right <= rowRect.right + 1,
+                `[13.12-D][TV scale=${tvScalePct}%] Passo ${step}: cartão deve permanecer visível em rowRect (card=[${Math.round(cardRect.left)}, ${Math.round(cardRect.right)}], row=[${rowRect.left}, ${rowRect.right}])`
+              );
+            }
+          } finally {
+            restoreScaleGeom();
+          }
+        }
+      } finally {
+        if (prevDisplayMode === null) {
+          document.documentElement.removeAttribute('data-display-mode');
+        } else {
+          document.documentElement.setAttribute('data-display-mode', prevDisplayMode);
+        }
+        if (prevUiScale) {
+          document.documentElement.style.setProperty('--nc-ui-scale', prevUiScale);
+        } else {
+          document.documentElement.style.removeProperty('--nc-ui-scale');
+        }
+      }
+    } finally {
+      (XtreamService as any).getShortEpg = savedGetShortEpg13;
+      setLiveEpgClockForTest(null);
+      resetLiveEpgCacheForTest();
+      await act(async () => {
+        root1312.unmount();
+      });
+      container1312.remove();
+    }
+  }
+
+  console.log('✅ Todos os testes do Ciclo 12.27-a / 12.27-a.2 / 12.27-a.3 / 12.27-a.4 (TV ao Vivo 50/50, D-Pad Vertical e Horizontal Contínuo, Favoritos por Atalho, Virtualização, Mouse vs D-Pad, Preview e EPG) aprovados!');
 }
 
 async function main() {
