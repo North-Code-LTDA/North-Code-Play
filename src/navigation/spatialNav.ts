@@ -1944,11 +1944,18 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       }
 
       if (currentZone === 'content') {
-        const showcaseCategoriesBtn = candidates.find(
-          (c) =>
-            getLogicalZone(c, ctx) === 'categories' &&
-            Boolean(c.closest('[data-showcase-categories-bar="true"]'))
-        );
+        const showcaseCategoriesBtn =
+          candidates.find(
+            (c) =>
+              getLogicalZone(c, ctx) === 'categories' &&
+              Boolean(c.closest('[data-showcase-categories-bar="true"]')) &&
+              c.getAttribute('data-category-selected') === 'true'
+          ) ||
+          candidates.find(
+            (c) =>
+              getLogicalZone(c, ctx) === 'categories' &&
+              Boolean(c.closest('[data-showcase-categories-bar="true"]'))
+          );
         if (showcaseCategoriesBtn) {
           focusElementSafely(showcaseCategoriesBtn, direction);
           return showcaseCategoriesBtn;

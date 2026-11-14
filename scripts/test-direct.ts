@@ -20177,14 +20177,12 @@ if (args[0] === 'add' && args[1] === 'android') {
               `[12.23][${testDisplayMode}] Em scrollLeft=0, a última opção (4K) deve estar fora da área visível da faixa`
             );
 
-            // Entrar na programação (Canal 1 -> Favorito 1 -> 1º item da programação) e subir (ArrowUp) para a faixa de versões
-            await dispatchArrowKey('ArrowRight');
-            assertSameElement(document.activeElement, fav1Btn, `[12.23][${testDisplayMode}] Canal 1 -> Favorito 1`);
+            // Entrar na programação (Canal 1 -> 1º item da programação direto, sem parar no coração) e subir (ArrowUp) para a faixa de versões
             await dispatchArrowKey('ArrowRight');
             assertSameElement(
               document.activeElement,
               epgItems[0],
-              `[12.23][${testDisplayMode}] Favorito 1 -> 1º item da programação preservado com canal agrupado`
+              `[12.23][${testDisplayMode}] Canal 1 -> 1º item da programação preservado com canal agrupado (sem parar no coração)`
             );
 
             await dispatchArrowKey('ArrowUp');
@@ -29989,7 +29987,694 @@ async function runCycle1227LiveTvAndEpgTests() {
   console.log('✅ Todos os testes do Ciclo 12.27-a / 12.27-a.2 / 12.27-a.3 / 12.27-a.4 (TV ao Vivo 50/50, D-Pad Vertical e Horizontal Contínuo, Favoritos por Atalho, Virtualização, Mouse vs D-Pad, Preview e EPG) aprovados!');
 }
 
+async function runCycle1228FavoritesStandardizationTests() {
+  console.log('\n🧪 Testando Ciclo 12.28: Padronização final da página de Favoritos (Seções em Todos, Grades filtradas, Cartões 16:9 e 2:3, D-Pad sem paradas em coração, Remoção com foco previsível, Abertura de Canal/Filme/Série e Virtualização)...');
+
+  const { moveSpatialFocus, setNavMode } = await import('../src/navigation/spatialNav');
+  const { getFavoritesKey, setStoredFavorites } = await import('../src/utils/accountUtils');
+  const { getHistoryRecords } = await import('../src/utils/playbackHistory');
+
+  const creds1228 = {
+    serverUrl: 'http://fav1228.northcode.tv:8080',
+    username: 'user_fav_1228',
+    password: 'pwd_1228',
+    playlistName: 'Lista Favoritos 1228',
+    allowed_output_formats: ['m3u8', 'ts'],
+  };
+  const favKey1228 = getFavoritesKey(creds1228.serverUrl, creds1228.username);
+
+  const savedGetVodInfo = (XtreamService as any).getVodInfo;
+  const savedGetSeriesInfo = (XtreamService as any).getSeriesInfo;
+  (XtreamService as any).getVodInfo = async (_creds: any, vodId: any) => ({
+    info: {
+      name: `Filme Favorito #${vodId}`,
+      plot: 'Sinopse detalhada do filme favorito para validação do Ciclo 12.28.',
+      releasedate: '2025-05-10',
+      rating: '8.7',
+      genre: 'Ação, Ficção',
+      duration: '02:05:00',
+    },
+    movie_data: {
+      stream_id: Number(vodId),
+      name: `Filme Favorito #${vodId}`,
+      container_extension: 'mp4',
+    },
+  });
+  (XtreamService as any).getSeriesInfo = async (_creds: any, seriesId: any) => ({
+    info: {
+      name: `Série Favorita #${seriesId}`,
+      plot: 'Sinopse detalhada da série favorita para validação do Ciclo 12.28.',
+      releaseDate: '2024',
+      rating: '9.1',
+      genre: 'Drama',
+    },
+    seasons: [{ season_number: 1, name: 'Temporada 1' }],
+    episodes: {
+      '1': [
+        {
+          id: '9901',
+          episode_num: 1,
+          title: 'Episódio 1: O Início',
+          container_extension: 'mp4',
+          info: { duration_secs: 2400 },
+        },
+      ],
+    },
+  });
+
+  const container1228 = document.createElement('div');
+  document.body.appendChild(container1228);
+  const root1228 = createRoot(container1228);
+
+  let playedCalls1228: Array<{
+    url: string;
+    title: string;
+    streamId?: string | number;
+    contentType?: string;
+    channelName?: string;
+  }> = [];
+
+  const renderFavoritesPage = async (searchQuery = '') => {
+    await act(async () => {
+      root1228.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: creds1228 },
+          React.createElement(
+            'div',
+            { className: 'h-[720px] w-[1280px] flex flex-col' },
+            React.createElement(
+              'header',
+              { className: 'nc-top-header' },
+              React.createElement(
+                'div',
+                { 'data-header-nav-strip': 'true' },
+                React.createElement(
+                  'button',
+                  {
+                    type: 'button',
+                    'data-nav-item': 'true',
+                    'data-header-nav-id': 'favorites',
+                    'data-header-nav-active': 'true',
+                  },
+                  'Favoritos'
+                )
+              )
+            ),
+            React.createElement(FavoritesView, {
+              onPlay: (url, title, _startAt, streamId, contentType, channelName) => {
+                playedCalls1228.push({ url, title, streamId, contentType, channelName });
+              },
+              searchQuery,
+            })
+          )
+        )
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+  };
+
+  try {
+    setNavMode('remote');
+
+    // -------------------------------------------------------------------------
+    // 1. Estado vazio (sem favoritos)
+    // -------------------------------------------------------------------------
+    setStoredFavorites(favKey1228, []);
+    await renderFavoritesPage('');
+
+    const emptyBox = container1228.querySelector('[data-favorites-empty="true"]');
+    assert(emptyBox !== null, '[12.28-1] Estado vazio deve ser exibido quando não há favoritos');
+    assert(
+      emptyBox?.textContent?.includes('Nenhum favorito encontrado'),
+      '[12.28-1] Estado vazio deve exibir "Nenhum favorito encontrado"'
+    );
+
+    const filterBtnsEmpty = Array.from(
+      container1228.querySelectorAll<HTMLButtonElement>('button[data-favorites-filter]')
+    );
+    assert.strictEqual(
+      filterBtnsEmpty.length,
+      4,
+      '[12.28-1] Deve exibir os 4 filtros: Todos, Canais, Filmes e Séries'
+    );
+    assert.deepStrictEqual(
+      filterBtnsEmpty.map((b) => b.textContent?.trim()),
+      ['Todos', 'Canais', 'Filmes', 'Séries'],
+      '[12.28-1] Rótulos dos filtros devem ser Todos, Canais, Filmes e Séries'
+    );
+
+    // -------------------------------------------------------------------------
+    // 2. Conteúdo misto em "Todos": seções organizadas (Canais, Filmes, Séries),
+    //    cartões 16:9 para canais (object-contain) e 2:3 para filmes/séries (object-cover),
+    //    e coração com tabIndex=-1 (nunca parada obrigatória entre cartões)
+    // -------------------------------------------------------------------------
+    const mixedFavorites = [
+      { id: 101, name: 'Globo SP FHD', cover: 'http://127.0.0.1:9/globo.png', type: 'live' as const },
+      { id: 102, name: 'SporTV HD', cover: 'http://127.0.0.1:9/sportv.png', type: 'live' as const },
+      { id: 103, name: 'Band News FHD', cover: 'http://127.0.0.1:9/band.png', type: 'live' as const },
+      {
+        id: 201,
+        name: 'Duna: Parte Dois',
+        cover: 'http://127.0.0.1:9/duna2.jpg',
+        type: 'movie' as const,
+        extraData: { rating: '8.9', year: 2024 },
+      },
+      {
+        id: 202,
+        name: 'Oppenheimer',
+        cover: 'http://127.0.0.1:9/opp.jpg',
+        type: 'movie' as const,
+        extraData: { rating: '8.8', year: 2023 },
+      },
+      {
+        id: 203,
+        name: 'Interestelar',
+        cover: 'http://127.0.0.1:9/inter.jpg',
+        type: 'movie' as const,
+        extraData: { rating: '9.2', year: 2014 },
+      },
+      {
+        id: 301,
+        name: 'Ruptura',
+        cover: 'http://127.0.0.1:9/ruptura.jpg',
+        type: 'series' as const,
+        extraData: { rating: '9.0', year: 2022 },
+      },
+      {
+        id: 302,
+        name: 'O Urso',
+        cover: 'http://127.0.0.1:9/urso.jpg',
+        type: 'series' as const,
+        extraData: { rating: '8.7', year: 2023 },
+      },
+    ];
+    setStoredFavorites(favKey1228, mixedFavorites);
+    await renderFavoritesPage('');
+
+    const liveSec = container1228.querySelector<HTMLElement>('[data-favorites-section="live"]');
+    const movieSec = container1228.querySelector<HTMLElement>('[data-favorites-section="movie"]');
+    const seriesSec = container1228.querySelector<HTMLElement>('[data-favorites-section="series"]');
+    assert(
+      liveSec && movieSec && seriesSec,
+      '[12.28-2] Em "Todos", deve organizar os favoritos nas 3 seções (Canais Favoritos, Filmes Favoritos, Séries Favoritas)'
+    );
+    assert(
+      liveSec.textContent?.includes('Canais Favoritos') &&
+        movieSec.textContent?.includes('Filmes Favoritos') &&
+        seriesSec.textContent?.includes('Séries Favoritas'),
+      '[12.28-2] Títulos das 3 seções devem estar presentes em "Todos"'
+    );
+
+    const liveCard0 = liveSec.querySelector<HTMLElement>('[data-favorite-card="true"][data-favorite-index="0"]')!;
+    const movieCard0 = movieSec.querySelector<HTMLElement>('[data-favorite-card="true"][data-favorite-index="0"]')!;
+    const seriesCard0 = seriesSec.querySelector<HTMLElement>('[data-favorite-card="true"][data-favorite-index="0"]')!;
+
+    assert(
+      liveCard0.className.includes('aspect-video') && !liveCard0.className.includes('aspect-[2/3]'),
+      `[12.28-2] Cartão de canal ao vivo deve usar formato 16:9 (aspect-video), nunca pôster 2:3. Classes: ${liveCard0.className}`
+    );
+    assert(
+      movieCard0.className.includes('aspect-[2/3]') && seriesCard0.className.includes('aspect-[2/3]'),
+      '[12.28-2] Cartões de filmes e séries devem manter formato de pôster 2:3 (aspect-[2/3])'
+    );
+
+    const allRemoveBtns = Array.from(
+      container1228.querySelectorAll<HTMLButtonElement>('button[data-favorite-remove="true"]')
+    );
+    assert.strictEqual(
+      allRemoveBtns.length,
+      8,
+      '[12.28-2] Todos os 8 cartões devem possuir o botão Remover dos favoritos para mouse/toque'
+    );
+    assert(
+      allRemoveBtns.every((btn) => btn.tabIndex === -1),
+      '[12.28-2] Botões de coração devem ter tabIndex=-1 para nunca virarem parada obrigatória no D-Pad'
+    );
+
+    // -------------------------------------------------------------------------
+    // 3. Navegação D-Pad em "Todos": Cabeçalho <-> Filtros <-> Seções (Horizontal e Vertical)
+    //    sem parar no coração
+    // -------------------------------------------------------------------------
+    const headerFavBtn = container1228.querySelector<HTMLButtonElement>(
+      'button[data-header-nav-id="favorites"]'
+    )!;
+    const filterAllBtn = container1228.querySelector<HTMLButtonElement>(
+      'button[data-favorites-filter="all"]'
+    )!;
+    const filterLiveBtn = container1228.querySelector<HTMLButtonElement>(
+      'button[data-favorites-filter="live"]'
+    )!;
+    const filterMovieBtn = container1228.querySelector<HTMLButtonElement>(
+      'button[data-favorites-filter="movie"]'
+    )!;
+    const filterSeriesBtn = container1228.querySelector<HTMLButtonElement>(
+      'button[data-favorites-filter="series"]'
+    )!;
+
+    await act(async () => {
+      headerFavBtn.focus();
+    });
+    // ArrowDown do cabeçalho -> filtro ativo ("Todos")
+    await act(async () => {
+      moveSpatialFocus('down');
+    });
+    assertSameElement(
+      document.activeElement,
+      filterAllBtn,
+      '[12.28-3] ArrowDown do cabeçalho deve focar o filtro ativo ("Todos")'
+    );
+
+    // ArrowRight / ArrowLeft pelos filtros
+    await act(async () => {
+      moveSpatialFocus('right');
+    });
+    assertSameElement(document.activeElement, filterLiveBtn, '[12.28-3] Todos -> Canais');
+    await act(async () => {
+      moveSpatialFocus('right');
+    });
+    assertSameElement(document.activeElement, filterMovieBtn, '[12.28-3] Canais -> Filmes');
+    await act(async () => {
+      moveSpatialFocus('right');
+    });
+    assertSameElement(document.activeElement, filterSeriesBtn, '[12.28-3] Filmes -> Séries');
+    await act(async () => {
+      moveSpatialFocus('left');
+      moveSpatialFocus('left');
+      moveSpatialFocus('left');
+    });
+    assertSameElement(document.activeElement, filterAllBtn, '[12.28-3] Retorno até o filtro Todos');
+
+    // ArrowDown do filtro -> 1º cartão de Canais Favoritos
+    await act(async () => {
+      moveSpatialFocus('down');
+    });
+    assertSameElement(
+      document.activeElement,
+      liveCard0,
+      '[12.28-3] ArrowDown a partir dos filtros deve focar o 1º cartão da seção Canais Favoritos'
+    );
+
+    // ArrowRight passa diretamente de canal 0 -> canal 1 -> canal 2 sem parar no coração
+    const liveCard1 = liveSec.querySelector<HTMLElement>('[data-favorite-card="true"][data-favorite-index="1"]')!;
+    const liveCard2 = liveSec.querySelector<HTMLElement>('[data-favorite-card="true"][data-favorite-index="2"]')!;
+    await act(async () => {
+      moveSpatialFocus('right');
+    });
+    assertSameElement(
+      document.activeElement,
+      liveCard1,
+      '[12.28-3] 1º ArrowRight deve ir direto ao 2º canal favorito (sem parar no coração)'
+    );
+    await act(async () => {
+      moveSpatialFocus('right');
+    });
+    assertSameElement(
+      document.activeElement,
+      liveCard2,
+      '[12.28-3] 2º ArrowRight deve ir direto ao 3º canal favorito (sem parar no coração)'
+    );
+    await act(async () => {
+      moveSpatialFocus('left');
+      moveSpatialFocus('left');
+    });
+    assertSameElement(
+      document.activeElement,
+      liveCard0,
+      '[12.28-3] ArrowLeft retorna diretamente ao 1º canal favorito'
+    );
+
+    // ArrowDown passa da seção Canais Favoritos -> Filmes Favoritos -> Séries Favoritas
+    await act(async () => {
+      moveSpatialFocus('down');
+    });
+    assertSameElement(
+      document.activeElement,
+      movieCard0,
+      '[12.28-3] ArrowDown em Canais Favoritos deve descer para Filmes Favoritos'
+    );
+    await act(async () => {
+      moveSpatialFocus('down');
+    });
+    assertSameElement(
+      document.activeElement,
+      seriesCard0,
+      '[12.28-3] ArrowDown em Filmes Favoritos deve descer para Séries Favoritas'
+    );
+
+    // ArrowUp retorna de Séries -> Filmes -> Canais -> Filtro ativo
+    await act(async () => {
+      moveSpatialFocus('up');
+    });
+    assertSameElement(document.activeElement, movieCard0, '[12.28-3] ArrowUp de Séries -> Filmes');
+    await act(async () => {
+      moveSpatialFocus('up');
+    });
+    assertSameElement(document.activeElement, liveCard0, '[12.28-3] ArrowUp de Filmes -> Canais');
+    await act(async () => {
+      moveSpatialFocus('up');
+    });
+    assertSameElement(
+      document.activeElement,
+      filterAllBtn,
+      '[12.28-3] ArrowUp da 1ª seção deve subir para o filtro ativo ("Todos")'
+    );
+
+    // -------------------------------------------------------------------------
+    // 4. Reprodução de canal, abertura de MovieDetails e abertura de SeriesDetails
+    //    com restauração de foco ao fechar os modais
+    // -------------------------------------------------------------------------
+    playedCalls1228 = [];
+    await act(async () => {
+      liveCard0.focus();
+      liveCard0.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      playedCalls1228.length,
+      1,
+      '[12.28-4] Pressionar Enter no canal favorito deve acionar reprodução imediata'
+    );
+    assert.strictEqual(playedCalls1228[0].streamId, 101, '[12.28-4] StreamId do canal reproduzido deve ser 101');
+    assert.strictEqual(playedCalls1228[0].contentType, 'live', '[12.28-4] ContentType deve ser live');
+    const historyAfterLive = getHistoryRecords(creds1228);
+    assert(
+      historyAfterLive.some((r) => r.type === 'live' && String(r.id) === '101'),
+      '[12.28-4] Reproduzir canal favorito deve registrar entrada no histórico de reprodução'
+    );
+
+    // Abrir MovieDetails no 2º filme ("Oppenheimer") e fechar com Escape -> foco volta para movieCard1
+    const movieCard1 = movieSec.querySelector<HTMLElement>('[data-favorite-card="true"][data-favorite-index="1"]')!;
+    await act(async () => {
+      movieCard1.focus();
+      movieCard1.click();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    assert(
+      document.querySelector('[data-details-dialog="true"]') !== null,
+      '[12.28-4] Clicar no cartão de filme deve abrir MovieDetails'
+    );
+    await act(async () => {
+      windowInstance.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    assert.strictEqual(
+      document.querySelector('[data-details-dialog="true"]'),
+      null,
+      '[12.28-4] Escape deve fechar MovieDetails'
+    );
+    assertSameElement(
+      document.activeElement,
+      container1228.querySelector('[data-favorite-key="movie-202"]'),
+      '[12.28-4] Ao fechar MovieDetails, o foco deve ser restaurado no cartão do filme correspondente'
+    );
+
+    // Abrir SeriesDetails na 1ª série ("Ruptura") e fechar com Escape -> foco volta para seriesCard0
+    await act(async () => {
+      seriesCard0.focus();
+      seriesCard0.click();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    assert(
+      document.querySelector('[data-details-dialog="true"]') !== null,
+      '[12.28-4] Clicar no cartão de série deve abrir SeriesDetails'
+    );
+    await act(async () => {
+      windowInstance.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    assert.strictEqual(
+      document.querySelector('[data-details-dialog="true"]'),
+      null,
+      '[12.28-4] Escape deve fechar SeriesDetails'
+    );
+    assertSameElement(
+      document.activeElement,
+      container1228.querySelector('[data-favorite-key="series-301"]'),
+      '[12.28-4] Ao fechar SeriesDetails, o foco deve ser restaurado no cartão da série correspondente'
+    );
+
+    // -------------------------------------------------------------------------
+    // 5. Remoção do item focado e remoção do último item da seção:
+    //    restauração previsível no vizinho, na seção seguinte ou no filtro ativo
+    // -------------------------------------------------------------------------
+    // Focar o 2º filme (índice 1: "Oppenheimer") e remover via tecla 'f' -> foco vai para o novo índice 1 ("Interestelar", movie-203)
+    const targetMovie1 = container1228.querySelector<HTMLElement>('[data-favorite-key="movie-202"]')!;
+    await act(async () => {
+      targetMovie1.focus();
+    });
+    await act(async () => {
+      targetMovie1.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'f',
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    assert.strictEqual(
+      container1228.querySelector('[data-favorite-key="movie-202"]'),
+      null,
+      '[12.28-5] Tecla "f" deve remover o favorito focado'
+    );
+    assertSameElement(
+      document.activeElement,
+      container1228.querySelector('[data-favorite-key="movie-203"]'),
+      '[12.28-5] Ao remover o item de índice 1, o foco deve ir para o vizinho que assumiu o índice 1 (movie-203)'
+    );
+
+    // Agora "movie-203" é o último item da seção Filmes (índice 1 de 2). Remover via tecla Delete -> foco vai para o vizinho anterior (índice 0: movie-201)
+    const targetMovieLast = container1228.querySelector<HTMLElement>('[data-favorite-key="movie-203"]')!;
+    await act(async () => {
+      targetMovieLast.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'Delete',
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    assertSameElement(
+      document.activeElement,
+      container1228.querySelector('[data-favorite-key="movie-201"]'),
+      '[12.28-5] Ao remover o último item da fileira (índice 1), o foco deve recuar para o vizinho anterior (índice 0: movie-201)'
+    );
+
+    // Agora "movie-201" é o ÚNICO item restante na seção Filmes Favoritos!
+    // Ao removê-lo em "Todos", a seção Filmes desaparece e o foco deve ir para o 1º item da seção seguinte (Séries Favoritas: series-301)!
+    const soleMovieCard = container1228.querySelector<HTMLElement>('[data-favorite-key="movie-201"]')!;
+    const soleMovieRemoveBtn = soleMovieCard.querySelector<HTMLButtonElement>('button[data-favorite-remove="true"]')!;
+    await act(async () => {
+      soleMovieRemoveBtn.click();
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    assert.strictEqual(
+      container1228.querySelector('[data-favorites-section="movie"]'),
+      null,
+      '[12.28-5] Seção Filmes Favoritos deve desmontar ao ficar vazia'
+    );
+    assertSameElement(
+      document.activeElement,
+      container1228.querySelector('[data-favorite-key="series-301"]'),
+      '[12.28-5] Ao remover o último item de uma seção em "Todos", o foco deve ir para o 1º item da seção vizinha (series-301)'
+    );
+
+    // -------------------------------------------------------------------------
+    // 6. Filtros individuais (Canais, Filmes, Séries), Busca e Remoção até esvaziar o filtro
+    // -------------------------------------------------------------------------
+    const seriesFilterBtn = container1228.querySelector<HTMLButtonElement>(
+      'button[data-favorites-filter="series"]'
+    )!;
+    await act(async () => {
+      seriesFilterBtn.focus();
+      seriesFilterBtn.click();
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    assert.strictEqual(
+      seriesFilterBtn.getAttribute('data-category-selected'),
+      'true',
+      '[12.28-6] Filtro Séries deve estar marcado como selecionado'
+    );
+
+    // ArrowDown do filtro Séries entra no 1º cartão da grade de Séries (series-301)
+    await act(async () => {
+      moveSpatialFocus('down');
+    });
+    assertSameElement(
+      document.activeElement,
+      container1228.querySelector('[data-favorite-key="series-301"]'),
+      '[12.28-6] ArrowDown do filtro Séries deve focar o 1º cartão da grade de Séries'
+    );
+
+    // ArrowUp do 1º cartão da grade de Séries deve voltar exatamente para o filtro ativo ("Séries", não "Todos")!
+    await act(async () => {
+      moveSpatialFocus('up');
+    });
+    assertSameElement(
+      document.activeElement,
+      seriesFilterBtn,
+      '[12.28-6] ArrowUp a partir da 1ª linha da grade deve retornar ao filtro ativo ("Séries")'
+    );
+
+    // Descer novamente e remover as 2 séries até esvaziar o filtro Séries -> foco deve restaurar no botão do filtro "Séries"!
+    await act(async () => {
+      moveSpatialFocus('down');
+    });
+    const ser1El = container1228.querySelector<HTMLElement>('[data-favorite-key="series-301"]')!;
+    await act(async () => {
+      ser1El.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'f',
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    const ser2El = container1228.querySelector<HTMLElement>('[data-favorite-key="series-302"]')!;
+    assertSameElement(
+      document.activeElement,
+      ser2El,
+      '[12.28-6] Remover 1ª série move o foco para a 2ª série (series-302)'
+    );
+
+    await act(async () => {
+      ser2El.dispatchEvent(
+        new (windowInstance as any).KeyboardEvent('keydown', {
+          key: 'f',
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    assertSameElement(
+      document.activeElement,
+      container1228.querySelector('button[data-favorites-filter="series"]'),
+      '[12.28-6] Remover o último item da aba filtrada ("Séries") deve restaurar o foco no filtro "Séries" (nunca perder o foco nem saltar para o cabeçalho)'
+    );
+
+    // Testar busca com e sem resultados
+    await act(async () => {
+      container1228.querySelector<HTMLButtonElement>('button[data-favorites-filter="all"]')?.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    await renderFavoritesPage('SporTV');
+    const matchedCards = container1228.querySelectorAll('[data-favorite-card="true"]');
+    assert.strictEqual(
+      matchedCards.length,
+      1,
+      '[12.28-6] Busca por "SporTV" deve exibir exatamente 1 favorito correspondente'
+    );
+    assert.strictEqual(
+      matchedCards[0].getAttribute('aria-label'),
+      'SporTV HD',
+      '[12.28-6] Cartão filtrado pela busca deve ser "SporTV HD"'
+    );
+
+    await renderFavoritesPage('TermoInexistente999');
+    const emptySearchBox = container1228.querySelector('[data-favorites-empty="true"]');
+    assert(
+      emptySearchBox !== null && emptySearchBox.textContent?.includes('TermoInexistente999'),
+      '[12.28-6] Busca sem resultados deve exibir estado vazio informando o termo pesquisado'
+    );
+
+    // -------------------------------------------------------------------------
+    // 7. Desempenho e escalabilidade: lista extensa (60 filmes favoritos)
+    //    com virtualização na grade e rolagem vertical por D-Pad
+    // -------------------------------------------------------------------------
+    const largeMovieFavs = Array.from({ length: 60 }, (_, idx) => ({
+      id: 5000 + idx,
+      name: `Filme Extenso #${idx + 1}`,
+      cover: `http://127.0.0.1:9/large_${idx + 1}.jpg`,
+      type: 'movie' as const,
+      extraData: { rating: '8.4', year: 2025 },
+    }));
+    setStoredFavorites(favKey1228, largeMovieFavs);
+    await renderFavoritesPage('');
+
+    // Na aba "Todos", a fileira de 60 filmes ativa virtualização horizontal (monta apenas a janela inicial < 60)
+    const allModeRenderedMovies = container1228.querySelectorAll('[data-favorite-card="true"]');
+    assert(
+      allModeRenderedMovies.length > 0 && allModeRenderedMovies.length < 30,
+      `[12.28-7] Em "Todos", fileira com 60 favoritos deve virtualizar horizontalmente (montados=${allModeRenderedMovies.length} de 60)`
+    );
+
+    // Mudar para o filtro "Filmes" (grade virtualizada) e navegar verticalmente
+    const movieTabBtn = container1228.querySelector<HTMLButtonElement>(
+      'button[data-favorites-filter="movie"]'
+    )!;
+    await act(async () => {
+      movieTabBtn.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const gridEl = container1228.querySelector<HTMLElement>('[data-nav-grid="true"][data-virtual-container="true"]')!;
+    assert(gridEl !== null, '[12.28-7] Aba Filmes deve montar grade virtualizada');
+    assert.strictEqual(
+      gridEl.getAttribute('data-virtual-total'),
+      '60',
+      '[12.28-7] Grade virtualizada deve reportar total de 60 itens'
+    );
+
+    const card0InGrid = gridEl.querySelector<HTMLElement>('[data-virtual-index="0"]')!;
+    await act(async () => {
+      card0InGrid.focus();
+    });
+    assertSameElement(document.activeElement, card0InGrid, '[12.28-7] Foco inicial no item 0 da grade');
+
+    // Avançar 5 linhas para baixo com ArrowDown
+    for (let step = 1; step <= 5; step++) {
+      await act(async () => {
+        moveSpatialFocus('down');
+      });
+    }
+    const activeAfterDown = document.activeElement as HTMLElement | null;
+    const focusedIdxAfterDown = Number(activeAfterDown?.getAttribute('data-virtual-index') ?? -1);
+    assert(
+      focusedIdxAfterDown >= 10,
+      `[12.28-7] 5 passos ArrowDown na grade devem avançar múltiplas linhas (índice focado=${focusedIdxAfterDown})`
+    );
+  } finally {
+    (XtreamService as any).getVodInfo = savedGetVodInfo;
+    (XtreamService as any).getSeriesInfo = savedGetSeriesInfo;
+    await act(async () => {
+      root1228.unmount();
+    });
+    container1228.remove();
+  }
+
+  console.log('✅ Todos os testes do Ciclo 12.28 (Padronização da página de Favoritos) aprovados!');
+}
+
 async function main() {
+  if (process.env.TEST_ONLY_SECTION === '14') {
+    console.log('🎯 EXECUTANDO TESTE DIRECIONADO: SEÇÃO 14 (CICLO 12.28 FAVORITOS)\n');
+    await runCycle1228FavoritesStandardizationTests();
+    await cleanupTestEnvironment();
+    console.log('\n🎉 TESTE DIRECIONADO DA SEÇÃO 14 CONCLUÍDO COM SUCESSO!');
+    return;
+  }
   if (process.env.TEST_ONLY_SECTION === '13') {
     console.log('🎯 EXECUTANDO TESTE DIRECIONADO: SEÇÃO 13 (CICLO 12.27-a EPG & LIVE TV)\n');
     await runCycle1227LiveTvAndEpgTests();
@@ -30011,6 +30696,7 @@ async function main() {
   await runCapacitorTransportAndAuditFixTests();
   await runPerformanceAndVirtualizationTests();
   await runCycle1227LiveTvAndEpgTests();
+  await runCycle1228FavoritesStandardizationTests();
   await cleanupTestEnvironment();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
 }
