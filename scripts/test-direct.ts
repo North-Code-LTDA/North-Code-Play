@@ -11258,9 +11258,13 @@ async function runPerformanceAndVirtualizationTests() {
     windowInstance.localStorage.removeItem(homeHistoryKey);
     if (savedWindowIO !== undefined) {
       (windowInstance as any).IntersectionObserver = savedWindowIO;
+    } else {
+      delete (windowInstance as any).IntersectionObserver;
     }
     if (savedGlobalIO !== undefined) {
       (globalThis as any).IntersectionObserver = savedGlobalIO;
+    } else {
+      delete (globalThis as any).IntersectionObserver;
     }
     (windowInstance.HTMLElement.prototype as any).getBoundingClientRect = origProtoGetBCRHome;
     await act(async () => {
@@ -28041,6 +28045,143 @@ async function runCycle1227LiveTvAndEpgTests() {
       });
       if (uiContainer.parentNode) document.body.removeChild(uiContainer);
     }
+
+    // 13.6 Proteção contra consultas EPG em cartões invisíveis / fora da área visível (IntersectionObserver)
+    resetLiveEpgCacheForTest();
+    setLiveEpgClockForTest(() => nowMs);
+    const prevIo = (windowInstance as any).IntersectionObserver;
+    const prevGlobalIo = (globalThis as any).IntersectionObserver;
+    const epgRequestedIds136: number[] = [];
+    (XtreamService as any).getShortEpg = async (_creds: any, streamId: number | string) => {
+      const id = Number(streamId);
+      epgRequestedIds136.push(id);
+      return {
+        epg_listings: [
+          {
+            id: `p_${id}`,
+            title: Buffer.from(`Programa Visível ${id}`, 'utf8').toString('base64'),
+            start_timestamp: nowEpochSec - 300,
+            stop_timestamp: nowEpochSec + 1800,
+          },
+        ],
+      };
+    };
+
+    const observedIoTargets = new Map<HTMLElement, { cb: IntersectionObserverCallback; observer: any }>();
+    class MockLiveIo {
+      private cb: IntersectionObserverCallback;
+      constructor(cb: IntersectionObserverCallback) {
+        this.cb = cb;
+      }
+      observe(target: HTMLElement) {
+        observedIoTargets.set(target, { cb: this.cb, observer: this });
+        const cardAttrIdx = target.getAttribute('data-virtual-index');
+        const rowAttrIdx = target.getAttribute('data-live-row-index');
+        const isVisible =
+          rowAttrIdx !== null
+            ? Number(rowAttrIdx) === 0
+            : cardAttrIdx !== null
+              ? Number(cardAttrIdx) < 2
+              : false;
+        this.cb(
+          [{ target, isIntersecting: isVisible, intersectionRatio: isVisible ? 1 : 0 } as any],
+          this as any
+        );
+      }
+      unobserve(target: HTMLElement) {
+        observedIoTargets.delete(target);
+      }
+      disconnect() {}
+    }
+
+    (windowInstance as any).IntersectionObserver = MockLiveIo;
+    (globalThis as any).IntersectionObserver = MockLiveIo;
+
+    const credsVis: any = {
+      serverUrl: 'http://vis-epg.tv:8080',
+      username: 'visUser',
+      password: 'visPassword',
+      allowed_output_formats: ['m3u8'],
+    };
+    const visStreams = Array.from({ length: 14 }, (_, idx) => ({
+      stream_id: 9500 + idx,
+      name: `Canal Vis ${idx + 1}`,
+      category_id: 'cat_vis_0',
+      stream_icon: '',
+    }));
+    const visCtx: any = {
+      ...uiCtx,
+      credentials: credsVis,
+      liveCategories: [{ category_id: 'cat_vis_0', category_name: 'CANAIS · VISIBILIDADE' }],
+      liveStreams: visStreams,
+      allLiveStreams: visStreams,
+    };
+
+    const visContainer = document.createElement('div');
+    document.body.appendChild(visContainer);
+    const visRoot = createRoot(visContainer);
+
+    try {
+      await act(async () => {
+        visRoot.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              XtreamMockProvider,
+              { value: visCtx },
+              React.createElement(LiveTvView, { onPlay: () => {} })
+            )
+          )
+        );
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      assert(
+        epgRequestedIds136.includes(9500) && epgRequestedIds136.includes(9501),
+        `[12.27-a] Cartões visíveis (9500, 9501) devem consultar EPG. Recebido: ${JSON.stringify(epgRequestedIds136)}`
+      );
+      assert(
+        !epgRequestedIds136.includes(9511) && !epgRequestedIds136.includes(9512) && !epgRequestedIds136.includes(9513),
+        `[12.27-a] Cartões invisíveis fora do viewport (9511..9513) NÃO devem disparar consultas EPG. Recebido: ${JSON.stringify(epgRequestedIds136)}`
+      );
+
+      // Simular rolagem tornando o cartão 11 (stream_id 9511) visível no IntersectionObserver
+      const card11El = visContainer.querySelector<HTMLElement>('[data-live-channel-card="true"][data-virtual-index="11"]')!;
+      const card11Entry = card11El ? observedIoTargets.get(card11El) : undefined;
+      assert(card11El && card11Entry, '[12.27-a] Cartão 11 deve estar observado pelo IntersectionObserver');
+      await act(async () => {
+        card11Entry!.cb(
+          [{ target: card11El, isIntersecting: true, intersectionRatio: 1 } as any],
+          card11Entry!.observer
+        );
+        await new Promise((r) => setTimeout(r, 50));
+      });
+      assert(
+        epgRequestedIds136.includes(9511),
+        '[12.27-a] Após cartão 11 entrar na área visível, deve consultar EPG sob demanda'
+      );
+      assert.strictEqual(
+        card11El.querySelector('[data-live-channel-epg="true"]')?.textContent?.trim(),
+        'Programa Visível 9511',
+        '[12.27-a] Cartão 11 deve exibir o título real do programa ao ficar visível'
+      );
+    } finally {
+      await act(async () => {
+        visRoot.unmount();
+      });
+      if (visContainer.parentNode) document.body.removeChild(visContainer);
+      if (prevIo !== undefined) {
+        (windowInstance as any).IntersectionObserver = prevIo;
+      } else {
+        delete (windowInstance as any).IntersectionObserver;
+      }
+      if (prevGlobalIo !== undefined) {
+        (globalThis as any).IntersectionObserver = prevGlobalIo;
+      } else {
+        delete (globalThis as any).IntersectionObserver;
+      }
+    }
   } finally {
     (XtreamService as any).getShortEpg = savedGetShortEpg13;
     setLiveEpgClockForTest(null);
@@ -28052,6 +28193,13 @@ async function runCycle1227LiveTvAndEpgTests() {
 }
 
 async function main() {
+  if (process.env.TEST_ONLY_SECTION === '13') {
+    console.log('🎯 EXECUTANDO TESTE DIRECIONADO: SEÇÃO 13 (CICLO 12.27-a EPG & LIVE TV)\n');
+    await runCycle1227LiveTvAndEpgTests();
+    await cleanupTestEnvironment();
+    console.log('\n🎉 TESTE DIRECIONADO DA SEÇÃO 13 CONCLUÍDO COM SUCESSO!');
+    return;
+  }
   console.log('🚀 INICIANDO VALIDAÇÃO COMPLETA DOS FAVORITOS SIMPLES E REGRESSÕES\n');
   runDirectUrlTests();
   await runSimpleFavoritesTests();
