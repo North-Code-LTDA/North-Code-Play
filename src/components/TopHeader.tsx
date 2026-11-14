@@ -248,7 +248,7 @@ export function computeTopHeaderLayoutMetrics({
 
 export interface TopHeaderProps {
   currentView: MainSectionId;
-  onSelectSection: (section: PrimaryNavSectionId) => void;
+  onSelectSection: (section: PrimaryNavSectionId, meta?: { isPointerClick?: boolean }) => void;
   onSelectAccountAction: (action: 'account' | 'config' | 'logout') => void;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
@@ -466,7 +466,7 @@ export const TopHeader = React.memo(function TopHeader({
             data-nav-item="true"
             data-header-logo="true"
             aria-label="North Code Play — Ir para o Início"
-            onClick={() => onSelectSection('inicio')}
+            onClick={(e) => onSelectSection('inicio', { isPointerClick: e.detail > 0 })}
             className="nc-top-header-logo-btn flex items-center rounded-xl py-1 px-1.5 text-left transition-opacity hover:opacity-90 shrink-0"
           >
             <Logo className="nc-top-header-logo" />
@@ -492,7 +492,7 @@ export const TopHeader = React.memo(function TopHeader({
                 data-header-nav-active={isActive ? 'true' : 'false'}
                 aria-current={isActive ? 'page' : undefined}
                 onFocus={(e) => scrollButtonIntoStrip(e.currentTarget)}
-                onClick={() => onSelectSection(section.id)}
+                onClick={(e) => onSelectSection(section.id, { isPointerClick: e.detail > 0 })}
                 className={`nc-top-header-pill shrink-0 whitespace-nowrap rounded-full transition-colors ${
                   isActive
                     ? 'nc-top-header-pill-active bg-[#262626] text-white font-semibold shadow-sm'

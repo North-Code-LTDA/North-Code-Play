@@ -522,7 +522,9 @@ export function ensureElementScrolledIntoView(
     const isVirtualizedGrid = Boolean(
       el.closest('[data-virtual-container="true"][data-nav-grid="true"]')
     );
-    const isInsideVirtualContainer = Boolean(el.closest('[data-virtual-container="true"]'));
+    const isInsideVirtualContainer = Boolean(
+      el.closest('[data-virtual-container="true"]') || isVirtualizedShowcase || isVirtualizedGrid
+    );
     const useImmediateVerticalScroll =
       (isVirtualizedShowcase || isVirtualizedGrid) && (direction === 'up' || direction === 'down');
 

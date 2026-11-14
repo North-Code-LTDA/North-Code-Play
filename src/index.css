@@ -518,10 +518,10 @@ html[data-display-mode="tv"] .nc-tv-hero-title {
   line-height: 1.15 !important;
 }
 
-.nc-tv-epg-card:focus,
-.nc-tv-epg-card:focus-visible,
-.nc-tv-epg-state:focus,
-.nc-tv-epg-state:focus-visible {
+html[data-nav-mode="remote"] .nc-tv-epg-card:focus,
+html[data-nav-mode="remote"] .nc-tv-epg-card:focus-visible,
+html[data-nav-mode="remote"] .nc-tv-epg-state:focus,
+html[data-nav-mode="remote"] .nc-tv-epg-state:focus-visible {
   outline: 2px solid #ffffff !important;
   outline-offset: 2px !important;
   box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.85), 0 8px 20px -4px rgba(255, 255, 255, 0.18) !important;
@@ -539,8 +539,6 @@ html[data-display-mode="tv"] .nc-tv-hero-title {
  * - Composition hint (will-change: transform) is applied strictly on active states
  * - Respects prefers-reduced-motion: reduce while preserving the focus outline
  * ============================================================================ */
-.nc-top-header-pill:focus,
-.nc-top-header-pill:focus-visible,
 html[data-nav-mode="remote"] .nc-top-header-pill:focus,
 html[data-nav-mode="remote"] .nc-top-header-pill:focus-visible,
 html[data-nav-mode="remote"] [data-header-nav-strip="true"] [data-nav-item="true"]:focus,
@@ -548,6 +546,13 @@ html[data-nav-mode="remote"] [data-header-nav-strip="true"] [data-nav-item="true
   outline: 2px solid #d1d5db !important;
   outline-offset: -2px !important;
   box-shadow: inset 0 0 0 2px #d1d5db, inset 0 0 0 3px rgba(0, 0, 0, 0.85) !important;
+}
+
+html[data-nav-mode="pointer"] .nc-top-header-pill:focus,
+html[data-nav-mode="pointer"] .nc-top-header-pill:focus:not(:focus-visible),
+html[data-nav-mode="pointer"] button:focus:not(:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .nc-showcase-card {
@@ -651,17 +656,17 @@ html[data-nav-mode="remote"] [data-showcase-rows-container="true"] [data-row-car
  * Compact horizontal cards with square logo on the left, channel name + real
  * EPG program title on the right, and accessible favorite toggle.
  * ============================================================================ */
-.nc-live-horizontal-card[data-card-focused="true"] {
+html[data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] {
   z-index: 20;
 }
 
-.nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer {
+html[data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer {
   transform: scale(1.03);
   will-change: transform;
   box-shadow: 0 10px 24px -6px rgba(0, 0, 0, 0.78);
 }
 
-.nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer::after {
+html[data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer::after {
   opacity: 1;
   border: 2px solid rgba(255, 255, 255, 0.92);
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.65);

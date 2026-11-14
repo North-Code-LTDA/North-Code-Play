@@ -34,6 +34,89 @@ import {
 
 export type ViewType = MainSectionId;
 
+interface ViewErrorBoundaryProps {
+  viewKey: string;
+  onReturnHome: () => void;
+  children: React.ReactNode;
+}
+
+interface ViewErrorBoundaryState {
+  hasError: boolean;
+  message: string;
+}
+
+class ViewErrorBoundary extends React.Component<ViewErrorBoundaryProps, ViewErrorBoundaryState> {
+  declare props: Readonly<ViewErrorBoundaryProps>;
+  declare setState: (
+    state:
+      | ViewErrorBoundaryState
+      | Partial<ViewErrorBoundaryState>
+      | ((
+          prevState: Readonly<ViewErrorBoundaryState>
+        ) => ViewErrorBoundaryState | Partial<ViewErrorBoundaryState> | null)
+  ) => void;
+  state: ViewErrorBoundaryState = { hasError: false, message: '' };
+
+  static getDerivedStateFromError(error: Error): ViewErrorBoundaryState {
+    return {
+      hasError: true,
+      message: error?.message || 'Erro inesperado ao renderizar esta seção.',
+    };
+  }
+
+  componentDidUpdate(prevProps: ViewErrorBoundaryProps) {
+    if (prevProps.viewKey !== this.props.viewKey && this.state.hasError) {
+      this.setState({ hasError: false, message: '' });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          role="alert"
+          data-view-error-boundary="true"
+          className="flex-1 w-full h-full bg-nc-bg flex flex-col items-center justify-center p-6 text-center gap-4"
+        >
+          <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center">
+            <AlertCircle className="w-6 h-6 text-red-400" />
+          </div>
+          <div className="max-w-md space-y-1.5">
+            <h2 className="nc-heading-section text-white">
+              Não foi possível exibir esta tela
+            </h2>
+            <p className="nc-text-subtitle text-white/60">
+              {this.state.message}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              data-nav-item="true"
+              onClick={() => this.setState({ hasError: false, message: '' })}
+              className="px-4 py-2 rounded-lg bg-white text-black text-sm font-semibold hover:bg-white/90 transition-colors"
+            >
+              Tentar novamente
+            </button>
+            <button
+              type="button"
+              data-nav-item="true"
+              onClick={() => {
+                this.setState({ hasError: false, message: '' });
+                this.props.onReturnHome();
+              }}
+              className="px-4 py-2 rounded-lg bg-white/10 text-white text-sm font-medium hover:bg-white/20 transition-colors"
+            >
+              Voltar ao Início
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function HomeContent({ credentials }: { credentials: any }) {
   const navigate = useNavigate();
   const { isConfigured } = useDisplayPreferences();
@@ -441,21 +524,34 @@ function HomeContent({ credentials }: { credentials: any }) {
     setLiveLaunchIntent((prev) => (prev && prev.requestId === reqId ? null : prev));
   }, []);
 
-  const handleSelectSection = useCallback((section: PrimaryNavSectionId) => {
-    setIsAccountMenuOpen(false);
-    setIsSearchOpen(false);
-    setSearchQuery('');
-    if (section === 'live' || section === 'movies' || section === 'series') {
-      pendingSectionFocusRef.current = {
-        section,
-        requestId: ++sectionFocusReqCounterRef.current,
-      };
-      setSectionFocusTick((t) => t + 1);
-    } else {
-      pendingSectionFocusRef.current = null;
-    }
-    setCurrentView(section);
-  }, []);
+  const handleSelectSection = useCallback(
+    (section: PrimaryNavSectionId, meta?: { isPointerClick?: boolean }) => {
+      setIsAccountMenuOpen(false);
+      setIsSearchOpen(false);
+      setSearchQuery('');
+      const isRecentPointerDown =
+        lastPointerDownTimeRef.current > 0 &&
+        Date.now() - lastPointerDownTimeRef.current < 500;
+      const isPointerInitiated =
+        Boolean(meta?.isPointerClick) ||
+        (getNavMode() === 'pointer' && isRecentPointerDown);
+
+      if (
+        !isPointerInitiated &&
+        (section === 'live' || section === 'movies' || section === 'series')
+      ) {
+        pendingSectionFocusRef.current = {
+          section,
+          requestId: ++sectionFocusReqCounterRef.current,
+        };
+        setSectionFocusTick((t) => t + 1);
+      } else {
+        pendingSectionFocusRef.current = null;
+      }
+      setCurrentView(section);
+    },
+    []
+  );
 
   const handleOpenSearch = useCallback(() => {
     pendingSectionFocusRef.current = null;
@@ -662,7 +758,12 @@ function HomeContent({ credentials }: { credentials: any }) {
                 className="flex-1 w-full h-full bg-nc-bg"
               />
             ) : (
-              renderView()
+              <ViewErrorBoundary
+                viewKey={currentView}
+                onReturnHome={() => setCurrentView('inicio')}
+              >
+                {renderView()}
+              </ViewErrorBoundary>
             )}
           </main>
         </div>

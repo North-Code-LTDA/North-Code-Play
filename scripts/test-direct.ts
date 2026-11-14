@@ -28182,6 +28182,528 @@ async function runCycle1227LiveTvAndEpgTests() {
         delete (globalThis as any).IntersectionObserver;
       }
     }
+    // 13.7 Estabilidade da virtualização vertical/horizontal em catálogo grande (medição isolada, rolagem sem saltos e preservação após favoritar/histórico)
+    resetLiveEpgCacheForTest();
+    setLiveEpgClockForTest(() => nowMs);
+    (XtreamService as any).getShortEpg = async () => ({ epg_listings: [] });
+
+    const manyCategories = Array.from({ length: 80 }, (_, rIdx) => ({
+      category_id: `cat_big_${rIdx}`,
+      category_name: `CATEGORIA ${String(rIdx + 1).padStart(2, '0')}`,
+    }));
+    const manyStreams: any[] = [];
+    for (let rIdx = 0; rIdx < 80; rIdx++) {
+      const countInRow = rIdx === 0 ? 30 : 6;
+      for (let cIdx = 0; cIdx < countInRow; cIdx++) {
+        manyStreams.push({
+          stream_id: 20000 + rIdx * 100 + cIdx,
+          name: `Canal ${rIdx + 1}-${cIdx + 1}`,
+          category_id: `cat_big_${rIdx}`,
+          stream_icon: '',
+        });
+      }
+    }
+    const bigCtx: any = {
+      ...uiCtx,
+      credentials: {
+        serverUrl: 'http://big-live.tv:8080',
+        username: 'bigUser',
+        password: 'bigPassword',
+        allowed_output_formats: ['m3u8'],
+      },
+      liveCategories: manyCategories,
+      liveStreams: manyStreams,
+      allLiveStreams: manyStreams,
+    };
+
+    const bigContainer = document.createElement('div');
+    document.body.appendChild(bigContainer);
+    const bigRoot = createRoot(bigContainer);
+
+    const savedRect137 = windowInstance.HTMLElement.prototype.getBoundingClientRect;
+    const savedClientHeightDesc137 = Object.getOwnPropertyDescriptor(
+      windowInstance.HTMLElement.prototype,
+      'clientHeight'
+    );
+    const savedClientWidthDesc137 = Object.getOwnPropertyDescriptor(
+      windowInstance.HTMLElement.prototype,
+      'clientWidth'
+    );
+    const consoleErr137: string[] = [];
+    const origConsoleError137 = console.error;
+    console.error = (...args: any[]) => {
+      consoleErr137.push(args.map((a) => String(a)).join(' '));
+      origConsoleError137(...args);
+    };
+
+    const ROW_HEIGHT_137 = 148;
+    const ROW_STRIDE_137 = 168; // 148 + 20px gap
+    const SCROLL_VIEW_H_137 = 640;
+
+    (windowInstance.HTMLElement.prototype as any).getBoundingClientRect = function () {
+      const el = this as HTMLElement;
+      if (el.getAttribute('data-showcase-rows-container') === 'true') {
+        return {
+          top: 80,
+          left: 0,
+          right: 620,
+          bottom: 80 + SCROLL_VIEW_H_137,
+          width: 620,
+          height: SCROLL_VIEW_H_137,
+          x: 0,
+          y: 80,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.hasAttribute('data-home-row-index')) {
+        const rIdx = parseInt(el.getAttribute('data-home-row-index') || '0', 10);
+        const scrollWrap = el.closest<HTMLElement>('[data-showcase-rows-container="true"]');
+        const sTop = scrollWrap ? scrollWrap.scrollTop || 0 : 0;
+        const top = 80 + 16 + rIdx * ROW_STRIDE_137 - sTop;
+        return {
+          top,
+          left: 16,
+          right: 604,
+          bottom: top + ROW_HEIGHT_137,
+          width: 588,
+          height: ROW_HEIGHT_137,
+          x: 16,
+          y: top,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.getAttribute('data-live-channel-card') === 'true') {
+        const cIdx = parseInt(el.getAttribute('data-virtual-index') || '0', 10);
+        const rowWrap = el.closest<HTMLElement>('[data-live-category-row-scroll="true"]');
+        const sLeft = rowWrap ? rowWrap.scrollLeft || 0 : 0;
+        const left = 16 + cIdx * 280 - sLeft;
+        return {
+          top: 120,
+          left,
+          right: left + 268,
+          bottom: 202,
+          width: 268,
+          height: 82, // Altura menor do cartão NÃO deve contaminar altura das categorias
+          x: left,
+          y: 120,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.getAttribute('data-live-channel-btn') === 'true') {
+        const card = el.closest<HTMLElement>('[data-live-channel-card="true"]');
+        const cardRect = card ? card.getBoundingClientRect() : { top: 120, left: 16 };
+        return {
+          top: cardRect.top,
+          left: cardRect.left,
+          right: cardRect.left + 220,
+          bottom: cardRect.top + 82,
+          width: 220,
+          height: 82,
+          x: cardRect.left,
+          y: cardRect.top,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.getAttribute('data-live-category-row-scroll') === 'true') {
+        return {
+          top: 112,
+          left: 16,
+          right: 604,
+          bottom: 210,
+          width: 588,
+          height: 98,
+          x: 16,
+          y: 112,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.getAttribute('data-virtual-spacer') === 'top') {
+        const h = parseFloat(el.style?.height || '0') || 0;
+        return { top: 80, left: 0, right: 604, bottom: 80 + h, width: 604, height: h, x: 0, y: 80, toJSON: () => {} } as DOMRect;
+      }
+      if (el.nextElementSibling === null && el.parentElement?.getAttribute('data-showcase-rows-container') === 'true') {
+        return { top: 96, left: 16, right: 604, bottom: 96, width: 588, height: 0, x: 16, y: 96, toJSON: () => {} } as DOMRect;
+      }
+      return savedRect137.call(this) as unknown as DOMRect;
+    };
+
+    Object.defineProperty(windowInstance.HTMLElement.prototype, 'clientHeight', {
+      get() {
+        if ((this as HTMLElement).getAttribute?.('data-showcase-rows-container') === 'true') {
+          return SCROLL_VIEW_H_137;
+        }
+        return savedClientHeightDesc137?.get ? savedClientHeightDesc137.get.call(this) : 0;
+      },
+      configurable: true,
+    });
+    Object.defineProperty(windowInstance.HTMLElement.prototype, 'clientWidth', {
+      get() {
+        if ((this as HTMLElement).getAttribute?.('data-live-category-row-scroll') === 'true') {
+          return 588;
+        }
+        if ((this as HTMLElement).getAttribute?.('data-showcase-rows-container') === 'true') {
+          return 620;
+        }
+        return savedClientWidthDesc137?.get ? savedClientWidthDesc137.get.call(this) : 0;
+      },
+      configurable: true,
+    });
+
+    try {
+      await act(async () => {
+        bigRoot.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              XtreamMockProvider,
+              { value: bigCtx },
+              React.createElement(LiveTvView, { onPlay: () => {} })
+            )
+          )
+        );
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      const leftScrollEl = bigContainer.querySelector<HTMLElement>(
+        '[data-showcase-rows-container="true"]'
+      )!;
+      assert(leftScrollEl !== null, '[12.27-a.2] Contêiner vertical de categorias deve existir');
+
+      // Botão interno do cartão NÃO deve duplicar data-virtual-index (somente wrapper do cartão tem)
+      assert.strictEqual(
+        bigContainer.querySelector('button[data-live-channel-btn="true"][data-virtual-index]'),
+        null,
+        '[12.27-a.2] Botão interno do cartão NÃO deve duplicar data-virtual-index para não interferir na lista vertical'
+      );
+
+      // Simular rolagem profunda do mouse até o meio/fim e validar estabilidade de scrollTop e ausência de erros/tremor
+      for (const targetTop of [1500, 4200, 8400, 11500, 3200, 0]) {
+        await act(async () => {
+          leftScrollEl.dispatchEvent(new (windowInstance as any).Event('wheel'));
+          leftScrollEl.scrollTop = targetTop;
+          leftScrollEl.dispatchEvent(new (windowInstance as any).Event('scroll'));
+          await new Promise((r) => setTimeout(r, 35));
+        });
+        assert(
+          Math.abs((leftScrollEl.scrollTop || 0) - targetTop) <= 4,
+          `[12.27-a.2] Rolagem com mouse para ${targetTop}px deve permanecer estável sem saltos (obteve ${leftScrollEl.scrollTop}px)`
+        );
+      }
+
+      // Verificar que categorias visíveis na região rolada continuam montadas
+      await act(async () => {
+        leftScrollEl.dispatchEvent(new (windowInstance as any).Event('wheel'));
+        leftScrollEl.scrollTop = 30 * ROW_STRIDE_137;
+        leftScrollEl.dispatchEvent(new (windowInstance as any).Event('scroll'));
+        await new Promise((r) => setTimeout(r, 35));
+      });
+      for (let expectedVisible = 30; expectedVisible <= 33; expectedVisible++) {
+        assert(
+          bigContainer.querySelector(`[data-home-row-index="${expectedVisible}"]`) !== null,
+          `[12.27-a.2] Categoria visível ${expectedVisible} não deve desaparecer após rolagem`
+        );
+      }
+
+      // Favoritar um canal estando rolado em row 30 NÃO deve resetar scrollTop/janela de volta para row 0
+      const favBtnInRow30 = bigContainer
+        .querySelector(`[data-home-row-index="30"]`)
+        ?.querySelector<HTMLButtonElement>('button[data-live-channel-fav="true"]')!;
+      assert(favBtnInRow30, '[12.27-a.2] Botão de favorito da linha 30 deve existir');
+      await act(async () => {
+        favBtnInRow30.click();
+        await new Promise((r) => setTimeout(r, 35));
+      });
+      assert(
+        bigContainer.querySelector('[data-home-row-index="31"]') !== null,
+        '[12.27-a.2] Favoritar canal não deve desmontar ou resetar a posição atual da lista'
+      );
+
+      // 13.8 Navegação D-Pad completa descendo todas as categorias (> janela virtual) e subindo de volta ao início, mais rolagem horizontal (>24 itens) sem perder foco
+      await act(async () => {
+        leftScrollEl.dispatchEvent(new (windowInstance as any).Event('wheel'));
+        leftScrollEl.scrollTop = 0;
+        leftScrollEl.dispatchEvent(new (windowInstance as any).Event('scroll'));
+        await new Promise((r) => setTimeout(r, 35));
+      });
+
+      const firstChannelBtn = bigContainer.querySelector<HTMLButtonElement>(
+        '[data-home-row-index="0"] button[data-live-channel-btn="true"]'
+      )!;
+      assert(firstChannelBtn, '[12.27-a.2] Primeiro canal da categoria 0 deve existir');
+      await act(async () => {
+        firstChannelBtn.focus();
+      });
+
+      // Navegação horizontal além de HORIZ_VIRTUAL_THRESHOLD (24) e retorno ao índice 0
+      for (let stepRight = 0; stepRight < 27; stepRight++) {
+        await act(async () => {
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
+          );
+          await new Promise((r) => setTimeout(r, 5));
+          // Move from button to fav, then next card button on next ArrowRight
+        });
+        assert(
+          document.activeElement && document.activeElement !== document.body,
+          `[12.27-a.2] Foco não deve sumir ao navegar horizontalmente (passo ${stepRight})`
+        );
+      }
+      for (let stepLeft = 0; stepLeft < 27; stepLeft++) {
+        await act(async () => {
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })
+          );
+          await new Promise((r) => setTimeout(r, 5));
+        });
+        assert(
+          document.activeElement && document.activeElement !== document.body,
+          `[12.27-a.2] Foco não deve sumir ao voltar horizontalmente (passo ${stepLeft})`
+        );
+      }
+
+      // Descer pelas categorias da 0 até além da janela virtual (0 -> 35 -> voltar até 0)
+      const startRowEl = (document.activeElement as HTMLElement)?.closest<HTMLElement>('[data-home-row-index]');
+      const startRowNum = parseInt(startRowEl?.getAttribute('data-home-row-index') || '0', 10);
+      for (let r = startRowNum; r < 35; r++) {
+        await act(async () => {
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })
+          );
+          await new Promise((r) => setTimeout(r, 8));
+        });
+        const focusedEl = document.activeElement as HTMLElement | null;
+        assert(
+          focusedEl &&
+            focusedEl !== document.body &&
+            bigContainer.contains(focusedEl) &&
+            focusedEl.closest('[data-home-row-index]') !== null,
+          `[12.27-a.2] Foco D-Pad desapareceu ao descer na categoria ${r + 1}`
+        );
+      }
+      const deepRowNum = parseInt(
+        (document.activeElement as HTMLElement)
+          ?.closest<HTMLElement>('[data-home-row-index]')
+          ?.getAttribute('data-home-row-index') || '-1',
+        10
+      );
+      assert(
+        deepRowNum >= 30,
+        `[12.27-a.2] D-Pad deve alcançar categorias profundas além da janela inicial (alcançou ${deepRowNum})`
+      );
+
+      for (let r = deepRowNum; r > 0; r--) {
+        await act(async () => {
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })
+          );
+          await new Promise((r) => setTimeout(r, 8));
+        });
+        const focusedEl = document.activeElement as HTMLElement | null;
+        assert(
+          focusedEl && focusedEl !== document.body && bigContainer.contains(focusedEl),
+          `[12.27-a.2] Foco D-Pad desapareceu ao subir da categoria ${r}`
+        );
+      }
+      assert.strictEqual(
+        consoleErr137.some((msg) => /Maximum update depth exceeded/i.test(msg)),
+        false,
+        `[12.27-a.2] Não deve ocorrer loop de atualização nem erro de renderização: ${consoleErr137.join(' | ')}`
+      );
+
+      // 13.10 Restauração visual do preview (informações à esquerda, player 16:9 à direita, fundo bg-nc-bg, selo vermelho AO VIVO)
+      const sampleChannelBtn = bigContainer.querySelector<HTMLButtonElement>(
+        '[data-home-row-index="0"] button[data-live-channel-btn="true"]'
+      )!;
+      await act(async () => {
+        sampleChannelBtn.click();
+        await new Promise((r) => setTimeout(r, 30));
+      });
+      const rightPaneEl = bigContainer.querySelector<HTMLElement>('.nc-live-right-pane')!;
+      assert(
+        rightPaneEl.className.includes('bg-nc-bg') && !rightPaneEl.className.includes('bg-zinc-950'),
+        `[12.27-a.2] Fundo do painel direito deve ser bg-nc-bg (recebido: ${rightPaneEl.className})`
+      );
+      const topSectionEl = bigContainer.querySelector<HTMLElement>('[data-live-top-section="true"]')!;
+      const infoColEl = topSectionEl.querySelector<HTMLElement>('[data-live-info-column="true"]')!;
+      const previewColEl = topSectionEl.querySelector<HTMLElement>('[data-live-preview-column="true"]')!;
+      assert(infoColEl && previewColEl, '[12.27-a.2] Colunas de informação e preview devem existir');
+      const topChildren = Array.from(topSectionEl.children);
+      assert(
+        topChildren.indexOf(infoColEl) < topChildren.indexOf(previewColEl) &&
+          topSectionEl.className.includes('md:flex-row') &&
+          topSectionEl.className.includes('flex-col-reverse'),
+        '[12.27-a.2] Em desktop/TV (md:flex-row), informações devem ficar à esquerda e vídeo 16:9 à direita'
+      );
+      const liveBadgeEl = bigContainer.querySelector<HTMLElement>('[data-live-badge="true"]')!;
+      assert(
+        liveBadgeEl &&
+          liveBadgeEl.textContent?.includes('AO VIVO') &&
+          liveBadgeEl.className.includes('text-red-400') &&
+          liveBadgeEl.className.includes('bg-red-500/10') &&
+          !rightPaneEl.innerHTML.includes('text-emerald-'),
+        '[12.27-a.2] Indicador AO VIVO deve ser vermelho (sem badge verde emerald)'
+      );
+    } finally {
+      console.error = origConsoleError137;
+      windowInstance.HTMLElement.prototype.getBoundingClientRect = savedRect137;
+      if (savedClientHeightDesc137) {
+        Object.defineProperty(windowInstance.HTMLElement.prototype, 'clientHeight', savedClientHeightDesc137);
+      }
+      if (savedClientWidthDesc137) {
+        Object.defineProperty(windowInstance.HTMLElement.prototype, 'clientWidth', savedClientWidthDesc137);
+      }
+      await act(async () => {
+        bigRoot.unmount();
+      });
+      if (bigContainer.parentNode) document.body.removeChild(bigContainer);
+    }
+
+    // 13.9 Separação real entre Mouse/Pointer e Controle Remoto (D-Pad) no TopHeader, Home e LiveTvView
+    const css139 = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf-8');
+    assert(
+      !css139.includes('\n.nc-top-header-pill:focus,') &&
+        css139.includes('html[data-nav-mode="remote"] .nc-top-header-pill:focus') &&
+        css139.includes('html[data-nav-mode="pointer"] .nc-top-header-pill:focus'),
+      '[12.27-a.2] Borda de foco das pílulas do cabeçalho deve ser restrita ao modo remote e suprimida no modo pointer'
+    );
+    assert(
+      !css139.includes('\n.nc-live-horizontal-card[data-card-focused="true"]') &&
+        css139.includes('html[data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"]'),
+      '[12.27-a.2] Borda branca de foco nos cartões da TV ao Vivo deve aplicar-se apenas em html[data-nav-mode="remote"]'
+    );
+
+    // Simular cliques de mouse reais em Home (Início -> TV ao Vivo -> Filmes -> Séries -> Início)
+    const homeCreds139 = {
+      serverUrl: 'http://mouse-dpad.tv:8080',
+      username: 'mouseUser',
+      password: 'mousePassword',
+      allowed_output_formats: ['m3u8'],
+    };
+    windowInstance.localStorage.setItem('northcode_tv_credentials', JSON.stringify(homeCreds139));
+    confirmDisplayPreferences('default', 100);
+    (XtreamService as any).getLiveCategories = async () => [
+      { category_id: 'c1', category_name: 'CANAIS · ABERTOS' },
+    ];
+    (XtreamService as any).getLiveStreams = async () => [
+      { stream_id: 7701, name: 'Globo HD', category_id: 'c1', stream_icon: '' },
+    ];
+    (XtreamService as any).getVodCategories = async () => [
+      { category_id: 'v1', category_name: 'Ação' },
+    ];
+    (XtreamService as any).getVodStreams = async () => [
+      { stream_id: 8801, name: 'Filme Teste', category_id: 'v1', stream_icon: '' },
+    ];
+    (XtreamService as any).getSeriesCategories = async () => [
+      { category_id: 's1', category_name: 'Drama' },
+    ];
+    (XtreamService as any).getSeries = async () => [
+      { series_id: 9901, name: 'Série Teste', category_id: 's1', cover: '' },
+    ];
+
+    const mouseContainer = document.createElement('div');
+    document.body.appendChild(mouseContainer);
+    const mouseRoot = createRoot(mouseContainer);
+
+    const simulateMouseClick = async (btn: HTMLElement) => {
+      await act(async () => {
+        btn.dispatchEvent(new (windowInstance as any).MouseEvent('pointerdown', { bubbles: true }));
+        btn.focus();
+        btn.dispatchEvent(new (windowInstance as any).MouseEvent('click', { bubbles: true, detail: 1 }));
+        await new Promise((r) => setTimeout(r, 40));
+      });
+    };
+
+    try {
+      await act(async () => {
+        mouseRoot.render(
+          React.createElement(
+            MemoryRouter,
+            null,
+            React.createElement(NavigationProvider, null, React.createElement(Home))
+          )
+        );
+        await new Promise((r) => setTimeout(r, 80));
+      });
+
+      const livePill = mouseContainer.querySelector<HTMLButtonElement>('button[data-header-nav-id="live"]')!;
+      assert(livePill, '[12.27-a.2] Botão TV ao Vivo no cabeçalho deve existir');
+      await simulateMouseClick(livePill);
+
+      assert.strictEqual(
+        document.documentElement.getAttribute('data-nav-mode'),
+        'pointer',
+        '[12.27-a.2] Clique com mouse em TV ao Vivo deve manter data-nav-mode="pointer"'
+      );
+      const activeAfterMouseLive = document.activeElement as HTMLElement | null;
+      assert(
+        !activeAfterMouseLive?.closest('[data-nav-zone="categories"]') &&
+          activeAfterMouseLive?.getAttribute('data-live-channel-btn') !== 'true',
+        `[12.27-a.2] Clique com mouse em TV ao Vivo NÃO deve encaminhar foco para o primeiro canal (obteve: ${describeElement(activeAfterMouseLive)})`
+      );
+
+      // Clicar em Filmes e Séries com mouse também NÃO deve ativar foco remoto
+      const moviesPill = mouseContainer.querySelector<HTMLButtonElement>('button[data-header-nav-id="movies"]')!;
+      await simulateMouseClick(moviesPill);
+      assert.strictEqual(
+        document.documentElement.getAttribute('data-nav-mode'),
+        'pointer',
+        '[12.27-a.2] Clique com mouse em Filmes deve manter data-nav-mode="pointer"'
+      );
+      assert(
+        !document.activeElement?.hasAttribute('data-categories-trigger'),
+        '[12.27-a.2] Clique com mouse em Filmes NÃO deve encaminhar foco remoto para Categorias'
+      );
+
+      const inicioPill = mouseContainer.querySelector<HTMLButtonElement>('button[data-header-nav-id="inicio"]')!;
+      await simulateMouseClick(inicioPill);
+      assert.strictEqual(
+        document.documentElement.getAttribute('data-nav-mode'),
+        'pointer',
+        '[12.27-a.2] Clique com mouse em Início deve manter data-nav-mode="pointer"'
+      );
+
+      // Voltar para TV ao Vivo via mouse, clicar num canal com mouse -> seleciona sem ativar data-nav-mode="remote"
+      await simulateMouseClick(
+        mouseContainer.querySelector<HTMLButtonElement>('button[data-header-nav-id="live"]')!
+      );
+      const channelCardBtn139 = mouseContainer.querySelector<HTMLButtonElement>(
+        'button[data-live-channel-btn="true"]'
+      )!;
+      assert(channelCardBtn139, '[12.27-a.2] Canal Globo HD deve estar renderizado na TV ao Vivo');
+      await simulateMouseClick(channelCardBtn139);
+      assert.strictEqual(
+        document.documentElement.getAttribute('data-nav-mode'),
+        'pointer',
+        '[12.27-a.2] Selecionar canal com mouse deve manter modo pointer (sem ativar foco remoto)'
+      );
+      assert.strictEqual(
+        channelCardBtn139.getAttribute('data-live-channel-selected'),
+        'true',
+        '[12.27-a.2] Canal clicado com mouse deve ficar selecionado no preview direito'
+      );
+
+      // Agora pressionar ArrowRight muda imediatamente para modo remote
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
+        );
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      assert.strictEqual(
+        document.documentElement.getAttribute('data-nav-mode'),
+        'remote',
+        '[12.27-a.2] Pressionar tecla direcional após mouse deve alternar para modo remote'
+      );
+    } finally {
+      windowInstance.localStorage.removeItem('northcode_tv_credentials');
+      windowInstance.localStorage.removeItem(STORAGE_KEY_DISPLAY_PREFS);
+      installDefaultXtreamOfflineMocks();
+      await act(async () => {
+        mouseRoot.unmount();
+      });
+      if (mouseContainer.parentNode) document.body.removeChild(mouseContainer);
+    }
   } finally {
     (XtreamService as any).getShortEpg = savedGetShortEpg13;
     setLiveEpgClockForTest(null);
@@ -28189,7 +28711,7 @@ async function runCycle1227LiveTvAndEpgTests() {
     resetLiveEpgCacheForTest();
   }
 
-  console.log('✅ Todos os testes do Ciclo 12.27-a (TV ao Vivo 50/50, Title Case, Cartões e Gerenciador EPG) aprovados!');
+  console.log('✅ Todos os testes do Ciclo 12.27-a / 12.27-a.2 (TV ao Vivo 50/50, Virtualização, Mouse vs D-Pad, Preview e EPG) aprovados!');
 }
 
 async function main() {

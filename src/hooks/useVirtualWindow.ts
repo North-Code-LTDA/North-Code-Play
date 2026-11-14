@@ -19,6 +19,7 @@ export interface UseVirtualWindowOptions {
   resetKey?: string;
   maxWindowItems?: number;
   fallbackOffsetTopPx?: number;
+  fallbackItemHeightPx?: number;
 }
 
 export interface VirtualWindowResult {
@@ -266,6 +267,7 @@ export function useVirtualWindow({
   resetKey = '',
   maxWindowItems,
   fallbackOffsetTopPx,
+  fallbackItemHeightPx,
 }: UseVirtualWindowOptions): VirtualWindowResult {
   const { effectiveMode: displayMode, effectiveTvScale: tvScale } = useDisplayPreferences();
   const effectiveWindowSize = maxWindowItems ?? (mode === 'grid' ? 96 : 80);
@@ -331,6 +333,11 @@ export function useVirtualWindow({
 
   const columns = mode === 'grid' ? Math.max(1, measuredColumns ?? fallbackColumns) : 1;
 
+  const baseListItemHeightPx =
+    typeof fallbackItemHeightPx === 'number' && fallbackItemHeightPx > 0
+      ? fallbackItemHeightPx
+      : 68;
+
   const fallbackRowHeightPx =
     mode === 'grid'
       ? displayMode === 'tv'
@@ -339,7 +346,7 @@ export function useVirtualWindow({
             rootFontSizePx
           ).rowHeightPx
         : Math.max(180, Math.round(260 * scaleFactor))
-      : Math.max(36, Math.round(68 * scaleFactor));
+      : Math.max(36, Math.round(baseListItemHeightPx * scaleFactor));
 
   const rowHeightPx = Math.max(32, measuredRowHeightPx ?? fallbackRowHeightPx);
   const listOffsetTop =
@@ -359,6 +366,10 @@ export function useVirtualWindow({
   const isFrozenRef = useRef<boolean>(isFrozen);
   isFrozenRef.current = isFrozen;
 
+  const measuredListBaselineRef = useRef<number | null>(null);
+  const measuredRowHeightRef = useRef<number | null>(measuredRowHeightPx);
+  measuredRowHeightRef.current = measuredRowHeightPx;
+
   // Clear variable height cache when category/resetKey or display scale changes
   const layoutResetSignature = `${resetKey}|${displayMode}|${tvScale}`;
   const prevLayoutResetSigRef = useRef<string>(layoutResetSignature);
@@ -366,6 +377,7 @@ export function useVirtualWindow({
     const prevKeyOnly = prevLayoutResetSigRef.current.split('|')[0];
     prevLayoutResetSigRef.current = layoutResetSignature;
     measuredItemHeightsRef.current.clear();
+    measuredListBaselineRef.current = null;
     if (prevKeyOnly !== resetKey && windowStart !== 0) {
       setWindowStart(0);
       windowStartRef.current = 0;
@@ -497,15 +509,21 @@ export function useVirtualWindow({
       setMeasuredColumns((prev) => (prev !== nextCols ? nextCols : prev));
       setMeasuredRowHeightPx((prev) => (prev !== nextRowStride ? nextRowStride : prev));
     } else {
-      // mode === 'list': Measure variable heights of rendered channel items
+      // mode === 'list': Measure ONLY direct vertical children (never nested horizontal channel cards)
       setMeasuredColumns(1);
-      const defaultItemHeight = Math.max(36, Math.round(68 * currentScaleFactor));
+      const defaultItemHeight = Math.max(36, Math.round(baseListItemHeightPx * currentScaleFactor));
       const listGapPx = Math.max(4, Math.round(8 * currentScaleFactor));
 
       if (virtualEl) {
-        const items = Array.from(
-          virtualEl.querySelectorAll('[data-virtual-index]')
-        ) as HTMLElement[];
+        const directItems = (Array.from(virtualEl.children) as HTMLElement[]).filter((child) =>
+          child.hasAttribute('data-virtual-index')
+        );
+        const items =
+          directItems.length > 0
+            ? directItems
+            : (Array.from(virtualEl.querySelectorAll('[data-virtual-index]')) as HTMLElement[]).filter(
+                (el) => !el.closest('[data-nav-row="true"]') && el.getAttribute('data-live-channel-btn') !== 'true'
+              );
         let anyHeightChanged = false;
         let measuredSum = 0;
         let measuredCount = 0;
@@ -545,9 +563,16 @@ export function useVirtualWindow({
         }
 
         if (measuredCount > 0) {
-          const avgMeasured = Math.max(36, Math.round(measuredSum / measuredCount));
-          setMeasuredRowHeightPx((prev) => (prev !== avgMeasured ? avgMeasured : prev));
-        } else {
+          // Lock the default height estimate for unmeasured items once we have an initial real measurement
+          // so prefix spacer heights above startIndex do not drift and cause scroll jitter while scrolling.
+          if (measuredListBaselineRef.current === null) {
+            const avgMeasured = Math.max(36, Math.round(measuredSum / measuredCount));
+            measuredListBaselineRef.current = avgMeasured;
+            setMeasuredRowHeightPx((prev) => (prev !== avgMeasured ? avgMeasured : prev));
+          } else if (measuredRowHeightRef.current === null) {
+            setMeasuredRowHeightPx(measuredListBaselineRef.current);
+          }
+        } else if (measuredListBaselineRef.current === null) {
           setMeasuredRowHeightPx((prev) =>
             prev !== defaultItemHeight ? defaultItemHeight : prev
           );
@@ -556,18 +581,18 @@ export function useVirtualWindow({
         if (anyHeightChanged) {
           setHeightMeasurementVersion((v) => v + 1);
         }
-      } else {
+      } else if (measuredListBaselineRef.current === null) {
         setMeasuredRowHeightPx((prev) => (prev !== defaultItemHeight ? defaultItemHeight : prev));
       }
     }
-  }, [displayMode, tvScale, scrollEl, virtualEl, mode, viewportWidth]);
+  }, [displayMode, tvScale, scrollEl, virtualEl, mode, viewportWidth, baseListItemHeightPx]);
 
   // Run layout measurement on mount, container replacement, scale/mode change, or window shift
   useLayoutEffect(() => {
     remeasureLayout();
   }, [remeasureLayout, windowStart, totalCount]);
 
-  // Window resize and ResizeObserver on scrollEl / virtualEl
+  // Window resize and ResizeObserver on scrollEl (and virtualEl width in grid mode only to prevent list oscillation)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handleResize = () => {
@@ -586,13 +611,30 @@ export function useVirtualWindow({
           ? (window as any).ResizeObserver
           : null;
 
-    if (ResizeObs && (scrollEl || virtualEl)) {
+    if (ResizeObs && scrollEl) {
+      let lastObservedScrollW = scrollEl.clientWidth || 0;
+      let lastObservedScrollH = scrollEl.clientHeight || 0;
+      let lastObservedVirtualW = virtualEl?.clientWidth || 0;
       try {
         resizeObserver = new ResizeObs(() => {
+          const nextScrollW = scrollEl.clientWidth || 0;
+          const nextScrollH = scrollEl.clientHeight || 0;
+          const nextVirtualW = virtualEl?.clientWidth || 0;
+          const scrollSizeChanged =
+            nextScrollW !== lastObservedScrollW || nextScrollH !== lastObservedScrollH;
+          const virtualWidthChanged = mode === 'grid' && nextVirtualW !== lastObservedVirtualW;
+          if (!scrollSizeChanged && !virtualWidthChanged) {
+            return;
+          }
+          lastObservedScrollW = nextScrollW;
+          lastObservedScrollH = nextScrollH;
+          lastObservedVirtualW = nextVirtualW;
           remeasureLayout();
         });
-        if (scrollEl) resizeObserver.observe(scrollEl);
-        if (virtualEl && virtualEl !== scrollEl) resizeObserver.observe(virtualEl);
+        resizeObserver.observe(scrollEl);
+        if (mode === 'grid' && virtualEl && virtualEl !== scrollEl) {
+          resizeObserver.observe(virtualEl);
+        }
       } catch {}
     }
 
@@ -604,14 +646,17 @@ export function useVirtualWindow({
         } catch {}
       }
     };
-  }, [scrollEl, virtualEl, remeasureLayout]);
+  }, [scrollEl, virtualEl, mode, remeasureLayout]);
 
   const computeStartForScrollTop = useCallback(
     (scrollTop: number): number => {
       if (totalCount <= alignedWindowSize) return 0;
 
       const effectiveScrollTop = Math.max(0, scrollTop - listOffsetTop);
-      const overscanRows = mode === 'grid' ? 3 : 10;
+      const overscanRows =
+        mode === 'grid'
+          ? 3
+          : Math.max(2, Math.min(6, Math.floor(alignedWindowSize / 4)));
 
       let rawFirstVisibleRow = 0;
       if (mode === 'list') {
@@ -637,6 +682,13 @@ export function useVirtualWindow({
     [totalCount, alignedWindowSize, listOffsetTop, mode, rowHeightPx, columns]
   );
 
+  const computeStartForScrollTopRef = useRef(computeStartForScrollTop);
+  computeStartForScrollTopRef.current = computeStartForScrollTop;
+  const rowHeightPxRef = useRef(rowHeightPx);
+  rowHeightPxRef.current = rowHeightPx;
+  const columnsRef = useRef(columns);
+  columnsRef.current = columns;
+
   // Attach/detach scroll listener whenever the actual scrollEl DOM node mounts, changes, or unmounts
   useEffect(() => {
     if (!scrollEl) return;
@@ -650,16 +702,17 @@ export function useVirtualWindow({
     const shouldSuppressDpadScrollEvent = (): boolean => {
       if (!(scrollEl as any).__ncDpadNavActive) return false;
       const currentScrollTop = Math.max(0, scrollEl.scrollTop || 0);
+      const curRowHeight = rowHeightPxRef.current;
       const lastTargetTop =
         typeof (scrollEl as any).__ncDpadTargetTop === 'number'
           ? (scrollEl as any).__ncDpadTargetTop
           : currentScrollTop;
-      const maxDpadDelta = Math.max(1200, rowHeightPx * 5);
+      const maxDpadDelta = Math.max(1200, curRowHeight * 5);
 
       // If scrollTop was explicitly reset to 0 from a deep position or jumped far beyond the D-Pad step range,
       // release D-Pad control so programmatic/manual deep scrolls update the window immediately.
       if (
-        (currentScrollTop === 0 && lastTargetTop > rowHeightPx * 2) ||
+        (currentScrollTop === 0 && lastTargetTop > curRowHeight * 2) ||
         Math.abs(currentScrollTop - lastTargetTop) > maxDpadDelta
       ) {
         (scrollEl as any).__ncDpadNavActive = false;
@@ -682,7 +735,7 @@ export function useVirtualWindow({
       rafId = null;
       if (isFrozenRef.current) return;
       if (shouldSuppressDpadScrollEvent()) return;
-      const nextStart = computeStartForScrollTop(scrollEl.scrollTop || 0);
+      const nextStart = computeStartForScrollTopRef.current(scrollEl.scrollTop || 0);
       if (nextStart !== windowStartRef.current) {
         windowStartRef.current = nextStart;
         setWindowStart(nextStart);
@@ -698,10 +751,10 @@ export function useVirtualWindow({
         }
         return;
       }
-      const nextStart = computeStartForScrollTop(scrollEl.scrollTop || 0);
+      const nextStart = computeStartForScrollTopRef.current(scrollEl.scrollTop || 0);
       if (nextStart === windowStartRef.current) return;
       // Update immediately when jumping >= 2 rows, or via rAF for small incremental scrolls
-      if (Math.abs(nextStart - windowStartRef.current) >= columns * 2) {
+      if (Math.abs(nextStart - windowStartRef.current) >= columnsRef.current * 2) {
         if (rafId !== null && typeof cancelAnimationFrame === 'function') {
           cancelAnimationFrame(rafId);
           rafId = null;
@@ -726,7 +779,7 @@ export function useVirtualWindow({
 
     // Sync window immediately with the mounted container's current scrollTop
     if (!isFrozenRef.current && !(scrollEl as any).__ncDpadNavActive) {
-      const syncedStart = computeStartForScrollTop(scrollEl.scrollTop || 0);
+      const syncedStart = computeStartForScrollTopRef.current(scrollEl.scrollTop || 0);
       if (syncedStart !== windowStartRef.current) {
         windowStartRef.current = syncedStart;
         setWindowStart(syncedStart);
@@ -751,7 +804,7 @@ export function useVirtualWindow({
         attachedScrollContainerCounts.set(scrollEl, nextCount);
       }
     };
-  }, [scrollEl, computeStartForScrollTop, columns, rowHeightPx]);
+  }, [scrollEl]);
 
   // Synchronous window shift for D-pad navigation (called by spatialNav before querying candidates)
   const ensureIndexMounted = useCallback(
@@ -887,10 +940,18 @@ export function useVirtualWindow({
               clampedTarget < Math.min(curEnd, nextBounds.endIndex)
             ? clampedTarget
             : -1;
-      const anchorElBefore =
-        anchorIndex >= 0 && virtualEl
-          ? virtualEl.querySelector<HTMLElement>(`[data-virtual-index="${anchorIndex}"]`)
-          : null;
+      const findVirtualItem = (idx: number): HTMLElement | null => {
+        if (!virtualEl || idx < 0) return null;
+        if (mode === 'list') {
+          const direct = (Array.from(virtualEl.children) as HTMLElement[]).find(
+            (child) => child.getAttribute('data-virtual-index') === String(idx)
+          );
+          if (direct) return direct;
+        }
+        return virtualEl.querySelector<HTMLElement>(`[data-virtual-index="${idx}"]`);
+      };
+
+      const anchorElBefore = findVirtualItem(anchorIndex);
       const anchorRectBefore = anchorElBefore ? anchorElBefore.getBoundingClientRect() : null;
       const hasRealAnchorBefore = Boolean(anchorRectBefore && anchorRectBefore.height > 0);
 
@@ -908,15 +969,16 @@ export function useVirtualWindow({
       if (activeScrollEl) {
         const scrollRect = activeScrollEl.getBoundingClientRect();
         if (scrollRect.height > 0 && hasRealAnchorBefore && anchorRectBefore && virtualEl) {
-          const anchorElAfter = virtualEl.querySelector<HTMLElement>(
-            `[data-virtual-index="${anchorIndex}"]`
-          );
+          const anchorElAfter = findVirtualItem(anchorIndex);
           const anchorRectAfter = anchorElAfter ? anchorElAfter.getBoundingClientRect() : null;
           if (anchorRectAfter && anchorRectAfter.height > 0) {
             const delta = anchorRectAfter.top - anchorRectBefore.top;
             if (Math.abs(delta) > 0.5) {
               const nextTop = Math.max(0, (activeScrollEl.scrollTop || 0) + delta);
+              const prevScrollBehavior = activeScrollEl.style.scrollBehavior;
+              activeScrollEl.style.scrollBehavior = 'auto';
               activeScrollEl.scrollTop = nextTop;
+              activeScrollEl.style.scrollBehavior = prevScrollBehavior;
               (activeScrollEl as any).__ncDpadTargetTop = nextTop;
             }
           }

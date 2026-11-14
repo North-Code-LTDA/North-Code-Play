@@ -470,7 +470,7 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
       <div
         className={`nc-card-visual-layer flex items-center bg-nc-bg-card border transition-colors ${
           isSelected
-            ? 'border-white/60 bg-white/[0.08]'
+            ? 'border-white/25 bg-white/[0.09]'
             : 'border-white/10 hover:border-white/25 hover:bg-white/[0.05]'
         }`}
       >
@@ -479,7 +479,6 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
           data-nav-item="true"
           data-live-channel-btn="true"
           data-row-card-index={cardIndex}
-          data-virtual-index={cardIndex}
           data-live-channel-id={primaryStreamId}
           data-live-channel-group-id={group.groupId}
           data-live-channel-category-id={categoryId}
@@ -739,7 +738,10 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       const el = rowElRef.current;
       if (el) {
         const targetScrollLeft = Math.max(0, clamped * HORIZ_CARD_STRIDE_PX - Math.round(rowWidth / 2) + Math.round(HORIZ_CARD_WIDTH_PX / 2));
+        const prevBehavior = el.style.scrollBehavior;
+        el.style.scrollBehavior = 'auto';
         el.scrollLeft = targetScrollLeft;
+        el.style.scrollBehavior = prevBehavior;
       }
 
       return true;
@@ -1526,8 +1528,10 @@ export const LiveTvView = React.memo(function LiveTvView({
     mode: 'list',
     scrollContainerRef: leftScrollRef,
     virtualContainerRef: leftVirtualRef,
-    maxWindowItems: 14,
-    resetKey: `live_rows_${normalizedSearch}_${categoryRows.length}`,
+    maxWindowItems: 24,
+    fallbackOffsetTopPx: 16,
+    fallbackItemHeightPx: 148,
+    resetKey: `live_rows_${normalizedSearch}`,
   });
 
   const [leftScrollNode, setLeftScrollNode] = useState<HTMLDivElement | null>(null);
@@ -1604,7 +1608,7 @@ export const LiveTvView = React.memo(function LiveTvView({
          =================================================================== */}
       <aside
         data-nav-zone="categories"
-        className={`nc-live-left-pane nc-tv-category-pane w-full md:w-1/2 md:max-w-[50%] flex-1 md:flex-none flex-col min-w-0 min-h-0 border-b md:border-b-0 md:border-r border-white/10 bg-black/50 ${
+        className={`nc-live-left-pane nc-tv-category-pane w-full md:w-1/2 md:max-w-[50%] flex-1 md:flex-none flex-col min-w-0 min-h-0 border-b md:border-b-0 md:border-r border-white/10 bg-nc-bg ${
           isMobilePlayerOpen ? 'hidden md:flex' : 'flex'
         }`}
       >
@@ -1628,6 +1632,7 @@ export const LiveTvView = React.memo(function LiveTvView({
           data-live-origin-row-index={effectiveOriginRowIndex >= 0 ? effectiveOriginRowIndex : undefined}
           data-live-origin-card-index={originState.cardIndex >= 0 ? originState.cardIndex : undefined}
           onScroll={() => notifyContainerScrollForFallback(leftScrollRef.current)}
+          style={{ overflowAnchor: 'none' }}
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar touch-pan-y px-4 sm:px-6 py-4"
         >
           {loadingLive && categoryRows.length === 0 ? (
@@ -1707,7 +1712,7 @@ export const LiveTvView = React.memo(function LiveTvView({
          =================================================================== */}
       <main
         data-nav-zone="content"
-        className={`nc-live-right-pane w-full md:w-1/2 md:max-w-[50%] flex-1 md:flex-none flex-col min-w-0 min-h-0 bg-zinc-950/90 overflow-y-auto md:overflow-hidden touch-pan-y ${
+        className={`nc-live-right-pane w-full md:w-1/2 md:max-w-[50%] flex-1 md:flex-none flex-col min-w-0 min-h-0 bg-nc-bg overflow-y-auto md:overflow-hidden touch-pan-y ${
           isMobilePlayerOpen ? 'flex' : 'hidden md:flex'
         }`}
       >
@@ -1740,33 +1745,16 @@ export const LiveTvView = React.memo(function LiveTvView({
               </button>
             </div>
 
-            {/* Top Section: Preview Player + Channel Info + Variants + Now Playing */}
+            {/* Top Section: Channel Info + Variants + Now Playing (Left) | Video Preview (Right) */}
             <div
               data-live-top-section="true"
-              className="nc-live-top-section shrink-0 p-4 sm:p-5 border-b border-white/10 flex flex-col md:flex-row gap-4 items-start min-w-0"
+              className="nc-live-top-section shrink-0 p-4 sm:p-5 border-b border-white/10 flex flex-col-reverse md:flex-row gap-4 items-start min-w-0"
             >
-              {/* Video Preview */}
-              <div className="nc-live-preview-box w-full md:w-[clamp(15rem,23.5vw,23.5rem)] shrink-0 aspect-video rounded-xl overflow-hidden bg-black border border-white/10 relative">
-                <VideoPlayer
-                  streamUrl={activeStreamUrl}
-                  title={selectedGroup.displayName}
-                  contentType="live"
-                  channelName={selectedGroup.displayName}
-                  programTitle={currentEpgProgram?.title}
-                  streamId={selectedChannel.stream_id ?? selectedChannel.id}
-                  attemptTrigger={attemptTrigger}
-                  fullscreenRequestTrigger={fullscreenRequestTrigger}
-                  embedded={true}
-                  disableEmbeddedControlsFocus={true}
-                  onBack={closePreviewAndRestoreFocus}
-                  onRetry={handleManualRetry}
-                  onPlaybackSuccess={handlePlaybackSuccess}
-                  onPlaybackFinalError={handlePlaybackFinalError}
-                />
-              </div>
-
               {/* Channel Metadata + Variant Selector + Now Playing Summary */}
-              <div className="flex-1 min-w-0 flex flex-col gap-2.5 w-full">
+              <div
+                data-live-info-column="true"
+                className="flex-1 min-w-0 flex flex-col gap-2.5 w-full"
+              >
                 <div className="flex items-start gap-3 min-w-0">
                   <div className="nc-live-channel-logo relative w-11 h-11 shrink-0 rounded-lg bg-black/60 border border-white/10 flex items-center justify-center overflow-hidden p-1">
                     <Tv className="w-5 h-5 text-white/25" aria-hidden="true" />
@@ -1794,18 +1782,19 @@ export const LiveTvView = React.memo(function LiveTvView({
                           {activeResolutionBadge}
                         </span>
                       )}
-                      {currentEpgProgram && (
-                        <span className="nc-text-meta text-emerald-400 font-medium inline-flex items-center gap-1">
-                          <Radio className="w-3 h-3" />
-                          <span>Ao vivo</span>
-                        </span>
-                      )}
+                      <span
+                        data-live-badge="true"
+                        className="nc-badge-info inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" aria-hidden="true" />
+                        <span>AO VIVO</span>
+                      </span>
                     </div>
                   </div>
                 </div>
 
                 {/* Variant Selector Row (only rendered when multiple resolutions exist) */}
-                {selectedGroup.isGrouped && selectedGroup.variants.length > 1 && (
+                {selectedGroup.isGrouped && Array.isArray(selectedGroup.variants) && selectedGroup.variants.length > 1 && (
                   <div className="space-y-1 min-w-0">
                     <span className="nc-text-meta text-white/50 block">Versão do canal</span>
                     <div
@@ -1877,6 +1866,29 @@ export const LiveTvView = React.memo(function LiveTvView({
                   </p>
                 )}
               </div>
+
+              {/* Video Preview */}
+              <div
+                data-live-preview-column="true"
+                className="nc-live-preview-box w-full md:w-[clamp(15rem,23.5vw,23.5rem)] shrink-0 aspect-video rounded-xl overflow-hidden bg-black border border-white/10 relative"
+              >
+                <VideoPlayer
+                  streamUrl={activeStreamUrl}
+                  title={selectedGroup.displayName}
+                  contentType="live"
+                  channelName={selectedGroup.displayName}
+                  programTitle={currentEpgProgram?.title}
+                  streamId={selectedChannel.stream_id ?? selectedChannel.id}
+                  attemptTrigger={attemptTrigger}
+                  fullscreenRequestTrigger={fullscreenRequestTrigger}
+                  embedded={true}
+                  disableEmbeddedControlsFocus={true}
+                  onBack={closePreviewAndRestoreFocus}
+                  onRetry={handleManualRetry}
+                  onPlaybackSuccess={handlePlaybackSuccess}
+                  onPlaybackFinalError={handlePlaybackFinalError}
+                />
+              </div>
             </div>
 
             {/* Bottom Section: EPG Timeline */}
@@ -1918,7 +1930,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                         data-nav-item="true"
                         data-epg-primary="true"
                         data-epg-state={epgStateKind}
-                        className="nc-tv-epg-state rounded-xl border border-white/10 bg-white/[0.03] p-5 text-center text-white/55 nc-text-subtitle flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-white/60"
+                        className="nc-tv-epg-state rounded-xl border border-white/10 bg-white/[0.03] p-5 text-center text-white/55 nc-text-subtitle flex items-center justify-center gap-2 focus:outline-none"
                       >
                         {epgStateKind === 'loading' ? (
                           <>
@@ -1954,8 +1966,11 @@ export const LiveTvView = React.memo(function LiveTvView({
                             {prog.startLabel} - {prog.endLabel}
                           </span>
                           {prog.isCurrent && (
-                            <span className="nc-badge-info px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                              Ao Vivo
+                            <span
+                              data-epg-live-badge="true"
+                              className="nc-badge-info px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20"
+                            >
+                              AO VIVO
                             </span>
                           )}
                         </div>
