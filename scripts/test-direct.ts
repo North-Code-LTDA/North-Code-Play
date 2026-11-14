@@ -1390,24 +1390,26 @@ async function runPlayerBackAndScrollNavigationTests() {
     );
   });
 
-  // Estado inicial: Hero monta o canal disponível no catálogo e permite filtrar pela barra Categorias
+  // Estado inicial: desktop exibe "Selecione um Canal"
   assert(
-    container.querySelector('[data-live-hero="true"]') !== null,
-    'Desktop inicia exibindo o Hero de destaque da TV ao Vivo'
+    container.textContent?.includes('Selecione um Canal'),
+    'Desktop inicia com estado Selecione um Canal'
   );
 
-  // Abrir filtro pela categoria Notícias no dropdown de Categorias
-  const categoryBtn = container.querySelector(
-    'button[data-live-category-id="cat_live_1"]'
+  // Clicar na categoria Notícias para exibir a lista de canais
+  const { formatCategoryLabel } = await import('../src/utils/categoryLabel');
+  const targetCategoryText = formatCategoryLabel('Notícias', 'live');
+  const categoryBtn = Array.from(container.querySelectorAll('.custom-scrollbar button')).find(
+    (b) => b.textContent?.trim() === targetCategoryText || b.textContent?.includes('NOTÍCIAS')
   ) as any as HTMLButtonElement;
-  assert(categoryBtn, 'Botão da categoria Notícias deve estar presente no menu de Categorias');
+  assert(categoryBtn, 'Botão da categoria Notícias deve estar presente');
   await act(async () => {
     categoryBtn.click();
   });
 
-  // Selecionar/ativar canal na grade filtrada
-  const channelItemBtn = container.querySelector('button[data-live-channel-btn="true"]') as any as HTMLButtonElement;
-  assert(channelItemBtn, 'Botão do canal deve estar visível');
+  // Selecionar canal
+  const channelItemBtn = container.querySelector('button.w-full.flex.items-center') as any as HTMLButtonElement;
+  assert(channelItemBtn, 'Botão do canal deve estar na lista');
   await act(async () => {
     channelItemBtn.click();
   });
@@ -1415,20 +1417,21 @@ async function runPlayerBackAndScrollNavigationTests() {
   const activeVideoEl = container.querySelector('video') as any as HTMLVideoElement;
   assert(activeVideoEl, 'Player com vídeo deve estar montado após seleção do canal');
 
-  // Em Player standalone, Voltar continua encerrando normalmente o stream sem deixar vídeo oculto
+  // Clicar em Voltar no player fora da tela cheia (desktop)
+  const playerBackBtn = container.querySelector('button[aria-label="Voltar"]') as any as HTMLButtonElement;
+  assert(playerBackBtn, 'Botão Voltar presente nos controles do preview');
   await act(async () => {
-    root.render(
-      React.createElement(
-        XtreamMockProvider,
-        { value: mockLiveContext },
-        React.createElement('div', { 'data-closed-view': 'true' })
-      )
-    );
+    playerBackBtn.click();
   });
+
+  assert(
+    container.textContent?.includes('Selecione um Canal'),
+    'Voltar fora de tela cheia encerra o canal no desktop e volta ao estado Selecione um Canal'
+  );
   assert.strictEqual(
     container.querySelector('video'),
     null,
-    'Nenhum elemento <video> ou transmissão invisível permanece consumindo rede após sair da TV ao Vivo'
+    'Nenhum elemento <video> ou transmissão invisível permanece consumindo rede'
   );
 
   // 1.4 Atalhos de teclado controlam apenas a instância ativa do player
@@ -1542,7 +1545,7 @@ async function runPlayerBackAndScrollNavigationTests() {
         );
       });
 
-      // Abrir a categoria Notícias (cat_live_1) pelo seletor
+      // Abrir a categoria Notícias (cat_live_1)
       const catBtn = container.querySelector(
         'button[data-live-category-id="cat_live_1"]'
       ) as any as HTMLButtonElement;
@@ -1558,12 +1561,10 @@ async function runPlayerBackAndScrollNavigationTests() {
       assert.strictEqual(channelBtns.length, 2, '[1.5] Dois canais devem estar renderizados na categoria');
       const channelBtn1 = channelBtns[0];
 
-      // 1º comando no canal 1: garante que está ativo no preview
+      // 1º comando no canal 1: abre o preview
       await act(async () => {
         channelBtn1.focus();
-        if (channelBtn1.getAttribute('data-live-channel-selected') !== 'true') {
-          channelBtn1.click();
-        }
+        channelBtn1.click();
         await new Promise((r) => setTimeout(r, 20));
       });
       assert(container.querySelector('video') !== null, '[1.5] Preview de vídeo deve estar montado');
@@ -1672,14 +1673,16 @@ async function runPlayerBackAndScrollNavigationTests() {
         );
         assert(
           container.querySelector('video') !== null,
-          '[1.5.A] O preview do Hero deve continuar aberto após a conclusão da saída de tela cheia'
+          '[1.5.A] O preview deve continuar aberto após a conclusão da saída de tela cheia'
         );
       } finally {
         channelBtn1.focus = origChannel1Focus;
       }
 
-      // Restaurar exitFullscreen padrão e validar retorno da grade filtrada para vitrine com Escape
+      // Restaurar exitFullscreen padrão para validar a sequência seguinte: preview -> lista de canais -> categorias
       (windowInstance.document as any).exitFullscreen = originalExitFullscreen;
+
+      // Próximo comando Voltar (após concluir a saída da tela cheia): fecha o preview normalmente
       await act(async () => {
         windowInstance.dispatchEvent(
           new (windowInstance as any).KeyboardEvent('keydown', {
@@ -1688,32 +1691,54 @@ async function runPlayerBackAndScrollNavigationTests() {
             cancelable: true,
           })
         );
-        await new Promise((r) => setTimeout(r, 20));
       });
-      const triggerCatAfterEsc = container.querySelector(
-        'button[data-categories-trigger="true"]'
-      ) as any as HTMLButtonElement;
-      assert(triggerCatAfterEsc, '[1.5.A] Botão Categorias deve estar presente ao sair da grade filtrada');
+      assertSameElement(
+        container.querySelector('video') as any,
+        null,
+        '[1.5.A] O próximo comando Voltar após concluir a transição deve fechar o preview normalmente'
+      );
       assertSameElement(
         document.activeElement,
-        triggerCatAfterEsc,
-        '[1.5.A] Voltar da grade filtrada restaura foco ao controle Categorias'
+        channelBtn1,
+        '[1.5.A] Ao fechar o preview, o foco permanece no canal na lista de canais'
+      );
+
+      // Comando Voltar seguinte: lista de canais -> categorias
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: 'Escape',
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      });
+      const restoredCatBtn = container.querySelector(
+        'button[data-live-category-id="cat_live_1"]'
+      ) as any as HTMLButtonElement;
+      assert(restoredCatBtn, '[1.5.A] Lista de categorias deve voltar a ser exibida');
+      assertSameElement(
+        document.activeElement,
+        restoredCatBtn,
+        '[1.5.A] Sequência tela cheia -> preview -> lista de canais -> categorias preservada'
       );
 
       // -----------------------------------------------------------------------
       // 1.5.B: Conclusão tardia de exitFullscreen() após mudar de canal não deve mover o foco
       // -----------------------------------------------------------------------
+      await act(async () => {
+        restoredCatBtn.click();
+      });
       const chBtnsForSwitch = Array.from(
         container.querySelectorAll('button[data-live-channel-btn="true"]')
       ) as any as HTMLButtonElement[];
       const ch1BtnSwitch = chBtnsForSwitch[0];
       const ch2BtnSwitch = chBtnsForSwitch[1];
 
+      // Abrir canal 1 no preview e depois em tela cheia
       await act(async () => {
         ch1BtnSwitch.focus();
-        if (ch1BtnSwitch.getAttribute('data-live-channel-selected') !== 'true') {
-          ch1BtnSwitch.click();
-        }
+        ch1BtnSwitch.click();
         await new Promise((r) => setTimeout(r, 20));
       });
       await act(async () => {
@@ -1750,19 +1775,19 @@ async function runPlayerBackAndScrollNavigationTests() {
       });
       assert.strictEqual(exitCallsOnChannelSwitch, 1, '[1.5.B] Saída de tela cheia iniciada para o canal 1');
 
-      // Trocar para o canal 2 antes da conclusão de exitFullscreen() e posicionar foco em outro elemento (Favoritar do Hero)
-      const heroFavAnchorBtn = container.querySelector(
-        'button[data-live-hero-favorite="true"]'
+      // Trocar para o canal 2 antes da conclusão de exitFullscreen() e posicionar o foco no botão de voltar às categorias
+      const backToCategoriesBtn = container.querySelector(
+        'button[data-live-back-to-categories="true"]'
       ) as any as HTMLButtonElement;
-      assert(heroFavAnchorBtn, '[1.5.B] Botão de favorito do Hero deve existir');
+      assert(backToCategoriesBtn, '[1.5.B] Botão Voltar às Categorias deve existir');
 
       await act(async () => {
         ch2BtnSwitch.click();
-        heroFavAnchorBtn.focus();
+        backToCategoriesBtn.focus();
       });
       assertSameElement(
         document.activeElement,
-        heroFavAnchorBtn,
+        backToCategoriesBtn,
         '[1.5.B] Foco posicionado em outro elemento após trocar para o canal 2'
       );
 
@@ -1778,7 +1803,7 @@ async function runPlayerBackAndScrollNavigationTests() {
       );
       assertSameElement(
         document.activeElement,
-        heroFavAnchorBtn,
+        backToCategoriesBtn,
         '[1.5.B] Conclusão tardia da saída de tela cheia após trocar de canal NÃO deve mover o foco'
       );
 
@@ -2812,28 +2837,22 @@ async function runLiveTvSdPriorityAndFallbackTests() {
     docCatBtn.click();
   });
 
-  // Localizar cartão do canal agrupado Discovery Channel (Hero permanece neutro até ativação explícita)
-  const channelBtn = container.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
-  assert(channelBtn, 'Cartão do canal Discovery Channel encontrado');
-  assert.strictEqual(
-    container.querySelector('video'),
-    null,
-    'Antes da ativação explícita do canal, nenhum <video> deve iniciar automaticamente no Hero'
-  );
+  // Clicar no canal agrupado Discovery Channel
+  const channelBtn = container.querySelector('button.w-full.flex.items-center') as HTMLButtonElement;
+  assert(channelBtn, 'Botão do canal Discovery Channel encontrado');
 
-  // 1º OK/clique explícito: seleciona o canal e inicia o preview no Hero na variante SD
   await act(async () => {
     channelBtn.click();
   });
 
   const videoEl = container.querySelector('video') as HTMLVideoElement;
-  assert(videoEl, 'Elemento <video> montado no Hero após 1º clique explícito no canal em SD');
+  assert(videoEl, 'Elemento <video> montado após 1º clique/OK no canal');
   assert(
     container.textContent?.includes('SD'),
-    'Player deve iniciar na variante SD após ativação explícita'
+    'Player deve iniciar automaticamente na variante SD'
   );
 
-  // Confirmar que 2º OK/clique no canal já ativo no Hero solicita tela cheia sem desmontar <video> nem reiniciar tentativa
+  // Confirmar que 2º clique/OK no mesmo canal já ativo solicita tela cheia sem desmontar <video> nem reiniciar tentativa
   currentFullscreenElement = null;
   const loadCountBeforeSecondOk = videoLoadCallCount;
 
@@ -3790,112 +3809,168 @@ async function runDpadNavigationAndBackPolicyTests() {
   await waitForCondition(
     () =>
       Boolean(
-        container.querySelector('[data-showcase-section="live"]') &&
-          container.querySelector('[data-nav-zone="categories"] button[data-categories-trigger="true"]') &&
+        container.querySelector('[data-nav-zone="categories"] [data-scroll-container="true"]') &&
           container.querySelector('button[data-live-category-id="1"]')
       ),
     1000,
-    'Montagem de LiveTvView em formato de vitrine e seletor Categorias'
+    'Montagem de LiveTvView e lista de categorias da TV ao Vivo'
   );
 
-  const liveCatTriggerBtn = container.querySelector(
-    '[data-nav-zone="categories"] button[data-categories-trigger="true"]'
+  const initialLiveCatBtn = container.querySelector(
+    '[data-nav-zone="categories"] button[data-category-selected="true"], [data-nav-zone="categories"] button[data-live-category-id]'
   ) as HTMLButtonElement;
   assertSameElement(
     document.activeElement,
-    liveCatTriggerBtn,
-    'Ativar TV ao Vivo no cabeçalho deve encaminhar o foco uma única vez para o controle Categorias'
+    initialLiveCatBtn,
+    'Ativar TV ao Vivo no cabeçalho deve encaminhar o foco uma única vez para a primeira categoria habilitada sem iniciar reprodução'
   );
-  assert(
-    container.querySelector('[data-live-hero-neutral="true"]') !== null &&
-      container.querySelector('[data-live-hero="true"] video') === null,
-    'Na entrada normal em TV ao Vivo sem initialChannelIntent, o Hero permanece neutro e não monta <video> automaticamente'
+  assert.strictEqual(
+    container.querySelector('video'),
+    null,
+    'Encaminhar foco ao entrar na TV ao Vivo não deve clicar no destino nem iniciar reprodução'
   );
 
-  // Critério 1: Filtrar categoria A (Abertos, id=1) pelo botão da categoria no menu Categorias
+  const liveCatList = container.querySelector('[data-nav-zone="categories"] [data-scroll-container="true"]') as HTMLElement;
+  assert(liveCatList, 'Lista de categorias da TV ao Vivo deve existir');
+  liveCatList.scrollTop = 180;
+
   const abertosCatBtn = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
-  assert(abertosCatBtn, 'Botão da categoria Abertos (id=1) deve existir no menu de Categorias da TV ao Vivo');
+  assert(abertosCatBtn, 'Botão da categoria Abertos (id=1) deve existir na TV ao Vivo');
+
+  // Critério 1: Ativar categoria A populada (Abertos, id=1) com Enter (em modo remote)
   await act(async () => {
-    abertosCatBtn.click();
+    abertosCatBtn.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
   });
 
   await waitForCondition(
     () => container.querySelectorAll('button[data-live-channel-btn="true"]').length >= 2,
     1000,
-    'Renderização dos canais filtrados da categoria Abertos (id=1)'
+    'Renderização dos canais da categoria Abertos (id=1)'
   );
 
   const channelButtonsCatA = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
-  assert(channelButtonsCatA.length >= 2, 'Grade da categoria Abertos deve conter os canais agrupados');
+  const backToCatsBtnInA = container.querySelector('button[data-live-back-to-categories="true"]');
+  assert(channelButtonsCatA.length >= 2, 'Lista de canais da categoria Abertos deve conter os canais agrupados');
   assert.strictEqual(
     channelButtonsCatA[0].getAttribute('data-live-channel-category-id'),
     '1',
-    'Critério 1: O cartão do primeiro canal em Abertos deve ter data-live-channel-category-id="1"'
+    'Critério 1: O botão do primeiro canal exibido em Abertos deve ter data-live-channel-category-id="1"'
+  );
+  assertSameElement(
+    document.activeElement,
+    channelButtonsCatA[0],
+    'Critério 1: Ao abrir a categoria A (Abertos), o foco deve ir para o primeiro canal dessa categoria'
+  );
+  assertDifferentElement(
+    document.activeElement,
+    backToCatsBtnInA,
+    'Critério 1: O foco NÃO deve terminar em "Voltar às Categorias" quando a categoria possui canais'
   );
 
-  // Critério 2: Abrir categoria B (Esportes, id=2) via seletor -> apenas canais de Esportes na grade
-  const esportesCatBtn = container.querySelector('button[data-live-category-id="2"]') as HTMLButtonElement;
-  assert(esportesCatBtn, 'Botão da categoria Esportes (id=2) deve existir');
-  await act(async () => {
-    esportesCatBtn.click();
-  });
-
-  await waitForCondition(
-    () => container.querySelectorAll('button[data-live-channel-category-id="2"]').length >= 1,
-    1000,
-    'Renderização dos canais da categoria Esportes (id=2)'
-  );
-
-  assert.strictEqual(
-    container.querySelectorAll('button[data-live-channel-category-id="1"]').length,
-    0,
-    'Critério 2: Ao filtrar categoria B (Esportes), nenhum cartão da categoria A (Abertos) permanece na grade'
-  );
-
-  // Escape na grade filtrada retorna à vitrine completa e devolve foco ao controle Categorias
+  // Critério 2: Voltar às categorias e abrir a categoria B populada (Esportes, id=2) com catálogo em memória (filtragem local sem canais residuais de A)
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
   });
   await waitForCondition(
-    () => container.querySelector('[data-showcase-rows-container="true"]') !== null,
+    () => container.querySelector('button[data-live-category-id="2"]') !== null,
     1000,
-    'Retorno à vitrine completa da TV ao Vivo'
+    'Retorno à lista de categorias da TV ao Vivo'
+  );
+  const esportesCatBtn = container.querySelector('button[data-live-category-id="2"]') as HTMLButtonElement;
+  assert(esportesCatBtn, 'Botão da categoria Esportes (id=2) deve existir na TV ao Vivo');
+
+  await act(async () => {
+    esportesCatBtn.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
+  });
+
+  await waitForCondition(
+    () => container.querySelectorAll('button[data-live-channel-btn="true"]').length >= 2,
+    1000,
+    'Renderização dos canais da categoria Esportes (id=2)'
+  );
+
+  const renderedCat1ButtonsInCat2 = container.querySelectorAll('button[data-live-channel-category-id="1"]');
+  assert.strictEqual(
+    renderedCat1ButtonsInCat2.length,
+    0,
+    'Critério 2: Ao abrir a categoria B (Esportes), nenhum canal da categoria A (Abertos) pode permanecer renderizado'
+  );
+
+  const channelButtonsCatB = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
+  const backToCatsBtnInB = container.querySelector('button[data-live-back-to-categories="true"]');
+  assert(channelButtonsCatB.length >= 2, 'Categoria B (Esportes) deve exibir seus canais');
+  assert.strictEqual(
+    channelButtonsCatB[0].getAttribute('data-live-channel-category-id'),
+    '2',
+    'Critério 2: O primeiro canal focado em Esportes deve ter data-live-channel-category-id="2"'
+  );
+  assertSameElement(
+    document.activeElement,
+    channelButtonsCatB[0],
+    'Critério 2: Ao trocar da categoria A para a categoria B populada, o foco deve estar no primeiro canal de B'
+  );
+  assertDifferentElement(
+    document.activeElement,
+    backToCatsBtnInB,
+    'Critério 2: O foco em B NÃO deve parar em "Voltar às Categorias"'
+  );
+
+  // Voltar para categorias e reabrir categoria A (Abertos) para testar fluxo completo de Critério 3:
+  // tela cheia -> preview -> canal -> categorias -> botão "TV ao Vivo" na barra lateral mantendo a tela de TV visível
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+  await waitForCondition(
+    () => container.querySelector('button[data-live-category-id="1"]') !== null,
+    1000,
+    'Retorno à lista de categorias da TV ao Vivo antes de reabrir Abertos'
+  );
+  const abertosCatBtnAgain = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
+  await act(async () => {
+    abertosCatBtnAgain.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
+  });
+  await waitForCondition(
+    () => container.querySelectorAll('button[data-live-channel-btn="true"]').length >= 2,
+    1000,
+    'Reabertura dos canais de Abertos'
   );
 
   const channelButtons = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
-  assert(channelButtons.length >= 2, 'Vitrine de TV ao Vivo exibe os carrosséis horizontais de canais');
+  assertSameElement(document.activeElement, channelButtons[0], 'Foco no primeiro canal de Abertos');
 
-  // Apenas focar com setas nos canais NÃO deve selecionar nenhum canal nem iniciar vídeo no Hero
-  const secondChannelBtn = channelButtons[1];
+  // ArrowDown deve mover para o segundo canal da lista
   await act(async () => {
-    channelButtons[0].focus();
-    secondChannelBtn.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    );
   });
-  assert.strictEqual(
-    container.querySelector('button[data-live-channel-selected="true"]'),
-    null,
-    'Apenas mover o foco com setas para outro card NÃO seleciona canal no Hero'
-  );
-  assert.strictEqual(
-    container.querySelector('[data-live-hero="true"] video'),
-    null,
-    'Apenas mover o foco com setas para outro card NÃO inicia reprodução no Hero'
+  assertSameElement(
+    document.activeElement,
+    channelButtons[1],
+    'ArrowDown na lista de canais deve focar o segundo canal'
   );
 
-  // 1º Enter no segundo canal: ativa o canal no Hero
+  // 1º Enter no segundo canal: abre o preview lateral mantendo foco no canal
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
-  assert.strictEqual(
-    secondChannelBtn.getAttribute('data-live-channel-selected'),
-    'true',
-    '1º Enter explícito no card ativa o canal selecionado no Hero'
-  );
+  assert(container.querySelector('video') !== null, '1º Enter no canal deve iniciar o preview de vídeo');
 
   // 2º Enter no mesmo canal ativo: entra em tela cheia (embedded fullscreen)
   await act(async () => {
@@ -3909,7 +3984,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     '2º Enter no mesmo canal em reprodução deve colocar o player em tela cheia ([data-player-container="true"][data-focus-scope="modal"])'
   );
 
-  // 1º Escape (em tela cheia): sai da tela cheia de volta ao Hero preview mantendo o mesmo <video>
+  // 1º Escape (em tela cheia): sai da tela cheia para o preview (sem fechar o preview e sem voltar às categorias)
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -3919,17 +3994,76 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.querySelector('[data-player-container="true"][data-focus-scope="modal"]'),
     null,
-    '1º Escape na TV ao Vivo deve sair da tela cheia de volta ao Hero preview'
+    '1º Escape na TV ao Vivo deve sair da tela cheia de volta ao preview'
   );
   assert(
-    container.querySelector('[data-live-hero="true"] video') !== null,
-    'Após sair da tela cheia, o preview do Hero permanece montado'
+    container.querySelector('video') !== null,
+    'Após 1º Escape (saindo da tela cheia), o preview do canal ainda deve estar aberto'
   );
 
-  // Critério 3: Escape na barra de categorias da TV ao Vivo foca "TV ao Vivo" no cabeçalho mantendo a tela aberta
+  // 2º Escape (no preview): fecha o preview e mantém a lista de canais com foco no canal selecionado
   await act(async () => {
-    liveCatTriggerBtn.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
   });
+  assertSameElement(
+    container.querySelector('video'),
+    null,
+    '2º Escape na TV ao Vivo deve fechar o preview do canal'
+  );
+  const channelButtonsAfterPreviewClose = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
+  assertSameElement(
+    document.activeElement,
+    channelButtonsAfterPreviewClose[1],
+    'Ao fechar o preview com Voltar, o foco deve permanecer no canal que estava selecionado na lista'
+  );
+
+  // 3º Escape (na lista de canais): volta para a lista de categorias e restaura o foco na categoria de origem (Abertos) e seu scrollTop
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+  const abertosCatBtnRestored = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
+  assert(abertosCatBtnRestored, 'Lista de categorias deve voltar a ser exibida após 3º Escape');
+  assertSameElement(
+    document.activeElement,
+    abertosCatBtnRestored,
+    '3º Escape deve restaurar o foco exatamente na categoria de origem (Abertos)'
+  );
+  const liveCatListRestored = container.querySelector('[data-nav-zone="categories"] [data-scroll-container="true"]') as HTMLElement;
+  assert.strictEqual(
+    liveCatListRestored.scrollTop,
+    180,
+    'Voltar para a lista de categorias deve preservar o scrollTop anterior das categorias'
+  );
+
+  // Testar categoria vazia ("Sem Canais", id=3): foco deve ir para o botão "Voltar às Categorias"
+  const emptyCatBtn = container.querySelector('button[data-live-category-id="3"]') as HTMLButtonElement;
+  assert(emptyCatBtn, 'Botão da categoria Sem Canais (id=3) deve existir');
+  await act(async () => {
+    emptyCatBtn.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  const backToCatsBtn = container.querySelector('button[data-live-back-to-categories="true"]') as HTMLButtonElement;
+  assertSameElement(
+    document.activeElement,
+    backToCatsBtn,
+    'Quando a categoria não tiver canais focáveis, o foco deve ir para o botão "Voltar às Categorias"'
+  );
+
+  // Escape volta da categoria vazia para a lista de categorias
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+
+  // 4º Escape (Critério 3 - na lista de categorias da TV ao Vivo): foca o botão "TV ao Vivo" no cabeçalho superior E mantém a tela de TV visível!
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -3939,10 +4073,11 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     liveHeaderBtn,
-    'Critério 3: Escape a partir da barra de categorias da TV ao Vivo deve focar o botão "TV ao Vivo" no cabeçalho superior'
+    'Critério 3: 4º Escape a partir das categorias da TV ao Vivo deve focar o botão "TV ao Vivo" no cabeçalho superior'
   );
   assert(
-    container.querySelector('[data-showcase-section="live"]') !== null,
+    container.textContent?.includes('CATEGORIAS DE TV') &&
+      container.querySelector('button[data-live-category-id="1"]') !== null,
     'Critério 3: Ao alcançar o botão "TV ao Vivo" no cabeçalho superior, a tela de TV DEVE continuar aberta e visível'
   );
 
@@ -3953,7 +4088,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     inicioHeaderBtn.click();
   });
   assert(
-    container.querySelector('[data-showcase-section="inicio"] [data-scroll-top-anchor="true"]') !== null,
+    container.querySelector('[data-scroll-top-anchor="true"]') !== null,
     'Critério 6: Clique explícito em "Início" no cabeçalho superior deve abrir a tela Início'
   );
 
@@ -3962,6 +4097,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   // =========================================================================
   window.localStorage.removeItem(realHistoryKey);
 
+  // Na HomeView, encontrar a fileira "Canais Ao Vivo" e ativar o card "Canal Esporte HD" (stream_id 104, que pertence ao grupo Canal Esporte com SD=103 e HD=104)
   const homeLiveCards = Array.from(container.querySelectorAll('[data-nav-row="true"] [data-nav-item="true"]')) as HTMLElement[];
   const esporteHomeCard = homeLiveCards.find((el) => el.textContent?.includes('Canal Esporte HD'));
   assert(esporteHomeCard, 'Card "Canal Esporte HD" deve existir na fileira Canais Ao Vivo da Home');
@@ -3974,9 +4110,9 @@ async function runDpadNavigationAndBackPolicyTests() {
     await new Promise((resolve) => setTimeout(resolve, 40));
   });
 
-  // Deve ter aberto LiveTvView com o grupo "Canal Esporte" selecionado e iniciado pela variante SD (stream_id 103) em formato .m3u8
+  // Deve ter aberto LiveTvView com o grupo "Canal Esporte" selecionado e iniciado pela variante SD (stream_id 103) em formato .m3u8 (nunca .ts fixo)
   const liveVideoFromHome = container.querySelector('video') as HTMLVideoElement;
-  assert(liveVideoFromHome, 'Clicar em um canal ao vivo na Home deve abrir o player de preview no Hero da LiveTvView');
+  assert(liveVideoFromHome, 'Clicar em um canal ao vivo na Home deve abrir o player de preview da LiveTvView');
   assert(
     liveVideoFromHome.src.includes('/live/navUser/navPassword/103.m3u8'),
     `Critério 7: Canal aberto pela Home deve usar .m3u8 (allowed_output_formats) e iniciar pela variante SD (103), mas obteve: ${liveVideoFromHome.src}`
@@ -4011,13 +4147,25 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Critério 7: Após o evento playing, o histórico real (PlaybackHistoryMap) deve conter a chave "live:103"'
   );
 
-  // Sequência de Voltar após abrir canal pela Home: foco em Categorias -> cabeçalho TV ao Vivo -> Início
-  const catBtnAfterHomeLaunch = container.querySelector(
-    '[data-showcase-section="live"] button[data-categories-trigger="true"]'
-  ) as HTMLButtonElement;
-  assert(catBtnAfterHomeLaunch, 'Botão Categorias em TV ao Vivo deve estar presente após abrir canal pela Home');
+  // Sequência de Voltar após abrir canal pela Home: preview -> canais -> categorias -> botão "TV ao Vivo" na sidebar (com TV aberta) -> Início
   await act(async () => {
-    catBtnAfterHomeLaunch.focus();
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+  assertSameElement(container.querySelector('video'), null, '1º Escape após abrir canal pela Home fecha o preview');
+
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+  });
+  assert(
+    container.querySelector('button[data-live-category-id="2"]') !== null,
+    '2º Escape após abrir canal pela Home volta para a lista de categorias da TV ao Vivo'
+  );
+
+  await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
@@ -4025,11 +4173,11 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     container.querySelector('button[data-header-nav-id="live"]'),
-    '1º Escape na barra de categorias da TV ao Vivo foca o botão "TV ao Vivo" no cabeçalho superior'
+    '3º Escape após abrir canal pela Home foca o botão "TV ao Vivo" no cabeçalho superior'
   );
   assert(
-    container.querySelector('[data-showcase-section="live"]') !== null,
-    'TV ao Vivo permanece aberta enquanto o foco está no botão do cabeçalho'
+    container.querySelector('button[data-live-category-id="2"]') !== null,
+    '3º Escape mantém a tela de TV ao Vivo aberta enquanto o foco está no botão do cabeçalho'
   );
 
   await act(async () => {
@@ -4038,8 +4186,8 @@ async function runDpadNavigationAndBackPolicyTests() {
     );
   });
   assert(
-    container.querySelector('[data-showcase-section="inicio"] [data-scroll-top-anchor="true"]') !== null,
-    '2º Escape separado no cabeçalho retorna à tela Início'
+    container.querySelector('[data-scroll-top-anchor="true"]') !== null,
+    '4º Escape separado retorna à tela Início'
   );
 
   // 4. Ponte oficial do Capacitor (@capacitor/app backButton) na raiz chama App.exitApp() e NUNCA faz logout
@@ -5501,14 +5649,6 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
       path.resolve(process.cwd(), 'src/views/LiveTvView.tsx'),
       'utf-8'
     );
-    const liveTvHeroSrc = fs.readFileSync(
-      path.resolve(process.cwd(), 'src/components/LiveTvHero.tsx'),
-      'utf-8'
-    );
-    const liveChannelRowSrc = fs.readFileSync(
-      path.resolve(process.cwd(), 'src/components/LiveChannelRow.tsx'),
-      'utf-8'
-    );
     const configViewSrc = fs.readFileSync(
       path.resolve(process.cwd(), 'src/views/ConfigView.tsx'),
       'utf-8'
@@ -5524,18 +5664,13 @@ async function runDisplaySetupPreviewAndLifecycleTests() {
       'SeriesDetails não deve conter o salto abrupto text-3xl md:text-5xl e deve usar nc-heading-details'
     );
     assert(
-      !liveTvSrc.includes('text-[10px]') &&
-        !liveTvSrc.includes('text-[11px]') &&
-        !liveTvHeroSrc.includes('text-[10px]') &&
-        !liveTvHeroSrc.includes('text-[11px]') &&
-        !liveChannelRowSrc.includes('text-[10px]') &&
-        !liveChannelRowSrc.includes('text-[11px]'),
-      'LiveTvView, LiveTvHero e LiveChannelRow não devem conter rótulos informativos de 10-11px'
+      !liveTvSrc.includes('text-[10px]') && !liveTvSrc.includes('text-[11px]'),
+      'LiveTvView não deve manter rótulos informativos de 10-11px (text-[10px] ou text-[11px])'
     );
     assert(
-      liveTvHeroSrc.includes('nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words w-full') &&
-        !liveTvHeroSrc.includes('line-clamp-2 whitespace-normal break-words block'),
-      'h1.nc-live-channel-title em LiveTvHero deve usar line-clamp-2 sem a classe block para preservar display: -webkit-box'
+      liveTvSrc.includes('nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words w-full') &&
+        !liveTvSrc.includes('line-clamp-2 whitespace-normal break-words block'),
+      'h1.nc-live-channel-title em LiveTvView deve usar line-clamp-2 sem a classe block para preservar display: -webkit-box no CSS compilado'
     );
     assert(
       !configViewSrc.includes('text-[10px]') && !configViewSrc.includes('text-[11px]'),
@@ -7715,11 +7850,7 @@ async function runPerformanceAndVirtualizationTests() {
     ) as HTMLElement[];
     const lastMountedRow = mountedRowsNow[mountedRowsNow.length - 1];
     const lastMountedIdx = Number(lastMountedRow.getAttribute('data-virtual-index'));
-    const lastMountedBtn = (
-      lastMountedRow.matches('button[data-live-channel-btn="true"]')
-        ? lastMountedRow
-        : lastMountedRow.querySelector('button[data-live-channel-btn="true"]')
-    ) as HTMLButtonElement;
+    const lastMountedBtn = lastMountedRow.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
     assert(lastMountedBtn, `[6.B] Ciclo ${cycle}: último botão de canal da janela deve existir`);
 
     await act(async () => {
@@ -7729,10 +7860,10 @@ async function runPerformanceAndVirtualizationTests() {
     });
 
     const activeRowAfterDown = (document.activeElement as HTMLElement)?.closest('[data-virtual-index]');
-    const activeIdxAfterDown = Number(activeRowAfterDown?.getAttribute('data-virtual-index'));
-    assert(
-      Number.isFinite(activeIdxAfterDown) && activeIdxAfterDown > lastMountedIdx,
-      `[6.B] Ciclo ${cycle}: D-Pad ArrowDown na borda da categoria reaberta deve expandir a janela e avançar além do índice ${lastMountedIdx} (obteve ${activeIdxAfterDown})`
+    assert.strictEqual(
+      Number(activeRowAfterDown?.getAttribute('data-virtual-index')),
+      lastMountedIdx + 1,
+      `[6.B] Ciclo ${cycle}: D-Pad ArrowDown na borda da categoria reaberta deve expandir a janela e focar o índice ${lastMountedIdx + 1}`
     );
 
     // Rolar até o último canal (índice 2999 de 3.000)
@@ -7747,9 +7878,9 @@ async function runPerformanceAndVirtualizationTests() {
       `[6.B] Ciclo ${cycle}: o último canal (índice 2999) deve ser acessível na categoria reaberta`
     );
 
-    // Voltar à vitrine principal de TV ao Vivo
-    const backToCatsBtn = virtContainer.querySelector('button[data-back-to-showcase="true"]') as HTMLButtonElement;
-    assert(backToCatsBtn, `[6.B] Ciclo ${cycle}: botão Vitrine deve existir`);
+    // Voltar às categorias (exceto no último ciclo onde deixamos verificado ou voltamos para testar desmontagem)
+    const backToCatsBtn = virtContainer.querySelector('button[data-live-back-to-categories="true"]') as HTMLButtonElement;
+    assert(backToCatsBtn, `[6.B] Ciclo ${cycle}: botão Voltar às Categorias deve existir`);
     await act(async () => {
       backToCatsBtn.click();
       await new Promise((r) => setTimeout(r, 30));
@@ -7759,12 +7890,17 @@ async function runPerformanceAndVirtualizationTests() {
     assert.strictEqual(
       diagAfterBack.activeScrollListeners,
       0,
-      `[6.B] Ciclo ${cycle}: ao voltar para a vitrine, o listener de scroll da grade antiga deve ser removido (obteve ${diagAfterBack.activeScrollListeners})`
+      `[6.B] Ciclo ${cycle}: ao voltar para categorias, o listener de scroll antigo deve ser removido (obteve ${diagAfterBack.activeScrollListeners})`
+    );
+    assert.strictEqual(
+      getActiveVirtualContainerCount(),
+      0,
+      `[6.B] Ciclo ${cycle}: ao voltar para categorias, o controlador virtual antigo deve ser desregistrado`
     );
     assert.strictEqual(
       hasRegisteredVirtualContainer(channelsVirtualEl),
       false,
-      `[6.B] Ciclo ${cycle}: o container da grade desmontada não deve permanecer registrado`
+      `[6.B] Ciclo ${cycle}: o container desmontado não deve permanecer registrado`
     );
   }
 
@@ -7946,7 +8082,7 @@ async function runPerformanceAndVirtualizationTests() {
     await new Promise((r) => setTimeout(r, 30));
   });
 
-  const topSpacerEl = varScrollEl.querySelector('[data-virtual-spacer="top"]') as HTMLElement;
+  const topSpacerEl = varListEl.querySelector('[data-virtual-spacer="top"]') as HTMLElement;
   assert(topSpacerEl, '[6.C] Espaçador superior deve existir após rolar lista de canais com alturas variáveis');
   const topSpacerHeight = parseFloat(topSpacerEl.style.height || '0');
   assert(
@@ -19489,11 +19625,11 @@ if (args[0] === 'add' && args[1] === 'android') {
               `[12.23.1] Proporção 16:9 do preview deve ser preservada em 961x541 (${mode} @ ${Math.round(scale * 100)}%): obtido ${metrics.previewAspectRatio}`
             );
             assert(
-              metrics.epgHeaderHeight >= 28 && metrics.epgScrollViewportHeight >= 200,
+              metrics.epgHeaderHeight >= 28 && metrics.epgScrollViewportHeight >= 220,
               `[12.23.1] Grade de programação deve ter cabeçalho e área útil generosa em 961x541 (${mode} @ ${Math.round(scale * 100)}%): scrollViewport=${metrics.epgScrollViewportHeight}px`
             );
             assert(
-              metrics.visibleEpgCardsCount >= 1,
+              metrics.visibleEpgCardsCount >= 2.5,
               `[12.23.1] Em 961x541 (${mode} @ ${Math.round(scale * 100)}%), pelo menos 1 entrada inteira (obtido ${metrics.visibleEpgCardsCount} entradas) deve ficar legível abaixo do cabeçalho`
             );
             assert(
@@ -19518,7 +19654,7 @@ if (args[0] === 'add' && args[1] === 'android') {
           epgCount: 6,
         });
         assert.strictEqual(desktopMetrics.topSectionDirection, 'row');
-        assert(desktopMetrics.epgScrollViewportHeight >= 340);
+        assert(desktopMetrics.epgScrollViewportHeight >= 360);
 
         const mobileMetrics = computeLiveTvLayoutMetrics({
           viewportWidth: 375,
@@ -19533,95 +19669,52 @@ if (args[0] === 'add' && args[1] === 'android') {
         assert.strictEqual(mobileMetrics.topSectionDirection, 'column');
         assert(Math.abs(mobileMetrics.previewAspectRatio - 16 / 9) < 0.03);
 
-        // 2. Teste integrado com LiveTvView real + navegação espacial real + relógio EPG compartilhado (default e tv)
-        const {
-          setLiveEpgClockNowForTest,
-          clearSharedSessionEpgCache,
-        } = await import('../src/utils/epgUtils');
-
+        // 2. Teste integrado com LiveTvView real + navegação espacial real (default e tv)
         const encodeB64 = (txt: string) =>
           Buffer.from(encodeURIComponent(txt).replace(/%([0-9A-F]{2})/g, (_, p1) => String.fromCharCode(parseInt(p1, 16))), 'binary').toString('base64');
-
-        const nowSecLiveTest = 1762980000;
-        const initialClockMs = (nowSecLiveTest + 900) * 1000; // 50% de epg_1 [nowSec, nowSec + 1800]
-        setLiveEpgClockNowForTest(initialClockMs);
 
         const sixPrograms = [
           {
             id: 'epg_1',
-            start: '18:00',
-            end: '18:30',
-            start_timestamp: nowSecLiveTest,
-            stop_timestamp: nowSecLiveTest + 1800,
+            start: '2026-11-08 18:00:00',
+            end: '2026-11-08 19:00:00',
             title: encodeB64('Jornal da Noite — Edição 1'),
             description: encodeB64('Resumo das principais notícias do dia.'),
           },
           {
             id: 'epg_2',
-            start: '18:30',
-            end: '19:30',
-            start_timestamp: nowSecLiveTest + 1800,
-            stop_timestamp: nowSecLiveTest + 5400,
+            start: '2026-11-08 19:00:00',
+            end: '2026-11-08 20:00:00',
             title: encodeB64('Debate Esportivo — Edição 2'),
             description: encodeB64('Análise da rodada e entrevistas ao vivo.'),
           },
           {
             id: 'epg_3',
-            start: '19:30',
-            end: '20:30',
-            start_timestamp: nowSecLiveTest + 5400,
-            stop_timestamp: nowSecLiveTest + 9000,
+            start: '2026-11-08 20:00:00',
+            end: '2026-11-08 21:00:00',
             title: encodeB64('Documentário Ciência — Edição 3'),
             description: encodeB64('Exploração espacial e novas descobertas.'),
           },
           {
             id: 'epg_4',
-            start: '20:30',
-            end: '21:30',
-            start_timestamp: nowSecLiveTest + 9000,
-            stop_timestamp: nowSecLiveTest + 12600,
+            start: '2026-11-08 21:00:00',
+            end: '2026-11-08 22:00:00',
             title: encodeB64('Sessão Cinema — Edição 4'),
             description: encodeB64('Suspense inédito na grade principal.'),
           },
           {
             id: 'epg_5',
-            start: '21:30',
-            end: '22:30',
-            start_timestamp: nowSecLiveTest + 12600,
-            stop_timestamp: nowSecLiveTest + 16200,
+            start: '2026-11-08 22:00:00',
+            end: '2026-11-08 23:00:00',
             title: encodeB64('Mesa Redonda — Edição 5'),
             description: encodeB64('Bastidores e gols da semana.'),
           },
           {
             id: 'epg_6',
-            start: '22:30',
-            end: '23:30',
-            start_timestamp: nowSecLiveTest + 16200,
-            stop_timestamp: nowSecLiveTest + 19800,
+            start: '2026-11-08 23:00:00',
+            end: '2026-11-09 00:00:00',
             title: encodeB64('Plantão da Madrugada — Edição 6'),
             description: encodeB64('Últimas atualizações internacionais.'),
-          },
-        ];
-
-        // Programas encerrados/futuros sem intervalo ativo em initialClockMs (para validar rejeição de EPG expirado/futuro na UI)
-        const expiredAndFutureOnlyPrograms = [
-          {
-            id: 'epg_past',
-            start: '16:00',
-            end: '17:00',
-            start_timestamp: nowSecLiveTest - 7200,
-            stop_timestamp: nowSecLiveTest - 3600,
-            title: encodeB64('Programa Já Encerrado'),
-            description: encodeB64('Não deve aparecer como Passando agora.'),
-          },
-          {
-            id: 'epg_future',
-            start: '21:00',
-            end: '22:00',
-            start_timestamp: nowSecLiveTest + 10800,
-            stop_timestamp: nowSecLiveTest + 14400,
-            title: encodeB64('Programa Futuro Ainda Não Iniciado'),
-            description: encodeB64('Não deve aparecer como Passando agora.'),
           },
         ];
 
@@ -19641,7 +19734,7 @@ if (args[0] === 'add' && args[1] === 'android') {
             return { epg_listings: sixPrograms };
           }
           if (key === '502') {
-            return { epg_listings: expiredAndFutureOnlyPrograms };
+            return { epg_listings: [] };
           }
           if (key === '503') {
             return new Promise((resolve) => {
@@ -19680,10 +19773,6 @@ if (args[0] === 'add' && args[1] === 'android') {
         try {
           for (const testDisplayMode of ['default', 'tv'] as const) {
             epgCallsByStreamId = {};
-            localStorage.clear();
-            clearSharedSessionEpgCache();
-            setLiveEpgClockNowForTest(initialClockMs);
-
             if (testDisplayMode === 'tv') {
               document.documentElement.setAttribute('data-display-mode', 'tv');
               document.documentElement.style.setProperty('--nc-ui-scale', '0.9');
@@ -19696,7 +19785,7 @@ if (args[0] === 'add' && args[1] === 'android') {
 
             const liveTestCreds: XtreamCredentials = {
               serverUrl: 'http://epg-audit.local:8080',
-              username: `epg_user_${testDisplayMode}`,
+              username: 'epg_user',
               password: 'epg_password',
             };
 
@@ -19821,190 +19910,179 @@ if (args[0] === 'add' && args[1] === 'android') {
               );
             });
 
+            // Entrar na categoria "Canais Principais"
+            const catBtn = liveEpgContainer.querySelector<HTMLButtonElement>(
+              'button[data-live-category-id="cat_epg_1"]'
+            );
+            assert(catBtn, `[12.23][${testDisplayMode}] Botão de categoria deve existir`);
             await act(async () => {
               setLiveNavMode('remote');
-              await new Promise((r) => setTimeout(r, 30));
+              catBtn.focus();
+              catBtn.click();
             });
 
-            // Verificar os 4 cartões horizontais largos no carrossel da vitrine
             const chBtns = Array.from(
               liveEpgContainer.querySelectorAll<HTMLButtonElement>('button[data-live-channel-btn="true"]')
             );
-            assert.strictEqual(chBtns.length, 4, `[12.23][${testDisplayMode}] Carrossel deve exibir os 4 canais da categoria`);
+            assert.strictEqual(
+              chBtns.length,
+              4,
+              `[12.23][${testDisplayMode}] Deve renderizar os 4 canais da categoria`
+            );
             const ch1Btn = chBtns[0];
             const ch2Btn = chBtns[1];
             const ch3Btn = chBtns[2];
             const ch4Btn = chBtns[3];
 
-            // Problema A: Entrada normal sem initialChannelIntent deve manter Hero neutro, sem <video> e sem consultar EPG
-            const neutralHeroEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-hero-neutral="true"]');
-            assert(
-              neutralHeroEl !== null && neutralHeroEl.textContent?.includes('Selecione um canal'),
-              `[12.23][${testDisplayMode}] Entrada normal na TV ao Vivo deve exibir estado neutro "Selecione um canal"`
+            const favBtns = Array.from(
+              liveEpgContainer.querySelectorAll<HTMLButtonElement>('button[data-live-channel-fav="true"]')
             );
-            assert.strictEqual(
-              liveEpgContainer.querySelector('video'),
-              null,
-              `[12.23][${testDisplayMode}] Entrada normal NÃO deve montar <video> automaticamente`
-            );
-            assert.strictEqual(
-              liveEpgContainer.querySelector('button[data-live-channel-selected="true"]'),
-              null,
-              `[12.23][${testDisplayMode}] Nenhum cartão deve iniciar marcado como selecionado na entrada normal`
-            );
-            assert.strictEqual(
-              Object.keys(epgCallsByStreamId).length,
-              0,
-              `[12.23][${testDisplayMode}] Entrada normal NÃO deve disparar chamadas de EPG`
-            );
+            assert.strictEqual(favBtns.length, 4, `[12.23][${testDisplayMode}] Deve renderizar os 4 botões de favorito`);
+            const fav1Btn = favBtns[0];
+            const fav2Btn = favBtns[1];
 
-            // Mover foco com setas pelos cards com Hero neutro NÃO deve ativar canal nem disparar vídeo/EPG
-            const loadCountBeforeExplicitActivation = videoLoadCallCount;
-            await act(async () => {
-              ch1Btn.focus();
-            });
-            await dispatchArrowKey('ArrowRight');
-            assertSameElement(document.activeElement, ch2Btn, `[12.23][${testDisplayMode}] ArrowRight foca Canal 2`);
-            await dispatchArrowKey('ArrowRight');
-            assertSameElement(document.activeElement, ch3Btn, `[12.23][${testDisplayMode}] ArrowRight foca Canal 3`);
-            assert.strictEqual(
-              liveEpgContainer.querySelector('video'),
-              null,
-              `[12.23][${testDisplayMode}] Mover foco pelos cards com Hero neutro NÃO monta <video>`
-            );
-            assert.strictEqual(
-              Object.keys(epgCallsByStreamId).length,
-              0,
-              `[12.23][${testDisplayMode}] Mover foco pelos cards com Hero neutro NÃO consulta EPG`
-            );
-
-            // Ativar explicitamente o Canal 1 com clique/Enter
+            // Abrir Canal 1 no preview
             await act(async () => {
               ch1Btn.focus();
               ch1Btn.click();
               await new Promise((r) => setTimeout(r, 25));
             });
 
-            // Verificar canal ativo no Hero, EPG válido com barra de progresso real e preview 16:9
-            const heroEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-hero="true"]');
-            const selectedChannelTitleEl = liveEpgContainer.querySelector<HTMLElement>('h1.nc-live-channel-title');
-            const nowPlayingEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-now-playing="true"]');
-            const heroProgressEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-progress="true"]');
-            const heroPlayBtn = liveEpgContainer.querySelector<HTMLButtonElement>('button[data-live-hero-play="true"]');
-            const heroFavBtn = liveEpgContainer.querySelector<HTMLButtonElement>('button[data-live-hero-favorite="true"]');
             const previewVideoEl = liveEpgContainer.querySelector('video') as HTMLVideoElement | null;
+            assert(previewVideoEl, `[12.23][${testDisplayMode}] <video> do preview deve estar montado`);
+            await act(async () => {
+              await previewVideoEl.play();
+            });
 
-            assert(
-              heroEl && selectedChannelTitleEl && nowPlayingEl && heroProgressEl && heroPlayBtn && heroFavBtn && previewVideoEl,
-              `[12.23][${testDisplayMode}] Após ativação explícita, Hero da TV ao Vivo deve renderizar título, bloco EPG com progresso real, botões e <video> embutido`
+            // Verificar que os 6 programas foram carregados e renderizados como elementos focáveis não-botão
+            const epgItems = Array.from(
+              liveEpgContainer.querySelectorAll<HTMLElement>('[data-epg-item="true"]')
             );
             assert.strictEqual(
-              ch1Btn.getAttribute('data-live-channel-selected'),
-              'true',
-              `[12.23][${testDisplayMode}] Canal 1 marcado como selecionado após ativação explícita`
+              epgItems.length,
+              6,
+              `[12.23][${testDisplayMode}] Todos os 6 programas do EPG devem estar renderizados`
+            );
+            for (let i = 0; i < epgItems.length; i++) {
+              assert.notStrictEqual(
+                epgItems[i].tagName,
+                'BUTTON',
+                `[12.23][${testDisplayMode}] Item EPG #${i} não deve ser um <button>`
+              );
+              assert.strictEqual(
+                epgItems[i].getAttribute('role'),
+                'article',
+                `[12.23][${testDisplayMode}] Item EPG #${i} deve usar role="article" (sem semântica de botão de ação)`
+              );
+              assert.strictEqual(
+                epgItems[i].tabIndex,
+                0,
+                `[12.23][${testDisplayMode}] Item EPG #${i} deve ter tabIndex=0`
+              );
+              assert.strictEqual(
+                isLiveElementFocusable(epgItems[i]),
+                true,
+                `[12.23][${testDisplayMode}] Item EPG #${i} deve ser focável pelo navegador espacial`
+              );
+            }
+
+            // Verificar ausência de rolagem aninhada no painel direito em md+ e preservação de toque no mobile
+            const rightPaneEl = liveEpgContainer.querySelector<HTMLElement>('[data-nav-zone="content"]');
+            const contentStackEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-content-stack="true"]');
+            const topSectionEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-top-section="true"]');
+            const epgSectionEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-section="true"]');
+            const epgHeaderEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-header="true"]');
+            const epgScrollEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-scroll="true"]');
+            const selectedChannelTitleEl = liveEpgContainer.querySelector<HTMLElement>('h1.nc-live-channel-title');
+
+            assert(
+              rightPaneEl && contentStackEl && topSectionEl && epgSectionEl && epgHeaderEl && epgScrollEl && selectedChannelTitleEl,
+              `[12.23][${testDisplayMode}] Estrutura da grade de programação e título do canal selecionado devem estar presentes`
             );
             assert(
               selectedChannelTitleEl.classList.contains('line-clamp-2') &&
                 selectedChannelTitleEl.classList.contains('whitespace-normal') &&
                 selectedChannelTitleEl.classList.contains('break-words') &&
                 !selectedChannelTitleEl.classList.contains('block'),
-              `[12.23][${testDisplayMode}] h1.nc-live-channel-title deve manter line-clamp-2 e quebra segura sem block`
+              `[12.23][${testDisplayMode}] h1.nc-live-channel-title deve manter line-clamp-2 e quebra de nomes longos sem a classe block`
             );
             assert(
-              nowPlayingEl.textContent?.includes('Passando agora') &&
-                nowPlayingEl.textContent?.includes('Jornal da Noite — Edição 1'),
-              `[12.23][${testDisplayMode}] EPG válido deve exibir Passando agora e o programa atual em exibição`
-            );
-            assert.strictEqual(
-              heroProgressEl.getAttribute('aria-valuenow'),
-              '50',
-              `[12.23][${testDisplayMode}] Progresso inicial do EPG no Hero deve ser 50%`
+              rightPaneEl.className.includes('md:overflow-hidden') &&
+                rightPaneEl.className.includes('overflow-y-auto') &&
+                rightPaneEl.className.includes('touch-pan-y'),
+              `[12.23][${testDisplayMode}] Painel direito deve evitar rolagem aninhada em md+ e preservar rolagem por toque no celular`
             );
             assert(
-              ch1Btn.textContent?.includes('Jornal da Noite — Edição 1') &&
-                ch1Btn.querySelector('[data-live-card-epg-progress="true"]') !== null,
-              `[12.23][${testDisplayMode}] Cartão do Canal 1 deve exibir título e barra de progresso a partir do cache de EPG`
+              contentStackEl.className.includes('md:overflow-hidden') &&
+                epgSectionEl.className.includes('md:overflow-hidden') &&
+                epgScrollEl.className.includes('md:overflow-y-auto') &&
+                epgScrollEl.getAttribute('data-scroll-container') === 'true',
+              `[12.23][${testDisplayMode}] Apenas o container da lista EPG deve rolar verticalmente em md+`
+            );
+            assert(
+              topSectionEl.className.includes('md:flex-row'),
+              `[12.23][${testDisplayMode}] Topo do canal deve usar md:flex-row para não empilhar preview acima do resumo em 961x541`
             );
 
-            // Problema C: Avanço do relógio compartilhado de EPG atualiza progresso, troca para próximo programa e expira sem reiniciar <video> nem refazer fetch
-            const videoLoadsBeforeClock = videoLoadCallCount;
-            const epgCallsBeforeClock = epgCallsByStreamId['501'] || 0;
-            assert.strictEqual(epgCallsBeforeClock, 1, `[12.23][${testDisplayMode}] Ativação explícita do Canal 1 consultou EPG 1 vez`);
-
-            // C.1: Avançar relógio para 75% do Programa 1 (nowSec + 1350s)
-            await act(async () => {
-              setLiveEpgClockNowForTest((nowSecLiveTest + 1350) * 1000);
+            // Configurar geometria realista de 961 × 541 no container de scroll do EPG para testar rolagem até o 6º item
+            const layout90 = computeLiveTvLayoutMetrics({
+              viewportWidth: 961,
+              viewportHeight: 541,
+              uiScale: 0.9,
+              displayMode: testDisplayMode,
+              isGrouped: false,
+              hasNowPlaying: true,
+              epgCount: 6,
             });
-            assert.strictEqual(
-              liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-progress="true"]')?.getAttribute('aria-valuenow'),
-              '75',
-              `[12.23][${testDisplayMode}] Avanço do relógio compartilhado deve atualizar progresso no Hero de 50% para 75%`
-            );
-            const ch1CardBar = ch1Btn.querySelector<HTMLElement>('[data-live-card-epg-progress="true"] > div');
-            assert.strictEqual(
-              ch1CardBar?.style.width,
-              '75%',
-              `[12.23][${testDisplayMode}] Avanço do relógio compartilhado deve atualizar barra de progresso do cartão para 75%`
-            );
-
-            // C.2: Avançar relógio para 50% do Programa 2 (nowSec + 3600s) -> transição automática para "Debate Esportivo — Edição 2"
-            await act(async () => {
-              setLiveEpgClockNowForTest((nowSecLiveTest + 3600) * 1000);
+            Object.defineProperty(epgScrollEl, 'clientHeight', {
+              value: layout90.epgScrollViewportHeight,
+              configurable: true,
             });
-            assert(
-              nowPlayingEl.textContent?.includes('Debate Esportivo — Edição 2'),
-              `[12.23][${testDisplayMode}] Quando o Programa 1 termina, o Hero deve transicionar para o Programa 2 do cache`
-            );
-            assert(
-              ch1Btn.textContent?.includes('Debate Esportivo — Edição 2'),
-              `[12.23][${testDisplayMode}] Cartão do Canal 1 também deve transicionar para o Programa 2`
-            );
-            assert.strictEqual(
-              liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-progress="true"]')?.getAttribute('aria-valuenow'),
-              '50',
-              `[12.23][${testDisplayMode}] Progresso do Programa 2 deve ser calculado como 50%`
-            );
-
-            // C.3: Avançar relógio após o término de todos os programas -> estado neutro "Programação indisponível" sem barra
-            await act(async () => {
-              setLiveEpgClockNowForTest((nowSecLiveTest + 25000) * 1000);
+            Object.defineProperty(epgScrollEl, 'scrollHeight', {
+              value: layout90.epgTotalContentHeight,
+              configurable: true,
             });
-            assert(
-              liveEpgContainer.querySelector('[data-epg-state="empty"]')?.textContent?.includes('Programação indisponível'),
-              `[12.23][${testDisplayMode}] Quando todos os programas do cache expiram, o Hero deve exibir Programação indisponível`
-            );
-            assert.strictEqual(
-              liveEpgContainer.querySelector('[data-live-epg-progress="true"]'),
-              null,
-              `[12.23][${testDisplayMode}] Barra de progresso do Hero deve ser removida quando a programação expira`
-            );
-            assert(
-              ch1Btn.textContent?.includes('Programação indisponível') &&
-                ch1Btn.querySelector('[data-live-card-epg-progress="true"]') === null,
-              `[12.23][${testDisplayMode}] Cartão do Canal 1 deve exibir Programação indisponível e remover barra quando expira`
-            );
-            assertSameElement(
-              liveEpgContainer.querySelector('video'),
-              previewVideoEl,
-              `[12.23][${testDisplayMode}] Atualizações do relógio de EPG NÃO devem desmontar o elemento <video>`
-            );
-            assert.strictEqual(
-              videoLoadCallCount,
-              videoLoadsBeforeClock,
-              `[12.23][${testDisplayMode}] Atualizações do relógio de EPG NÃO devem reiniciar o stream`
-            );
-            assert.strictEqual(
-              epgCallsByStreamId['501'],
-              epgCallsBeforeClock,
-              `[12.23][${testDisplayMode}] Atualizações do relógio de EPG NÃO devem disparar novas requisições de rede`
-            );
+            epgScrollEl.getBoundingClientRect = () =>
+              ({
+                top: layout90.topSectionHeight + layout90.epgHeaderHeight,
+                bottom: layout90.topSectionHeight + layout90.epgHeaderHeight + layout90.epgScrollViewportHeight,
+                left: 380,
+                right: 961,
+                width: layout90.rightPaneWidth,
+                height: layout90.epgScrollViewportHeight,
+                x: 380,
+                y: layout90.topSectionHeight + layout90.epgHeaderHeight,
+                toJSON: () => ({}),
+              }) as DOMRect;
 
-            // Restaurar relógio para initialClockMs para continuar as demais verificações
-            await act(async () => {
-              setLiveEpgClockNowForTest(initialClockMs);
+            epgItems.forEach((item, idx) => {
+              const itemTopOffset = idx * (layout90.epgCardHeight + 10);
+              Object.defineProperty(item, 'offsetTop', { value: itemTopOffset, configurable: true });
+              Object.defineProperty(item, 'offsetHeight', {
+                value: layout90.epgCardHeight,
+                configurable: true,
+              });
+              item.getBoundingClientRect = () => {
+                const baseTop =
+                  layout90.topSectionHeight +
+                  layout90.epgHeaderHeight +
+                  itemTopOffset -
+                  epgScrollEl.scrollTop;
+                return {
+                  top: baseTop,
+                  bottom: baseTop + layout90.epgCardHeight,
+                  left: 410,
+                  right: 945,
+                  width: 535,
+                  height: layout90.epgCardHeight,
+                  x: 410,
+                  y: baseTop,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
             });
 
-            // Verificar que controles do player embutido NÃO são candidatos de foco por setas, mas aceitam clique
+            // Verificar que controles do player embutido NÃO são candidatos de foco por setas, mas continuam aceitando clique
             const focusableInPreview = getLiveFocusableElements();
             const previewPlayPauseBtn = liveEpgContainer.querySelector<HTMLButtonElement>(
               '[data-player-control="play-pause"]'
@@ -20014,193 +20092,511 @@ if (args[0] === 'add' && args[1] === 'android') {
             );
             assert(
               previewPlayPauseBtn && previewFullscreenBtn,
-              `[12.23][${testDisplayMode}] Controles de clique/toque do preview continuam no DOM`
+              `[12.23][${testDisplayMode}] Controles de clique/toque do preview continuam presentes no DOM`
             );
             assert(
               !focusableInPreview.includes(previewPlayPauseBtn) &&
                 !focusableInPreview.includes(previewFullscreenBtn),
               `[12.23][${testDisplayMode}] Controles do player no preview embutido NÃO devem receber foco por setas`
             );
-            await act(async () => {
-              await previewVideoEl.play();
-              previewPlayPauseBtn.click();
-            });
-            assert.strictEqual(previewVideoEl.paused, true, `[12.23][${testDisplayMode}] Clique em play/pause do preview pausa o vídeo`);
+
+            // Clique direto no botão Play/Pause do preview continua funcionando
             await act(async () => {
               previewPlayPauseBtn.click();
             });
-            assert.strictEqual(previewVideoEl.paused, false, `[12.23][${testDisplayMode}] Segundo clique retoma o vídeo`);
+            assert.strictEqual(
+              previewVideoEl.paused,
+              true,
+              `[12.23][${testDisplayMode}] Clique/toque no controle do preview deve continuar pausando o vídeo`
+            );
+            await act(async () => {
+              previewPlayPauseBtn.click();
+            });
+            assert.strictEqual(
+              previewVideoEl.paused,
+              false,
+              `[12.23][${testDisplayMode}] Segundo clique/toque no controle do preview retoma a reprodução`
+            );
 
-            const loadCountBeforeNav = videoLoadCallCount;
-            const epgCallsBeforeNav = epgCallsByStreamId['501'] || 0;
-
-            // Mover foco com setas para Canal 2, 3, 4 e faixa de versões NÃO troca canal ativo nem dispara vídeo/EPG
+            // Posicionar foco de volta no botão do Canal 1 e registrar contadores antes de navegar por setas
             await act(async () => {
               ch1Btn.focus();
             });
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] Foco inicial no botão do Canal 1`
+            );
+
+            const loadCountBeforeNav = videoLoadCallCount;
+            const epgCallsBeforeNav = epgCallsByStreamId['501'] || 0;
+            assert.strictEqual(
+              epgCallsBeforeNav,
+              1,
+              `[12.23][${testDisplayMode}] Seleção do Canal 1 deve disparar exatamente 1 consulta de EPG`
+            );
+
+            // 1º ArrowRight: Canal 1 -> Favorito do Canal 1
             await dispatchArrowKey('ArrowRight');
-            assertSameElement(document.activeElement, ch2Btn, `[12.23][${testDisplayMode}] ArrowRight foca Canal 2`);
+            assertSameElement(
+              document.activeElement,
+              fav1Btn,
+              `[12.23][${testDisplayMode}] 1º ArrowRight deve mover o foco do canal para a estrela de favorito`
+            );
+
+            // 2º ArrowRight: Favorito do Canal 1 -> 1º item da grade de programação (sem parar nos controles do preview!)
             await dispatchArrowKey('ArrowRight');
-            assertSameElement(document.activeElement, ch3Btn, `[12.23][${testDisplayMode}] ArrowRight foca Canal 3`);
-            assert.strictEqual(
-              videoLoadCallCount,
-              loadCountBeforeNav,
-              `[12.23][${testDisplayMode}] Mover foco pelos cards NÃO deve reiniciar vídeo`
-            );
-            assert.strictEqual(
-              (epgCallsByStreamId['502'] || 0) + (epgCallsByStreamId['503'] || 0),
-              0,
-              `[12.23][${testDisplayMode}] Mover foco pelos cards NÃO deve consultar EPG de outros canais`
-            );
-            assert.strictEqual(
-              ch1Btn.getAttribute('data-live-channel-selected'),
-              'true',
-              `[12.23][${testDisplayMode}] Canal 1 permanece ativo enquanto o foco apenas percorre outros cards`
+            assertSameElement(
+              document.activeElement,
+              epgItems[0],
+              `[12.23][${testDisplayMode}] 2º ArrowRight deve entrar direto no 1º programa da grade (sem parar no player)`
             );
 
-            // Faixa de versões do Canal 1 agrupado: navegação horizontal sem alterar versão ativa apenas pelo foco
-            const variantsRowEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-variants-row="true"]');
-            assert(variantsRowEl, `[12.23][${testDisplayMode}] Faixa de versões deve estar montada para canal agrupado`);
-            const variantBtns = Array.from(variantsRowEl.querySelectorAll<HTMLButtonElement>('button'));
-            assert.strictEqual(variantBtns.length, 5, `[12.23][${testDisplayMode}] Automático + 4 versões presentes`);
-            await act(async () => {
-              variantBtns[4].focus();
-              variantBtns[4].click();
-              await new Promise((r) => setTimeout(r, 20));
-            });
-            assert.strictEqual(variantBtns[4].getAttribute('data-variant-active'), 'true', `[12.23][${testDisplayMode}] Clique em 4K ativa resolução 4K`);
-
-            // Validar Lista Cronológica de Programação (EPG) no painel direito permanente para o Canal 1:
-            const epgListElCh1 = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-list="true"]')!;
-            const epgScrollElCh1 = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-scroll="true"]')!;
+            // ArrowDown percorrendo todos os 6 programas até o último (índice 5)
+            for (let targetIdx = 1; targetIdx < epgItems.length; targetIdx++) {
+              await dispatchArrowKey('ArrowDown');
+              assertSameElement(
+                document.activeElement,
+                epgItems[targetIdx],
+                `[12.23][${testDisplayMode}] ArrowDown deve focar o programa #${targetIdx + 1} (índice ${targetIdx})`
+              );
+              const containerRect = epgScrollEl.getBoundingClientRect();
+              const itemRect = epgItems[targetIdx].getBoundingClientRect();
+              assert(
+                itemRect.bottom <= containerRect.bottom && itemRect.top >= containerRect.top,
+                `[12.23][${testDisplayMode}] Programa #${targetIdx + 1} focado deve estar visível dentro da área de rolagem do EPG`
+              );
+            }
             assert(
-              epgListElCh1 && epgScrollElCh1,
-              `[12.23][${testDisplayMode}] Painel direito permanente deve conter lista cronológica de programação com scroll próprio`
-            );
-            const scheduleItemsCh1 = Array.from(
-              epgScrollElCh1.querySelectorAll<HTMLElement>('[data-epg-schedule-item="true"]')
-            );
-            assert(
-              scheduleItemsCh1.length >= 2 &&
-                scheduleItemsCh1[0].getAttribute('data-epg-item-current') === 'true' &&
-                scheduleItemsCh1[0].textContent?.includes('Jornal da Noite — Edição 1') &&
-                scheduleItemsCh1[1].getAttribute('data-epg-item-current') === 'false' &&
-                scheduleItemsCh1[1].textContent?.includes('Debate Esportivo — Edição 2'),
-              `[12.23][${testDisplayMode}] Grade cronológica de EPG do Canal 1 deve exibir o programa atual destacado seguido dos próximos programas em ordem cronológica`
+              epgScrollEl.scrollTop > 0,
+              `[12.23][${testDisplayMode}] Rolagem do EPG deve avançar para exibir o 6º programa (scrollTop=${epgScrollEl.scrollTop})`
             );
 
-            // Fase C (Ciclo 12.27-c): Simular rolagem na coluna esquerda (scrollTop = 260) e ativar explicitamente Canal 2:
-            // - NÃO deve rolar a coluna esquerda de volta ao topo (scrollTop permanece 260, smoothScrollTopCalled === false)
-            // - Deve manter o foco no cartão ativado (ch2Btn)
-            // - O painel direito permanente permanece visível (data-live-right-panel="true", data-live-preview-state="open")
-            const mainScrollEl = liveEpgContainer.querySelector<HTMLElement>('main[data-scroll-container="true"]')!;
-            assert(mainScrollEl, `[12.23][${testDisplayMode}] Coluna esquerda principal com rolagem deve existir`);
-            mainScrollEl.scrollTop = 260;
-            let smoothScrollTopCalled = false;
-            (mainScrollEl as any).scrollTo = (opts: any) => {
-              if (opts && opts.top === 0) {
-                smoothScrollTopCalled = true;
-                mainScrollEl.scrollTop = 0;
-              }
-            };
+            // ArrowUp voltando na grade e mantendo visibilidade
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              epgItems[4],
+              `[12.23][${testDisplayMode}] ArrowUp deve subir para o programa #5 (índice 4)`
+            );
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              epgItems[5],
+              `[12.23][${testDisplayMode}] ArrowDown retorna ao último programa #6 (índice 5)`
+            );
 
-            await act(async () => {
-              ch2Btn.focus();
-              ch2Btn.click();
-              await new Promise((r) => setTimeout(r, 20));
-            });
-            assert.strictEqual(
-              smoothScrollTopCalled,
-              false,
-              `[12.23][${testDisplayMode}] Ao ativar canal estando rolado abaixo, NÃO deve rolar a coluna esquerda de volta para o topo`
+            // ArrowLeft a partir da grade devolve o foco para o canal de origem (Canal 1)
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft na programação deve devolver o foco para o canal de origem (Canal 1)`
             );
-            assert.strictEqual(
-              mainScrollEl.scrollTop,
-              260,
-              `[12.23][${testDisplayMode}] O scrollTop da coluna esquerda deve permanecer inalterado (260px)`
-            );
+
+            // Testar saída a partir de outra linha de canal (Canal 2) enquanto o Canal 1 permanece aberto no preview
+            await dispatchArrowKey('ArrowDown');
             assertSameElement(
               document.activeElement,
               ch2Btn,
-              `[12.23][${testDisplayMode}] O foco deve permanecer no cartão de canal selecionado`
+              `[12.23][${testDisplayMode}] ArrowDown na lista de canais foca o Canal 2`
             );
-            assert.strictEqual(ch2Btn.getAttribute('data-live-channel-selected'), 'true', `[12.23][${testDisplayMode}] Canal 2 agora é o canal ativo`);
-            const rightPanelHeroEl = liveEpgContainer.querySelector<HTMLElement>('[data-live-hero="true"]')!;
-            assert.strictEqual(
-              rightPanelHeroEl.getAttribute('data-live-right-panel'),
-              'true',
-              `[12.23][${testDisplayMode}] Painel direito permanente deve estar ativo (data-live-right-panel="true")`
-            );
-            assert.strictEqual(
-              rightPanelHeroEl.getAttribute('data-live-preview-state'),
-              'open',
-              `[12.23][${testDisplayMode}] Estado do preview no painel direito deve ser "open"`
-            );
-            assert.strictEqual(
-              liveEpgContainer.querySelectorAll('video').length,
-              1,
-              `[12.23][${testDisplayMode}] Deve existir apenas 1 instância de <video> no DOM`
-            );
-
-            const nowPlayingCh2El = liveEpgContainer.querySelector<HTMLElement>('[data-live-now-playing="true"]')!;
-            const emptyStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="empty"]');
-            assert(
-              emptyStateEl && emptyStateEl.textContent?.includes('Programação indisponível'),
-              `[12.23][${testDisplayMode}] Canal 2 sem programa ativo no instante atual deve exibir Programação indisponível em Passando agora`
-            );
-            assert(
-              !nowPlayingCh2El.textContent?.includes('Programa Já Encerrado') &&
-                !nowPlayingCh2El.textContent?.includes('Programa Futuro Ainda Não Iniciado'),
-              `[12.23][${testDisplayMode}] Programas encerrados ou futuros NUNCA devem ser exibidos como Passando agora`
-            );
-            assert.strictEqual(liveEpgContainer.querySelector('[data-live-epg-progress="true"]'), null, `[12.23][${testDisplayMode}] Canal 2 sem programa ativo em nowMs não exibe barra de progresso`);
-
-            // Na lista cronológica do painel direito do Canal 2, o programa já encerrado foi descartado e o programa futuro aparece como próximo horário (data-epg-item-current="false")
-            const epgScrollElCh2 = liveEpgContainer.querySelector<HTMLElement>('[data-live-epg-scroll="true"]')!;
-            assert(
-              !epgScrollElCh2.textContent?.includes('Programa Já Encerrado') &&
-                epgScrollElCh2.textContent?.includes('Programa Futuro Ainda Não Iniciado'),
-              `[12.23][${testDisplayMode}] Lista cronológica de EPG do Canal 2 deve descartar programas encerrados e listar programas futuros`
-            );
-
-            // Navegar com setas na coluna esquerda (ArrowRight -> Canal 3 -> ArrowLeft -> Canal 2) mantém o painel direito aberto e estável
             await dispatchArrowKey('ArrowRight');
             assertSameElement(
               document.activeElement,
-              ch3Btn,
-              `[12.23][${testDisplayMode}] ArrowRight avança o foco diretamente para o próximo cartão (Canal 3)`
+              fav2Btn,
+              `[12.23][${testDisplayMode}] ArrowRight no Canal 2 foca o favorito do Canal 2`
             );
-            assert.strictEqual(
-              rightPanelHeroEl.getAttribute('data-live-preview-state'),
-              'open',
-              `[12.23][${testDisplayMode}] Painel direito permanece visível e aberto durante navegação por setas no catálogo`
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              epgItems[0],
+              `[12.23][${testDisplayMode}] ArrowRight no favorito do Canal 2 entra na programação`
             );
-            assert.strictEqual(
-              mainScrollEl.scrollTop,
-              260,
-              `[12.23][${testDisplayMode}] Navegar com setas preserva scrollTop=260 na coluna esquerda`
-            );
-
             await dispatchArrowKey('ArrowLeft');
-            assertSameElement(document.activeElement, ch2Btn, `[12.23][${testDisplayMode}] ArrowLeft retorna o foco ao Canal 2`);
+            assertSameElement(
+              document.activeElement,
+              ch2Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft devolve o foco exatamente para a linha de canal de origem (Canal 2)`
+            );
 
-            // Segunda ativação consecutiva no canal já ativo (Canal 2) abre tela cheia preservando a mesma instância de <video>
-            const currentVideoBeforeFs = liveEpgContainer.querySelector('video')!;
-            await act(async () => {
-              ch2Btn.click();
-              await new Promise((r) => setTimeout(r, 20));
-            });
-            assert(
-              liveEpgContainer.querySelector('[data-player-container="true"][data-focus-scope="modal"]') !== null,
-              `[12.23][${testDisplayMode}] 2º clique consecutivo no canal ativo abre tela cheia`
+            // Confirmar que mover o foco NUNCA reiniciou a reprodução nem disparou nova consulta de EPG
+            assert.strictEqual(
+              videoLoadCallCount,
+              loadCountBeforeNav,
+              `[12.23][${testDisplayMode}] Mover o foco entre canais, favoritos e EPG NÃO deve reiniciar a reprodução`
+            );
+            assert.strictEqual(
+              epgCallsByStreamId['501'],
+              1,
+              `[12.23][${testDisplayMode}] Mover o foco NÃO deve disparar nova consulta de EPG`
             );
             assertSameElement(
               liveEpgContainer.querySelector('video'),
-              currentVideoBeforeFs,
-              `[12.23][${testDisplayMode}] Entrar em tela cheia preserva o mesmo <video>`
+              previewVideoEl,
+              `[12.23][${testDisplayMode}] Mesma instância de <video> preservada após navegar pela grade`
             );
 
-            // Escape sai da tela cheia preservando o painel direito e focando o canal selecionado
+            // 2.B. Rolagem horizontal da faixa "Versão do canal" (data-nav-row="true" + data-live-variants-row="true"),
+            // preferência pela versão ativa ao entrar por cima/baixo e preservação de reprodução e EPG
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] Foco de volta no Canal 1 agrupado`
+            );
+
+            const variantsRowEl = liveEpgContainer.querySelector<HTMLElement>(
+              '[data-live-variants-row="true"]'
+            );
+            assert(
+              variantsRowEl,
+              `[12.23][${testDisplayMode}] Faixa "Versão do canal" deve estar montada para o canal agrupado`
+            );
+            assert.strictEqual(
+              variantsRowEl.getAttribute('data-nav-row'),
+              'true',
+              `[12.23][${testDisplayMode}] Faixa de versões deve usar data-nav-row="true" para reaproveitar a rolagem horizontal`
+            );
+            assert.strictEqual(
+              variantsRowEl.getAttribute('data-live-variants-row'),
+              'true',
+              `[12.23][${testDisplayMode}] Faixa de versões deve ter o marcador data-live-variants-row="true"`
+            );
+            assert(
+              variantsRowEl.className.includes('overflow-x-auto') &&
+                variantsRowEl.className.includes('touch-pan-x'),
+              `[12.23][${testDisplayMode}] Faixa de versões deve preservar rolagem horizontal e toque (overflow-x-auto touch-pan-x)`
+            );
+
+            const variantBtns = Array.from(
+              variantsRowEl.querySelectorAll<HTMLButtonElement>('button')
+            );
+            assert.strictEqual(
+              variantBtns.length,
+              5,
+              `[12.23][${testDisplayMode}] Faixa de versões deve conter 5 opções (Automático + 4 resoluções)`
+            );
+            assert.strictEqual(
+              variantBtns[0].textContent?.trim(),
+              'Automático',
+              `[12.23][${testDisplayMode}] Primeira opção da faixa deve ser Automático`
+            );
+            assert.strictEqual(
+              variantBtns[4].textContent?.trim(),
+              '4K',
+              `[12.23][${testDisplayMode}] Última opção da faixa deve ser 4K`
+            );
+
+            // Configurar geometria horizontal onde as 5 opções (largura total 266px) não cabem na largura disponível (140px)
+            const variantsRowLeft = 480;
+            const variantsRowWidth = 140;
+            const variantsRowRight = variantsRowLeft + variantsRowWidth; // 620
+            const variantMetrics = [
+              { offsetLeft: 0, width: 76 },   // Automático: [0..76]
+              { offsetLeft: 82, width: 40 },  // FHD: [82..122]
+              { offsetLeft: 128, width: 42 }, // HD: [128..170]
+              { offsetLeft: 176, width: 46 }, // SD: [176..222]
+              { offsetLeft: 228, width: 38 }, // 4K: [228..266]
+            ];
+            const variantsTotalScrollWidth = 266;
+
+            variantsRowEl.scrollLeft = 0;
+            Object.defineProperty(variantsRowEl, 'clientWidth', {
+              value: variantsRowWidth,
+              configurable: true,
+            });
+            Object.defineProperty(variantsRowEl, 'scrollWidth', {
+              value: variantsTotalScrollWidth,
+              configurable: true,
+            });
+            variantsRowEl.getBoundingClientRect = () =>
+              ({
+                top: 96,
+                bottom: 124,
+                left: variantsRowLeft,
+                right: variantsRowRight,
+                width: variantsRowWidth,
+                height: 28,
+                x: variantsRowLeft,
+                y: 96,
+                toJSON: () => ({}),
+              }) as DOMRect;
+
+            variantBtns.forEach((btn, idx) => {
+              const m = variantMetrics[idx];
+              btn.getBoundingClientRect = () => {
+                const left = variantsRowLeft + m.offsetLeft - variantsRowEl.scrollLeft;
+                return {
+                  top: 98,
+                  bottom: 122,
+                  left,
+                  right: left + m.width,
+                  width: m.width,
+                  height: 24,
+                  x: left,
+                  y: 98,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
+            });
+
+            // Confirmar que em scrollLeft=0 a última opção (4K) está inicialmente fora da área visível
+            assert(
+              variantBtns[4].getBoundingClientRect().right > variantsRowEl.getBoundingClientRect().right,
+              `[12.23][${testDisplayMode}] Em scrollLeft=0, a última opção (4K) deve estar fora da área visível da faixa`
+            );
+
+            // Entrar na programação (Canal 1 -> Favorito 1 -> 1º item da programação) e subir (ArrowUp) para a faixa de versões
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(document.activeElement, fav1Btn, `[12.23][${testDisplayMode}] Canal 1 -> Favorito 1`);
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              epgItems[0],
+              `[12.23][${testDisplayMode}] Favorito 1 -> 1º item da programação preservado com canal agrupado`
+            );
+
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[0],
+              `[12.23][${testDisplayMode}] Entrar na faixa de versões por baixo (ArrowUp) deve focar a versão ativa (Automático)`
+            );
+
+            // Subir (ArrowUp) para o controle acima da faixa e entrar na faixa de versões por cima (ArrowDown)
+            const mobileBackWrapper = liveEpgContainer.querySelector<HTMLElement>('div.md\\:hidden');
+            const mobileBackBtn = mobileBackWrapper?.querySelector<HTMLButtonElement>('button') || null;
+            const headerSearchInput = liveEpgContainer.querySelector<HTMLInputElement>(
+              'input[data-test-header-search="true"]'
+            );
+            assert(
+              mobileBackBtn && headerSearchInput,
+              `[12.23][${testDisplayMode}] Controles acima da faixa de versões devem existir`
+            );
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              mobileBackBtn,
+              `[12.23][${testDisplayMode}] ArrowUp a partir da faixa de versões sobe para o bloco superior`
+            );
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[0],
+              `[12.23][${testDisplayMode}] Entrar na faixa de versões por cima (ArrowDown a partir do bloco superior) deve focar a versão ativa (Automático)`
+            );
+
+            // Em viewport md+ (961px, onde .md:hidden fica oculto), ArrowUp sobe para o header e ArrowDown entra na faixa focando a versão ativa
+            if (mobileBackWrapper) {
+              mobileBackWrapper.style.display = 'none';
+            }
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              headerSearchInput,
+              `[12.23][${testDisplayMode}] Com .md:hidden oculto em 961px, ArrowUp sobe para o header`
+            );
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[0],
+              `[12.23][${testDisplayMode}] Entrar na faixa de versões por cima (ArrowDown a partir do header) deve focar a versão ativa (Automático)`
+            );
+
+            // Avançar com ArrowRight até a última opção (4K), verificando que cada opção focada fica visível na faixa
+            for (let vIdx = 1; vIdx < variantBtns.length; vIdx++) {
+              await dispatchArrowKey('ArrowRight');
+              assertSameElement(
+                document.activeElement,
+                variantBtns[vIdx],
+                `[12.23][${testDisplayMode}] ArrowRight na faixa de versões deve focar a opção #${vIdx + 1} (${variantBtns[vIdx].textContent?.trim()})`
+              );
+              const rRect = variantsRowEl.getBoundingClientRect();
+              const bRect = variantBtns[vIdx].getBoundingClientRect();
+              assert(
+                bRect.left >= rRect.left && bRect.right <= rRect.right,
+                `[12.23][${testDisplayMode}] Opção #${vIdx + 1} (${variantBtns[vIdx].textContent?.trim()}) deve ficar visível dentro da faixa ao avançar (btn=[${bRect.left}..${bRect.right}], row=[${rRect.left}..${rRect.right}], scrollLeft=${variantsRowEl.scrollLeft})`
+              );
+            }
+            assert(
+              variantsRowEl.scrollLeft > 0,
+              `[12.23][${testDisplayMode}] A faixa deve ter rolado para a direita para exibir a última opção 4K (scrollLeft=${variantsRowEl.scrollLeft})`
+            );
+            assert(
+              variantBtns[0].getBoundingClientRect().left < variantsRowEl.getBoundingClientRect().left,
+              `[12.23][${testDisplayMode}] Com o foco na última opção (4K), a primeira opção (Automático) está deslocada à esquerda`
+            );
+
+            // Voltar com ArrowLeft até a primeira opção (Automático) e confirmar que ela volta a ficar visível
+            for (let vIdx = variantBtns.length - 2; vIdx >= 0; vIdx--) {
+              await dispatchArrowKey('ArrowLeft');
+              assertSameElement(
+                document.activeElement,
+                variantBtns[vIdx],
+                `[12.23][${testDisplayMode}] ArrowLeft na faixa de versões deve focar a opção #${vIdx + 1} (${variantBtns[vIdx].textContent?.trim()})`
+              );
+              const rRect = variantsRowEl.getBoundingClientRect();
+              const bRect = variantBtns[vIdx].getBoundingClientRect();
+              assert(
+                bRect.left >= rRect.left && bRect.right <= rRect.right,
+                `[12.23][${testDisplayMode}] Opção #${vIdx + 1} (${variantBtns[vIdx].textContent?.trim()}) deve ficar visível dentro da faixa ao recuar (btn=[${bRect.left}..${bRect.right}], row=[${rRect.left}..${rRect.right}], scrollLeft=${variantsRowEl.scrollLeft})`
+              );
+            }
+            assert.strictEqual(
+              variantsRowEl.scrollLeft,
+              0,
+              `[12.23][${testDisplayMode}] Ao retornar à primeira opção (Automático), scrollLeft deve voltar a 0`
+            );
+
+            // Confirmar que apenas mover o foco pela faixa NÃO alterou a versão ativa, NÃO reiniciou o vídeo e NÃO consultou o EPG novamente
+            assert.strictEqual(
+              variantBtns[0].getAttribute('data-variant-active'),
+              'true',
+              `[12.23][${testDisplayMode}] Mover o foco pela faixa NÃO deve alterar a versão selecionada (Automático continua ativo)`
+            );
+            assert.strictEqual(
+              variantBtns[4].getAttribute('data-variant-active'),
+              'false',
+              `[12.23][${testDisplayMode}] 4K não deve ficar ativo apenas por receber foco`
+            );
+            assert.strictEqual(
+              videoLoadCallCount,
+              loadCountBeforeNav,
+              `[12.23][${testDisplayMode}] Mover o foco pela faixa de versões NÃO deve reiniciar o vídeo`
+            );
+            assert.strictEqual(
+              epgCallsByStreamId['501'],
+              1,
+              `[12.23][${testDisplayMode}] Mover o foco pela faixa de versões NÃO deve consultar novamente a programação`
+            );
+            assert.strictEqual(
+              epgCallsByStreamId['5013'] || 0,
+              0,
+              `[12.23][${testDisplayMode}] Nenhuma consulta de EPG deve ser disparada para 4K sem pressionar OK/Enter`
+            );
+
+            // Mais um ArrowLeft na primeira opção (Automático) devolve o foco ao canal de origem (Canal 1)
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft na primeira opção da faixa de versões devolve o foco ao canal de origem`
+            );
+
+            // Selecionar 4K com OK/Enter e verificar preferência pela versão ativa ao entrar por baixo e por cima mesmo com a faixa em scrollLeft=0
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowUp');
+            for (let vIdx = 1; vIdx < variantBtns.length; vIdx++) {
+              await dispatchArrowKey('ArrowRight');
+            }
+            assertSameElement(document.activeElement, variantBtns[4], `[12.23][${testDisplayMode}] Foco em 4K antes de Enter`);
+            await dispatchArrowKey('Enter');
+            await act(async () => {
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            assert.strictEqual(
+              variantBtns[4].getAttribute('data-variant-active'),
+              'true',
+              `[12.23][${testDisplayMode}] OK/Enter deve selecionar a versão 4K`
+            );
+            assert.strictEqual(
+              variantBtns[0].getAttribute('data-variant-active'),
+              'false',
+              `[12.23][${testDisplayMode}] Automático deixa de ser a versão ativa após selecionar 4K`
+            );
+
+            // Descer para a programação, rebobinar scrollLeft=0 na faixa (deixando 4K fora da área visível) e subir (ArrowUp):
+            // deve focar 4K (versão ativa) e rolar a faixa horizontalmente para torná-lo visível
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              epgItems[0],
+              `[12.23][${testDisplayMode}] ArrowDown a partir da faixa de versões entra no 1º item da programação`
+            );
+            variantsRowEl.scrollLeft = 0;
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[4],
+              `[12.23][${testDisplayMode}] Entrar por baixo (ArrowUp) com 4K ativo deve focar diretamente 4K`
+            );
+            {
+              const rRect = variantsRowEl.getBoundingClientRect();
+              const bRect = variantBtns[4].getBoundingClientRect();
+              assert(
+                bRect.left >= rRect.left && bRect.right <= rRect.right && variantsRowEl.scrollLeft > 0,
+                `[12.23][${testDisplayMode}] Entrar por baixo em 4K deve ajustar a rolagem horizontal da faixa (scrollLeft=${variantsRowEl.scrollLeft})`
+              );
+            }
+
+            // Subir para o header, rebobinar scrollLeft=0 na faixa e descer (ArrowDown):
+            // deve focar 4K (versão ativa) e rolar a faixa horizontalmente para torná-lo visível
+            await dispatchArrowKey('ArrowUp');
+            assertSameElement(document.activeElement, headerSearchInput, `[12.23][${testDisplayMode}] Foco no header acima da faixa`);
+            variantsRowEl.scrollLeft = 0;
+            await dispatchArrowKey('ArrowDown');
+            assertSameElement(
+              document.activeElement,
+              variantBtns[4],
+              `[12.23][${testDisplayMode}] Entrar por cima (ArrowDown) com 4K ativo deve focar diretamente 4K`
+            );
+            {
+              const rRect = variantsRowEl.getBoundingClientRect();
+              const bRect = variantBtns[4].getBoundingClientRect();
+              assert(
+                bRect.left >= rRect.left && bRect.right <= rRect.right && variantsRowEl.scrollLeft > 0,
+                `[12.23][${testDisplayMode}] Entrar por cima em 4K deve ajustar a rolagem horizontal da faixa (scrollLeft=${variantsRowEl.scrollLeft})`
+              );
+            }
+
+            // Voltar até Automático e pressionar Enter para restaurar o modo automático antes do teste de tela cheia
+            for (let vIdx = variantBtns.length - 2; vIdx >= 0; vIdx--) {
+              await dispatchArrowKey('ArrowLeft');
+            }
+            assertSameElement(document.activeElement, variantBtns[0], `[12.23][${testDisplayMode}] Foco de volta em Automático`);
+            await dispatchArrowKey('Enter');
+            await act(async () => {
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            assert.strictEqual(
+              variantBtns[0].getAttribute('data-variant-active'),
+              'true',
+              `[12.23][${testDisplayMode}] OK/Enter restaura Automático como versão ativa`
+            );
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(document.activeElement, ch1Btn, `[12.23][${testDisplayMode}] Foco de volta no Canal 1`);
+
+            // 3. Fluxo de Tela Cheia (2º OK no canal já selecionado) + controles em tela cheia + sequência Voltar preservando o mesmo <video>
+
+            await act(async () => {
+              ch1Btn.click();
+              await new Promise((r) => setTimeout(r, 20));
+            });
+
+            const fsScopeEl = liveEpgContainer.querySelector<HTMLElement>(
+              '[data-player-container="true"][data-focus-scope="modal"]'
+            );
+            assert(
+              fsScopeEl,
+              `[12.23][${testDisplayMode}] Segundo OK no canal já selecionado deve abrir tela cheia`
+            );
+            assertSameElement(
+              liveEpgContainer.querySelector('video'),
+              previewVideoEl,
+              `[12.23][${testDisplayMode}] Entrar em tela cheia deve preservar a mesma instância de <video>`
+            );
+
+            // Em tela cheia, os controles do player DEVEM ser focáveis por setas
+            const focusableInFullscreen = getLiveFocusableElements();
+            assert(
+              focusableInFullscreen.includes(previewPlayPauseBtn) &&
+                focusableInFullscreen.includes(previewFullscreenBtn),
+              `[12.23][${testDisplayMode}] Em tela cheia, os controles do player devem voltar a receber foco por setas`
+            );
+
+            // 1º Voltar (Escape): sai da tela cheia para o preview, preservando o mesmo <video> e restaurando foco ao Canal 1
             await dispatchArrowKey('Escape');
             await act(async () => {
               await new Promise((r) => setTimeout(r, 20));
@@ -20208,51 +20604,225 @@ if (args[0] === 'add' && args[1] === 'android') {
             assert.strictEqual(
               liveEpgContainer.querySelector('[data-player-container="true"][data-focus-scope="modal"]'),
               null,
-              `[12.23][${testDisplayMode}] Escape sai da tela cheia mantendo o preview no painel direito`
+              `[12.23][${testDisplayMode}] 1º Voltar deve sair da tela cheia de volta ao preview`
             );
-            assertSameElement(document.activeElement, ch2Btn, `[12.23][${testDisplayMode}] Sair da tela cheia devolve foco ao canal ativo`);
+            assertSameElement(
+              liveEpgContainer.querySelector('video'),
+              previewVideoEl,
+              `[12.23][${testDisplayMode}] Sair da tela cheia deve preservar a mesma instância de <video>`
+            );
+            assertSameElement(
+              document.activeElement,
+              ch1Btn,
+              `[12.23][${testDisplayMode}] Sair da tela cheia deve restaurar o foco ao Canal 1`
+            );
 
-            // Testar Canal 3 (EPG carregando -> resolvido vazio) e Canal 4 (EPG com erro)
+            // 4. Testar erro de reprodução no preview e acesso a "Tentar Novamente" por setas
+            for (let errStep = 0; errStep < 16; errStep++) {
+              if (liveEpgContainer.querySelector('[data-player-error-primary="true"]')) break;
+              await act(async () => {
+                previewVideoEl.dispatchEvent(new windowInstance.Event('error') as unknown as Event);
+                await new Promise((r) => setTimeout(r, 25));
+              });
+            }
+            const retryErrorBtn = liveEpgContainer.querySelector<HTMLButtonElement>(
+              '[data-player-error-primary="true"]'
+            );
+            assert(
+              retryErrorBtn && isLiveElementFocusable(retryErrorBtn),
+              `[12.23][${testDisplayMode}] Em caso de falha na reprodução, o botão Tentar Novamente deve estar visível e focável`
+            );
+            retryErrorBtn.getBoundingClientRect = () =>
+              ({
+                top: 68,
+                bottom: 100,
+                left: 740,
+                right: 880,
+                width: 140,
+                height: 32,
+                x: 740,
+                y: 68,
+                toJSON: () => ({}),
+              }) as DOMRect;
+
+            const epgItemsAfterError = Array.from(
+              liveEpgContainer.querySelectorAll<HTMLElement>('[data-epg-item="true"]')
+            );
+            epgItemsAfterError.forEach((item, idx) => {
+              const itemTopOffset = idx * (layout90.epgCardHeight + 10);
+              item.getBoundingClientRect = () => {
+                const baseTop =
+                  layout90.topSectionHeight +
+                  layout90.epgHeaderHeight +
+                  itemTopOffset -
+                  epgScrollEl.scrollTop;
+                return {
+                  top: baseTop,
+                  bottom: baseTop + layout90.epgCardHeight,
+                  left: 410,
+                  right: 945,
+                  width: 535,
+                  height: layout90.epgCardHeight,
+                  x: 410,
+                  y: baseTop,
+                  toJSON: () => ({}),
+                } as DOMRect;
+              };
+            });
+
+            // Navegar Canal 1 -> Favorito -> Programação -> ArrowUp (faixa de versão -> Tentar Novamente)
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              epgItemsAfterError[0],
+              `[12.23][${testDisplayMode}] ArrowRight entra na programação mesmo com erro no player`
+            );
+            await dispatchArrowKey('ArrowUp');
+            if (document.activeElement !== retryErrorBtn) {
+              // Em canal agrupado, o 1º ArrowUp passa pela faixa "Versão do canal" e o 2º alcança o botão Tentar Novamente no preview
+              await dispatchArrowKey('ArrowUp');
+            }
+            assertSameElement(
+              document.activeElement,
+              retryErrorBtn,
+              `[12.23][${testDisplayMode}] ArrowUp a partir do topo da programação alcança o botão Tentar Novamente do preview`
+            );
+
+            const loadBeforeRetry = videoLoadCallCount;
             await act(async () => {
+              retryErrorBtn.click();
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            assert(
+              videoLoadCallCount > loadBeforeRetry,
+              `[12.23][${testDisplayMode}] Acionar Tentar Novamente deve reiniciar a tentativa de reprodução`
+            );
+
+            // 5. Testar Grade Vazia (Canal 2), Carregando -> Vazia (Canal 3) e Erro de EPG (Canal 4) com saída previsível no ArrowLeft
+            await act(async () => {
+              ch2Btn.focus();
+              ch2Btn.click();
+              await new Promise((r) => setTimeout(r, 20));
+            });
+            const emptyStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="empty"]');
+            assert(emptyStateEl, `[12.23][${testDisplayMode}] Canal 2 sem programação deve exibir estado vazio`);
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(document.activeElement, fav2Btn, `[12.23][${testDisplayMode}] Canal 2 -> Favorito 2`);
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              emptyStateEl,
+              `[12.23][${testDisplayMode}] Favorito 2 -> Estado de grade vazia`
+            );
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch2Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft na grade vazia devolve foco ao Canal 2`
+            );
+
+            // Canal 3: EPG carregando e depois concluindo enquanto focado
+            await act(async () => {
+              ch3Btn.focus();
               ch3Btn.click();
             });
-            assert(liveEpgContainer.querySelector('[data-epg-state="loading"]'), `[12.23][${testDisplayMode}] Canal 3 pendente mostra Carregando programação`);
+            const loadingStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="loading"]');
+            assert(loadingStateEl, `[12.23][${testDisplayMode}] Canal 3 com EPG pendente deve exibir estado carregando`);
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              loadingStateEl,
+              `[12.23][${testDisplayMode}] Favorito 3 -> Estado carregando do EPG`
+            );
             await act(async () => {
               resolvePendingCh3Epg?.({ epg_listings: [] });
               await new Promise((r) => setTimeout(r, 20));
             });
-            assert(liveEpgContainer.querySelector('[data-epg-state="empty"]'), `[12.23][${testDisplayMode}] Canal 3 resolvido vazio mostra Programação indisponível`);
+            const ch3EmptyAfterLoad = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="empty"]');
+            assertSameElement(
+              document.activeElement,
+              ch3EmptyAfterLoad,
+              `[12.23][${testDisplayMode}] Quando o carregamento do EPG termina, o foco deve ser preservado na área da programação`
+            );
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch3Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft devolve foco ao Canal 3`
+            );
 
+            // Canal 4: EPG com falha/indisponível
             await act(async () => {
+              ch4Btn.focus();
               ch4Btn.click();
               await new Promise((r) => setTimeout(r, 20));
             });
-            assert(liveEpgContainer.querySelector('[data-epg-state="error"]'), `[12.23][${testDisplayMode}] Canal 4 com falha no EPG mostra Programação indisponível`);
+            const errorStateEl = liveEpgContainer.querySelector<HTMLElement>('[data-epg-state="error"]');
+            assert(errorStateEl, `[12.23][${testDisplayMode}] Canal 4 com falha no EPG deve exibir estado indisponível`);
+            await dispatchArrowKey('ArrowRight');
+            await dispatchArrowKey('ArrowRight');
+            assertSameElement(
+              document.activeElement,
+              errorStateEl,
+              `[12.23][${testDisplayMode}] Favorito 4 -> Estado indisponível do EPG`
+            );
+            await dispatchArrowKey('ArrowLeft');
+            assertSameElement(
+              document.activeElement,
+              ch4Btn,
+              `[12.23][${testDisplayMode}] ArrowLeft no estado de erro do EPG devolve foco ao Canal 4`
+            );
 
-            // Verificar tokens CSS da nova arquitetura de cards horizontais compactos (16.5rem desktop / 16.5*--nc-rem TV)
+            // Voltar fecha o preview e mantém foco no Canal 4
+            await dispatchArrowKey('Escape');
+            assert.strictEqual(
+              liveEpgContainer.querySelector('video'),
+              null,
+              `[12.23][${testDisplayMode}] Voltar no preview fecha o player`
+            );
+            assertSameElement(
+              document.activeElement,
+              ch4Btn,
+              `[12.23][${testDisplayMode}] Fechar o preview mantém o foco no canal selecionado`
+            );
+            // 6. Validar estilo de foco da programação em src/index.css (sem fundo/borda/brilho ciano #00E5FF, usando contorno branco padrão)
             const indexCssContent = fs.readFileSync(
               path.resolve(process.cwd(), 'src/index.css'),
               'utf-8'
             );
+            const epgFocusRuleMatch = indexCssContent.match(
+              /\.nc-tv-epg-card:focus[\s\S]*?\{([\s\S]*?)\}/
+            );
             assert(
-              indexCssContent.includes('.nc-live-wide-card') &&
-                indexCssContent.includes('--nc-tv-row-card-live-wide-w: calc(16.5 * var(--nc-rem))') &&
-                indexCssContent.includes('width: 16.5rem') &&
-                indexCssContent.includes('--nc-tv-row-card-live-wide-h'),
-              `[12.23][${testDisplayMode}] src/index.css deve definir tokens compactos (16.5rem desktop / 16.5*--nc-rem TV) para os cards da TV ao Vivo`
+              epgFocusRuleMatch !== null,
+              `[12.23][${testDisplayMode}] Regra .nc-tv-epg-card:focus deve existir em src/index.css`
+            );
+            const epgFocusRuleBody = epgFocusRuleMatch![1];
+            assert(
+              !epgFocusRuleBody.includes('#00E5FF') &&
+                !epgFocusRuleBody.includes('0, 229, 255') &&
+                !epgFocusRuleBody.includes('background-color') &&
+                !epgFocusRuleBody.includes('border-color'),
+              `[12.23][${testDisplayMode}] Regra de foco de .nc-tv-epg-card e .nc-tv-epg-state não deve aplicar fundo, borda nem brilho ciano`
+            );
+            assert(
+              epgFocusRuleBody.includes('outline: 2px solid #ffffff') &&
+                epgFocusRuleBody.includes('outline-offset: 2px'),
+              `[12.23][${testDisplayMode}] Regra de foco de .nc-tv-epg-card e .nc-tv-epg-state deve usar o contorno branco padrão da plataforma`
             );
           }
 
           console.log(
-            `📊 [Métricas 12.23 — Ciclo 12.27-b: Reutilização de HorizontalRow, Preview Deslizante sem Salto de Scroll e EPG Estrito]\n` +
-              `   • Entrada normal sem initialChannelIntent: Hero neutro ("Selecione um canal"), 0 <video> montado, 0 chamadas de EPG\n` +
-              `   • Preview deslizante (Estados 1-5): 0 salto de scroll ao ativar canal, recolhe ao navegar com seta avançando o foco na mesma tecla, e expande em tela cheia no 2º comando\n` +
-              `   • Relógio compartilhado (60s + focus/visibility): atualiza progresso, avança para próximo programa e expira sem remontar <video>\n` +
+            `📊 [Métricas 12.23 — Grade de Programação e Navegação por Setas na TV ao Vivo]\n` +
+              `   • Percurso D-Pad validado (default e tv): Canal -> Favorito -> Programação (6 itens) -> ArrowDown até item #6 -> ArrowLeft retorna à linha de canal de origem\n` +
+              `   • Faixa "Versão do canal" (data-nav-row="true" + data-live-variants-row="true"): rolagem horizontal ida/volta (Automático <-> 4K), preferência pela versão ativa ao entrar por cima/baixo e 0 reinícios/consultas extras ao mover foco\n` +
+              `   • Foco visual da programação (.nc-tv-epg-card / .nc-tv-epg-state): contorno branco padrão (#ffffff), sem fundo/borda/brilho ciano, preservando destaque do programa atual\n` +
+              `   • Exclusão de foco nos controles do preview embutido: ativa (clique/toque e botão Tentar Novamente preservados; tela cheia mantém controles focáveis e mesma instância de <video>)\n` +
               `   • Layout 961×541: ${layoutSummaryLines.join(' | ')}`
           );
         } finally {
-          setLiveEpgClockNowForTest(null);
-          clearSharedSessionEpgCache();
           (XtreamService as any).getShortEpg = savedGetShortEpgLiveTest;
           if (prevDocDisplayMode !== null) {
             document.documentElement.setAttribute('data-display-mode', prevDocDisplayMode);
@@ -27131,22 +27701,11 @@ if (args[0] === 'add' && args[1] === 'android') {
                   0,
                   '[12.26-b.1] Fechar SeriesDetails deve limpar a pilha sem deixar entradas extras'
                 );
-                if (strangerShowcaseCardB1.isConnected) {
-                  assertSameElement(
-                    document.activeElement,
-                    strangerShowcaseCardB1,
-                    '[12.26-b.1] Fechar SeriesDetails após Player/Submodal deve devolver foco ao cartão original'
-                  );
-                } else {
-                  const restoredCardEl = document.activeElement as HTMLElement | null;
-                  assert(
-                    restoredCardEl !== null &&
-                      restoredCardEl.isConnected &&
-                      restoredCardEl.getAttribute('data-showcase-card') === 'true' &&
-                      restoredCardEl.getAttribute('aria-label') === 'Stranger Things',
-                    '[12.26-b.1] Fechar SeriesDetails após Player/Submodal deve devolver foco ao cartão ativo de Stranger Things na vitrine'
-                  );
-                }
+                assertSameElement(
+                  document.activeElement,
+                  strangerShowcaseCardB1,
+                  '[12.26-b.1] Fechar SeriesDetails após Player/Submodal deve devolver foco ao cartão original'
+                );
               } finally {
                 (globalThis as any).CSS = savedGlobalCssB1;
               }
@@ -27156,488 +27715,6 @@ if (args[0] === 'add' && args[1] === 'android') {
               );
             } finally {
               (XtreamService as any).getSeriesInfo = savedGetSeriesInfo1226b;
-            }
-          }
-
-          // ===================================================================
-          // 12.27-c: Arquitetura em Duas Colunas na TV ao Vivo (Catálogo à Esquerda + Painel
-          // Permanente de Reprodução e EPG à Direita), Cartões Compactos, Capitalização Natural
-          // e Navegação D-Pad 16×24 sem Salto de Scroll
-          // ===================================================================
-          {
-            const { formatLiveCategoryTitle } = await import('../src/utils/categoryLabel');
-            assert.strictEqual(
-              formatLiveCategoryTitle('ESPORTES AO VIVO', 'live'),
-              'Esportes ao vivo',
-              '[12.27-c] formatLiveCategoryTitle deve normalizar ESPORTES AO VIVO para Esportes ao vivo'
-            );
-            assert.strictEqual(
-              formatLiveCategoryTitle('CANAIS DE FILMES', 'live'),
-              'Canais de filmes',
-              '[12.27-c] formatLiveCategoryTitle deve normalizar CANAIS DE FILMES para Canais de filmes'
-            );
-            assert.strictEqual(
-              formatLiveCategoryTitle('NOTÍCIAS CNN HD', 'live'),
-              'Notícias CNN HD',
-              '[12.27-c] formatLiveCategoryTitle deve preservar siglas legítimas como CNN e HD'
-            );
-            assert.strictEqual(
-              formatLiveCategoryTitle('CANAIS | ESPORTES ESPN 4K', 'live'),
-              'Esportes ESPN 4K',
-              '[12.27-c] formatLiveCategoryTitle deve limpar prefixo CANAIS | e preservar ESPN e 4K'
-            );
-
-            const live16Categories = Array.from({ length: 16 }, (_, catIdx) => ({
-              category_id: `live_cat_${catIdx + 1}`,
-              category_name:
-                catIdx === 0
-                  ? 'ESPORTES AO VIVO'
-                  : catIdx === 1
-                    ? 'CANAIS DE FILMES HBO'
-                    : `CATEGORIA AO VIVO ${catIdx + 1}`,
-            }));
-            const live16x24Streams: any[] = [];
-            for (let catIdx = 0; catIdx < 16; catIdx++) {
-              const catId = `live_cat_${catIdx + 1}`;
-              for (let chIdx = 0; chIdx < 24; chIdx++) {
-                const streamId = 90000 + catIdx * 100 + chIdx + 1;
-                live16x24Streams.push({
-                  stream_id: streamId,
-                  name: `Canal Cat${catIdx + 1} #${chIdx + 1} HD`,
-                  category_id: catId,
-                  epg_channel_id: `epg_${streamId}`,
-                  stream_icon: `http://stage1.local:8080/logo_${streamId}.png`,
-                });
-              }
-            }
-
-            const live1227bContainer = document.createElement('div');
-            document.body.appendChild(live1227bContainer);
-            const live1227bRoot = createRoot(live1227bContainer);
-
-            const live1227bMockCtx: any = {
-              credentials: {
-                serverUrl: 'http://stage1.local:8080',
-                username: 'live_1227b_user',
-                password: 'live_1227b_pass',
-                allowed_output_formats: ['m3u8', 'ts'],
-              },
-              accountInfo: {
-                user_info: { allowed_output_formats: ['m3u8', 'ts'] },
-              },
-              isAuthenticated: true,
-              isAuthChecking: false,
-              isAuthRejected: false,
-              authError: null,
-              hasInitialMenuData: true,
-              isInitialSetupComplete: true,
-              liveCategories: live16Categories,
-              vodCategories: [],
-              seriesCategories: [],
-              liveStreams: live16x24Streams,
-              allLiveStreams: live16x24Streams,
-              vodStreams: [],
-              allVodStreams: [],
-              series: [],
-              allSeries: [],
-              loadingLive: false,
-              loadingVod: false,
-              loadingSeries: false,
-              liveError: null,
-              vodError: null,
-              seriesError: null,
-              liveCategoriesError: null,
-              vodCategoriesError: null,
-              seriesCategoriesError: null,
-              liveCategoriesStatus: 'ready',
-              vodCategoriesStatus: 'ready',
-              seriesCategoriesStatus: 'ready',
-              liveCatalogStatus: 'ready',
-              vodCatalogStatus: 'ready',
-              seriesCatalogStatus: 'ready',
-              fetchLiveCategories: async () => {},
-              fetchVodCategories: async () => {},
-              fetchSeriesCategories: async () => {},
-              fetchLiveStreams: async () => {},
-              fetchVodStreams: async () => {},
-              fetchSeries: async () => {},
-              retryInitialSetup: async () => {},
-            };
-
-            let liveDomObserver: any = null;
-            try {
-              (windowInstance as any).innerWidth = 1440;
-              (windowInstance as any).innerHeight = 900;
-
-              await act(async () => {
-                live1227bRoot.render(
-                  React.createElement(
-                    Stage1NavProvider,
-                    null,
-                    React.createElement(
-                      XtreamMockProvider,
-                      { value: live1227bMockCtx },
-                      React.createElement(LiveTvView, { onPlay: () => {} })
-                    )
-                  )
-                );
-                await new Promise((r) => setTimeout(r, 30));
-              });
-
-              await act(async () => {
-                setStage1NavMode('remote');
-              });
-
-              const twoColContainer = live1227bContainer.querySelector<HTMLElement>(
-                '[data-live-two-column-layout="true"]'
-              )!;
-              const liveMainEl = live1227bContainer.querySelector<HTMLElement>(
-                'main[data-scroll-container="true"][data-live-catalog-column="true"]'
-              )!;
-              const liveRowsContainer = live1227bContainer.querySelector<HTMLElement>(
-                '[data-showcase-rows-container="true"]'
-              )!;
-              const liveRightCol = live1227bContainer.querySelector<HTMLElement>(
-                '[data-live-right-column="true"]'
-              )!;
-              assert(
-                twoColContainer && liveMainEl && liveRowsContainer && liveRightCol,
-                '[12.27-c] Layout em duas colunas (coluna esquerda de catálogo + coluna direita de reprodução/EPG) deve existir'
-              );
-              assert.strictEqual(
-                liveRowsContainer.getAttribute('data-showcase-total-rows'),
-                '16',
-                '[12.27-c] Vitrine na coluna esquerda deve registrar 16 fileiras de categorias'
-              );
-
-              // Verificar capitalização natural dos títulos das categorias na coluna esquerda
-              const row0Heading = liveRowsContainer.querySelector<HTMLElement>(
-                '[data-home-row-index="0"] h2'
-              );
-              const row1Heading = liveRowsContainer.querySelector<HTMLElement>(
-                '[data-home-row-index="1"] h2'
-              );
-              assert.strictEqual(
-                row0Heading?.textContent?.trim(),
-                'Esportes ao vivo',
-                '[12.27-c] Título da categoria 0 deve seguir capitalização natural (Esportes ao vivo)'
-              );
-              assert.strictEqual(
-                row1Heading?.textContent?.trim(),
-                'Canais de filmes HBO',
-                '[12.27-c] Título da categoria 1 deve seguir capitalização natural preservando sigla HBO'
-              );
-
-              Object.defineProperty(liveMainEl, 'clientHeight', {
-                value: 800,
-                configurable: true,
-              });
-              liveMainEl.getBoundingClientRect = () =>
-                ({
-                  top: 100,
-                  bottom: 900,
-                  left: 0,
-                  right: 720,
-                  width: 720,
-                  height: 800,
-                  x: 0,
-                  y: 100,
-                  toJSON: () => ({}),
-                }) as DOMRect;
-
-              liveRightCol.getBoundingClientRect = () =>
-                ({
-                  top: 100,
-                  bottom: 900,
-                  left: 720,
-                  right: 1440,
-                  width: 720,
-                  height: 800,
-                  x: 720,
-                  y: 100,
-                  toJSON: () => ({}),
-                }) as DOMRect;
-
-              const ROW_SIM_HEIGHT = 176;
-              const CARD_SIM_WIDTH = 264;
-              const CARD_SIM_HEIGHT = 88;
-              const CARD_SIM_GAP = 16;
-              const CARD_SIM_STEP = CARD_SIM_WIDTH + CARD_SIM_GAP;
-
-              const installLiveDynamicRects = () => {
-                const allBlocks = Array.from(
-                  liveRowsContainer.querySelectorAll<HTMLElement>('[data-scroll-block="true"]')
-                );
-                for (const blk of allBlocks) {
-                  const rIdx = parseInt(
-                    blk.getAttribute('data-showcase-row-index') || '0',
-                    10
-                  );
-                  const cTop = rIdx * ROW_SIM_HEIGHT;
-                  const blockRectFn = () => {
-                    const vTop = 100 + cTop - (liveMainEl.scrollTop || 0);
-                    return {
-                      top: vTop,
-                      bottom: vTop + ROW_SIM_HEIGHT,
-                      left: 24,
-                      right: 696,
-                      width: 672,
-                      height: ROW_SIM_HEIGHT,
-                      x: 24,
-                      y: vTop,
-                      toJSON: () => ({}),
-                    } as DOMRect;
-                  };
-                  blk.getBoundingClientRect = blockRectFn;
-
-                  const wrapper = blk.querySelector<HTMLElement>('[data-home-row-index]');
-                  if (wrapper) {
-                    wrapper.getBoundingClientRect = blockRectFn;
-                  }
-                  const navRow = blk.querySelector<HTMLElement>('[data-nav-row="true"]');
-                  if (navRow) {
-                    Object.defineProperty(navRow, 'clientWidth', {
-                      value: 672,
-                      configurable: true,
-                    });
-                    Object.defineProperty(navRow, 'scrollWidth', {
-                      value: 24 * CARD_SIM_STEP,
-                      configurable: true,
-                    });
-                    navRow.getBoundingClientRect = () => {
-                      const vTop = 100 + cTop + 40 - (liveMainEl.scrollTop || 0);
-                      return {
-                        top: vTop,
-                        bottom: vTop + CARD_SIM_HEIGHT + 16,
-                        left: 24,
-                        right: 696,
-                        width: 672,
-                        height: CARD_SIM_HEIGHT + 16,
-                        x: 24,
-                        y: vTop,
-                        toJSON: () => ({}),
-                      } as DOMRect;
-                    };
-
-                    const cards = Array.from(
-                      navRow.querySelectorAll<HTMLElement>('button[data-live-channel-btn="true"]')
-                    );
-                    for (const card of cards) {
-                      const cIdx = parseInt(
-                        card.getAttribute('data-row-card-index') || '0',
-                        10
-                      );
-                      card.getBoundingClientRect = () => {
-                        const vTop = 100 + cTop + 40 - (liveMainEl.scrollTop || 0);
-                        const sLeft = navRow.scrollLeft || 0;
-                        const left = 24 + cIdx * CARD_SIM_STEP - sLeft;
-                        return {
-                          top: vTop,
-                          bottom: vTop + CARD_SIM_HEIGHT,
-                          left,
-                          right: left + CARD_SIM_WIDTH,
-                          width: CARD_SIM_WIDTH,
-                          height: CARD_SIM_HEIGHT,
-                          x: left,
-                          y: vTop,
-                          toJSON: () => ({}),
-                        } as DOMRect;
-                      };
-                    }
-                  }
-                }
-              };
-
-              liveDomObserver = new (windowInstance as any).MutationObserver(() => {
-                installLiveDynamicRects();
-              });
-              liveDomObserver.observe(liveRowsContainer, {
-                childList: true,
-                subtree: true,
-              });
-              installLiveDynamicRects();
-
-              const pressLiveKey = async (
-                key: 'ArrowRight' | 'ArrowLeft' | 'ArrowDown' | 'ArrowUp' | 'Enter' | 'Escape'
-              ) => {
-                await act(async () => {
-                  const target =
-                    document.activeElement instanceof HTMLElement
-                      ? document.activeElement
-                      : windowInstance;
-                  target.dispatchEvent(
-                    new (windowInstance as any).KeyboardEvent('keydown', {
-                      key,
-                      bubbles: true,
-                      cancelable: true,
-                    })
-                  );
-                });
-                installLiveDynamicRects();
-              };
-
-              // 1. Validar reutilização de HorizontalRow e cartões compactos na fileira 0
-              const row0Wrapper = liveRowsContainer.querySelector<HTMLElement>(
-                '[data-home-row-index="0"]'
-              )!;
-              assert(row0Wrapper, '[12.27-c] Fileira 0 deve estar montada com data-home-row-index="0"');
-              const row0Card0 = row0Wrapper.querySelector<HTMLButtonElement>(
-                'button[data-live-channel-btn="true"][data-row-card-index="0"]'
-              )!;
-              assert(
-                row0Card0 &&
-                  row0Card0.classList.contains('nc-live-wide-card') &&
-                  row0Card0.classList.contains('nc-showcase-card'),
-                '[12.27-c] Cartão de canal deve usar nc-live-wide-card e nc-showcase-card dentro do HorizontalRow'
-              );
-              const visualLayer0 = row0Card0.querySelector<HTMLElement>('.nc-card-visual-layer')!;
-              assert(
-                visualLayer0 &&
-                  visualLayer0.className.includes('bg-nc-bg-card') &&
-                  visualLayer0.className.includes('border-nc-border'),
-                '[12.27-c] Superfície do cartão deve usar bg-nc-bg-card e border-nc-border como Filmes e Séries'
-              );
-
-              // 2. Navegação horizontal D-Pad por todos os 24 canais da fileira 0 na coluna esquerda (0 -> 23 -> 0)
-              await act(async () => {
-                row0Card0.focus();
-              });
-              for (let expectedIdx = 1; expectedIdx < 24; expectedIdx++) {
-                await pressLiveKey('ArrowRight');
-                const activeEl = document.activeElement as HTMLElement | null;
-                assert(
-                  activeEl !== null &&
-                    activeEl.getAttribute('data-live-channel-btn') === 'true' &&
-                    Number(activeEl.getAttribute('data-row-card-index')) === expectedIdx,
-                  `[12.27-c] ArrowRight na fileira 0 deve avançar para o canal ${expectedIdx} (obteve ${activeEl?.getAttribute('data-row-card-index')})`
-                );
-              }
-              for (let expectedIdx = 22; expectedIdx >= 0; expectedIdx--) {
-                await pressLiveKey('ArrowLeft');
-                const activeEl = document.activeElement as HTMLElement | null;
-                assert(
-                  activeEl !== null &&
-                    activeEl.getAttribute('data-live-channel-btn') === 'true' &&
-                    Number(activeEl.getAttribute('data-row-card-index')) === expectedIdx,
-                  `[12.27-c] ArrowLeft na fileira 0 deve retornar para o canal ${expectedIdx} (obteve ${activeEl?.getAttribute('data-row-card-index')})`
-                );
-              }
-
-              // 3. Navegação vertical D-Pad pelas 16 categorias na coluna esquerda (0 -> 15 -> 0) sem pular fileiras e sem perder foco
-              for (let expectedRow = 1; expectedRow < 16; expectedRow++) {
-                await pressLiveKey('ArrowDown');
-                const activeEl = document.activeElement as HTMLElement | null;
-                const activeRowWrapper = activeEl?.closest<HTMLElement>('[data-home-row-index]');
-                const actualRow = activeRowWrapper
-                  ? Number(activeRowWrapper.getAttribute('data-home-row-index'))
-                  : -1;
-                assert.strictEqual(
-                  actualRow,
-                  expectedRow,
-                  `[12.27-c] ArrowDown deve avançar sequencialmente para a categoria ${expectedRow} sem pular fileiras (obteve ${actualRow})`
-                );
-              }
-              for (let expectedRow = 14; expectedRow >= 0; expectedRow--) {
-                await pressLiveKey('ArrowUp');
-                const activeEl = document.activeElement as HTMLElement | null;
-                const activeRowWrapper = activeEl?.closest<HTMLElement>('[data-home-row-index]');
-                const actualRow = activeRowWrapper
-                  ? Number(activeRowWrapper.getAttribute('data-home-row-index'))
-                  : -1;
-                assert.strictEqual(
-                  actualRow,
-                  expectedRow,
-                  `[12.27-c] ArrowUp deve retornar sequencialmente para a categoria ${expectedRow} sem pular fileiras (obteve ${actualRow})`
-                );
-              }
-
-              // 4. Descer até a categoria 8, avançar até o canal 4 e validar seleção no painel direito permanente sem salto de scroll
-              for (let r = 1; r <= 8; r++) {
-                await pressLiveKey('ArrowDown');
-              }
-              for (let c = 1; c <= 4; c++) {
-                await pressLiveKey('ArrowRight');
-              }
-
-              const row8Card4 = document.activeElement as HTMLButtonElement;
-              const row8Wrapper = row8Card4.closest<HTMLElement>('[data-home-row-index="8"]')!;
-              const row8NavRow = row8Wrapper.querySelector<HTMLElement>('[data-nav-row="true"]')!;
-              assert(
-                row8Wrapper &&
-                  row8Card4.getAttribute('data-row-card-index') === '4',
-                '[12.27-c] Foco deve estar posicionado na categoria 8, canal 4'
-              );
-
-              await act(async () => {
-                liveMainEl.scrollTop = 6 * ROW_SIM_HEIGHT;
-                liveMainEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
-                await new Promise((r) => setTimeout(r, 20));
-              });
-              installLiveDynamicRects();
-
-              const scrollTopBeforeActivate = liveMainEl.scrollTop;
-              const scrollLeftBeforeActivate = row8NavRow.scrollLeft;
-
-              // 1ª ativação do canal 4 na categoria 8 -> atualiza painel direito permanente sem deslocar scrollTop/scrollLeft da coluna esquerda
-              await act(async () => {
-                row8Card4.click();
-                await new Promise((r) => setTimeout(r, 20));
-              });
-              const heroEl1227c = live1227bContainer.querySelector<HTMLElement>('[data-live-hero="true"]')!;
-              assert.strictEqual(
-                liveMainEl.scrollTop,
-                scrollTopBeforeActivate,
-                '[12.27-c] Ativar canal na coluna esquerda NÃO deve alterar scrollTop da coluna esquerda (deltaScrollTop === 0)'
-              );
-              assert.strictEqual(
-                row8NavRow.scrollLeft,
-                scrollLeftBeforeActivate,
-                '[12.27-c] Ativar canal NÃO deve alterar scrollLeft da fileira ativa (deltaScrollLeft === 0)'
-              );
-              assertSameElement(
-                document.activeElement,
-                row8Card4,
-                '[12.27-c] Foco deve permanecer no cartão ativado (categoria 8, canal 4)'
-              );
-              assert.strictEqual(
-                heroEl1227c.getAttribute('data-live-right-panel'),
-                'true',
-                '[12.27-c] Painel direito permanente deve estar montado (data-live-right-panel="true")'
-              );
-              assert.strictEqual(
-                heroEl1227c.getAttribute('data-live-preview-state'),
-                'open',
-                '[12.27-c] Estado do preview no painel direito deve ser "open"'
-              );
-
-              // Pressionar ArrowDown na coluna esquerda avança foco para categoria 9 mantendo o painel direito aberto
-              await pressLiveKey('ArrowDown');
-              const activeAfterDown = document.activeElement as HTMLElement | null;
-              const rowAfterDown = activeAfterDown
-                ?.closest<HTMLElement>('[data-home-row-index]')
-                ?.getAttribute('data-home-row-index');
-              assert.strictEqual(
-                heroEl1227c.getAttribute('data-live-preview-state'),
-                'open',
-                '[12.27-c] Painel direito permanente continua aberto ao navegar entre categorias na coluna esquerda'
-              );
-              assert.strictEqual(
-                rowAfterDown,
-                '9',
-                '[12.27-c] ArrowDown avança o foco diretamente para a categoria 9 na coluna esquerda'
-              );
-
-              console.log(
-                '✅ [12.27-c] Layout em duas colunas, cartões compactos, capitalização natural e navegação D-Pad 16×24 aprovados!'
-              );
-            } finally {
-              liveDomObserver?.disconnect();
-              await act(async () => {
-                live1227bRoot.unmount();
-              });
-              if (live1227bContainer.parentNode) {
-                document.body.removeChild(live1227bContainer);
-              }
             }
           }
         } finally {
