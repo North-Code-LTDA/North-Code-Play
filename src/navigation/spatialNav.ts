@@ -406,7 +406,24 @@ export function findScrollContainer(el: HTMLElement | null): HTMLElement | null 
     if (curr.getAttribute('data-scroll-container') === 'true') {
       return curr;
     }
+    const isHorizontalRowOnly =
+      curr.getAttribute('data-nav-row') === 'true' ||
+      curr.getAttribute('data-live-category-row-scroll') === 'true' ||
+      curr.getAttribute('data-header-nav-strip') === 'true' ||
+      curr.getAttribute('data-live-variants-row') === 'true';
+    if (isHorizontalRowOnly) {
+      curr = curr.parentElement;
+      continue;
+    }
     const cls = typeof curr.className === 'string' ? curr.className : '';
+    const isHorizontalOverflowClassOnly =
+      (cls.includes('overflow-x-auto') || cls.includes('overflow-x-scroll')) &&
+      !cls.includes('overflow-y-auto') &&
+      !cls.includes('overflow-y-scroll');
+    if (isHorizontalOverflowClassOnly) {
+      curr = curr.parentElement;
+      continue;
+    }
     const isMdOverflowHidden =
       cls.includes('md:overflow-hidden') &&
       typeof window !== 'undefined' &&
@@ -526,7 +543,7 @@ export function ensureElementScrolledIntoView(
       el.closest('[data-virtual-container="true"]') || isVirtualizedShowcase || isVirtualizedGrid
     );
     const useImmediateVerticalScroll =
-      (isVirtualizedShowcase || isVirtualizedGrid) && (direction === 'up' || direction === 'down');
+      isVirtualizedShowcase || isVirtualizedGrid || Boolean(direction);
 
     if (isInsideVirtualContainer && direction) {
       (scrollContainer as any).__ncDpadNavActive = true;
@@ -1277,6 +1294,29 @@ function pickPreferredZoneEntry(
         '[data-nav-zone="categories"][data-showcase-rows-container="true"][data-live-origin-row-index], [data-nav-zone="categories"] [data-showcase-rows-container="true"][data-live-origin-row-index]'
       );
       if (liveRowsContainer) {
+        const wasMouseScrolled =
+          (liveRowsContainer as any).__ncDpadNavActive === false &&
+          (liveRowsContainer.scrollTop || 0) > 120;
+
+        if (wasMouseScrolled) {
+          const cRect = getCachedRect(liveRowsContainer, ctx);
+          if (cRect.height > 0) {
+            const visibleChannelBtn = zoneItems.find((c) => {
+              if (c.getAttribute('data-live-channel-btn') !== 'true') return false;
+              const rowEl = c.closest<HTMLElement>('[data-home-row-index]') || c;
+              const rRect = getCachedRect(rowEl, ctx);
+              return (
+                rRect.height > 0 &&
+                rRect.bottom > cRect.top + 16 &&
+                rRect.top < cRect.bottom - 16
+              );
+            });
+            if (visibleChannelBtn) {
+              return visibleChannelBtn;
+            }
+          }
+        }
+
         const rawRowIdx = parseInt(
           liveRowsContainer.getAttribute('data-live-origin-row-index') || '-1',
           10
@@ -1633,6 +1673,16 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       : null;
 
   if (!activeEl || !candidates.includes(activeEl)) {
+    const liveRowsContainer = scopeRoot.querySelector<HTMLElement>(
+      '[data-nav-zone="categories"][data-showcase-rows-container="true"], [data-nav-zone="categories"] [data-showcase-rows-container="true"]'
+    );
+    if (liveRowsContainer) {
+      const preferredLiveCat = pickPreferredZoneEntry(candidates, 'categories', ctx);
+      if (preferredLiveCat) {
+        focusElementSafely(preferredLiveCat, direction);
+        return preferredLiveCat;
+      }
+    }
     const contentCandidates = candidates.filter((c) => getLogicalZone(c, ctx) === 'content');
     const first =
       candidates.find((c) => c.getAttribute('data-autofocus') === 'true') ||

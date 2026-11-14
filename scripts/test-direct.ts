@@ -28370,11 +28370,13 @@ async function runCycle1227LiveTvAndEpgTests() {
       )!;
       assert(leftScrollEl !== null, '[12.27-a.2] Contêiner vertical de categorias deve existir');
 
-      // Botão interno do cartão NÃO deve duplicar data-virtual-index (somente wrapper do cartão tem)
-      assert.strictEqual(
-        bigContainer.querySelector('button[data-live-channel-btn="true"][data-virtual-index]'),
-        null,
-        '[12.27-a.2] Botão interno do cartão NÃO deve duplicar data-virtual-index para não interferir na lista vertical'
+      // Mesmo com data-virtual-index presente nos cartões horizontais (82px), a medição vertical usa exclusivamente as seções diretas (168px)
+      const chBtnWithIdx = bigContainer.querySelector<HTMLElement>(
+        'button[data-live-channel-btn="true"][data-virtual-index="0"]'
+      );
+      assert(
+        chBtnWithIdx !== null && chBtnWithIdx.getBoundingClientRect().height === 82,
+        '[12.27-a.2] Cartão horizontal possui data-virtual-index próprio com 82px de altura'
       );
 
       // Simular rolagem profunda do mouse até o meio/fim e validar estabilidade de scrollTop e ausência de erros/tremor
@@ -28704,6 +28706,461 @@ async function runCycle1227LiveTvAndEpgTests() {
       });
       if (mouseContainer.parentNode) document.body.removeChild(mouseContainer);
     }
+
+    // 13.11 [12.27-a.3] Regressão definitiva da navegação vertical D-Pad (contêiner vertical real vs fileira horizontal com overflowY=auto computado, scrollTop passo a passo 0..59..0, modo TV e transição Mouse <-> D-Pad)
+    const { findScrollContainer } = await import('../src/navigation/spatialNav');
+    resetLiveEpgCacheForTest();
+    setLiveEpgClockForTest(() => nowMs);
+    (XtreamService as any).getShortEpg = async () => ({ epg_listings: [] });
+
+    const totalCats1311 = 60;
+    const cats1311 = Array.from({ length: totalCats1311 }, (_, rIdx) => ({
+      category_id: `cat_1311_${rIdx}`,
+      category_name: `CATEGORIA D-PAD ${String(rIdx + 1).padStart(2, '0')}`,
+    }));
+    const streams1311: any[] = [];
+    for (let rIdx = 0; rIdx < totalCats1311; rIdx++) {
+      // Quantidades diferentes de canais por categoria (1, 5, 35 canais)
+      const chCount = rIdx % 5 === 0 ? 35 : rIdx % 3 === 0 ? 1 : 5;
+      for (let cIdx = 0; cIdx < chCount; cIdx++) {
+        streams1311.push({
+          stream_id: 50000 + rIdx * 100 + cIdx,
+          name: `Canal ${rIdx + 1}.${cIdx + 1}`,
+          category_id: `cat_1311_${rIdx}`,
+          stream_icon: '',
+        });
+      }
+    }
+
+    const ctx1311: any = {
+      ...uiCtx,
+      credentials: {
+        serverUrl: 'http://dpad-1311.tv:8080',
+        username: 'dpadUser',
+        password: 'dpadPassword',
+        allowed_output_formats: ['m3u8'],
+      },
+      liveCategories: cats1311,
+      liveStreams: streams1311,
+      allLiveStreams: streams1311,
+    };
+
+    const container1311 = document.createElement('div');
+    document.body.appendChild(container1311);
+    const root1311 = createRoot(container1311);
+
+    const savedRect1311 = windowInstance.HTMLElement.prototype.getBoundingClientRect;
+    const savedGetComputedStyle1311 = windowInstance.getComputedStyle;
+    const savedGlobalGetComputedStyle1311 = (globalThis as any).getComputedStyle;
+    const savedClientHeightDesc1311 = Object.getOwnPropertyDescriptor(
+      windowInstance.HTMLElement.prototype,
+      'clientHeight'
+    );
+    const savedClientWidthDesc1311 = Object.getOwnPropertyDescriptor(
+      windowInstance.HTMLElement.prototype,
+      'clientWidth'
+    );
+
+    // Viewport vertical onde cabem ~3,5 categorias (520px de altura útil, cada categoria com 128px + 20px gap = 148px stride)
+    const ROW_HEIGHT_1311 = 128;
+    const ROW_GAP_1311 = 20;
+    const ROW_STRIDE_1311 = ROW_HEIGHT_1311 + ROW_GAP_1311; // 148px
+    const CONTAINER_TOP_1311 = 100;
+    const SCROLL_VIEW_H_1311 = 520; // cabem 3 categorias inteiras (3 * 148 = 444px); a 4ª (índice 3) ultrapassa bottom-24
+
+    // Simular especificação CSS Overflow dos navegadores reais: overflow-x: auto + overflow-y: visible computa overflowY = 'auto'
+    const realisticGetComputedStyle = function (el: any, pseudoElt?: string | null) {
+      const baseStyle = savedGetComputedStyle1311.call(windowInstance, el as any, pseudoElt as any);
+      if (
+        el &&
+        typeof el.getAttribute === 'function' &&
+        (el.getAttribute('data-live-category-row-scroll') === 'true' ||
+          el.getAttribute('data-nav-row') === 'true')
+      ) {
+        return new Proxy(baseStyle, {
+          get(target, prop, receiver) {
+            if (prop === 'overflowY') return 'auto';
+            if (prop === 'overflowX') return 'auto';
+            const val = Reflect.get(target, prop, receiver);
+            return typeof val === 'function' ? val.bind(target) : val;
+          },
+        });
+      }
+      return baseStyle;
+    };
+    (windowInstance as any).getComputedStyle = realisticGetComputedStyle;
+    (globalThis as any).getComputedStyle = realisticGetComputedStyle;
+
+    // Geometria real baseada na posição física dentro de [data-virtual-container="true"] + topSpacerPx - scrollTop
+    (windowInstance.HTMLElement.prototype as any).getBoundingClientRect = function () {
+      const el = this as HTMLElement;
+      if (el.getAttribute('data-showcase-rows-container') === 'true') {
+        return {
+          top: CONTAINER_TOP_1311,
+          left: 0,
+          right: 640,
+          bottom: CONTAINER_TOP_1311 + SCROLL_VIEW_H_1311,
+          width: 640,
+          height: SCROLL_VIEW_H_1311,
+          x: 0,
+          y: CONTAINER_TOP_1311,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.hasAttribute('data-home-row-index')) {
+        const scrollWrap = el.closest<HTMLElement>('[data-showcase-rows-container="true"]');
+        const virtualWrap = el.parentElement;
+        const sTop = scrollWrap ? scrollWrap.scrollTop || 0 : 0;
+        let topSpacerH = 0;
+        let posInMounted = 0;
+        if (virtualWrap && virtualWrap.getAttribute('data-virtual-container') === 'true') {
+          const topSpacerEl = virtualWrap.querySelector<HTMLElement>('[data-virtual-spacer="top"]');
+          topSpacerH = topSpacerEl ? parseFloat(topSpacerEl.style.height || '0') || 0 : 0;
+          const mountedSections = Array.from(virtualWrap.children).filter((c) =>
+            c.hasAttribute('data-home-row-index')
+          );
+          const idx = mountedSections.indexOf(el);
+          posInMounted = idx >= 0 ? idx : 0;
+        } else {
+          posInMounted = parseInt(el.getAttribute('data-home-row-index') || '0', 10);
+        }
+        const top =
+          CONTAINER_TOP_1311 + 16 + topSpacerH + posInMounted * ROW_STRIDE_1311 - sTop;
+        return {
+          top,
+          left: 16,
+          right: 624,
+          bottom: top + ROW_HEIGHT_1311,
+          width: 608,
+          height: ROW_HEIGHT_1311,
+          x: 16,
+          y: top,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.getAttribute('data-live-category-row-scroll') === 'true') {
+        const sectionEl = el.closest<HTMLElement>('[data-home-row-index]');
+        const secRect = sectionEl
+          ? sectionEl.getBoundingClientRect()
+          : ({ top: CONTAINER_TOP_1311 + 16 } as DOMRect);
+        const top = secRect.top + 30;
+        return {
+          top,
+          left: 16,
+          right: 624,
+          bottom: top + 98,
+          width: 608,
+          height: 98,
+          x: 16,
+          y: top,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.getAttribute('data-live-channel-card') === 'true') {
+        const cIdx = parseInt(
+          el.getAttribute('data-virtual-index') ?? el.getAttribute('data-row-card-index') ?? '0',
+          10
+        );
+        const rowWrap = el.closest<HTMLElement>('[data-live-category-row-scroll="true"]');
+        const rowRect = rowWrap
+          ? rowWrap.getBoundingClientRect()
+          : ({ top: CONTAINER_TOP_1311 + 46 } as DOMRect);
+        const sLeft = rowWrap ? rowWrap.scrollLeft || 0 : 0;
+        const left = 16 + cIdx * 280 - sLeft;
+        return {
+          top: rowRect.top,
+          left,
+          right: left + 268,
+          bottom: rowRect.top + 82,
+          width: 268,
+          height: 82,
+          x: left,
+          y: rowRect.top,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.getAttribute('data-live-channel-btn') === 'true') {
+        const card = el.closest<HTMLElement>('[data-live-channel-card="true"]');
+        const cardRect = card
+          ? card.getBoundingClientRect()
+          : ({ top: CONTAINER_TOP_1311 + 46, left: 16 } as DOMRect);
+        return {
+          top: cardRect.top,
+          left: cardRect.left,
+          right: cardRect.left + 220,
+          bottom: cardRect.top + 82,
+          width: 220,
+          height: 82,
+          x: cardRect.left,
+          y: cardRect.top,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (el.getAttribute('data-virtual-spacer') === 'top') {
+        const h = parseFloat(el.style?.height || '0') || 0;
+        return {
+          top: CONTAINER_TOP_1311 + 16,
+          left: 0,
+          right: 624,
+          bottom: CONTAINER_TOP_1311 + 16 + h,
+          width: 624,
+          height: h,
+          x: 0,
+          y: CONTAINER_TOP_1311 + 16,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      if (
+        el.nextElementSibling === null &&
+        el.parentElement?.getAttribute('data-showcase-rows-container') === 'true'
+      ) {
+        return {
+          top: CONTAINER_TOP_1311 + 16,
+          left: 16,
+          right: 624,
+          bottom: CONTAINER_TOP_1311 + 16,
+          width: 608,
+          height: 0,
+          x: 16,
+          y: CONTAINER_TOP_1311 + 16,
+          toJSON: () => {},
+        } as DOMRect;
+      }
+      return savedRect1311.call(this) as unknown as DOMRect;
+    };
+
+    Object.defineProperty(windowInstance.HTMLElement.prototype, 'clientHeight', {
+      get() {
+        if ((this as HTMLElement).getAttribute?.('data-showcase-rows-container') === 'true') {
+          return SCROLL_VIEW_H_1311;
+        }
+        return savedClientHeightDesc1311?.get ? savedClientHeightDesc1311.get.call(this) : 0;
+      },
+      configurable: true,
+    });
+    Object.defineProperty(windowInstance.HTMLElement.prototype, 'clientWidth', {
+      get() {
+        if ((this as HTMLElement).getAttribute?.('data-live-category-row-scroll') === 'true') {
+          return 608;
+        }
+        if ((this as HTMLElement).getAttribute?.('data-showcase-rows-container') === 'true') {
+          return 640;
+        }
+        return savedClientWidthDesc1311?.get ? savedClientWidthDesc1311.get.call(this) : 0;
+      },
+      configurable: true,
+    });
+
+    try {
+      await act(async () => {
+        confirmDisplayPreferences('default', 100);
+        root1311.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              XtreamMockProvider,
+              { value: ctx1311 },
+              React.createElement(LiveTvView, { onPlay: () => {} })
+            )
+          )
+        );
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      const leftScrollEl1311 = container1311.querySelector<HTMLElement>(
+        '[data-showcase-rows-container="true"]'
+      )!;
+      assert(leftScrollEl1311 !== null, '[12.27-a.3] Contêiner vertical deve existir');
+
+      const firstBtn1311 = container1311.querySelector<HTMLButtonElement>(
+        '[data-home-row-index="0"] button[data-live-channel-btn="true"]'
+      )!;
+      const firstHorizRow1311 = firstBtn1311.closest<HTMLElement>(
+        '[data-live-category-row-scroll="true"]'
+      )!;
+      assert.strictEqual(
+        windowInstance.getComputedStyle(firstHorizRow1311 as any).overflowY,
+        'auto',
+        '[12.27-a.3] O teste deve simular o comportamento real do navegador onde overflow-x:auto + overflow-y:visible resulta em getComputedStyle(row).overflowY === "auto"'
+      );
+      assertSameElement(
+        findScrollContainer(firstBtn1311),
+        leftScrollEl1311,
+        '[12.27-a.3] findScrollContainer(channelBtn) DEVE resolver o contêiner vertical real ([data-showcase-rows-container="true"]) e nunca a fileira horizontal'
+      );
+
+      await act(async () => {
+        firstBtn1311.focus();
+      });
+
+      // Percorrer passo a passo da categoria 0 até a última (59) com ArrowDown
+      let prevScrollTop1311 = leftScrollEl1311.scrollTop || 0;
+      for (let expectedRow = 1; expectedRow < totalCats1311; expectedRow++) {
+        await act(async () => {
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', {
+              key: 'ArrowDown',
+              bubbles: true,
+            })
+          );
+          await new Promise((r) => setTimeout(r, 6));
+        });
+
+        const activeEl = document.activeElement as HTMLElement | null;
+        assert(
+          activeEl && activeEl.getAttribute('data-live-channel-btn') === 'true',
+          `[12.27-a.3] Foco deve estar em um botão de canal no passo ${expectedRow} (obteve: ${describeElement(activeEl)})`
+        );
+        const sectionEl = activeEl!.closest<HTMLElement>('[data-home-row-index]')!;
+        assert(sectionEl !== null, `[12.27-a.3] Seção da categoria ${expectedRow} deve existir`);
+        const actualRow = parseInt(sectionEl.getAttribute('data-home-row-index') || '-1', 10);
+        assert.strictEqual(
+          actualRow,
+          expectedRow,
+          `[12.27-a.3] ArrowDown no passo ${expectedRow} deve focar a categoria ${expectedRow} (focou ${actualRow})`
+        );
+
+        const horizRow = activeEl!.closest<HTMLElement>('[data-live-category-row-scroll="true"]')!;
+        assert.strictEqual(
+          horizRow.scrollTop || 0,
+          0,
+          `[12.27-a.3] A fileira horizontal nunca deve receber scrollTop vertical (passo ${expectedRow})`
+        );
+
+        const curScrollTop = leftScrollEl1311.scrollTop || 0;
+        if (expectedRow >= 3) {
+          assert(
+            curScrollTop > 0 && curScrollTop >= prevScrollTop1311,
+            `[12.27-a.3] A partir da 4ª categoria (índice ${expectedRow}), scrollTop do painel vertical deve avançar (anterior=${prevScrollTop1311}, atual=${curScrollTop})`
+          );
+        }
+        prevScrollTop1311 = curScrollTop;
+
+        const cRect = leftScrollEl1311.getBoundingClientRect();
+        const sRect = sectionEl.getBoundingClientRect();
+        assert(
+          sRect.top >= cRect.top && sRect.bottom <= cRect.bottom,
+          `[12.27-a.3] Categoria focada ${expectedRow} deve estar visível dentro do viewport vertical [${cRect.top}, ${cRect.bottom}], mas estava em [${sRect.top}, ${sRect.bottom}] (scrollTop=${curScrollTop})`
+        );
+        assert(
+          container1311.querySelector('.nc-live-right-pane') !== null,
+          `[12.27-a.3] Painel direito de preview deve permanecer visível no passo ${expectedRow}`
+        );
+      }
+
+      // Percorrer passo a passo da última categoria (59) de volta até a primeira (0) com ArrowUp
+      for (let expectedRow = totalCats1311 - 2; expectedRow >= 0; expectedRow--) {
+        await act(async () => {
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', {
+              key: 'ArrowUp',
+              bubbles: true,
+            })
+          );
+          await new Promise((r) => setTimeout(r, 6));
+        });
+
+        const activeEl = document.activeElement as HTMLElement | null;
+        const sectionEl = activeEl?.closest<HTMLElement>('[data-home-row-index]') || null;
+        const actualRow = parseInt(sectionEl?.getAttribute('data-home-row-index') || '-1', 10);
+        assert.strictEqual(
+          actualRow,
+          expectedRow,
+          `[12.27-a.3] ArrowUp voltando deve focar a categoria ${expectedRow} (focou ${actualRow})`
+        );
+
+        const cRect = leftScrollEl1311.getBoundingClientRect();
+        const sRect = sectionEl!.getBoundingClientRect();
+        assert(
+          sRect.top >= cRect.top && sRect.bottom <= cRect.bottom,
+          `[12.27-a.3] Ao subir, categoria focada ${expectedRow} deve estar visível no viewport [${cRect.top}, ${cRect.bottom}], mas estava em [${sRect.top}, ${sRect.bottom}]`
+        );
+      }
+      assert.strictEqual(
+        leftScrollEl1311.scrollTop || 0,
+        0,
+        '[12.27-a.3] Ao retornar para a primeira categoria (índice 0), scrollTop deve voltar a 0'
+      );
+
+      // Testar modo Android TV (escala 75%) + sequência rápida de teclas sem espera intermediária
+      await act(async () => {
+        confirmDisplayPreferences('tv', 75);
+        for (let step = 0; step < 28; step++) {
+          windowInstance.dispatchEvent(
+            new (windowInstance as any).KeyboardEvent('keydown', {
+              key: 'ArrowDown',
+              bubbles: true,
+            })
+          );
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      });
+      const tvActiveEl = document.activeElement as HTMLElement | null;
+      const tvSectionEl = tvActiveEl?.closest<HTMLElement>('[data-home-row-index]') || null;
+      const tvRowIdx = parseInt(tvSectionEl?.getAttribute('data-home-row-index') || '-1', 10);
+      assert.strictEqual(
+        tvRowIdx,
+        28,
+        `[12.27-a.3] Em modo Android TV com sequência rápida de teclas, D-Pad deve alcançar categoria 28 (obteve ${tvRowIdx})`
+      );
+      const tvCRect = leftScrollEl1311.getBoundingClientRect();
+      const tvSRect = tvSectionEl!.getBoundingClientRect();
+      assert(
+        tvSRect.top >= tvCRect.top && tvSRect.bottom <= tvCRect.bottom,
+        `[12.27-a.3] Em modo Android TV, categoria 28 deve estar visível dentro do viewport [${tvCRect.top}, ${tvCRect.bottom}], mas estava em [${tvSRect.top}, ${tvSRect.bottom}]`
+      );
+
+      // Testar transição Mouse (rolagem profunda) -> D-Pad -> Mouse
+      await act(async () => {
+        leftScrollEl1311.dispatchEvent(new (windowInstance as any).Event('wheel'));
+        leftScrollEl1311.scrollTop = 42 * ROW_STRIDE_1311;
+        leftScrollEl1311.dispatchEvent(new (windowInstance as any).Event('scroll'));
+        await new Promise((r) => setTimeout(r, 35));
+      });
+      await act(async () => {
+        windowInstance.dispatchEvent(
+          new (windowInstance as any).KeyboardEvent('keydown', {
+            key: 'ArrowDown',
+            bubbles: true,
+          })
+        );
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      const afterMouseDpadEl = document.activeElement as HTMLElement | null;
+      const afterMouseSection = afterMouseDpadEl?.closest<HTMLElement>('[data-home-row-index]') || null;
+      const afterMouseRowIdx = parseInt(
+        afterMouseSection?.getAttribute('data-home-row-index') || '-1',
+        10
+      );
+      assert(
+        afterMouseRowIdx >= 38 && afterMouseRowIdx <= 46,
+        `[12.27-a.3] Transição Mouse -> D-Pad em rolagem profunda (linha ~42) deve retomar foco nas categorias visíveis e não saltar para o topo (focou linha ${afterMouseRowIdx})`
+      );
+    } finally {
+      await act(async () => {
+        confirmDisplayPreferences('default', 100);
+        root1311.unmount();
+      });
+      windowInstance.HTMLElement.prototype.getBoundingClientRect = savedRect1311;
+      (windowInstance as any).getComputedStyle = savedGetComputedStyle1311;
+      (globalThis as any).getComputedStyle = savedGlobalGetComputedStyle1311;
+      if (savedClientHeightDesc1311) {
+        Object.defineProperty(
+          windowInstance.HTMLElement.prototype,
+          'clientHeight',
+          savedClientHeightDesc1311
+        );
+      }
+      if (savedClientWidthDesc1311) {
+        Object.defineProperty(
+          windowInstance.HTMLElement.prototype,
+          'clientWidth',
+          savedClientWidthDesc1311
+        );
+      }
+      if (container1311.parentNode) document.body.removeChild(container1311);
+    }
   } finally {
     (XtreamService as any).getShortEpg = savedGetShortEpg13;
     setLiveEpgClockForTest(null);
@@ -28711,7 +29168,7 @@ async function runCycle1227LiveTvAndEpgTests() {
     resetLiveEpgCacheForTest();
   }
 
-  console.log('✅ Todos os testes do Ciclo 12.27-a / 12.27-a.2 (TV ao Vivo 50/50, Virtualização, Mouse vs D-Pad, Preview e EPG) aprovados!');
+  console.log('✅ Todos os testes do Ciclo 12.27-a / 12.27-a.2 / 12.27-a.3 (TV ao Vivo 50/50, D-Pad Vertical, Virtualização, Mouse vs D-Pad, Preview e EPG) aprovados!');
 }
 
 async function main() {

@@ -478,6 +478,7 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
           type="button"
           data-nav-item="true"
           data-live-channel-btn="true"
+          data-virtual-index={cardIndex}
           data-row-card-index={cardIndex}
           data-live-channel-id={primaryStreamId}
           data-live-channel-group-id={group.groupId}

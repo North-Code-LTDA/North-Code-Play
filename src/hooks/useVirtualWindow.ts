@@ -527,6 +527,7 @@ export function useVirtualWindow({
         let anyHeightChanged = false;
         let measuredSum = 0;
         let measuredCount = 0;
+        let inferredGapPx = listGapPx;
 
         for (let i = 0; i < items.length; i++) {
           const el = items[i];
@@ -544,11 +545,15 @@ export function useVirtualWindow({
             const nextRect = nextEl ? nextEl.getBoundingClientRect() : null;
             if (nextRect && nextRect.height > 0 && nextIdx === idxAttr + 1 && nextRect.top > rect.top) {
               itemStride = Math.round(nextRect.top - rect.top);
+              const measuredGap = Math.round(nextRect.top - rect.bottom);
+              if (measuredGap >= 0 && measuredGap <= 64) {
+                inferredGapPx = measuredGap;
+              }
             } else {
-              itemStride = Math.round(rect.height + listGapPx);
+              itemStride = Math.round(rect.height + inferredGapPx);
             }
           } else if (el.offsetHeight > 0) {
-            itemStride = Math.round(el.offsetHeight + listGapPx);
+            itemStride = Math.round(el.offsetHeight + inferredGapPx);
           }
 
           if (itemStride > 0) {
@@ -842,7 +847,12 @@ export function useVirtualWindow({
       const curStart = curBounds.startIndex;
       const curEnd = curBounds.endIndex;
       const windowRows = curBounds.windowRows;
-      const margin = windowRows <= 6 ? columns : columns * 2;
+      const margin =
+        mode === 'list'
+          ? Math.max(2, Math.min(6, Math.floor(windowRows / 3)))
+          : windowRows <= 6
+            ? columns
+            : columns * 2;
 
       const isComfortablyAfterStart = curStart === 0 || clampedTarget >= curStart + margin;
       const isComfortablyBeforeEnd =
@@ -953,7 +963,15 @@ export function useVirtualWindow({
 
       const anchorElBefore = findVirtualItem(anchorIndex);
       const anchorRectBefore = anchorElBefore ? anchorElBefore.getBoundingClientRect() : null;
-      const hasRealAnchorBefore = Boolean(anchorRectBefore && anchorRectBefore.height > 0);
+      const scrollRectBefore = activeScrollEl ? activeScrollEl.getBoundingClientRect() : null;
+      const hasRealAnchorBefore = Boolean(
+        anchorRectBefore &&
+          anchorRectBefore.height > 0 &&
+          scrollRectBefore &&
+          scrollRectBefore.height > 0 &&
+          anchorRectBefore.bottom > scrollRectBefore.top - 40 &&
+          anchorRectBefore.top < scrollRectBefore.bottom + 40
+      );
 
       windowStartRef.current = nextStart;
       try {
@@ -975,6 +993,25 @@ export function useVirtualWindow({
             const delta = anchorRectAfter.top - anchorRectBefore.top;
             if (Math.abs(delta) > 0.5) {
               const nextTop = Math.max(0, (activeScrollEl.scrollTop || 0) + delta);
+              const prevScrollBehavior = activeScrollEl.style.scrollBehavior;
+              activeScrollEl.style.scrollBehavior = 'auto';
+              activeScrollEl.scrollTop = nextTop;
+              activeScrollEl.style.scrollBehavior = prevScrollBehavior;
+              (activeScrollEl as any).__ncDpadTargetTop = nextTop;
+            }
+          }
+        } else if (scrollRect.height > 0 && virtualEl) {
+          const targetElAfter = findVirtualItem(clampedTarget);
+          const targetRectAfter = targetElAfter ? targetElAfter.getBoundingClientRect() : null;
+          if (targetRectAfter && targetRectAfter.height > 0) {
+            const padY = 24;
+            let nextTop = activeScrollEl.scrollTop || 0;
+            if (targetRectAfter.bottom > scrollRect.bottom - padY) {
+              nextTop = Math.max(0, nextTop + (targetRectAfter.bottom - scrollRect.bottom) + padY);
+            } else if (targetRectAfter.top < scrollRect.top + padY) {
+              nextTop = Math.max(0, nextTop + (targetRectAfter.top - scrollRect.top) - padY);
+            }
+            if (Math.abs(nextTop - (activeScrollEl.scrollTop || 0)) > 0.5) {
               const prevScrollBehavior = activeScrollEl.style.scrollBehavior;
               activeScrollEl.style.scrollBehavior = 'auto';
               activeScrollEl.scrollTop = nextTop;
@@ -1049,7 +1086,11 @@ export function useVirtualWindow({
     ) {
       const delta = topSpacerPx - prevListAnchorTopSpacerRef.current;
       if (Math.abs(delta) > 1) {
-        scrollEl.scrollTop = Math.max(0, scrollEl.scrollTop + delta);
+        const nextTop = Math.max(0, scrollEl.scrollTop + delta);
+        scrollEl.scrollTop = nextTop;
+        if ((scrollEl as any).__ncDpadNavActive) {
+          (scrollEl as any).__ncDpadTargetTop = nextTop;
+        }
       }
     }
     prevStartIndexForAnchorRef.current = startIndex;
