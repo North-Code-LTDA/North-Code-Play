@@ -1000,9 +1000,15 @@ function pickBestItemInBlock(
 
     let pool = block.items;
     if (block.type === 'row') {
+      const liveChannelMainBtns = pool.filter(
+        (item) => item.getAttribute('data-live-channel-btn') === 'true'
+      );
+      if (liveChannelMainBtns.length > 0) {
+        pool = liveChannelMainBtns;
+      }
       const rowRect = getCachedRect(block.container, ctx);
       if (rowRect.width > 0) {
-        const visibleInRow = block.items.filter((item) => {
+        const visibleInRow = pool.filter((item) => {
           const r = getCachedRect(item, ctx);
           return r.right > rowRect.left + 4 && r.left < rowRect.right - 4;
         });
@@ -1261,9 +1267,48 @@ function pickPreferredZoneEntry(
   if (zoneItems.length === 0) return null;
 
   if (targetZone === 'categories') {
-    const originChannel = zoneItems.find(
+    let originChannel = zoneItems.find(
       (c) => c.getAttribute('data-live-channel-origin') === 'true'
     );
+    if (!originChannel && typeof document !== 'undefined') {
+      const liveRowsContainer = document.querySelector<HTMLElement>(
+        '[data-nav-zone="categories"][data-showcase-rows-container="true"][data-live-origin-row-index], [data-nav-zone="categories"] [data-showcase-rows-container="true"][data-live-origin-row-index]'
+      );
+      if (liveRowsContainer) {
+        const rawRowIdx = parseInt(
+          liveRowsContainer.getAttribute('data-live-origin-row-index') || '-1',
+          10
+        );
+        const rawCardIdx = parseInt(
+          liveRowsContainer.getAttribute('data-live-origin-card-index') || '-1',
+          10
+        );
+        if (!isNaN(rawRowIdx) && rawRowIdx >= 0) {
+          const rowController = showcaseRowControllers.get(liveRowsContainer);
+          if (rowController) {
+            rowController.ensureRowMounted(rawRowIdx);
+          }
+          if (!isNaN(rawCardIdx) && rawCardIdx >= 0) {
+            const targetRowEl = liveRowsContainer.querySelector<HTMLElement>(
+              `[data-home-row-index="${rawRowIdx}"] [data-nav-row="true"]`
+            );
+            if (targetRowEl) {
+              const horizController = virtualControllers.get(targetRowEl);
+              if (horizController) {
+                horizController.ensureIndexMounted(rawCardIdx);
+              }
+            }
+          }
+          invalidateCandidateCache();
+          const mountedOrigin = liveRowsContainer.querySelector<HTMLElement>(
+            '[data-live-channel-origin="true"], [data-live-channel-selected="true"]'
+          );
+          if (mountedOrigin && isElementFocusable(mountedOrigin)) {
+            originChannel = mountedOrigin;
+          }
+        }
+      }
+    }
     if (originChannel) return originChannel;
 
     const selectedChannel = zoneItems.find(
@@ -1688,7 +1733,11 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       const showcaseRowsContainer = homeRowEl?.closest<HTMLElement>(
         '[data-showcase-rows-container="true"]'
       );
-      if (homeRowEl && showcaseRowsContainer && currentZone === 'content') {
+      if (
+        homeRowEl &&
+        showcaseRowsContainer &&
+        (currentZone === 'content' || currentZone === 'categories')
+      ) {
         const currentRowIndex = parseInt(
           homeRowEl.getAttribute('data-home-row-index') || '-1',
           10
@@ -1927,26 +1976,42 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
     // 1. Inside an explicit horizontal row (data-nav-row / data-nav-group)
     if (currentRow) {
       const rowController = virtualControllers.get(currentRow);
+      const isLiveCategoryRow =
+        currentRow.getAttribute('data-live-category-row-scroll') === 'true';
       const rawVirtualIdx =
-        activeEl.getAttribute('data-virtual-index') ?? activeEl.getAttribute('data-row-card-index');
+        activeEl.getAttribute('data-virtual-index') ??
+        activeEl.getAttribute('data-row-card-index') ??
+        activeEl.getAttribute('data-row-fav-index');
       const currentVirtualIdx = rawVirtualIdx !== null ? parseInt(rawVirtualIdx, 10) : -1;
 
       if (rowController && rowController.totalCount > 0 && currentVirtualIdx >= 0) {
         if (direction === 'right') {
+          if (
+            isLiveCategoryRow &&
+            activeEl.getAttribute('data-live-channel-btn') === 'true'
+          ) {
+            const sameCardFav = currentRow.querySelector<HTMLElement>(
+              `[data-row-fav-index="${currentVirtualIdx}"]`
+            );
+            if (sameCardFav && isElementFocusable(sameCardFav)) {
+              focusElementSafely(sameCardFav, direction);
+              return sameCardFav;
+            }
+          }
+
           const nextLogicalIdx = currentVirtualIdx + 1;
           if (nextLogicalIdx < rowController.totalCount) {
-            let nextEl = currentRow.querySelector<HTMLElement>(
-              `[data-virtual-index="${nextLogicalIdx}"], [data-row-card-index="${nextLogicalIdx}"]`
-            );
+            const targetSelector = isLiveCategoryRow
+              ? `[data-row-card-index="${nextLogicalIdx}"][data-live-channel-btn="true"]`
+              : `[data-virtual-index="${nextLogicalIdx}"], [data-row-card-index="${nextLogicalIdx}"]`;
+            let nextEl = currentRow.querySelector<HTMLElement>(targetSelector);
             if (!nextEl) {
               const expanded = rowController.ensureIndexMounted(nextLogicalIdx, currentVirtualIdx);
               if (expanded) {
                 spatialPerfStats.virtualWindowExpansions++;
                 invalidateCandidateCache();
               }
-              nextEl = currentRow.querySelector<HTMLElement>(
-                `[data-virtual-index="${nextLogicalIdx}"], [data-row-card-index="${nextLogicalIdx}"]`
-              );
+              nextEl = currentRow.querySelector<HTMLElement>(targetSelector);
             }
             if (nextEl && isElementFocusable(nextEl)) {
               focusElementSafely(nextEl, direction);
@@ -1967,20 +2032,40 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
         }
 
         if (direction === 'left') {
+          if (
+            isLiveCategoryRow &&
+            activeEl.getAttribute('data-live-channel-fav') === 'true'
+          ) {
+            const sameCardMain = currentRow.querySelector<HTMLElement>(
+              `[data-row-card-index="${currentVirtualIdx}"][data-live-channel-btn="true"]`
+            );
+            if (sameCardMain && isElementFocusable(sameCardMain)) {
+              focusElementSafely(sameCardMain, direction);
+              return sameCardMain;
+            }
+          }
+
           if (currentVirtualIdx > 0) {
             const prevLogicalIdx = currentVirtualIdx - 1;
-            let prevEl = currentRow.querySelector<HTMLElement>(
-              `[data-virtual-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"]`
-            );
+            const prevSelector = isLiveCategoryRow
+              ? `[data-row-fav-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"][data-live-channel-btn="true"]`
+              : `[data-virtual-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"]`;
+            let prevEl = currentRow.querySelector<HTMLElement>(prevSelector);
             if (!prevEl) {
               const expanded = rowController.ensureIndexMounted(prevLogicalIdx, currentVirtualIdx);
               if (expanded) {
                 spatialPerfStats.virtualWindowExpansions++;
                 invalidateCandidateCache();
               }
-              prevEl = currentRow.querySelector<HTMLElement>(
-                `[data-virtual-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"]`
+              prevEl = currentRow.querySelector<HTMLElement>(prevSelector);
+            }
+            if (isLiveCategoryRow && prevEl) {
+              const prevFav = currentRow.querySelector<HTMLElement>(
+                `[data-row-fav-index="${prevLogicalIdx}"]`
               );
+              if (prevFav && isElementFocusable(prevFav)) {
+                prevEl = prevFav;
+              }
             }
             if (prevEl && isElementFocusable(prevEl)) {
               focusElementSafely(prevEl, direction);

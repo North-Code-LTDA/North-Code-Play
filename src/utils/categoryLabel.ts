@@ -67,3 +67,91 @@ export function formatCategoryLabel(rawName: unknown, domain?: string): string {
   const result = text || trimmed;
   return result.toUpperCase();
 }
+
+const LIVE_TV_ACRONYMS = new Set([
+  'TV',
+  'HD',
+  'FHD',
+  'UHD',
+  'SD',
+  '4K',
+  '8K',
+  '24H',
+  'H265',
+  'HEVC',
+  'HBO',
+  'ESPN',
+  'TNT',
+  'UFC',
+  'NBA',
+  'NFL',
+  'MLB',
+  'NHL',
+  'F1',
+  'PPV',
+  'VIP',
+  'SBT',
+  'CNN',
+  'BBC',
+  'FOX',
+  'AXN',
+  'AMC',
+  'FX',
+  'TBS',
+  'TLC',
+  'MTV',
+  'VH1',
+  'GNT',
+  'BIS',
+  'OFF',
+  'RTP',
+  'SIC',
+  'TVI',
+  'NBC',
+  'CBS',
+  'ABC',
+  'TCM',
+  'ID',
+  'BR',
+  'PT',
+  'US',
+  'UK',
+]);
+
+/**
+ * Formats a Live TV category name in Title Case (first letter of each word capitalized)
+ * while preserving important acronyms (e.g. TV, HD, FHD, 4K, HBO, ESPN).
+ * Strictly presentation-only; does not alter category IDs, keys, or search tokens.
+ */
+export function formatLiveTvCategoryTitle(rawName: unknown): string {
+  if (rawName == null || typeof rawName !== 'string') {
+    return 'Geral';
+  }
+
+  const trimmed = rawName.trim();
+  if (!trimmed) {
+    return 'Geral';
+  }
+
+  if (trimmed.toLowerCase() === 'assistidos recentemente') {
+    return 'Assistidos Recentemente';
+  }
+  if (trimmed.toLowerCase() === 'canais favoritos') {
+    return 'Canais Favoritos';
+  }
+
+  const cleanedUpper = formatCategoryLabel(rawName, 'live');
+  if (!cleanedUpper || cleanedUpper === 'GERAL') {
+    return 'Geral';
+  }
+
+  return cleanedUpper.replace(/([\p{L}\p{N}]+)/gu, (word) => {
+    const upper = word.toUpperCase();
+    if (LIVE_TV_ACRONYMS.has(upper)) {
+      return upper;
+    }
+    const lower = word.toLowerCase();
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  });
+}
+

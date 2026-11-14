@@ -2828,17 +2828,15 @@ async function runLiveTvSdPriorityAndFallbackTests() {
     );
   });
 
-  // Selecionar categoria Documentários
-  const docCatBtn = Array.from(container.querySelectorAll('button')).find((b) =>
-    b.textContent?.toUpperCase().includes('DOCUMENTÁRIOS')
-  ) as HTMLButtonElement;
-  assert(docCatBtn, 'Botão da categoria Documentários encontrado');
-  await act(async () => {
-    docCatBtn.click();
-  });
+  // Verificar cabeçalho da categoria Documentários e clicar no canal agrupado Discovery Channel
+  const docCatTitle = Array.from(
+    container.querySelectorAll('[data-live-category-title="true"]')
+  ).find((el) => el.textContent?.toUpperCase().includes('DOCUMENTÁRIOS'));
+  assert(docCatTitle, 'Cabeçalho da categoria Documentários encontrado');
 
-  // Clicar no canal agrupado Discovery Channel
-  const channelBtn = container.querySelector('button.w-full.flex.items-center') as HTMLButtonElement;
+  const channelBtn = container.querySelector(
+    'button[data-live-channel-btn="true"]'
+  ) as HTMLButtonElement;
   assert(channelBtn, 'Botão do canal Discovery Channel encontrado');
 
   await act(async () => {
@@ -3813,7 +3811,7 @@ async function runDpadNavigationAndBackPolicyTests() {
           container.querySelector('button[data-live-category-id="1"]')
       ),
     1000,
-    'Montagem de LiveTvView e lista de categorias da TV ao Vivo'
+    'Montagem de LiveTvView e fileiras horizontais de categorias da TV ao Vivo'
   );
 
   const initialLiveCatBtn = container.querySelector(
@@ -3822,7 +3820,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     initialLiveCatBtn,
-    'Ativar TV ao Vivo no cabeçalho deve encaminhar o foco uma única vez para a primeira categoria habilitada sem iniciar reprodução'
+    'Ativar TV ao Vivo no cabeçalho deve encaminhar o foco uma única vez para o primeiro canal da primeira categoria habilitada sem iniciar reprodução'
   );
   assert.strictEqual(
     container.querySelector('video'),
@@ -3831,136 +3829,64 @@ async function runDpadNavigationAndBackPolicyTests() {
   );
 
   const liveCatList = container.querySelector('[data-nav-zone="categories"] [data-scroll-container="true"]') as HTMLElement;
-  assert(liveCatList, 'Lista de categorias da TV ao Vivo deve existir');
+  assert(liveCatList, 'Container rolável de categorias da TV ao Vivo deve existir');
   liveCatList.scrollTop = 180;
 
-  const abertosCatBtn = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
-  assert(abertosCatBtn, 'Botão da categoria Abertos (id=1) deve existir na TV ao Vivo');
-
-  // Critério 1: Ativar categoria A populada (Abertos, id=1) com Enter (em modo remote)
-  await act(async () => {
-    abertosCatBtn.focus();
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
-    );
-  });
-
-  await waitForCondition(
-    () => container.querySelectorAll('button[data-live-channel-btn="true"]').length >= 2,
-    1000,
-    'Renderização dos canais da categoria Abertos (id=1)'
-  );
-
-  const channelButtonsCatA = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
-  const backToCatsBtnInA = container.querySelector('button[data-live-back-to-categories="true"]');
-  assert(channelButtonsCatA.length >= 2, 'Lista de canais da categoria Abertos deve conter os canais agrupados');
-  assert.strictEqual(
-    channelButtonsCatA[0].getAttribute('data-live-channel-category-id'),
-    '1',
-    'Critério 1: O botão do primeiro canal exibido em Abertos deve ter data-live-channel-category-id="1"'
-  );
+  // Verificar fileira da categoria A (Abertos, id=1) e categoria B (Esportes, id=2) montadas continuamente
+  const channelButtonsCatA = Array.from(
+    container.querySelectorAll('button[data-live-channel-btn="true"][data-live-channel-category-id="1"]')
+  ) as HTMLButtonElement[];
+  assert(channelButtonsCatA.length >= 2, 'Fileira da categoria Abertos (id=1) deve conter seus canais agrupados');
   assertSameElement(
     document.activeElement,
     channelButtonsCatA[0],
-    'Critério 1: Ao abrir a categoria A (Abertos), o foco deve ir para o primeiro canal dessa categoria'
-  );
-  assertDifferentElement(
-    document.activeElement,
-    backToCatsBtnInA,
-    'Critério 1: O foco NÃO deve terminar em "Voltar às Categorias" quando a categoria possui canais'
+    'Critério 1: O foco inicial na TV ao Vivo deve estar no primeiro canal da categoria A (Abertos)'
   );
 
-  // Critério 2: Voltar às categorias e abrir a categoria B populada (Esportes, id=2) com catálogo em memória (filtragem local sem canais residuais de A)
-  await act(async () => {
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-    );
-  });
-  await waitForCondition(
-    () => container.querySelector('button[data-live-category-id="2"]') !== null,
-    1000,
-    'Retorno à lista de categorias da TV ao Vivo'
-  );
-  const esportesCatBtn = container.querySelector('button[data-live-category-id="2"]') as HTMLButtonElement;
-  assert(esportesCatBtn, 'Botão da categoria Esportes (id=2) deve existir na TV ao Vivo');
-
-  await act(async () => {
-    esportesCatBtn.focus();
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
-    );
-  });
-
-  await waitForCondition(
-    () => container.querySelectorAll('button[data-live-channel-btn="true"]').length >= 2,
-    1000,
-    'Renderização dos canais da categoria Esportes (id=2)'
-  );
-
-  const renderedCat1ButtonsInCat2 = container.querySelectorAll('button[data-live-channel-category-id="1"]');
-  assert.strictEqual(
-    renderedCat1ButtonsInCat2.length,
-    0,
-    'Critério 2: Ao abrir a categoria B (Esportes), nenhum canal da categoria A (Abertos) pode permanecer renderizado'
-  );
-
-  const channelButtonsCatB = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
-  const backToCatsBtnInB = container.querySelector('button[data-live-back-to-categories="true"]');
-  assert(channelButtonsCatB.length >= 2, 'Categoria B (Esportes) deve exibir seus canais');
-  assert.strictEqual(
-    channelButtonsCatB[0].getAttribute('data-live-channel-category-id'),
-    '2',
-    'Critério 2: O primeiro canal focado em Esportes deve ter data-live-channel-category-id="2"'
-  );
-  assertSameElement(
-    document.activeElement,
-    channelButtonsCatB[0],
-    'Critério 2: Ao trocar da categoria A para a categoria B populada, o foco deve estar no primeiro canal de B'
-  );
-  assertDifferentElement(
-    document.activeElement,
-    backToCatsBtnInB,
-    'Critério 2: O foco em B NÃO deve parar em "Voltar às Categorias"'
-  );
-
-  // Voltar para categorias e reabrir categoria A (Abertos) para testar fluxo completo de Critério 3:
-  // tela cheia -> preview -> canal -> categorias -> botão "TV ao Vivo" na barra lateral mantendo a tela de TV visível
-  await act(async () => {
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-    );
-  });
-  await waitForCondition(
-    () => container.querySelector('button[data-live-category-id="1"]') !== null,
-    1000,
-    'Retorno à lista de categorias da TV ao Vivo antes de reabrir Abertos'
-  );
-  const abertosCatBtnAgain = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
-  await act(async () => {
-    abertosCatBtnAgain.focus();
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
-    );
-  });
-  await waitForCondition(
-    () => container.querySelectorAll('button[data-live-channel-btn="true"]').length >= 2,
-    1000,
-    'Reabertura dos canais de Abertos'
-  );
-
-  const channelButtons = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
-  assertSameElement(document.activeElement, channelButtons[0], 'Foco no primeiro canal de Abertos');
-
-  // ArrowDown deve mover para o segundo canal da lista
+  // Critério 2: Navegar verticalmente (ArrowDown) da categoria A (Abertos, id=1) para a categoria B (Esportes, id=2)
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
     );
   });
+
+  const channelButtonsCatB = Array.from(
+    container.querySelectorAll('button[data-live-channel-btn="true"][data-live-channel-category-id="2"]')
+  ) as HTMLButtonElement[];
+  assert(channelButtonsCatB.length >= 2, 'Fileira da categoria B (Esportes) deve exibir seus canais');
+  assert.strictEqual(
+    (document.activeElement as HTMLElement)?.getAttribute('data-live-channel-category-id'),
+    '2',
+    'Critério 2: ArrowDown deve mover o foco para um canal da categoria B (Esportes, id=2)'
+  );
+
+  // Subir (ArrowUp) de volta para a categoria A (Abertos, id=1)
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+    );
+  });
   assertSameElement(
     document.activeElement,
-    channelButtons[1],
-    'ArrowDown na lista de canais deve focar o segundo canal'
+    channelButtonsCatA[0],
+    'ArrowUp deve retornar ao primeiro canal de Abertos (id=1)'
+  );
+
+  // Na fileira horizontal de Abertos: ArrowRight -> favorito do 1º canal -> ArrowRight -> 2º canal de Abertos
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+    );
+  });
+  await act(async () => {
+    windowInstance.dispatchEvent(
+      new (windowInstance as any).KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+    );
+  });
+  assertSameElement(
+    document.activeElement,
+    channelButtonsCatA[1],
+    'Navegação horizontal na fileira de Abertos deve focar o segundo canal'
   );
 
   // 1º Enter no segundo canal: abre o preview lateral mantendo foco no canal
@@ -3984,7 +3910,7 @@ async function runDpadNavigationAndBackPolicyTests() {
     '2º Enter no mesmo canal em reprodução deve colocar o player em tela cheia ([data-player-container="true"][data-focus-scope="modal"])'
   );
 
-  // 1º Escape (em tela cheia): sai da tela cheia para o preview (sem fechar o preview e sem voltar às categorias)
+  // 1º Escape (em tela cheia): sai da tela cheia para o preview (sem fechar o preview)
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -4001,69 +3927,35 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Após 1º Escape (saindo da tela cheia), o preview do canal ainda deve estar aberto'
   );
 
-  // 2º Escape (no preview): fecha o preview e mantém a lista de canais com foco no canal selecionado
+  // 2º Escape (no preview): fecha o preview e mantém o foco no canal selecionado
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
+    await new Promise((resolve) => setTimeout(resolve, 20));
   });
   assertSameElement(
     container.querySelector('video'),
     null,
     '2º Escape na TV ao Vivo deve fechar o preview do canal'
   );
-  const channelButtonsAfterPreviewClose = Array.from(container.querySelectorAll('button[data-live-channel-btn="true"]')) as HTMLButtonElement[];
+  const channelButtonsAfterPreviewClose = Array.from(
+    container.querySelectorAll('button[data-live-channel-btn="true"][data-live-channel-category-id="1"]')
+  ) as HTMLButtonElement[];
   assertSameElement(
     document.activeElement,
     channelButtonsAfterPreviewClose[1],
-    'Ao fechar o preview com Voltar, o foco deve permanecer no canal que estava selecionado na lista'
+    'Ao fechar o preview com Voltar, o foco deve permanecer no canal que estava selecionado na fileira'
   );
 
-  // 3º Escape (na lista de canais): volta para a lista de categorias e restaura o foco na categoria de origem (Abertos) e seu scrollTop
-  await act(async () => {
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-    );
-  });
-  const abertosCatBtnRestored = container.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
-  assert(abertosCatBtnRestored, 'Lista de categorias deve voltar a ser exibida após 3º Escape');
-  assertSameElement(
-    document.activeElement,
-    abertosCatBtnRestored,
-    '3º Escape deve restaurar o foco exatamente na categoria de origem (Abertos)'
-  );
   const liveCatListRestored = container.querySelector('[data-nav-zone="categories"] [data-scroll-container="true"]') as HTMLElement;
   assert.strictEqual(
     liveCatListRestored.scrollTop,
     180,
-    'Voltar para a lista de categorias deve preservar o scrollTop anterior das categorias'
+    'Fechar o preview deve preservar o scrollTop vertical do catálogo de categorias'
   );
 
-  // Testar categoria vazia ("Sem Canais", id=3): foco deve ir para o botão "Voltar às Categorias"
-  const emptyCatBtn = container.querySelector('button[data-live-category-id="3"]') as HTMLButtonElement;
-  assert(emptyCatBtn, 'Botão da categoria Sem Canais (id=3) deve existir');
-  await act(async () => {
-    emptyCatBtn.focus();
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
-    );
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  });
-  const backToCatsBtn = container.querySelector('button[data-live-back-to-categories="true"]') as HTMLButtonElement;
-  assertSameElement(
-    document.activeElement,
-    backToCatsBtn,
-    'Quando a categoria não tiver canais focáveis, o foco deve ir para o botão "Voltar às Categorias"'
-  );
-
-  // Escape volta da categoria vazia para a lista de categorias
-  await act(async () => {
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-    );
-  });
-
-  // 4º Escape (Critério 3 - na lista de categorias da TV ao Vivo): foca o botão "TV ao Vivo" no cabeçalho superior E mantém a tela de TV visível!
+  // 3º Escape (Critério 3 - nas fileiras de categorias da TV ao Vivo): foca o botão "TV ao Vivo" no cabeçalho superior E mantém a tela de TV visível!
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
@@ -4073,10 +3965,10 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     liveHeaderBtn,
-    'Critério 3: 4º Escape a partir das categorias da TV ao Vivo deve focar o botão "TV ao Vivo" no cabeçalho superior'
+    'Critério 3: Escape a partir das categorias da TV ao Vivo deve focar o botão "TV ao Vivo" no cabeçalho superior'
   );
   assert(
-    container.textContent?.includes('CATEGORIAS DE TV') &&
+    container.textContent?.toUpperCase().includes('CATEGORIAS DE TV') &&
       container.querySelector('button[data-live-category-id="1"]') !== null,
     'Critério 3: Ao alcançar o botão "TV ao Vivo" no cabeçalho superior, a tela de TV DEVE continuar aberta e visível'
   );
@@ -4147,22 +4039,17 @@ async function runDpadNavigationAndBackPolicyTests() {
     'Critério 7: Após o evento playing, o histórico real (PlaybackHistoryMap) deve conter a chave "live:103"'
   );
 
-  // Sequência de Voltar após abrir canal pela Home: preview -> canais -> categorias -> botão "TV ao Vivo" na sidebar (com TV aberta) -> Início
+  // Sequência de Voltar após abrir canal pela Home: preview -> catálogo de categorias -> botão "TV ao Vivo" no cabeçalho (com TV aberta) -> Início
   await act(async () => {
     windowInstance.dispatchEvent(
       new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     );
+    await new Promise((resolve) => setTimeout(resolve, 20));
   });
   assertSameElement(container.querySelector('video'), null, '1º Escape após abrir canal pela Home fecha o preview');
-
-  await act(async () => {
-    windowInstance.dispatchEvent(
-      new (windowInstance as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-    );
-  });
   assert(
     container.querySelector('button[data-live-category-id="2"]') !== null,
-    '2º Escape após abrir canal pela Home volta para a lista de categorias da TV ao Vivo'
+    'Após fechar o preview, as fileiras de categorias da TV ao Vivo permanecem visíveis'
   );
 
   await act(async () => {
@@ -4173,11 +4060,11 @@ async function runDpadNavigationAndBackPolicyTests() {
   assertSameElement(
     document.activeElement,
     container.querySelector('button[data-header-nav-id="live"]'),
-    '3º Escape após abrir canal pela Home foca o botão "TV ao Vivo" no cabeçalho superior'
+    '2º Escape após abrir canal pela Home foca o botão "TV ao Vivo" no cabeçalho superior'
   );
   assert(
     container.querySelector('button[data-live-category-id="2"]') !== null,
-    '3º Escape mantém a tela de TV ao Vivo aberta enquanto o foco está no botão do cabeçalho'
+    '2º Escape mantém a tela de TV ao Vivo aberta enquanto o foco está no botão do cabeçalho'
   );
 
   await act(async () => {
@@ -4187,7 +4074,7 @@ async function runDpadNavigationAndBackPolicyTests() {
   });
   assert(
     container.querySelector('[data-scroll-top-anchor="true"]') !== null,
-    '4º Escape separado retorna à tela Início'
+    '3º Escape separado retorna à tela Início'
   );
 
   // 4. Ponte oficial do Capacitor (@capacitor/app backButton) na raiz chama App.exitApp() e NUNCA faz logout
@@ -6258,16 +6145,9 @@ async function runCapacitorTransportAndAuditFixTests() {
       await new Promise((resolve) => setTimeout(resolve, 40));
     });
 
-    // Abrir categoria 88 e clicar no canal para iniciar o preview (que agenda fallbackTimeoutRef)
-    const cat88Btn = timerContainer.querySelector('button[data-live-category-id="88"]') as HTMLButtonElement;
-    assert(cat88Btn !== null, 'Categoria 88 deve estar renderizada');
-    await act(async () => {
-      cat88Btn.click();
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    });
-
+    // Clicar no canal da categoria 88 para iniciar o preview (que agenda fallbackTimeoutRef)
     const chBtn = timerContainer.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
-    assert(chBtn !== null, 'Botão do canal deve estar renderizado');
+    assert(chBtn !== null, 'Botão do canal da categoria 88 deve estar renderizado');
     await act(async () => {
       chBtn.click();
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -7481,23 +7361,18 @@ async function runPerformanceAndVirtualizationTests() {
     await new Promise((r) => setTimeout(r, 60));
   });
 
-  // Abrir a categoria 1 de TV ao Vivo (com 3.000 canais)
-  const catBtnLive = virtContainer.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
-  assert(catBtnLive, 'Botão da Categoria 1 na TV ao Vivo deve existir');
+  // Rolar horizontalmente a fileira da categoria 1 de TV ao Vivo (com 3.000 canais)
+  const liveCategoryHorizRowEl = virtContainer.querySelector(
+    '[data-live-category-row-scroll="true"][data-virtual-container="true"]'
+  ) as HTMLElement;
+  assert(liveCategoryHorizRowEl, 'Fileira horizontal virtualizada de canais em LiveTvView deve existir');
   await act(async () => {
-    catBtnLive.click();
-    await new Promise((r) => setTimeout(r, 40));
-  });
-
-  const liveChannelsScrollEl = virtContainer.querySelector('[data-scroll-container="true"]') as HTMLElement;
-  assert(liveChannelsScrollEl, 'Lista rolável de canais em LiveTvView deve existir');
-  await act(async () => {
-    liveChannelsScrollEl.scrollTop = 18000;
-    liveChannelsScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    liveCategoryHorizRowEl.scrollLeft = 18000;
+    liveCategoryHorizRowEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
     await new Promise((r) => setTimeout(r, 30));
   });
 
-  const mountedLiveChannelButtons = liveChannelsScrollEl.querySelectorAll('button[data-live-channel-btn="true"]').length;
+  const mountedLiveChannelButtons = liveCategoryHorizRowEl.querySelectorAll('button[data-live-channel-btn="true"]').length;
   assert(
     mountedLiveChannelButtons > 0 && mountedLiveChannelButtons <= 80,
     `LiveTvView após rolagem profunda em 3.000 canais deve manter <= 80 botões montados no DOM (montou ${mountedLiveChannelButtons})`
@@ -7506,7 +7381,7 @@ async function runPerformanceAndVirtualizationTests() {
   // =========================================================================
   // 12.7. Controle de repetição contínua (e.repeat) no NavigationProvider e cache de MediaImage
   // =========================================================================
-  const firstChannelBtn = liveChannelsScrollEl.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
+  const firstChannelBtn = liveCategoryHorizRowEl.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
   assert(firstChannelBtn, 'Primeiro botão da janela virtual de canais deve existir');
   await act(async () => {
     firstChannelBtn.focus();
@@ -7799,103 +7674,102 @@ async function runPerformanceAndVirtualizationTests() {
     await new Promise((r) => setTimeout(r, 60));
   });
 
-  // Realizar 3 ciclos completos de abrir a MESMA categoria ("1") -> rolar -> voltar às categorias -> reabrir a mesma categoria ("1")
+  // Realizar 3 ciclos completos de rolar a fileira virtualizada da categoria ("1", 3.000 canais) -> expandir borda por D-Pad -> desmontar/remontar
   for (let cycle = 1; cycle <= 3; cycle++) {
-    const catBtnCycle = virtContainer.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
-    assert(catBtnCycle, `[6.B] Ciclo ${cycle}: botão da categoria 1 deve estar visível na tela de categorias`);
+    if (cycle > 1) {
+      await act(async () => {
+        virtRoot.render(
+          React.createElement(
+            XtreamProvider,
+            { credentials: creds39k },
+            React.createElement(
+              NavigationProvider,
+              null,
+              React.createElement(LiveTvView, { isTvMode: true })
+            )
+          )
+        );
+        await new Promise((r) => setTimeout(r, 40));
+      });
+    }
 
-    await act(async () => {
-      catBtnCycle.click();
-      await new Promise((r) => setTimeout(r, 40));
-    });
-
-    const diagAfterOpen = getVirtualWindowDiagnostics();
-    assert.strictEqual(
-      diagAfterOpen.activeScrollListeners,
-      1,
-      `[6.B] Ciclo ${cycle}: ao abrir a lista de canais, exatamente 1 listener de scroll virtual deve estar ativo (obteve ${diagAfterOpen.activeScrollListeners})`
-    );
-    assert.strictEqual(
-      getActiveVirtualContainerCount(),
-      1,
-      `[6.B] Ciclo ${cycle}: exatamente 1 controlador virtual deve estar registrado no spatialNav`
-    );
-
-    const channelsVirtualEl = virtContainer.querySelector('[data-virtual-container="true"]') as HTMLElement;
-    const channelsScrollEl = channelsVirtualEl?.closest('[data-scroll-container="true"]') as HTMLElement;
+    const channelsVirtualEl = virtContainer.querySelector(
+      '[data-live-category-row-scroll="true"][data-virtual-container="true"]'
+    ) as HTMLElement;
+    const channelsScrollEl = virtContainer.querySelector('[data-scroll-container="true"]') as HTMLElement;
     assert(channelsScrollEl && channelsVirtualEl, `[6.B] Ciclo ${cycle}: containers de canais devem estar montados`);
     assert.strictEqual(
       hasRegisteredVirtualContainer(channelsVirtualEl),
       true,
-      `[6.B] Ciclo ${cycle}: o novo elemento DOM [data-virtual-container="true"] deve estar registrado no spatialNav`
+      `[6.B] Ciclo ${cycle}: o elemento DOM [data-virtual-container="true"] deve estar registrado no spatialNav`
     );
 
-    // Rolar profundamente na categoria reaberta até o meio (scrollTop = 18000) e depois até o final (scrollTop = 400000)
+    // Rolar profundamente na fileira horizontal até o meio (scrollLeft = 36000) e depois até o final (scrollLeft = 900000)
     await act(async () => {
-      channelsScrollEl.scrollTop = 18000;
-      channelsScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      channelsVirtualEl.scrollLeft = 36000;
+      channelsVirtualEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
       await new Promise((r) => setTimeout(r, 30));
     });
 
-    const firstMountedRowAfterReopenScroll = channelsVirtualEl.querySelector('[data-virtual-index]') as HTMLElement;
-    const startIdxReopen = Number(firstMountedRowAfterReopenScroll?.getAttribute('data-virtual-index'));
+    const firstMountedCardAfterScroll = channelsVirtualEl.querySelector('button[data-virtual-index]') as HTMLElement;
+    const startIdxReopen = Number(firstMountedCardAfterScroll?.getAttribute('data-virtual-index'));
     assert(
-      startIdxReopen > 100,
-      `[6.B] Ciclo ${cycle}: rolagem após reabrir a mesma categoria DEVE atualizar a janela virtual (startIndex=${startIdxReopen})`
+      startIdxReopen > 50,
+      `[6.B] Ciclo ${cycle}: rolagem horizontal DEVE atualizar a janela virtual (startIndex=${startIdxReopen})`
     );
 
-    // Testar travessia de fronteira por D-Pad (ArrowDown no último canal montado da janela atual)
-    const mountedRowsNow = Array.from(
-      channelsVirtualEl.querySelectorAll('[data-virtual-index]')
-    ) as HTMLElement[];
-    const lastMountedRow = mountedRowsNow[mountedRowsNow.length - 1];
-    const lastMountedIdx = Number(lastMountedRow.getAttribute('data-virtual-index'));
-    const lastMountedBtn = lastMountedRow.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
-    assert(lastMountedBtn, `[6.B] Ciclo ${cycle}: último botão de canal da janela deve existir`);
+    // Testar travessia de fronteira por D-Pad (ArrowRight no botão de favorito do último cartão montado da janela atual)
+    const mountedCardsNow = Array.from(
+      channelsVirtualEl.querySelectorAll('button[data-live-channel-btn="true"][data-virtual-index]')
+    ) as HTMLButtonElement[];
+    const lastMountedBtn = mountedCardsNow[mountedCardsNow.length - 1];
+    const lastMountedIdx = Number(lastMountedBtn.getAttribute('data-virtual-index'));
+    const lastMountedFavBtn = channelsVirtualEl.querySelector(
+      `button[data-row-fav-index="${lastMountedIdx}"]`
+    ) as HTMLButtonElement;
+    assert(lastMountedBtn && lastMountedFavBtn, `[6.B] Ciclo ${cycle}: último cartão e favorito da janela devem existir`);
 
     await act(async () => {
-      lastMountedBtn.focus();
-      moveSpatialFocus('down');
+      lastMountedFavBtn.focus();
+      moveSpatialFocus('right');
       await new Promise((r) => setTimeout(r, 20));
     });
 
-    const activeRowAfterDown = (document.activeElement as HTMLElement)?.closest('[data-virtual-index]');
+    const activeBtnAfterRight = document.activeElement as HTMLElement | null;
     assert.strictEqual(
-      Number(activeRowAfterDown?.getAttribute('data-virtual-index')),
+      Number(activeBtnAfterRight?.getAttribute('data-virtual-index')),
       lastMountedIdx + 1,
-      `[6.B] Ciclo ${cycle}: D-Pad ArrowDown na borda da categoria reaberta deve expandir a janela e focar o índice ${lastMountedIdx + 1}`
+      `[6.B] Ciclo ${cycle}: D-Pad ArrowRight na borda da fileira deve expandir a janela e focar o índice ${lastMountedIdx + 1}`
     );
 
     // Rolar até o último canal (índice 2999 de 3.000)
     await act(async () => {
-      channelsScrollEl.scrollTop = 400000;
-      channelsScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+      channelsVirtualEl.scrollLeft = 950000;
+      channelsVirtualEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
       await new Promise((r) => setTimeout(r, 30));
     });
-    const lastChannelRow2999 = channelsVirtualEl.querySelector('[data-virtual-index="2999"]') as HTMLElement;
+    const lastChannelCard2999 = channelsVirtualEl.querySelector('button[data-virtual-index="2999"]') as HTMLElement;
     assert(
-      lastChannelRow2999 !== null,
-      `[6.B] Ciclo ${cycle}: o último canal (índice 2999) deve ser acessível na categoria reaberta`
+      lastChannelCard2999 !== null,
+      `[6.B] Ciclo ${cycle}: o último canal (índice 2999) deve ser acessível ao final da fileira`
     );
 
-    // Voltar às categorias (exceto no último ciclo onde deixamos verificado ou voltamos para testar desmontagem)
-    const backToCatsBtn = virtContainer.querySelector('button[data-live-back-to-categories="true"]') as HTMLButtonElement;
-    assert(backToCatsBtn, `[6.B] Ciclo ${cycle}: botão Voltar às Categorias deve existir`);
+    // Desmontar a árvore para verificar limpeza completa dos controladores virtuais
     await act(async () => {
-      backToCatsBtn.click();
-      await new Promise((r) => setTimeout(r, 30));
+      virtRoot.render(React.createElement('div', null));
+      await new Promise((r) => setTimeout(r, 20));
     });
 
     const diagAfterBack = getVirtualWindowDiagnostics();
     assert.strictEqual(
       diagAfterBack.activeScrollListeners,
       0,
-      `[6.B] Ciclo ${cycle}: ao voltar para categorias, o listener de scroll antigo deve ser removido (obteve ${diagAfterBack.activeScrollListeners})`
+      `[6.B] Ciclo ${cycle}: ao desmontar, nenhum listener de scroll virtual deve restar (obteve ${diagAfterBack.activeScrollListeners})`
     );
     assert.strictEqual(
       getActiveVirtualContainerCount(),
       0,
-      `[6.B] Ciclo ${cycle}: ao voltar para categorias, o controlador virtual antigo deve ser desregistrado`
+      `[6.B] Ciclo ${cycle}: ao desmontar, todos os controladores virtuais devem ser desregistrados`
     );
     assert.strictEqual(
       hasRegisteredVirtualContainer(channelsVirtualEl),
@@ -8053,52 +7927,35 @@ async function runPerformanceAndVirtualizationTests() {
     await new Promise((r) => setTimeout(r, 60));
   });
 
-  const catBtnVarH = virtContainer.querySelector('button[data-live-category-id="1"]') as HTMLButtonElement;
-  await act(async () => {
-    catBtnVarH.click();
-    await new Promise((r) => setTimeout(r, 40));
-  });
+  const varListEl = virtContainer.querySelector(
+    '[data-live-category-row-scroll="true"][data-virtual-container="true"]'
+  ) as HTMLElement;
+  assert(varListEl, '[6.C] Fileira horizontal virtualizada de 300 canais deve estar montada');
 
-  const varListEl = virtContainer.querySelector('[data-virtual-container="true"]') as HTMLElement;
-  const varScrollEl = varListEl?.closest('[data-scroll-container="true"]') as HTMLElement;
-  assert(varListEl && varScrollEl, '[6.C] Lista de canais com alturas variáveis deve estar montada');
-
-  // Atribuir alturas reais variáveis aos primeiros 80 itens (ex.: 52px para 1 linha e 96px para 3 linhas)
-  const renderedRows0 = Array.from(varListEl.querySelectorAll('[data-virtual-index]')) as HTMLElement[];
-  renderedRows0.forEach((rowEl) => {
-    const idx = Number(rowEl.getAttribute('data-virtual-index'));
-    const h = idx % 2 === 0 ? 52 : 96;
-    Object.defineProperty(rowEl, 'offsetHeight', { value: h, configurable: true });
-  });
-
-  // Disparar resize para medir as alturas reais variáveis e depois rolar para scrollTop = 9000
+  // Rolar horizontalmente para scrollLeft = 9000 e verificar espaçador esquerdo
   await act(async () => {
-    windowInstance.dispatchEvent(new windowInstance.Event('resize'));
-    await new Promise((r) => setTimeout(r, 20));
-  });
-  await act(async () => {
-    varScrollEl.scrollTop = 9000;
-    varScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    varListEl.scrollLeft = 9000;
+    varListEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
     await new Promise((r) => setTimeout(r, 30));
   });
 
-  const topSpacerEl = varListEl.querySelector('[data-virtual-spacer="top"]') as HTMLElement;
-  assert(topSpacerEl, '[6.C] Espaçador superior deve existir após rolar lista de canais com alturas variáveis');
-  const topSpacerHeight = parseFloat(topSpacerEl.style.height || '0');
+  const leftSpacerEl = varListEl.querySelector('[data-virtual-spacer="left"]') as HTMLElement;
+  assert(leftSpacerEl, '[6.C] Espaçador esquerdo deve existir após rolar fileira virtualizada de canais');
+  const leftSpacerWidth = parseFloat(leftSpacerEl.style.width || '0');
   assert(
-    topSpacerHeight > 0,
-    `[6.C] topSpacerPx (${topSpacerHeight}px) deve refletir a soma acumulada das alturas medidas dos itens anteriores`
+    leftSpacerWidth > 0,
+    `[6.C] leftSpacerPx (${leftSpacerWidth}px) deve refletir o deslocamento acumulado dos cartões anteriores`
   );
 
-  // Rolar até o final da lista de alturas variáveis e confirmar acesso ao último canal (índice 299)
+  // Rolar até o final da fileira e confirmar acesso ao último canal (índice 299)
   await act(async () => {
-    varScrollEl.scrollTop = 50000;
-    varScrollEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
+    varListEl.scrollLeft = 90000;
+    varListEl.dispatchEvent(new windowInstance.Event('scroll') as unknown as Event);
     await new Promise((r) => setTimeout(r, 30));
   });
   assert(
-    varListEl.querySelector('[data-virtual-index="299"]') !== null,
-    '[6.C] Último canal (índice 299) deve ser montado ao final da lista com alturas variáveis'
+    varListEl.querySelector('button[data-virtual-index="299"]') !== null,
+    '[6.C] Último canal (índice 299) deve ser montado ao final da fileira virtualizada'
   );
 
   // =========================================================================
@@ -19770,8 +19627,15 @@ if (args[0] === 'add' && args[1] === 'android') {
         const prevInnerW = windowInstance.innerWidth;
         const prevInnerH = windowInstance.innerHeight;
 
+        const {
+          resetLiveEpgCacheForTest,
+          setLiveEpgClockForTest,
+        } = await import('../src/utils/liveEpgManager');
+
         try {
+          setLiveEpgClockForTest(() => Date.parse('2026-11-08T18:30:00'));
           for (const testDisplayMode of ['default', 'tv'] as const) {
+            resetLiveEpgCacheForTest();
             epgCallsByStreamId = {};
             if (testDisplayMode === 'tv') {
               document.documentElement.setAttribute('data-display-mode', 'tv');
@@ -19821,19 +19685,19 @@ if (args[0] === 'add' && args[1] === 'android') {
               {
                 stream_id: 502,
                 name: 'Canal Esportes HD',
-                category_id: 'cat_epg_1',
+                category_id: 'cat_epg_2',
                 stream_icon: '',
               },
               {
                 stream_id: 503,
                 name: 'Canal Documentários HD',
-                category_id: 'cat_epg_1',
+                category_id: 'cat_epg_3',
                 stream_icon: '',
               },
               {
                 stream_id: 504,
                 name: 'Canal Filmes HD',
-                category_id: 'cat_epg_1',
+                category_id: 'cat_epg_4',
                 stream_icon: '',
               },
             ];
@@ -19849,7 +19713,12 @@ if (args[0] === 'add' && args[1] === 'android') {
               authError: null,
               hasInitialMenuData: true,
               isInitialSetupComplete: true,
-              liveCategories: [{ category_id: 'cat_epg_1', category_name: 'Canais Principais' }],
+              liveCategories: [
+                { category_id: 'cat_epg_1', category_name: 'Canais Principais' },
+                { category_id: 'cat_epg_2', category_name: 'Esportes' },
+                { category_id: 'cat_epg_3', category_name: 'Documentários' },
+                { category_id: 'cat_epg_4', category_name: 'Filmes' },
+              ],
               vodCategories: [],
               seriesCategories: [],
               liveStreams: liveTestStreams,
@@ -19908,17 +19777,11 @@ if (args[0] === 'add' && args[1] === 'android') {
                   )
                 )
               );
+              await new Promise((r) => setTimeout(r, 25));
             });
 
-            // Entrar na categoria "Canais Principais"
-            const catBtn = liveEpgContainer.querySelector<HTMLButtonElement>(
-              'button[data-live-category-id="cat_epg_1"]'
-            );
-            assert(catBtn, `[12.23][${testDisplayMode}] Botão de categoria deve existir`);
             await act(async () => {
               setLiveNavMode('remote');
-              catBtn.focus();
-              catBtn.click();
             });
 
             const chBtns = Array.from(
