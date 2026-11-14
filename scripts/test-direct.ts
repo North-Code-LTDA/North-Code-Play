@@ -1396,20 +1396,15 @@ async function runPlayerBackAndScrollNavigationTests() {
     'Desktop inicia com estado Selecione um Canal'
   );
 
-  // Clicar na categoria Notícias para exibir a lista de canais
-  const { formatCategoryLabel } = await import('../src/utils/categoryLabel');
-  const targetCategoryText = formatCategoryLabel('Notícias', 'live');
-  const categoryBtn = Array.from(container.querySelectorAll('.custom-scrollbar button')).find(
-    (b) => b.textContent?.trim() === targetCategoryText || b.textContent?.includes('NOTÍCIAS')
-  ) as any as HTMLButtonElement;
-  assert(categoryBtn, 'Botão da categoria Notícias deve estar presente');
-  await act(async () => {
-    categoryBtn.click();
-  });
+  // Ciclo 12.27-a: cabeçalho da categoria Notícias em Title Case e cartão horizontal já visível na fileira
+  const docCatTitle = Array.from(
+    container.querySelectorAll('[data-live-category-title="true"]')
+  ).find((el) => el.textContent?.trim() === 'Notícias');
+  assert(docCatTitle, 'Cabeçalho da categoria Notícias deve estar presente em Title Case');
 
-  // Selecionar canal
-  const channelItemBtn = container.querySelector('button.w-full.flex.items-center') as any as HTMLButtonElement;
-  assert(channelItemBtn, 'Botão do canal deve estar na lista');
+  // Selecionar canal diretamente da fileira horizontal
+  const channelItemBtn = container.querySelector('button[data-live-channel-btn="true"]') as any as HTMLButtonElement;
+  assert(channelItemBtn, 'Botão do canal deve estar na fileira horizontal');
   await act(async () => {
     channelItemBtn.click();
   });
@@ -1545,20 +1540,16 @@ async function runPlayerBackAndScrollNavigationTests() {
         );
       });
 
-      // Abrir a categoria Notícias (cat_live_1)
+      // Verificar que a categoria Notícias (cat_live_1) e seus canais horizontais já estão continuamente montados
       const catBtn = container.querySelector(
         'button[data-live-category-id="cat_live_1"]'
       ) as any as HTMLButtonElement;
-      assert(catBtn, '[1.5] Botão da categoria Notícias deve existir');
-      await act(async () => {
-        catBtn.focus();
-        catBtn.click();
-      });
+      assert(catBtn, '[1.5] Marcador da categoria Notícias deve existir no 1º canal da fileira');
 
       const channelBtns = Array.from(
         container.querySelectorAll('button[data-live-channel-btn="true"]')
       ) as any as HTMLButtonElement[];
-      assert.strictEqual(channelBtns.length, 2, '[1.5] Dois canais devem estar renderizados na categoria');
+      assert.strictEqual(channelBtns.length, 2, '[1.5] Dois canais devem estar renderizados na fileira da categoria');
       const channelBtn1 = channelBtns[0];
 
       // 1º comando no canal 1: abre o preview
@@ -1679,7 +1670,7 @@ async function runPlayerBackAndScrollNavigationTests() {
         channelBtn1.focus = origChannel1Focus;
       }
 
-      // Restaurar exitFullscreen padrão para validar a sequência seguinte: preview -> lista de canais -> categorias
+      // Restaurar exitFullscreen padrão para validar fechamento do preview preservando as fileiras horizontais de categorias
       (windowInstance.document as any).exitFullscreen = originalExitFullscreen;
 
       // Próximo comando Voltar (após concluir a saída da tela cheia): fecha o preview normalmente
@@ -1700,40 +1691,25 @@ async function runPlayerBackAndScrollNavigationTests() {
       assertSameElement(
         document.activeElement,
         channelBtn1,
-        '[1.5.A] Ao fechar o preview, o foco permanece no canal na lista de canais'
+        '[1.5.A] Ao fechar o preview, o foco permanece no canal na fileira horizontal'
       );
-
-      // Comando Voltar seguinte: lista de canais -> categorias
-      await act(async () => {
-        windowInstance.dispatchEvent(
-          new (windowInstance as any).KeyboardEvent('keydown', {
-            key: 'Escape',
-            bubbles: true,
-            cancelable: true,
-          })
-        );
-      });
       const restoredCatBtn = container.querySelector(
         'button[data-live-category-id="cat_live_1"]'
       ) as any as HTMLButtonElement;
-      assert(restoredCatBtn, '[1.5.A] Lista de categorias deve voltar a ser exibida');
-      assertSameElement(
-        document.activeElement,
-        restoredCatBtn,
-        '[1.5.A] Sequência tela cheia -> preview -> lista de canais -> categorias preservada'
-      );
+      assert(restoredCatBtn, '[1.5.A] Fileira contínua de categorias permanece montada após fechar o preview');
 
       // -----------------------------------------------------------------------
       // 1.5.B: Conclusão tardia de exitFullscreen() após mudar de canal não deve mover o foco
       // -----------------------------------------------------------------------
-      await act(async () => {
-        restoredCatBtn.click();
-      });
       const chBtnsForSwitch = Array.from(
         container.querySelectorAll('button[data-live-channel-btn="true"]')
       ) as any as HTMLButtonElement[];
       const ch1BtnSwitch = chBtnsForSwitch[0];
       const ch2BtnSwitch = chBtnsForSwitch[1];
+      const fav2BtnSwitch = Array.from(
+        container.querySelectorAll('button[data-live-channel-fav="true"]')
+      )[1] as any as HTMLButtonElement;
+      assert(fav2BtnSwitch, '[1.5.B] Botão de favorito do canal 2 deve existir como âncora distinta');
 
       // Abrir canal 1 no preview e depois em tela cheia
       await act(async () => {
@@ -1775,19 +1751,13 @@ async function runPlayerBackAndScrollNavigationTests() {
       });
       assert.strictEqual(exitCallsOnChannelSwitch, 1, '[1.5.B] Saída de tela cheia iniciada para o canal 1');
 
-      // Trocar para o canal 2 antes da conclusão de exitFullscreen() e posicionar o foco no botão de voltar às categorias
-      const backToCategoriesBtn = container.querySelector(
-        'button[data-live-back-to-categories="true"]'
-      ) as any as HTMLButtonElement;
-      assert(backToCategoriesBtn, '[1.5.B] Botão Voltar às Categorias deve existir');
-
       await act(async () => {
         ch2BtnSwitch.click();
-        backToCategoriesBtn.focus();
+        fav2BtnSwitch.focus();
       });
       assertSameElement(
         document.activeElement,
-        backToCategoriesBtn,
+        fav2BtnSwitch,
         '[1.5.B] Foco posicionado em outro elemento após trocar para o canal 2'
       );
 
@@ -1803,7 +1773,7 @@ async function runPlayerBackAndScrollNavigationTests() {
       );
       assertSameElement(
         document.activeElement,
-        backToCategoriesBtn,
+        fav2BtnSwitch,
         '[1.5.B] Conclusão tardia da saída de tela cheia após trocar de canal NÃO deve mover o foco'
       );
 
@@ -19631,10 +19601,28 @@ if (args[0] === 'add' && args[1] === 'android') {
           resetLiveEpgCacheForTest,
           setLiveEpgClockForTest,
         } = await import('../src/utils/liveEpgManager');
+        const {
+          getHistoryKey: getLiveEpgTestHistoryKey,
+          clearPlaybackHistoryMemoryCacheForTest: clearLiveEpgTestHistoryCache,
+        } = await import('../src/utils/playbackHistory');
+
+        const liveTestCreds: XtreamCredentials = {
+          serverUrl: 'http://epg-audit.local:8080',
+          username: 'epg_user',
+          password: 'epg_password',
+        };
+        const liveEpgTestHistKey = getLiveEpgTestHistoryKey(
+          liveTestCreds.serverUrl,
+          liveTestCreds.username
+        );
 
         try {
           setLiveEpgClockForTest(() => Date.parse('2026-11-08T18:30:00'));
           for (const testDisplayMode of ['default', 'tv'] as const) {
+            if (liveEpgTestHistKey) {
+              windowInstance.localStorage.removeItem(liveEpgTestHistKey);
+            }
+            clearLiveEpgTestHistoryCache();
             resetLiveEpgCacheForTest();
             epgCallsByStreamId = {};
             if (testDisplayMode === 'tv') {
@@ -19646,12 +19634,6 @@ if (args[0] === 'add' && args[1] === 'android') {
             }
             (windowInstance as any).innerWidth = 961;
             (windowInstance as any).innerHeight = 541;
-
-            const liveTestCreds: XtreamCredentials = {
-              serverUrl: 'http://epg-audit.local:8080',
-              username: 'epg_user',
-              password: 'epg_password',
-            };
 
             const liveTestStreams = [
               {
@@ -20702,6 +20684,10 @@ if (args[0] === 'add' && args[1] === 'android') {
           await act(async () => {
             liveEpgRoot.unmount();
           });
+          if (liveEpgTestHistKey) {
+            windowInstance.localStorage.removeItem(liveEpgTestHistKey);
+          }
+          clearLiveEpgTestHistoryCache();
           if (liveEpgContainer.parentNode) {
             document.body.removeChild(liveEpgContainer);
           }
@@ -27333,7 +27319,9 @@ if (args[0] === 'add' && args[1] === 'android') {
               });
 
               const strangerShowcaseCardB1 = Array.from(
-                stage1Container.querySelectorAll<HTMLElement>('[data-showcase-card="true"]')
+                stage1Container.querySelectorAll<HTMLElement>(
+                  '[data-showcase-row-key="featured_series"] [data-showcase-card="true"], [data-showcase-row-key^="series_cat_"] [data-showcase-card="true"]'
+                )
               ).find((el) => el.getAttribute('aria-label') === 'Stranger Things')!;
               assert(
                 strangerShowcaseCardB1 !== null,
@@ -27632,6 +27620,437 @@ if (args[0] === 'add' && args[1] === 'android') {
   console.log('✅ Todos os testes de desempenho, auditoria de imagens da Home (12.14), virtualização horizontal de Continuar Assistindo (12.15), divisão de rotas (12.16), otimização do player por visibilidade (12.17 / P2.1), isolamento do contexto compartilhado (12.18 / P2.2), otimização do histórico (12.19 / P2.3), diagnóstico P3.1/P3.2, transferência de catálogos grandes via arquivo temporário P3.3 (12.20 / 12.21 / 12.22), grade de programação e navegação por setas da TV ao vivo (12.23), geometria dinâmica em rolagem, eliminação de retrabalho, virtualização (6.A, 6.B, 6.C, 6.D) e navegação D-Pad aprovados!');
 }
 
+async function runCycle1227LiveTvAndEpgTests() {
+  console.log('\n--- 13. Testes do Ciclo 12.27-a: TV ao Vivo 50/50, Categorias Horizontais, Cartões e Gerenciador Real de EPG ---');
+  const {
+    decodeEpgText,
+    resolveCurrentEpgProgram,
+    resolveRightPaneEpgTimeline,
+    getPreferredEpgStreamIdForGroup,
+    subscribeLiveChannelEpg,
+    getCachedLiveEpgSnapshot,
+    setLiveEpgClockForTest,
+    setLiveEpgConcurrencyLimitForTest,
+    resetLiveEpgCacheForTest,
+    getLiveEpgStatsForTest,
+  } = await import('../src/utils/liveEpgManager');
+  const { formatLiveTvCategoryTitle } = await import('../src/utils/categoryLabel');
+  const { LiveTvView } = await import('../src/views/LiveTvView');
+  const { groupLiveStreams } = await import('../src/utils/liveChannelGroups');
+  const { NavigationProvider } = await import('../src/navigation');
+  const { getHistoryKey, readHistoryMap } = await import('../src/utils/playbackHistory');
+
+  // 13.1 Formatação de títulos de categorias em Title Case preservando siglas e sem mutar dados brutos
+  assert.strictEqual(
+    formatLiveTvCategoryTitle('CANAIS · ESPORTES HD'),
+    'Esportes HD',
+    '[12.27-a] Deve converter para Title Case preservando sigla HD'
+  );
+  assert.strictEqual(
+    formatLiveTvCategoryTitle('canais | hbo e telecine 4k'),
+    'HBO E Telecine 4K',
+    '[12.27-a] Deve preservar siglas HBO e 4K em Title Case'
+  );
+  assert.strictEqual(
+    formatLiveTvCategoryTitle('tv esportes fhd espn'),
+    'TV Esportes FHD ESPN',
+    '[12.27-a] Deve preservar siglas TV, FHD e ESPN'
+  );
+
+  // 13.2 Decodificação segura de Base64 UTF-8, texto plano e rejeição de lixo/timestamps inválidos
+  const b64Title = Buffer.from('Jornal da Noite — Edição Especial', 'utf8').toString('base64');
+  assert.strictEqual(
+    decodeEpgText(b64Title),
+    'Jornal da Noite — Edição Especial',
+    '[12.27-a] Deve decodificar Base64 UTF-8 com acentuação corretamente'
+  );
+  assert.strictEqual(
+    decodeEpgText('Futebol Ao Vivo: Final'),
+    'Futebol Ao Vivo: Final',
+    '[12.27-a] Deve preservar texto plano válido sem corrupção'
+  );
+
+  const nowEpochSec = 1_760_000_000;
+  const nowMs = nowEpochSec * 1000;
+  setLiveEpgClockForTest(() => nowMs);
+  resetLiveEpgCacheForTest();
+
+  // Programa 0 já terminou; Programa 1 está em exibição (start <= now < end); Programa 2 é futuro.
+  // Valida que NUNCA assume índice 0 sem validar janelas temporais.
+  const mixedListings = [
+    {
+      id: 'past',
+      title: Buffer.from('Programa Encerrado', 'utf8').toString('base64'),
+      start_timestamp: nowEpochSec - 3600,
+      stop_timestamp: nowEpochSec - 60,
+    },
+    {
+      id: 'current',
+      title: Buffer.from('Programa Real Em Exibição', 'utf8').toString('base64'),
+      description: Buffer.from('Descrição real do programa', 'utf8').toString('base64'),
+      start_timestamp: nowEpochSec - 300,
+      stop_timestamp: nowEpochSec + 1800,
+    },
+    {
+      id: 'future',
+      title: 'Próximo Programa',
+      start_timestamp: nowEpochSec + 1800,
+      stop_timestamp: nowEpochSec + 5400,
+    },
+  ];
+  const resolvedCurr = resolveCurrentEpgProgram(mixedListings, nowMs);
+  assert(resolvedCurr !== null, '[12.27-a] Deve localizar programa vigente pelo horário real');
+  assert.strictEqual(
+    resolvedCurr!.title,
+    'Programa Real Em Exibição',
+    '[12.27-a] Não deve assumir índice 0 quando índice 0 já encerrou'
+  );
+  const timelineRes = resolveRightPaneEpgTimeline(mixedListings, nowMs);
+  assert.strictEqual(timelineRes.timeline.length, 2, '[12.27-a] Timeline do painel direito deve filtrar encerrados');
+  assert.strictEqual(timelineRes.timeline[0].isCurrent, true, '[12.27-a] Primeiro item não expirado deve estar marcado como atual');
+
+  // Listings corrompidos ou expirados retornam null (nunca texto sintético)
+  assert.strictEqual(
+    resolveCurrentEpgProgram(
+      [{ title: 'Inválido', start_timestamp: nowEpochSec + 100, stop_timestamp: nowEpochSec + 50 }],
+      nowMs
+    ),
+    null,
+    '[12.27-a] Intervalo com stop <= start deve retornar null'
+  );
+  assert.strictEqual(
+    resolveCurrentEpgProgram(
+      [{ title: '   ', start_timestamp: nowEpochSec - 10, stop_timestamp: nowEpochSec + 10 }],
+      nowMs
+    ),
+    null,
+    '[12.27-a] Título vazio deve retornar null'
+  );
+
+  // 13.3 Stream canônico compartilhado pelo grupo (SD -> HD -> FHD -> 4K) e isolamento por conta
+  const groupedLive = groupLiveStreams([
+    { stream_id: 9012, name: 'Telecine Premium FHD', category_id: 'c1' },
+    { stream_id: 9010, name: 'Telecine Premium SD', category_id: 'c1' },
+    { stream_id: 9011, name: 'Telecine Premium HD', category_id: 'c1' },
+  ]);
+  assert.strictEqual(groupedLive.length, 1);
+  assert.strictEqual(
+    getPreferredEpgStreamIdForGroup(groupedLive[0]),
+    9010,
+    '[12.27-a] Deve eleger stream SD (9010) como ID canônico de EPG do grupo'
+  );
+
+  // 13.4 Deduplicação, concorrência limitada (<= 3), cancelamento de fila e expiração temporal
+  const savedGetShortEpg13 = (XtreamService as any).getShortEpg;
+  try {
+    let mutableClockMs = nowMs;
+    setLiveEpgClockForTest(() => mutableClockMs);
+    setLiveEpgConcurrencyLimitForTest(3);
+    resetLiveEpgCacheForTest();
+
+    const credsA: any = {
+      serverUrl: 'http://epg-a.tv:8080',
+      username: 'userA',
+      password: 'pA',
+      allowed_output_formats: ['m3u8'],
+    };
+    const credsB: any = {
+      serverUrl: 'http://epg-a.tv:8080',
+      username: 'userB',
+      password: 'pB',
+      allowed_output_formats: ['m3u8'],
+    };
+
+    const resolvers = new Map<number, (val: any) => void>();
+    let inFlightObserved = 0;
+    let maxInFlightObserved = 0;
+
+    (XtreamService as any).getShortEpg = async (_creds: any, streamId: number | string) => {
+      const id = Number(streamId);
+      inFlightObserved++;
+      if (inFlightObserved > maxInFlightObserved) maxInFlightObserved = inFlightObserved;
+      return await new Promise((resolve) => {
+        resolvers.set(id, (payload) => {
+          inFlightObserved--;
+          resolve(payload);
+        });
+      });
+    };
+
+    // Deduplicação: 2 assinantes no mesmo canal disparam apenas 1 requisição
+    const subResults: string[] = [];
+    const u1 = subscribeLiveChannelEpg({
+      credentials: credsA,
+      streamId: 8001,
+      onUpdate: (s) => subResults.push(`u1:${s.currentProgram?.title}`),
+    });
+    const u2 = subscribeLiveChannelEpg({
+      credentials: credsA,
+      streamId: 8001,
+      onUpdate: (s) => subResults.push(`u2:${s.currentProgram?.title}`),
+    });
+    // Abrir mais 4 canais em paralelo para testar fila + cancelamento
+    const uCancelTargets = [8002, 8003, 8004, 8005, 8006].map((sid) =>
+      subscribeLiveChannelEpg({
+        credentials: credsA,
+        streamId: sid,
+        onUpdate: () => {},
+      })
+    );
+
+    await new Promise((r) => setTimeout(r, 10));
+    assert(
+      maxInFlightObserved <= 3,
+      `[12.27-a] Concorrência máxima do EPG deve ser <= 3 (observado: ${maxInFlightObserved})`
+    );
+
+    // Cancelar canais que ainda estão na fila (ex: 8005, 8006)
+    uCancelTargets[3]();
+    uCancelTargets[4]();
+
+    // Resolver os 3 em voo (8001, 8002, 8003) e o 8004
+    for (const sid of [8001, 8002, 8003]) {
+      resolvers.get(sid)?.({
+        epg_listings: [
+          {
+            title: Buffer.from(`Prog ${sid}`, 'utf8').toString('base64'),
+            start_timestamp: Math.floor(mutableClockMs / 1000) - 60,
+            stop_timestamp: Math.floor(mutableClockMs / 1000) + 60, // expira em 60s
+          },
+        ],
+      });
+    }
+    await new Promise((r) => setTimeout(r, 15));
+    resolvers.get(8004)?.({ epg_listings: [] });
+    await new Promise((r) => setTimeout(r, 15));
+
+    const epgStats = getLiveEpgStatsForTest();
+    assert.strictEqual(
+      epgStats.requestsByStreamId[8001],
+      1,
+      '[12.27-a] Canal 8001 com 2 assinantes deve ter apenas 1 requisição de rede'
+    );
+    assert(
+      epgStats.deduplicatedHits >= 1,
+      '[12.27-a] Deve contabilizar deduplicatedHits para assinaturas simultâneas'
+    );
+    assert(
+      !epgStats.requestsByStreamId[8005] && !epgStats.requestsByStreamId[8006],
+      '[12.27-a] Canais cancelados na fila NÃO devem disparar requisições de rede'
+    );
+    assert.strictEqual(subResults.length, 2, '[12.27-a] Ambos assinantes devem receber o snapshot atualizado');
+
+    u1();
+    u2();
+    uCancelTargets[0]();
+    uCancelTargets[1]();
+    uCancelTargets[2]();
+
+    // Cache hit antes do fim do programa; e expiração após endMs (mutableClockMs + 65s)
+    assert(
+      getCachedLiveEpgSnapshot(credsA, 8001)?.currentProgram?.title === 'Prog 8001',
+      '[12.27-a] Snapshot em cache deve estar disponível para credsA'
+    );
+    assert.strictEqual(
+      getCachedLiveEpgSnapshot(credsB, 8001),
+      null,
+      '[12.27-a] Cache de EPG deve ser isolado por conta/credencial'
+    );
+
+    mutableClockMs += 65_000;
+    assert.strictEqual(
+      getCachedLiveEpgSnapshot(credsA, 8001),
+      null,
+      '[12.27-a] Cache deve invalidar quando programa atual ultrapassa endMs'
+    );
+
+    // 13.5 Teste integrado na UI completa da LiveTvView com EPG real nos cartões, Favoritos, Histórico, Mobile e Layout 50/50
+    resetLiveEpgCacheForTest();
+    setLiveEpgClockForTest(() => nowMs);
+    (XtreamService as any).getShortEpg = async (_creds: any, streamId: number | string) => {
+      if (Number(streamId) === 9010) {
+        return {
+          epg_listings: [
+            {
+              id: 'p_now',
+              title: Buffer.from('Cine Especial: O Retorno', 'utf8').toString('base64'),
+              description: Buffer.from('Filme real em exibição agora', 'utf8').toString('base64'),
+              start_timestamp: nowEpochSec - 600,
+              stop_timestamp: nowEpochSec + 1800,
+            },
+            {
+              id: 'p_next',
+              title: Buffer.from('Sessão Coruja', 'utf8').toString('base64'),
+              start_timestamp: nowEpochSec + 1800,
+              stop_timestamp: nowEpochSec + 5400,
+            },
+          ],
+        };
+      }
+      return { epg_listings: [] };
+    };
+
+    const credsUi: any = {
+      serverUrl: 'http://ui-epg.tv:8080',
+      username: 'uiUser',
+      password: 'uiPassword',
+      allowed_output_formats: ['m3u8', 'ts'],
+    };
+    const uiStreams = [
+      { stream_id: 9010, name: 'Telecine Premium SD', category_id: 'cat_filmes', stream_icon: 'http://ui-epg.tv:8080/tc.png' },
+      { stream_id: 9011, name: 'Telecine Premium HD', category_id: 'cat_filmes', stream_icon: 'http://ui-epg.tv:8080/tc.png' },
+      { stream_id: 9020, name: 'Canal Sem EPG', category_id: 'cat_variedades', stream_icon: '' },
+    ];
+    const uiCtx: any = {
+      credentials: credsUi,
+      liveCategories: [
+        { category_id: 'cat_filmes', category_name: 'CANAIS · TELECINE HD' },
+        { category_id: 'cat_variedades', category_name: 'variedades e cultura' },
+      ],
+      liveStreams: uiStreams,
+      allLiveStreams: uiStreams,
+      vodCategories: [],
+      vodStreams: [],
+      allVodStreams: [],
+      seriesCategories: [],
+      seriesStreams: [],
+      allSeriesStreams: [],
+      loadingLive: false,
+      loadingVod: false,
+      loadingSeries: false,
+      liveCatalogStatus: 'ready',
+      liveCategoriesStatus: 'ready',
+      error: null,
+      fetchLiveStreams: async () => {},
+      fetchVodStreams: async () => {},
+      fetchSeriesStreams: async () => {},
+      fetchLiveCategories: async () => {},
+    };
+
+    const uiContainer = document.createElement('div');
+    document.body.appendChild(uiContainer);
+    const uiRoot = createRoot(uiContainer);
+
+    try {
+      await act(async () => {
+        uiRoot.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              XtreamMockProvider,
+              { value: uiCtx },
+              React.createElement(LiveTvView, { onPlay: () => {} })
+            )
+          )
+        );
+        await new Promise((r) => setTimeout(r, 60));
+      });
+
+      // Painel esquerdo e direito 50/50 + cabeçalho "Categorias De TV"
+      assert(uiContainer.querySelector('.nc-live-left-pane') !== null, '[12.27-a] Painel esquerdo 50% deve existir');
+      assert(uiContainer.querySelector('.nc-live-right-pane') !== null, '[12.27-a] Painel direito 50% deve existir');
+      assert(
+        uiContainer.querySelector('h2.nc-heading-view')?.textContent?.trim() === 'Categorias De TV',
+        '[12.27-a] Cabeçalho "Categorias De TV" com classe nc-heading-view deve estar presente'
+      );
+
+      // Títulos das categorias em Title Case preservando sigla HD
+      const catTitles = Array.from(uiContainer.querySelectorAll('[data-live-category-title="true"]')).map((e) =>
+        e.textContent?.trim()
+      );
+      assert.deepStrictEqual(
+        catTitles,
+        ['Telecine HD', 'Variedades E Cultura'],
+        '[12.27-a] Títulos das categorias devem seguir Title Case preservando HD'
+      );
+
+      // Cartões horizontais: programa real sem prefixo "Passando Agora", e sem etiquetas "2 versões"
+      const epgSubtitles = Array.from(uiContainer.querySelectorAll('[data-live-channel-epg="true"]')).map((e) =>
+        e.textContent?.trim()
+      );
+      assert(
+        epgSubtitles.includes('Cine Especial: O Retorno'),
+        `[12.27-a] Cartão do Telecine deve mostrar título real do EPG ("Cine Especial: O Retorno"), obteve: ${JSON.stringify(epgSubtitles)}`
+      );
+      assert(
+        epgSubtitles.includes('Programação indisponível'),
+        '[12.27-a] Canal sem EPG válido deve exibir fallback discreto "Programação indisponível"'
+      );
+      const cardTextAll = Array.from(uiContainer.querySelectorAll('[data-live-channel-card="true"]'))
+        .map((c) => c.textContent || '')
+        .join(' | ');
+      assert(
+        !cardTextAll.includes('Passando Agora'),
+        '[12.27-a] Cartões NÃO devem exibir o prefixo "Passando Agora"'
+      );
+      assert(
+        !/\b\d+\s+vers(ões|ao|ão)\b/i.test(cardTextAll),
+        '[12.27-a] Cartões NÃO devem exibir etiquetas "2 versões" no catálogo'
+      );
+
+      // Favoritar pelo botão do cartão
+      const favBtn = uiContainer.querySelector('button[data-live-channel-fav="true"]') as HTMLButtonElement;
+      assert(favBtn && favBtn.getAttribute('aria-pressed') === 'false', '[12.27-a] Botão favorito inicia desmarcado');
+      await act(async () => {
+        favBtn.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      assert.strictEqual(favBtn.getAttribute('aria-pressed'), 'true', '[12.27-a] Clique no favorito alterna estado para true');
+
+      // Selecionar Telecine -> atualiza painel direito com seletor de versões + timeline EPG + grava histórico no 'playing'
+      const telecineBtn = uiContainer.querySelector('button[data-live-channel-btn="true"]') as HTMLButtonElement;
+      await act(async () => {
+        telecineBtn.click();
+        await new Promise((r) => setTimeout(r, 40));
+      });
+      assert(
+        uiContainer.querySelector('[data-live-variants-row="true"]') !== null,
+        '[12.27-a] Seletor de versões (Automático/SD/HD) deve aparecer no painel direito'
+      );
+      assert(
+        uiContainer.querySelectorAll('[data-epg-item="true"]').length === 2,
+        '[12.27-a] Painel direito deve exibir a programação completa (2 programas)'
+      );
+      const videoEl1227 = uiContainer.querySelector('video') as HTMLVideoElement;
+      assert(videoEl1227 !== null, '[12.27-a] Player de preview deve montar ao selecionar canal');
+      await act(async () => {
+        videoEl1227.dispatchEvent(new (windowInstance as any).Event('playing'));
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      const histMap = readHistoryMap(getHistoryKey(credsUi.serverUrl, credsUi.username));
+      assert(
+        histMap && histMap['live:9010']?.type === 'live',
+        '[12.27-a] Reprodução confirmada deve registrar canal no histórico real (live:9010)'
+      );
+
+      // Mobile back button retorna do player mobile para o catálogo
+      const mobileBackBtn = uiContainer.querySelector('button[data-mobile-back="true"]') as HTMLButtonElement;
+      assert(mobileBackBtn && mobileBackBtn.textContent?.includes('Voltar aos Canais'), '[12.27-a] Botão mobile "Voltar aos Canais" deve existir');
+      await act(async () => {
+        mobileBackBtn.click();
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      const leftPaneEl = uiContainer.querySelector('.nc-live-left-pane') as HTMLElement;
+      assert(leftPaneEl.className.includes('flex') && !leftPaneEl.className.startsWith('hidden'), '[12.27-a] Clicar em Voltar aos Canais restaura visibilidade do painel esquerdo');
+    } finally {
+      const uiHistKey = getHistoryKey(credsUi.serverUrl, credsUi.username);
+      if (uiHistKey) windowInstance.localStorage.removeItem(uiHistKey);
+      await act(async () => {
+        uiRoot.unmount();
+      });
+      if (uiContainer.parentNode) document.body.removeChild(uiContainer);
+    }
+  } finally {
+    (XtreamService as any).getShortEpg = savedGetShortEpg13;
+    setLiveEpgClockForTest(null);
+    setLiveEpgConcurrencyLimitForTest(3);
+    resetLiveEpgCacheForTest();
+  }
+
+  console.log('✅ Todos os testes do Ciclo 12.27-a (TV ao Vivo 50/50, Title Case, Cartões e Gerenciador EPG) aprovados!');
+}
+
 async function main() {
   console.log('🚀 INICIANDO VALIDAÇÃO COMPLETA DOS FAVORITOS SIMPLES E REGRESSÕES\n');
   runDirectUrlTests();
@@ -27646,6 +28065,7 @@ async function main() {
   await runDisplaySetupPreviewAndLifecycleTests();
   await runCapacitorTransportAndAuditFixTests();
   await runPerformanceAndVirtualizationTests();
+  await runCycle1227LiveTvAndEpgTests();
   await cleanupTestEnvironment();
   console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
 }

@@ -1,5 +1,6 @@
-import { XtreamCredentials, XtreamService } from '../services/xtreamService';
-import { LiveChannelGroup } from './liveChannelGroups';
+import { XtreamCredentials } from '../types';
+import { XtreamService } from '../services/xtreamService';
+import { LiveChannelGroup, ResolutionQuality } from './liveChannelGroups';
 
 export interface ResolvedEpgProgram {
   id: string;
@@ -331,23 +332,49 @@ export function resolveRightPaneEpgTimeline(
   };
 }
 
+const EPG_VARIANT_RESOLUTION_PRIORITY: ResolutionQuality[] = ['SD', 'HD', 'FHD', '4K'];
+
 /**
  * Selects the canonical stream_id used for EPG queries of a channel group when in automatic mode.
- * Matches `getAutoInitialVariant(group.variants)` (lowest non-4K resolution first, e.g. SD)
+ * Prioritizes SD -> HD -> FHD -> 4K (matching `group.primaryStream` and initial auto playback)
  * so card EPG queries and initial right-pane playback share the exact same stream_id and cache entry.
  */
 export function getPreferredEpgStreamIdForGroup(group: LiveChannelGroup | null | undefined): number {
   if (!group) return 0;
+
   if (Array.isArray(group.variants) && group.variants.length > 0) {
-    const non4k = group.variants.filter((v) => v.quality !== '4K');
-    const pool = non4k.length > 0 ? non4k : group.variants;
-    const candidateId = Number(pool[0]?.stream?.stream_id);
-    if (Number.isFinite(candidateId) && candidateId > 0) {
-      return candidateId;
+    for (const res of EPG_VARIANT_RESOLUTION_PRIORITY) {
+      const match = group.variants.find((v) => v.resolution === res);
+      const candidateId = Number(
+        match?.streamId ?? match?.stream?.stream_id ?? match?.stream?.id
+      );
+      if (Number.isFinite(candidateId) && candidateId > 0) {
+        return candidateId;
+      }
+    }
+    const fallbackVariantId = Number(
+      group.variants[0]?.streamId ??
+        group.variants[0]?.stream?.stream_id ??
+        group.variants[0]?.stream?.id
+    );
+    if (Number.isFinite(fallbackVariantId) && fallbackVariantId > 0) {
+      return fallbackVariantId;
     }
   }
-  const repId = Number(group.representative?.stream_id);
-  return Number.isFinite(repId) && repId > 0 ? repId : 0;
+
+  const primaryId = Number(group.primaryStream?.stream_id ?? group.primaryStream?.id);
+  if (Number.isFinite(primaryId) && primaryId > 0) {
+    return primaryId;
+  }
+
+  if (Array.isArray(group.allStreams) && group.allStreams.length > 0) {
+    const firstStreamId = Number(group.allStreams[0]?.stream_id ?? group.allStreams[0]?.id);
+    if (Number.isFinite(firstStreamId) && firstStreamId > 0) {
+      return firstStreamId;
+    }
+  }
+
+  return 0;
 }
 
 export function buildLiveEpgCacheKey(

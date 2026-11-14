@@ -462,9 +462,12 @@ export const VideoPlayer = React.memo(function VideoPlayer({
       const exitSelectionKey = activeSelectionKeyRef.current;
       const initialSelectedChannelBtn =
         typeof document !== 'undefined'
-          ? document.querySelector<HTMLButtonElement>(
+          ? (document.querySelector<HTMLButtonElement>(
+              'button[data-live-channel-origin="true"]'
+            ) ||
+            document.querySelector<HTMLButtonElement>(
               'button[data-live-channel-selected="true"]'
-            )
+            ))
           : null;
       const initialSelectedChannelId =
         initialSelectedChannelBtn?.getAttribute('data-live-channel-id') ?? null;
@@ -495,9 +498,13 @@ export const VideoPlayer = React.memo(function VideoPlayer({
       }
 
       if (getNavMode() === 'remote' && typeof document !== 'undefined') {
-        const selectedChannelBtn = document.querySelector<HTMLButtonElement>(
-          'button[data-live-channel-selected="true"]'
-        );
+        const selectedChannelBtn =
+          document.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-origin="true"]'
+          ) ||
+          document.querySelector<HTMLButtonElement>(
+            'button[data-live-channel-selected="true"]'
+          );
         if (selectedChannelBtn && selectedChannelBtn.isConnected) {
           const currentChannelId = selectedChannelBtn.getAttribute(
             'data-live-channel-id'
