@@ -1938,7 +1938,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
       if (scrollContainer && scrollContainer.scrollTop > 0) {
         scrollContainer.scrollTop = 0;
         (scrollContainer as any).__ncDpadTargetTop = 0;
-        if (!currentGrid) {
+        if (!currentGrid && !activeEl.closest('[data-favorites-view="true"]')) {
           return activeEl;
         }
       }

@@ -967,6 +967,7 @@ export const FavoritesView = React.memo(function FavoritesView({
               <section
                 key={sec.key}
                 data-scroll-block="true"
+                data-scroll-top-anchor={rowIdx === 0 ? 'true' : undefined}
                 data-favorites-section={sec.type}
                 data-showcase-row-key={`fav_sec_${sec.type}`}
                 data-showcase-row-index={rowIdx}

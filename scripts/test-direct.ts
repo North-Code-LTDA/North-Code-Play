@@ -30340,6 +30340,26 @@ async function runCycle1228FavoritesStandardizationTests() {
       '[12.28-3] ArrowUp da 1ª seção deve subir para o filtro ativo ("Todos")'
     );
 
+    // Mesmo quando scrollTop residual > 0 na 1ª seção, um único ArrowUp deve zerar scrollTop e focar o filtro ativo
+    const mainScroll1228 = container1228.querySelector<HTMLElement>('main[data-scroll-container="true"]')!;
+    await act(async () => {
+      liveCard0.focus();
+      mainScroll1228.scrollTop = 180;
+    });
+    await act(async () => {
+      moveSpatialFocus('up');
+    });
+    assert.strictEqual(
+      mainScroll1228.scrollTop,
+      0,
+      '[12.28-3] ArrowUp na 1ª seção com scrollTop > 0 deve zerar scrollTop'
+    );
+    assertSameElement(
+      document.activeElement,
+      filterAllBtn,
+      '[12.28-3] ArrowUp na 1ª seção com scrollTop > 0 deve focar diretamente o filtro ativo ("Todos") sem exigir 2º pressionamento'
+    );
+
     // -------------------------------------------------------------------------
     // 4. Reprodução de canal, abertura de MovieDetails e abertura de SeriesDetails
     //    com restauração de foco ao fechar os modais

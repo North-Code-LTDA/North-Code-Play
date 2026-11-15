@@ -239,21 +239,21 @@ html[data-display-mode="tv"] {
   word-break: break-word;
 }
 
-.nc-section-title {
+[data-favorites-view="true"] .nc-section-title {
   font-size: clamp(calc(1.25 * var(--nc-rem)), calc(1.08 * var(--nc-rem) + 0.75vw), calc(1.75 * var(--nc-rem)));
   line-height: 1.25;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
-.nc-subsection-title {
+[data-favorites-view="true"] .nc-subsection-title {
   font-size: clamp(calc(1.05 * var(--nc-rem)), calc(0.95 * var(--nc-rem) + 0.45vw), calc(1.35 * var(--nc-rem)));
   line-height: 1.3;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
-.nc-card-title {
+[data-favorites-view="true"] .nc-card-title {
   font-size: calc(0.875 * var(--nc-rem));
   line-height: 1.35;
   overflow-wrap: anywhere;
