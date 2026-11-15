@@ -990,11 +990,62 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
     };
   }, [rowElState, totalCount, ensureIndexMounted]);
 
+  const computeScrollEdgeAvailability = useCallback(
+    (
+      el: HTMLDivElement | null,
+      win: { startIndex: number; endIndex: number } = horizWindowRef.current
+    ): { canPrev: boolean; canNext: boolean } => {
+      if (totalCount <= 1) {
+        return { canPrev: false, canNext: false };
+      }
+      const scrollLeft = el ? el.scrollLeft || 0 : 0;
+      let maxScroll = 0;
+      if (el && el.clientWidth > 0 && el.scrollWidth > 0) {
+        maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+      } else {
+        const m = resolveLiveHorizRowMetrics(el);
+        const totalW = totalCount * m.cardWidth + Math.max(0, totalCount - 1) * m.gap;
+        maxScroll = Math.max(0, totalW - m.rowWidth);
+      }
+      const canPrev = scrollLeft > 2 || (shouldVirtualizeHoriz && win.startIndex > 0);
+      const canNext =
+        scrollLeft < maxScroll - 2 || (shouldVirtualizeHoriz && win.endIndex < totalCount);
+      return { canPrev, canNext };
+    },
+    [totalCount, shouldVirtualizeHoriz]
+  );
+
+  const [scrollEdges, setScrollEdges] = useState<{ canPrev: boolean; canNext: boolean }>(() =>
+    computeScrollEdgeAvailability(null)
+  );
+
+  const syncScrollEdges = useCallback(
+    (
+      el: HTMLDivElement | null,
+      win: { startIndex: number; endIndex: number } = horizWindowRef.current
+    ) => {
+      const nextEdges = computeScrollEdgeAvailability(el, win);
+      setScrollEdges((prev) =>
+        prev.canPrev === nextEdges.canPrev && prev.canNext === nextEdges.canNext
+          ? prev
+          : nextEdges
+      );
+    },
+    [computeScrollEdgeAvailability]
+  );
+
+  useEffect(() => {
+    syncScrollEdges(rowElRef.current, horizWindowRef.current);
+  }, [row.id, totalCount, rowElState, syncScrollEdges]);
+
   const handleRowScroll = useCallback(() => {
     const el = rowElRef.current;
     if (!el) return;
     notifyContainerScrollForFallback(el);
-    if (!shouldVirtualizeHoriz) return;
+    if (!shouldVirtualizeHoriz) {
+      syncScrollEdges(el, horizWindowRef.current);
+      return;
+    }
     const metrics = resolveLiveHorizRowMetrics(el);
     const next = computeHorizWindow(
       totalCount,
@@ -1011,21 +1062,26 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       horizWindowRef.current = next;
       setHorizWindow(next);
     }
-  }, [shouldVirtualizeHoriz, totalCount]);
+    syncScrollEdges(el, next);
+  }, [shouldVirtualizeHoriz, totalCount, syncScrollEdges]);
 
-  const scrollRowBy = useCallback((dir: -1 | 1) => {
-    const el = rowElRef.current;
-    if (!el) return;
-    const step = Math.max(280, Math.round((el.clientWidth || 640) * 0.75));
-    const nextLeft = Math.max(0, (el.scrollLeft || 0) + dir * step);
-    if (typeof el.scrollTo === 'function') {
-      try {
-        el.scrollTo({ left: nextLeft, behavior: 'smooth' });
-        return;
-      } catch {}
-    }
-    el.scrollLeft = nextLeft;
-  }, []);
+  const scrollRowBy = useCallback(
+    (dir: -1 | 1) => {
+      const el = rowElRef.current;
+      if (!el) return;
+      const step = Math.max(280, Math.round((el.clientWidth || 640) * 0.75));
+      const nextLeft = Math.max(0, (el.scrollLeft || 0) + dir * step);
+      if (typeof el.scrollTo === 'function') {
+        try {
+          el.scrollTo({ left: nextLeft, behavior: 'smooth' });
+          return;
+        } catch {}
+      }
+      el.scrollLeft = nextLeft;
+      handleRowScroll();
+    },
+    [handleRowScroll]
+  );
 
   const visibleSlice = shouldVirtualizeHoriz
     ? row.channels.slice(horizWindow.startIndex, horizWindow.endIndex)
@@ -1039,84 +1095,99 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       data-scroll-block="true"
       className="space-y-2 min-w-0"
     >
-      <div className="flex items-center justify-between gap-2 px-1">
+      <div className="flex items-center px-1 min-w-0">
         <h3
           data-live-category-title="true"
           className="nc-heading-section text-white/95 tracking-tight truncate"
         >
           {formattedTitle}
         </h3>
-        {row.channels.length > 2 && (
-          <div className="hidden sm:flex items-center gap-1 shrink-0">
-            <button
-              type="button"
-              tabIndex={-1}
-              aria-label={`Rolar ${formattedTitle} para esquerda`}
-              onClick={() => scrollRowBy(-1)}
-              className="p-1 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              tabIndex={-1}
-              aria-label={`Rolar ${formattedTitle} para direita`}
-              onClick={() => scrollRowBy(1)}
-              className="p-1 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
       </div>
 
       <div
-        ref={setRowCallbackRef}
-        data-nav-row="true"
-        data-live-category-row-scroll="true"
-        data-virtual-container={shouldVirtualizeHoriz ? 'true' : undefined}
-        onScroll={handleRowScroll}
-        className="flex items-stretch gap-3 overflow-x-auto overflow-y-visible scrollbar-hide touch-pan-x py-1.5 px-1 min-w-0"
+        className="relative w-full min-w-0 group"
+        onMouseEnter={() => syncScrollEdges(rowElRef.current)}
       >
-        {shouldVirtualizeHoriz && horizWindow.leftSpacerPx > 0 && (
-          <div
-            data-virtual-spacer="left"
-            aria-hidden="true"
-            className="shrink-0"
-            style={{ width: `${horizWindow.leftSpacerPx}px` }}
-          />
-        )}
+        <button
+          type="button"
+          tabIndex={-1}
+          data-row-scroll-prev="true"
+          disabled={!scrollEdges.canPrev}
+          aria-label={`Rolar ${formattedTitle} para esquerda`}
+          onClick={() => scrollRowBy(-1)}
+          className={`hidden sm:flex absolute left-0 top-1.5 bottom-1.5 w-10 md:w-12 bg-gradient-to-r from-nc-bg via-nc-bg/80 to-transparent z-30 items-center justify-start pl-1.5 md:pl-2.5 transition-opacity disabled:opacity-0 ${
+            scrollEdges.canPrev
+              ? 'opacity-0 group-hover:opacity-100 cursor-pointer pointer-events-none group-hover:pointer-events-auto'
+              : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          <ChevronLeft className="w-6 h-6 text-white drop-shadow-md" />
+        </button>
 
-        {visibleSlice.map((group, offsetIdx) => {
-          const cardIdx = shouldVirtualizeHoriz ? horizWindow.startIndex + offsetIdx : offsetIdx;
-          return (
-            <LiveChannelCard
-              key={group.groupId}
-              group={group}
-              categoryId={row.categoryId}
-              rowIndex={rowIndex}
-              cardIndex={cardIdx}
-              credentials={credentials}
-              isSelected={selectedGroupId === group.groupId}
-              isOrigin={originGroupId === group.groupId && originCategoryId === row.categoryId}
-              isFavorite={isGroupFavorite(group)}
-              isRowVisible={isRowVisible}
-              rowScrollEl={rowElState}
-              onSelectGroup={onSelectGroup}
-              onToggleFavorite={onToggleFavorite}
-              onFocusCard={onFocusCard}
+        <div
+          ref={setRowCallbackRef}
+          data-nav-row="true"
+          data-live-category-row-scroll="true"
+          data-virtual-container={shouldVirtualizeHoriz ? 'true' : undefined}
+          onScroll={handleRowScroll}
+          className="flex items-stretch gap-3 overflow-x-auto overflow-y-visible scrollbar-hide touch-pan-x py-1.5 px-1 min-w-0"
+        >
+          {shouldVirtualizeHoriz && horizWindow.leftSpacerPx > 0 && (
+            <div
+              data-virtual-spacer="left"
+              aria-hidden="true"
+              className="shrink-0"
+              style={{ width: `${horizWindow.leftSpacerPx}px` }}
             />
-          );
-        })}
+          )}
 
-        {shouldVirtualizeHoriz && horizWindow.rightSpacerPx > 0 && (
-          <div
-            data-virtual-spacer="right"
-            aria-hidden="true"
-            className="shrink-0"
-            style={{ width: `${horizWindow.rightSpacerPx}px` }}
-          />
-        )}
+          {visibleSlice.map((group, offsetIdx) => {
+            const cardIdx = shouldVirtualizeHoriz ? horizWindow.startIndex + offsetIdx : offsetIdx;
+            return (
+              <LiveChannelCard
+                key={group.groupId}
+                group={group}
+                categoryId={row.categoryId}
+                rowIndex={rowIndex}
+                cardIndex={cardIdx}
+                credentials={credentials}
+                isSelected={selectedGroupId === group.groupId}
+                isOrigin={originGroupId === group.groupId && originCategoryId === row.categoryId}
+                isFavorite={isGroupFavorite(group)}
+                isRowVisible={isRowVisible}
+                rowScrollEl={rowElState}
+                onSelectGroup={onSelectGroup}
+                onToggleFavorite={onToggleFavorite}
+                onFocusCard={onFocusCard}
+              />
+            );
+          })}
+
+          {shouldVirtualizeHoriz && horizWindow.rightSpacerPx > 0 && (
+            <div
+              data-virtual-spacer="right"
+              aria-hidden="true"
+              className="shrink-0"
+              style={{ width: `${horizWindow.rightSpacerPx}px` }}
+            />
+          )}
+        </div>
+
+        <button
+          type="button"
+          tabIndex={-1}
+          data-row-scroll-next="true"
+          disabled={!scrollEdges.canNext}
+          aria-label={`Rolar ${formattedTitle} para direita`}
+          onClick={() => scrollRowBy(1)}
+          className={`hidden sm:flex absolute right-0 top-1.5 bottom-1.5 w-10 md:w-12 bg-gradient-to-l from-nc-bg via-nc-bg/80 to-transparent z-30 items-center justify-end pr-1.5 md:pr-2.5 transition-opacity disabled:opacity-0 ${
+            scrollEdges.canNext
+              ? 'opacity-0 group-hover:opacity-100 cursor-pointer pointer-events-none group-hover:pointer-events-auto'
+              : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          <ChevronRight className="w-6 h-6 text-white drop-shadow-md" />
+        </button>
       </div>
     </section>
   );

@@ -246,9 +246,11 @@ html[data-display-mode="tv"] {
   word-break: break-word;
 }
 
-[data-favorites-view="true"] .nc-subsection-title {
-  font-size: clamp(calc(1.05 * var(--nc-rem)), calc(0.95 * var(--nc-rem) + 0.45vw), calc(1.35 * var(--nc-rem)));
-  line-height: 1.3;
+[data-favorites-view="true"] .nc-subsection-title,
+[data-favorites-view="true"] .nc-heading-view {
+  font-size: clamp(calc(1.125 * var(--nc-rem)), calc(0.98 * var(--nc-rem) + 0.65vw), calc(1.5 * var(--nc-rem)));
+  line-height: 1.25;
+  font-weight: 700;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -256,6 +258,7 @@ html[data-display-mode="tv"] {
 [data-favorites-view="true"] .nc-card-title {
   font-size: calc(0.875 * var(--nc-rem));
   line-height: 1.35;
+  font-weight: 600;
   overflow-wrap: anywhere;
   word-break: break-word;
 }

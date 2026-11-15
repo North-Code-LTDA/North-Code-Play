@@ -29903,6 +29903,26 @@ async function runCycle1227LiveTvAndEpgTests() {
               nowPlayingDescEl.classList.contains('nc-live-now-playing-desc'),
             '[13.12-G] Card de programa atual deve exibir título e descrição com classes de legibilidade ampliada'
           );
+
+          const catTitle60El = container1312.querySelector<HTMLElement>(
+            '[data-live-category-title="true"]'
+          )!;
+          const catSectionEl = catTitle60El?.closest<HTMLElement>('section[data-scroll-block="true"]')!;
+          assert.strictEqual(
+            catTitle60El?.parentElement?.querySelectorAll('button').length ?? -1,
+            0,
+            '[12.28-b] Cabeçalho da categoria na TV ao Vivo não deve conter botões de seta na linha do título'
+          );
+          const prevArrow60 = catSectionEl?.querySelector<HTMLButtonElement>(
+            'button[data-row-scroll-prev="true"]'
+          )!;
+          const nextArrow60 = catSectionEl?.querySelector<HTMLButtonElement>(
+            'button[data-row-scroll-next="true"]'
+          )!;
+          assert(
+            prevArrow60 && nextArrow60 && prevArrow60.tabIndex === -1 && nextArrow60.tabIndex === -1,
+            '[12.28-b] Setas sobrepostas da fileira de canais devem existir com tabIndex=-1 (fora do D-Pad)'
+          );
         }
       } finally {
         restoreGeomDefault();
@@ -30389,31 +30409,26 @@ async function runCycle1228FavoritesStandardizationTests() {
       '[12.28-4] Reproduzir canal favorito deve registrar entrada no histórico de reprodução'
     );
 
-    // Abrir MovieDetails no 2º filme ("Oppenheimer") e fechar com Escape -> foco volta para movieCard1
+    // Abrir MovieDetails no 2º filme ("Oppenheimer") e fechar com Back/Escape -> foco volta para movieCard1
+    const { executeBackAction } = await import('../src/navigation/backPolicy');
     const movieCard1 = movieSec.querySelector<HTMLElement>('[data-favorite-card="true"][data-favorite-index="1"]')!;
     await act(async () => {
       movieCard1.focus();
       movieCard1.click();
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 30));
     });
     assert(
       document.querySelector('[data-details-dialog="true"]') !== null,
       '[12.28-4] Clicar no cartão de filme deve abrir MovieDetails'
     );
     await act(async () => {
-      windowInstance.dispatchEvent(
-        new (windowInstance as any).KeyboardEvent('keydown', {
-          key: 'Escape',
-          bubbles: true,
-          cancelable: true,
-        })
-      );
-      await new Promise((r) => setTimeout(r, 50));
+      executeBackAction();
+      await new Promise((r) => setTimeout(r, 30));
     });
     assert.strictEqual(
       document.querySelector('[data-details-dialog="true"]'),
       null,
-      '[12.28-4] Escape deve fechar MovieDetails'
+      '[12.28-4] Back/Escape deve fechar MovieDetails'
     );
     assertSameElement(
       document.activeElement,
@@ -30421,30 +30436,24 @@ async function runCycle1228FavoritesStandardizationTests() {
       '[12.28-4] Ao fechar MovieDetails, o foco deve ser restaurado no cartão do filme correspondente'
     );
 
-    // Abrir SeriesDetails na 1ª série ("Ruptura") e fechar com Escape -> foco volta para seriesCard0
+    // Abrir SeriesDetails na 1ª série ("Ruptura") e fechar com Back/Escape -> foco volta para seriesCard0
     await act(async () => {
       seriesCard0.focus();
       seriesCard0.click();
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 30));
     });
     assert(
       document.querySelector('[data-details-dialog="true"]') !== null,
       '[12.28-4] Clicar no cartão de série deve abrir SeriesDetails'
     );
     await act(async () => {
-      windowInstance.dispatchEvent(
-        new (windowInstance as any).KeyboardEvent('keydown', {
-          key: 'Escape',
-          bubbles: true,
-          cancelable: true,
-        })
-      );
-      await new Promise((r) => setTimeout(r, 50));
+      executeBackAction();
+      await new Promise((r) => setTimeout(r, 30));
     });
     assert.strictEqual(
       document.querySelector('[data-details-dialog="true"]'),
       null,
-      '[12.28-4] Escape deve fechar SeriesDetails'
+      '[12.28-4] Back/Escape deve fechar SeriesDetails'
     );
     assertSameElement(
       document.activeElement,
@@ -30534,6 +30543,11 @@ async function runCycle1228FavoritesStandardizationTests() {
       seriesFilterBtn.getAttribute('data-category-selected'),
       'true',
       '[12.28-6] Filtro Séries deve estar marcado como selecionado'
+    );
+    const seriesGridTitleEl = container1228.querySelector<HTMLElement>('[data-favorites-grid-title="true"]');
+    assert(
+      seriesGridTitleEl !== null && seriesGridTitleEl.classList.contains('nc-heading-view'),
+      '[12.28-b] Título do filtro específico deve usar nc-heading-view para consistência tipográfica com Todos'
     );
 
     // ArrowDown do filtro Séries entra no 1º cartão da grade de Séries (series-301)

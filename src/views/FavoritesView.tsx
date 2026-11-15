@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { Play, Tv, Film, PlaySquare, Heart, AlertCircle, RefreshCw, Search, X } from 'lucide-react';
-import { AnimatePresence } from 'motion/react';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { useXtreamCredentials } from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
@@ -797,32 +796,28 @@ export const FavoritesView = React.memo(function FavoritesView({
       data-favorites-view="true"
       className="flex flex-1 flex-col overflow-hidden w-full h-full relative bg-nc-bg"
     >
-      <AnimatePresence>
-        {selectedMovie && (
-          <MovieDetails
-            streamId={selectedMovie.id}
-            streamName={selectedMovie.name}
-            streamIcon={normalizeImageSource(selectedMovie.cover)}
-            categoryName={selectedMovie.extraData?.category || 'Favorito'}
-            rating={selectedMovie.extraData?.rating}
-            year={selectedMovie.extraData?.year}
-            onClose={handleCloseMovieDetails}
-            onPlay={onPlay}
-          />
-        )}
-      </AnimatePresence>
+      {selectedMovie && (
+        <MovieDetails
+          streamId={selectedMovie.id}
+          streamName={selectedMovie.name}
+          streamIcon={normalizeImageSource(selectedMovie.cover)}
+          categoryName={selectedMovie.extraData?.category || 'Favorito'}
+          rating={selectedMovie.extraData?.rating}
+          year={selectedMovie.extraData?.year}
+          onClose={handleCloseMovieDetails}
+          onPlay={onPlay}
+        />
+      )}
 
-      <AnimatePresence>
-        {selectedSeries && (
-          <SeriesDetails
-            seriesId={selectedSeries.id}
-            seriesName={selectedSeries.name}
-            seriesCover={normalizeImageSource(selectedSeries.cover)}
-            onClose={handleCloseSeriesDetails}
-            onPlay={onPlay}
-          />
-        )}
-      </AnimatePresence>
+      {selectedSeries && (
+        <SeriesDetails
+          seriesId={selectedSeries.id}
+          seriesName={selectedSeries.name}
+          seriesCover={normalizeImageSource(selectedSeries.cover)}
+          onClose={handleCloseSeriesDetails}
+          onPlay={onPlay}
+        />
+      )}
 
       {favPlayError && (
         <div
@@ -1017,7 +1012,10 @@ export const FavoritesView = React.memo(function FavoritesView({
             className="px-4 sm:px-6 md:px-10 pt-4 pb-16"
           >
             <div className="mb-4 flex items-center justify-between gap-2">
-              <h2 className="nc-subsection-title font-bold text-white whitespace-normal break-words">
+              <h2
+                data-favorites-grid-title="true"
+                className="nc-heading-view font-semibold text-white whitespace-normal break-words"
+              >
                 {hasSearch
                   ? `Resultados em ${domainGridTitle} para "${searchQuery}"`
                   : domainGridTitle}
