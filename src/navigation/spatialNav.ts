@@ -44,6 +44,12 @@ export function setFastHorizontalRowNavEnabledForTest(enabled: boolean): void {
   fastHorizontalRowNavEnabled = Boolean(enabled);
 }
 
+let fastVerticalNavEnabled = true;
+
+export function setFastVerticalNavEnabledForTest(enabled: boolean): void {
+  fastVerticalNavEnabled = Boolean(enabled);
+}
+
 
 export interface ShowcaseRowController {
   totalRows: number;
@@ -512,7 +518,14 @@ export function ensureElementScrolledIntoView(
       }
     }
 
-    if (!isVirtualRow || isLiveCategoryRow) {
+    const mayNeedHorizScrollCheck =
+      direction === 'left' ||
+      direction === 'right' ||
+      isLiveCategoryRow ||
+      (rowContainer.scrollWidth || 0) > (rowContainer.clientWidth || 0) ||
+      Object.prototype.hasOwnProperty.call(rowContainer, 'getBoundingClientRect');
+
+    if ((!isVirtualRow || isLiveCategoryRow) && mayNeedHorizScrollCheck) {
       const horizTargetEl = isLiveCategoryRow
         ? el.closest<HTMLElement>('[data-live-channel-card="true"]') || el
         : el;
@@ -697,11 +710,16 @@ export function ensureElementScrolledIntoView(
     };
 
     if (topAnchor && scrollContainer.contains(topAnchor)) {
-      spatialPerfStats.boundingRectCalls++;
-      const elRect = el.getBoundingClientRect();
-      if (containerRect.height > 0 && elRect.height > 0) {
-        const elBottomAtTopZero = elRect.bottom - containerRect.top + scrollContainer.scrollTop;
-        if (elBottomAtTopZero <= containerRect.height - 12) {
+      if (containerRect.height > 0) {
+        spatialPerfStats.boundingRectCalls++;
+        const elRect = el.getBoundingClientRect();
+        if (elRect.height > 0) {
+          const elBottomAtTopZero = elRect.bottom - containerRect.top + scrollContainer.scrollTop;
+          if (elBottomAtTopZero <= containerRect.height - 12) {
+            applyVerticalScrollTop(0);
+            return;
+          }
+        } else {
           applyVerticalScrollTop(0);
           return;
         }
@@ -711,29 +729,31 @@ export function ensureElementScrolledIntoView(
       }
     }
 
-    spatialPerfStats.boundingRectCalls++;
-    const blockRect = targetBlock.getBoundingClientRect();
+    if (containerRect.height > 0) {
+      spatialPerfStats.boundingRectCalls++;
+      const blockRect = targetBlock.getBoundingClientRect();
 
-    if (containerRect.height > 0 && blockRect.height > 0) {
-      const padY = 24;
-      if (blockRect.top < containerRect.top + padY) {
-        applyVerticalScrollTop(
-          scrollContainer.scrollTop + (blockRect.top - containerRect.top) - padY
-        );
-      } else if (blockRect.bottom > containerRect.bottom - padY) {
-        if (direction === 'up' || blockRect.height > containerRect.height - padY * 2) {
+      if (blockRect.height > 0) {
+        const padY = 24;
+        if (blockRect.top < containerRect.top + padY) {
           applyVerticalScrollTop(
             scrollContainer.scrollTop + (blockRect.top - containerRect.top) - padY
           );
+        } else if (blockRect.bottom > containerRect.bottom - padY) {
+          if (direction === 'up' || blockRect.height > containerRect.height - padY * 2) {
+            applyVerticalScrollTop(
+              scrollContainer.scrollTop + (blockRect.top - containerRect.top) - padY
+            );
+          } else {
+            applyVerticalScrollTop(
+              scrollContainer.scrollTop + (blockRect.bottom - containerRect.bottom) + padY
+            );
+          }
         } else {
-          applyVerticalScrollTop(
-            scrollContainer.scrollTop + (blockRect.bottom - containerRect.bottom) + padY
-          );
+          recordRowVerticalAlignment(scrollContainer, targetBlock);
         }
-      } else {
-        recordRowVerticalAlignment(scrollContainer, targetBlock);
+        return;
       }
-      return;
     }
 
     // Fallback for simulated DOM environments where getBoundingClientRect() returns 0x0
@@ -942,6 +962,50 @@ export function getFocusableElements(
   const rawList = queryRawCandidates(root);
   return rawList.filter((el) => isElementFocusable(el, cache));
 }
+
+/**
+ * Lists focusable elements inside a localized subtree (such as a single row or grid)
+ * without polluting the global scopeRoot candidate cache.
+ */
+function getFocusableElementsInSubtree(
+  subtreeRoot: HTMLElement | null | undefined,
+  ancestorCache: Map<HTMLElement, boolean>,
+  selector: string = FOCUSABLE_SELECTOR
+): HTMLElement[] {
+  if (!subtreeRoot) return [];
+  const rawList = Array.from(subtreeRoot.querySelectorAll<HTMLElement>(selector));
+  return rawList.filter((el) => isElementFocusable(el, ancestorCache));
+}
+
+/**
+ * Collects focusable items for a target horizontal row container without scanning the entire document.
+ * For Live TV category rows, prioritizes the primary channel buttons ([data-live-channel-btn="true"])
+ * to avoid unnecessary style checks on secondary favorite buttons.
+ */
+function getTargetRowFocusableItems(
+  targetRowWrapper: HTMLElement,
+  targetRowContainer: HTMLElement,
+  ancestorCache: Map<HTMLElement, boolean>
+): HTMLElement[] {
+  if (targetRowContainer.getAttribute('data-live-category-row-scroll') === 'true') {
+    const mainChannelBtns = getFocusableElementsInSubtree(
+      targetRowContainer,
+      ancestorCache,
+      'button[data-live-channel-btn="true"]'
+    );
+    if (mainChannelBtns.length > 0) {
+      return mainChannelBtns;
+    }
+  }
+
+  const rowItems = getFocusableElementsInSubtree(targetRowContainer, ancestorCache);
+  if (rowItems.length > 0 || targetRowContainer === targetRowWrapper) {
+    return rowItems;
+  }
+
+  return getFocusableElementsInSubtree(targetRowWrapper, ancestorCache);
+}
+
 
 interface NavPassContext {
   rectCache: Map<HTMLElement, DOMRect>;
@@ -1676,6 +1740,10 @@ function ensureVirtualTargetMountedIfNeeded(
   if (isNaN(currentIndex) || currentIndex < 0) return;
 
   const isHorizontalRow = virtualContainer.getAttribute('data-nav-row') === 'true';
+  if (isHorizontalRow && (direction === 'up' || direction === 'down')) {
+    return;
+  }
+
   const cols = Math.max(1, controller.getColumns());
   const totalCount = controller.totalCount;
   let targetIndex = -1;
@@ -1773,6 +1841,423 @@ interface FastHorizontalRowMoveResult {
   handled: boolean;
   target: HTMLElement | null;
   virtualExpansionHandled: boolean;
+}
+
+/**
+ * Checks whether the current element and target row items have real non-zero geometry
+ * without reading layout rects across all focusable elements on the page.
+ */
+function hasLocalBlockRealGeometry(
+  activeEl: HTMLElement,
+  targetContainer: HTMLElement,
+  items: HTMLElement[],
+  ctx: NavPassContext
+): boolean {
+  if (items.length <= 1) {
+    return false;
+  }
+
+  const mayHaveLayoutDimensions =
+    (activeEl.offsetWidth || 0) > 0 ||
+    (activeEl.offsetHeight || 0) > 0 ||
+    (activeEl.clientWidth || 0) > 0 ||
+    (activeEl.clientHeight || 0) > 0 ||
+    Object.prototype.hasOwnProperty.call(activeEl, 'getBoundingClientRect') ||
+    Object.prototype.hasOwnProperty.call(targetContainer, 'getBoundingClientRect') ||
+    items.some((el) => Object.prototype.hasOwnProperty.call(el, 'getBoundingClientRect'));
+
+  if (!mayHaveLayoutDimensions) {
+    return false;
+  }
+
+  const activeRect = getCachedRect(activeEl, ctx);
+  if (activeRect.width <= 0 || activeRect.height <= 0) {
+    return false;
+  }
+
+  return items.some((item) => {
+    if (item === activeEl) return false;
+    const r = getCachedRect(item, ctx);
+    return (
+      r.width > 0 &&
+      r.height > 0 &&
+      (r.left !== activeRect.left || r.top !== activeRect.top)
+    );
+  });
+}
+
+interface CachedVirtualGridColsState {
+  cols: number;
+  controllerCols: number;
+  clientWidth: number;
+  childCount: number;
+  viewportW: number;
+}
+
+const virtualGridMeasuredColsCache = new WeakMap<HTMLElement, CachedVirtualGridColsState>();
+
+/**
+ * Resolves the effective column count for a virtualized grid ([data-virtual-container="true"][data-nav-grid="true"]),
+ * verifying against real first-row item geometry only when layout dimensions exist or change.
+ */
+function resolveVirtualGridColumns(
+  virtualGrid: HTMLElement,
+  activeEl: HTMLElement,
+  controller: VirtualContainerController,
+  ctx: NavPassContext
+): number {
+  const controllerCols = Math.max(1, controller.getColumns());
+  const clientWidth = virtualGrid.clientWidth || 0;
+  const childCount = virtualGrid.children.length;
+  const viewportW = typeof window !== 'undefined' ? window.innerWidth || 0 : 0;
+
+  const hasCustomRectOverride =
+    Object.prototype.hasOwnProperty.call(activeEl, 'getBoundingClientRect') ||
+    Object.prototype.hasOwnProperty.call(virtualGrid, 'getBoundingClientRect');
+
+  const cached = virtualGridMeasuredColsCache.get(virtualGrid);
+  if (
+    cached &&
+    !hasCustomRectOverride &&
+    cached.controllerCols === controllerCols &&
+    cached.clientWidth === clientWidth &&
+    cached.childCount === childCount &&
+    cached.viewportW === viewportW
+  ) {
+    return cached.cols;
+  }
+
+  let cols = controllerCols;
+  const mayHaveRealGeometry =
+    hasCustomRectOverride ||
+    (activeEl.offsetWidth || 0) > 0 ||
+    (activeEl.offsetHeight || 0) > 0 ||
+    (activeEl.clientWidth || 0) > 0 ||
+    (activeEl.clientHeight || 0) > 0;
+
+  if (mayHaveRealGeometry && childCount > 1) {
+    const sampleItems: HTMLElement[] = [];
+    for (let i = 0; i < virtualGrid.children.length && sampleItems.length < 16; i++) {
+      const child = virtualGrid.children[i];
+      if (child instanceof HTMLElement && child.hasAttribute('data-virtual-index')) {
+        sampleItems.push(child);
+      }
+    }
+    if (sampleItems.length > 1) {
+      const firstRect = getCachedRect(sampleItems[0], ctx);
+      if (firstRect.width > 0 && firstRect.height > 0) {
+        let measuredCols = 0;
+        let foundSecondRow = false;
+        for (let i = 0; i < sampleItems.length; i++) {
+          const r = getCachedRect(sampleItems[i], ctx);
+          if (r.width <= 0 || r.height <= 0) continue;
+          if (Math.abs(r.top - firstRect.top) < firstRect.height * 0.4) {
+            measuredCols++;
+          } else if (r.top >= firstRect.top + firstRect.height * 0.5) {
+            foundSecondRow = true;
+            break;
+          }
+        }
+        if (foundSecondRow && measuredCols >= 1) {
+          cols = measuredCols;
+        }
+      }
+    }
+  }
+
+  virtualGridMeasuredColsCache.set(virtualGrid, {
+    cols,
+    controllerCols,
+    clientWidth,
+    childCount,
+    viewportW,
+  });
+
+  return cols;
+}
+
+/**
+ * Conservative fast path for vertical ('up' | 'down') movements:
+ * 1) Between known horizontal rows ([data-home-row-index]) inside a showcase container or direct sibling rows,
+ *    preserving visual horizontal card selection (pickBestItemInBlock) without scanning all focusable elements on the page.
+ * 2) Inside a virtualized grid ([data-virtual-container="true"][data-nav-grid="true"]) when the destination row
+ *    is strictly inside the grid bounds (0 <= targetRow < totalRows).
+ * Falls back to the full algorithm at vertical boundaries, modals, submenus, synopses, or special zones.
+ */
+function tryFastVerticalMove(
+  initialActive: HTMLElement | null,
+  direction: SpatialDirection,
+  ctx: NavPassContext
+): FastHorizontalRowMoveResult {
+  if (!fastVerticalNavEnabled) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+  if (direction !== 'up' && direction !== 'down') {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+  if (!initialActive || !initialActive.isConnected) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  // Scrollable synopsis regions have dedicated progressive scrolling rules
+  if (initialActive.getAttribute('data-synopsis-focus') === 'true') {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  // Header bars and dropdown menus have dedicated vertical navigation rules
+  if (
+    initialActive.closest(
+      '[data-header-account-menu="true"], [data-categories-menu="true"], header, [data-nav-zone="header"]'
+    )
+  ) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  const currentZone = getLogicalZone(initialActive, ctx);
+  if (currentZone !== 'content' && currentZone !== 'categories') {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  const scopeRoot = getActiveScopeRoot(ctx.ancestorCache);
+  if (!scopeRoot || !scopeRoot.contains(initialActive)) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  if (!isElementFocusable(initialActive, ctx.ancestorCache)) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  // -------------------------------------------------------------------------
+  // A) Known horizontal rows ([data-home-row-index])
+  // -------------------------------------------------------------------------
+  const homeRowEl = initialActive.closest<HTMLElement>('[data-home-row-index]');
+  if (homeRowEl && !getLogicalGrid(initialActive, ctx)) {
+    const currentRowIndex = parseInt(homeRowEl.getAttribute('data-home-row-index') || '-1', 10);
+    const showcaseRowsContainer = homeRowEl.closest<HTMLElement>(
+      '[data-showcase-rows-container="true"]'
+    );
+
+    if (
+      showcaseRowsContainer &&
+      scopeRoot.contains(showcaseRowsContainer) &&
+      !isNaN(currentRowIndex) &&
+      currentRowIndex >= 0
+    ) {
+      const rowController = showcaseRowControllers.get(showcaseRowsContainer);
+      const parsedTotalRows = parseInt(
+        showcaseRowsContainer.getAttribute('data-showcase-total-rows') || '0',
+        10
+      );
+      const totalRows =
+        rowController && rowController.totalRows > 0
+          ? rowController.totalRows
+          : parsedTotalRows > 0
+            ? parsedTotalRows
+            : 0;
+
+      if (totalRows > 0) {
+        const targetRowIndex =
+          direction === 'down' ? currentRowIndex + 1 : currentRowIndex - 1;
+
+        if (targetRowIndex >= 0 && targetRowIndex < totalRows) {
+          let virtualExpansionHandled = false;
+          if (rowController) {
+            const expanded = rowController.ensureRowMounted(targetRowIndex, currentRowIndex);
+            virtualExpansionHandled = true;
+            if (expanded) {
+              spatialPerfStats.virtualWindowExpansions++;
+              invalidateCandidateCache();
+            }
+          }
+
+          const targetRowWrapper = showcaseRowsContainer.querySelector<HTMLElement>(
+            `[data-home-row-index="${targetRowIndex}"]`
+          );
+          if (targetRowWrapper && scopeRoot.contains(targetRowWrapper)) {
+            const targetRowContainer =
+              targetRowWrapper.querySelector<HTMLElement>('[data-nav-row="true"]') ||
+              targetRowWrapper;
+            const targetRowItems = getTargetRowFocusableItems(
+              targetRowWrapper,
+              targetRowContainer,
+              ctx.ancestorCache
+            );
+
+            if (targetRowItems.length > 0) {
+              const hasLocalGeom = hasLocalBlockRealGeometry(
+                initialActive,
+                targetRowContainer,
+                targetRowItems,
+                ctx
+              );
+              const targetBlock: ZoneBlock = {
+                type: 'row',
+                container: targetRowContainer,
+                items: targetRowItems,
+              };
+              const nextEl = pickBestItemInBlock(
+                initialActive,
+                targetBlock,
+                hasLocalGeom,
+                ctx,
+                direction
+              );
+              focusElementSafely(nextEl, direction);
+              return { handled: true, target: nextEl, virtualExpansionHandled };
+            }
+          }
+
+          // Logical neighbor row exists within totalRows, but its cards are not ready yet:
+          // preserve current focus rather than jumping to HeroBanner, header, or top reset.
+          if (initialActive.isConnected) {
+            return { handled: true, target: initialActive, virtualExpansionHandled };
+          }
+          const currentRowWrapperAfter = showcaseRowsContainer.querySelector<HTMLElement>(
+            `[data-home-row-index="${currentRowIndex}"]`
+          );
+          const recoveredInCurrentRow = currentRowWrapperAfter
+            ? getFocusableElementsInSubtree(currentRowWrapperAfter, ctx.ancestorCache)[0]
+            : null;
+          if (recoveredInCurrentRow) {
+            focusElementSafely(recoveredInCurrentRow, direction);
+            return { handled: true, target: recoveredInCurrentRow, virtualExpansionHandled };
+          }
+          return { handled: true, target: initialActive, virtualExpansionHandled };
+        }
+
+        if (direction === 'down' && targetRowIndex >= totalRows) {
+          return { handled: true, target: initialActive, virtualExpansionHandled: true };
+        }
+
+        // direction === 'up' && targetRowIndex < 0 (first row upward boundary):
+        // fall back to full zone boundary logic (HeroBanner / Categories bar / Header).
+        return { handled: false, target: null, virtualExpansionHandled: true };
+      }
+    } else if (!showcaseRowsContainer && !isNaN(currentRowIndex) && currentRowIndex >= 0) {
+      // Direct sibling [data-home-row-index] rows without a showcase wrapper
+      const targetRowIndex =
+        direction === 'down' ? currentRowIndex + 1 : currentRowIndex - 1;
+      const adjacentSibling =
+        direction === 'down' ? homeRowEl.nextElementSibling : homeRowEl.previousElementSibling;
+
+      if (
+        targetRowIndex >= 0 &&
+        adjacentSibling instanceof HTMLElement &&
+        adjacentSibling.getAttribute('data-home-row-index') === String(targetRowIndex) &&
+        scopeRoot.contains(adjacentSibling) &&
+        getLogicalZone(adjacentSibling, ctx) === currentZone
+      ) {
+        const targetRowContainer =
+          adjacentSibling.querySelector<HTMLElement>('[data-nav-row="true"]') ||
+          adjacentSibling;
+        const targetRowItems = getTargetRowFocusableItems(
+          adjacentSibling,
+          targetRowContainer,
+          ctx.ancestorCache
+        );
+        if (targetRowItems.length > 0) {
+          const hasLocalGeom = hasLocalBlockRealGeometry(
+            initialActive,
+            targetRowContainer,
+            targetRowItems,
+            ctx
+          );
+          const targetBlock: ZoneBlock = {
+            type: 'row',
+            container: targetRowContainer,
+            items: targetRowItems,
+          };
+          const nextEl = pickBestItemInBlock(
+            initialActive,
+            targetBlock,
+            hasLocalGeom,
+            ctx,
+            direction
+          );
+          focusElementSafely(nextEl, direction);
+          return { handled: true, target: nextEl, virtualExpansionHandled: true };
+        }
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // B) Virtualized grids ([data-virtual-container="true"][data-nav-grid="true"])
+  // -------------------------------------------------------------------------
+  const currentGrid = getLogicalGrid(initialActive, ctx);
+  if (
+    currentGrid &&
+    currentGrid.getAttribute('data-virtual-container') === 'true' &&
+    scopeRoot.contains(currentGrid)
+  ) {
+    const virtualItemEl = initialActive.closest<HTMLElement>('[data-virtual-index]');
+    const controller = virtualControllers.get(currentGrid);
+    const currentIndex = virtualItemEl
+      ? parseInt(virtualItemEl.getAttribute('data-virtual-index') || '-1', 10)
+      : -1;
+
+    if (
+      virtualItemEl &&
+      controller &&
+      controller.totalCount > 0 &&
+      !isNaN(currentIndex) &&
+      currentIndex >= 0
+    ) {
+      const cols = resolveVirtualGridColumns(currentGrid, initialActive, controller, ctx);
+      const totalCount = controller.totalCount;
+      const currentRow = Math.floor(currentIndex / cols);
+      const currentCol = currentIndex % cols;
+      const totalRows = Math.ceil(totalCount / cols);
+
+      const targetVirtualIndex =
+        direction === 'down'
+          ? currentRow < totalRows - 1
+            ? Math.min(totalCount - 1, (currentRow + 1) * cols + currentCol)
+            : -1
+          : currentRow > 0
+            ? (currentRow - 1) * cols + currentCol
+            : -1;
+
+      if (targetVirtualIndex >= 0 && targetVirtualIndex < totalCount) {
+        const targetSelector = `[data-virtual-index="${targetVirtualIndex}"]`;
+        let targetEl = currentGrid.querySelector<HTMLElement>(targetSelector);
+
+        // Pre-expand virtual window if target is unmounted or within 1 row of window edge
+        const aheadIndex =
+          direction === 'down'
+            ? Math.min(totalCount - 1, targetVirtualIndex + cols)
+            : Math.max(0, targetVirtualIndex - cols);
+        const aheadEl = targetEl
+          ? currentGrid.querySelector<HTMLElement>(`[data-virtual-index="${aheadIndex}"]`)
+          : null;
+
+        if (!targetEl || !aheadEl) {
+          const expanded = controller.ensureIndexMounted(targetVirtualIndex, currentIndex);
+          if (expanded) {
+            spatialPerfStats.virtualWindowExpansions++;
+            invalidateCandidateCache();
+          }
+          if (!targetEl || !targetEl.isConnected) {
+            targetEl = currentGrid.querySelector<HTMLElement>(targetSelector);
+          }
+        }
+
+        if (
+          targetEl &&
+          targetEl !== initialActive &&
+          scopeRoot.contains(targetEl) &&
+          isElementFocusable(targetEl, ctx.ancestorCache)
+        ) {
+          focusElementSafely(targetEl, direction);
+          return { handled: true, target: targetEl, virtualExpansionHandled: true };
+        }
+
+        return { handled: false, target: null, virtualExpansionHandled: true };
+      }
+    }
+  }
+
+  return { handled: false, target: null, virtualExpansionHandled: false };
 }
 
 /**
@@ -1898,11 +2383,18 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
 
   const ctx = createNavPassContext();
 
-  // Fast, conservative path for horizontal moves between adjacent cards in known rows
-  const fastResult = tryFastHorizontalRowCardMove(initialActive, direction, ctx);
+  // Fast, conservative path for horizontal ('left' | 'right') or vertical ('up' | 'down') moves
+  const fastResult =
+    direction === 'left' || direction === 'right'
+      ? tryFastHorizontalRowCardMove(initialActive, direction, ctx)
+      : tryFastVerticalMove(initialActive, direction, ctx);
   if (fastResult.handled) {
     return fastResult.target;
   }
+
+  const prevVirtualIdx = initialActive?.getAttribute('data-virtual-index') ?? null;
+  const prevVirtualContainer =
+    initialActive?.closest<HTMLElement>('[data-virtual-container="true"]') ?? null;
 
   // Expand virtual window synchronously if navigating near/across a virtualized list boundary
   if (!fastResult.virtualExpansionHandled) {
@@ -1913,10 +2405,24 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
   const candidates = getFocusableElements(scopeRoot, ctx.ancestorCache);
   if (candidates.length === 0) return null;
 
-  const activeEl =
+  let activeEl =
     document.activeElement instanceof HTMLElement && scopeRoot.contains(document.activeElement)
       ? document.activeElement
       : null;
+
+  if (
+    !activeEl &&
+    prevVirtualIdx !== null &&
+    prevVirtualContainer &&
+    scopeRoot.contains(prevVirtualContainer)
+  ) {
+    const remountedActive = prevVirtualContainer.querySelector<HTMLElement>(
+      `[data-virtual-index="${prevVirtualIdx}"]`
+    );
+    if (remountedActive && candidates.includes(remountedActive)) {
+      activeEl = remountedActive;
+    }
+  }
 
   if (!activeEl || !candidates.includes(activeEl)) {
     const liveRowsContainer = scopeRoot.querySelector<HTMLElement>(
@@ -2057,7 +2563,12 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
             direction === 'down' ? currentRowIndex + 1 : currentRowIndex - 1;
 
           if (targetRowIndex >= 0 && targetRowIndex < totalRows) {
-            if (rowController) {
+            let targetRowWrapper =
+              showcaseRowsContainer.querySelector<HTMLElement>(
+                `[data-home-row-index="${targetRowIndex}"]`
+              );
+
+            if (!targetRowWrapper && rowController) {
               const expanded = rowController.ensureRowMounted(
                 targetRowIndex,
                 currentRowIndex
@@ -2066,12 +2577,11 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
                 spatialPerfStats.virtualWindowExpansions++;
                 invalidateCandidateCache();
               }
-            }
-
-            const targetRowWrapper =
-              showcaseRowsContainer.querySelector<HTMLElement>(
+              targetRowWrapper = showcaseRowsContainer.querySelector<HTMLElement>(
                 `[data-home-row-index="${targetRowIndex}"]`
               );
+            }
+
             const targetRowItems = targetRowWrapper
               ? getFocusableElements(targetRowWrapper, ctx.ancestorCache)
               : [];

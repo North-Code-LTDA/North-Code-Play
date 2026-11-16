@@ -259,6 +259,11 @@ import {
   getSpatialNavPerfStats,
   resetSpatialNavPerfStats,
   setFastHorizontalRowNavEnabledForTest,
+  setFastVerticalNavEnabledForTest,
+  registerShowcaseRowController,
+  unregisterShowcaseRowController,
+  registerVirtualContainer,
+  unregisterVirtualContainer,
   invalidateCandidateCache,
 } from '../src/navigation';
 import { HorizontalRow } from '../src/components/HorizontalRow';
@@ -1270,17 +1275,540 @@ async function runCycle1230bSpatialNavOptimizationTests(): Promise<void> {
   console.log('✅ Ciclo 12.30-b (caminho rápido D-Pad, virtualização, HorizontalRow e regressão) validado!');
 }
 
+// ============================================================================
+// 5. CICLO 12.30-c — OTIMIZAÇÃO CIRÚRGICA DA NAVEGAÇÃO VERTICAL D-PAD
+// ============================================================================
+async function runCycle1230cVerticalNavOptimizationTests(): Promise<void> {
+  console.log('--- 5. Ciclo 12.30-c: Caminho Rápido Vertical D-Pad (Fileiras, Grades Virtualizadas, Alinhamento Visual e Fallbacks) ---');
+
+  const doc: Document = windowInstance.document as unknown as Document;
+  setNavMode('remote');
+  clearAllBackHandlersForTest();
+  clearFocusMemory();
+  setFastHorizontalRowNavEnabledForTest(true);
+  setFastVerticalNavEnabledForTest(true);
+
+  const shellEl = doc.createElement('div');
+  doc.body.appendChild(shellEl);
+
+  let showcaseContainerEl: HTMLElement | null = null;
+  let virtualGridEl: HTMLElement | null = null;
+
+  try {
+    // -------------------------------------------------------------------------
+    // 5.1. Caminho vertical rápido vs tradicional em fileiras de vitrine
+    //      ([data-showcase-rows-container="true"]) + ausência de chamadas
+    //      duplicadas a ensureRowMounted + travessia de janela virtualizada
+    // -------------------------------------------------------------------------
+    const headerZone = doc.createElement('header');
+    headerZone.setAttribute('data-nav-zone', 'header');
+    for (let i = 0; i < 6; i++) {
+      const hBtn = doc.createElement('button');
+      hBtn.setAttribute('data-nav-item', 'true');
+      if (i === 0) hBtn.setAttribute('data-header-nav-active', 'true');
+      hBtn.textContent = `Menu ${i}`;
+      headerZone.appendChild(hBtn);
+    }
+    shellEl.appendChild(headerZone);
+
+    const categoriesBar = doc.createElement('div');
+    categoriesBar.setAttribute('data-nav-zone', 'categories');
+    categoriesBar.setAttribute('data-showcase-categories-bar', 'true');
+    const selectedCategoryBtn = doc.createElement('button');
+    selectedCategoryBtn.setAttribute('data-nav-item', 'true');
+    selectedCategoryBtn.setAttribute('data-category-selected', 'true');
+    selectedCategoryBtn.setAttribute('data-cat-id', 'todos');
+    selectedCategoryBtn.textContent = 'Todos';
+    categoriesBar.appendChild(selectedCategoryBtn);
+    for (let i = 1; i <= 10; i++) {
+      const catBtn = doc.createElement('button');
+      catBtn.setAttribute('data-nav-item', 'true');
+      catBtn.textContent = `Categoria ${i}`;
+      categoriesBar.appendChild(catBtn);
+    }
+    shellEl.appendChild(categoriesBar);
+
+    const contentScrollEl = doc.createElement('div');
+    contentScrollEl.setAttribute('data-nav-zone', 'content');
+    contentScrollEl.setAttribute('data-scroll-container', 'true');
+    shellEl.appendChild(contentScrollEl);
+
+    showcaseContainerEl = doc.createElement('div');
+    showcaseContainerEl.setAttribute('data-showcase-rows-container', 'true');
+    const totalShowcaseRows = 10;
+    const windowSize = 6;
+    let currentWindowStart = 0;
+    let ensureRowMountedCalls = 0;
+    const rowNodesByIndex = new Map<number, HTMLElement>();
+
+    const renderShowcaseRowsWindow = (startRow: number) => {
+      if (!showcaseContainerEl) return;
+      showcaseContainerEl.setAttribute('data-showcase-total-rows', String(totalShowcaseRows));
+      const endRow = Math.min(totalShowcaseRows, startRow + windowSize);
+
+      for (const [rIdx, node] of Array.from(rowNodesByIndex.entries())) {
+        if (rIdx < startRow || rIdx >= endRow) {
+          node.remove();
+          rowNodesByIndex.delete(rIdx);
+        }
+      }
+
+      let prevNode: HTMLElement | null = null;
+      for (let r = startRow; r < endRow; r++) {
+        let rowWrapper = rowNodesByIndex.get(r);
+        if (!rowWrapper) {
+          rowWrapper = doc.createElement('div');
+          rowWrapper.setAttribute('data-home-row-index', String(r));
+          rowWrapper.setAttribute('data-scroll-block', 'true');
+          if (r === 0) {
+            rowWrapper.setAttribute('data-scroll-top-anchor', 'true');
+          }
+
+          const rowScroll = doc.createElement('div');
+          rowScroll.setAttribute('data-nav-row', 'true');
+          for (let c = 0; c < 12; c++) {
+            const card = doc.createElement('div');
+            card.setAttribute('tabindex', '0');
+            card.setAttribute('role', 'button');
+            card.setAttribute('data-nav-item', 'true');
+            card.setAttribute('data-row-card-index', String(c));
+            card.setAttribute('data-test-pos', `r${r}-c${c}`);
+            card.textContent = `Fileira ${r} Cartão ${c}`;
+            rowScroll.appendChild(card);
+          }
+          rowWrapper.appendChild(rowScroll);
+          rowNodesByIndex.set(r, rowWrapper);
+        }
+        if (rowWrapper.parentElement !== showcaseContainerEl) {
+          const refNode = prevNode ? prevNode.nextSibling : showcaseContainerEl.firstChild;
+          showcaseContainerEl.insertBefore(rowWrapper, refNode);
+        }
+        prevNode = rowWrapper;
+      }
+    };
+
+    renderShowcaseRowsWindow(0);
+    contentScrollEl.appendChild(showcaseContainerEl);
+
+    registerShowcaseRowController(showcaseContainerEl, {
+      totalRows: totalShowcaseRows,
+      ensureRowMounted: (targetRowIndex: number) => {
+        ensureRowMountedCalls++;
+        const curEnd = currentWindowStart + windowSize;
+        if (targetRowIndex >= currentWindowStart && targetRowIndex < curEnd) {
+          return false;
+        }
+        const nextStart = Math.max(
+          0,
+          Math.min(totalShowcaseRows - windowSize, targetRowIndex - 2)
+        );
+        if (nextStart === currentWindowStart) {
+          return false;
+        }
+        currentWindowStart = nextStart;
+        renderShowcaseRowsWindow(currentWindowStart);
+        return true;
+      },
+    });
+
+    // Focar Fileira 0 Cartão 0
+    const getRowCard = (r: number, c: number) =>
+      showcaseContainerEl!.querySelector<HTMLElement>(
+        `[data-home-row-index="${r}"] [data-row-card-index="${c}"]`
+      );
+
+    focusElementSafely(getRowCard(0, 0)!);
+    assert.strictEqual(doc.activeElement, getRowCard(0, 0));
+
+    // A) Medir 4 movimentos verticais (0 -> 1 -> 2 -> 3 -> 4) no CAMINHO VERTICAL RÁPIDO
+    invalidateCandidateCache();
+    resetSpatialNavPerfStats();
+    ensureRowMountedCalls = 0;
+    setFastVerticalNavEnabledForTest(true);
+
+    for (let targetRow = 1; targetRow <= 4; targetRow++) {
+      const next = moveSpatialFocus('down');
+      assert.strictEqual(
+        next?.getAttribute('data-test-pos'),
+        `r${targetRow}-c0`,
+        `Passo vertical rápido para baixo deve focar r${targetRow}-c0`
+      );
+    }
+
+    const fastDownStats = getSpatialNavPerfStats();
+    assert.strictEqual(
+      ensureRowMountedCalls,
+      4,
+      `Cada movimento vertical deve consultar ensureRowMounted exatamente 1 vez sem duplicidade (obtido: ${ensureRowMountedCalls} para 4 passos)`
+    );
+
+    // Voltar para cima (4 -> 3 -> 2 -> 1 -> 0) no caminho rápido
+    for (let targetRow = 3; targetRow >= 0; targetRow--) {
+      const prev = moveSpatialFocus('up');
+      assert.strictEqual(
+        prev?.getAttribute('data-test-pos'),
+        `r${targetRow}-c0`,
+        `Passo vertical rápido para cima deve focar r${targetRow}-c0`
+      );
+    }
+
+    // B) Medir os mesmos 4 movimentos verticais (0 -> 1 -> 2 -> 3 -> 4) no CAMINHO TRADICIONAL
+    invalidateCandidateCache();
+    resetSpatialNavPerfStats();
+    setFastVerticalNavEnabledForTest(false);
+
+    for (let targetRow = 1; targetRow <= 4; targetRow++) {
+      const next = moveSpatialFocus('down');
+      assert.strictEqual(
+        next?.getAttribute('data-test-pos'),
+        `r${targetRow}-c0`,
+        `Passo vertical tradicional para baixo deve focar r${targetRow}-c0`
+      );
+    }
+
+    const tradDownStats = getSpatialNavPerfStats();
+    setFastVerticalNavEnabledForTest(true);
+
+    assert.strictEqual(
+      fastDownStats.querySelectorCalls,
+      0,
+      `Caminho vertical rápido entre fileiras montadas não deve executar querySelectorAll global de candidatos (obtido: ${fastDownStats.querySelectorCalls})`
+    );
+    assert(
+      fastDownStats.querySelectorCalls < tradDownStats.querySelectorCalls,
+      `Caminho vertical rápido deve realizar menos varreduras globais que o caminho tradicional (fast=${fastDownStats.querySelectorCalls}, trad=${tradDownStats.querySelectorCalls})`
+    );
+    assert(
+      fastDownStats.boundingRectCalls <= 4,
+      `Caminho vertical rápido entre fileiras montadas deve restringir getBoundingClientRect apenas ao contêiner de scroll por passo (obtido: ${fastDownStats.boundingRectCalls})`
+    );
+    assert(
+      fastDownStats.boundingRectCalls < tradDownStats.boundingRectCalls,
+      `Caminho vertical rápido deve realizar menos leituras de geometria que o caminho tradicional (fast=${fastDownStats.boundingRectCalls}, trad=${tradDownStats.boundingRectCalls})`
+    );
+    assert(
+      fastDownStats.computedStyleCalls < tradDownStats.computedStyleCalls,
+      `Caminho vertical rápido deve realizar menos chamadas a getComputedStyle que o caminho tradicional (fast=${fastDownStats.computedStyleCalls}, trad=${tradDownStats.computedStyleCalls})`
+    );
+
+    // -------------------------------------------------------------------------
+    // 5.2. Preservação da seleção visual horizontal (pickBestItemInBlock) entre
+    //      fileiras com diferentes deslocamentos horizontais (scrollLeft)
+    // -------------------------------------------------------------------------
+    const row0Container = showcaseContainerEl.querySelector<HTMLElement>(
+      '[data-home-row-index="0"] [data-nav-row="true"]'
+    )!;
+    const row1Container = showcaseContainerEl.querySelector<HTMLElement>(
+      '[data-home-row-index="1"] [data-nav-row="true"]'
+    )!;
+
+    const mockRect = (left: number, top: number, width: number, height: number): DOMRect =>
+      ({
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+        x: left,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    (row0Container as any).getBoundingClientRect = () => mockRect(0, 100, 1200, 220);
+    (row1Container as any).getBoundingClientRect = () => mockRect(0, 360, 1200, 220);
+
+    // Fileira 0: sem scroll horizontal (cartão 2 está em left = 400..580, centro cx = 490)
+    const row0Cards = Array.from(row0Container.querySelectorAll<HTMLElement>('[data-row-card-index]'));
+    row0Cards.forEach((card, idx) => {
+      (card as any).getBoundingClientRect = () => mockRect(idx * 200, 110, 180, 200);
+    });
+
+    // Fileira 1: rolada horizontalmente em 600px (scrollLeft = 600), de modo que os cartões 0, 1 e 2
+    // estão fora da área visível à esquerda (left < 0) e o cartão 5 está visualmente alinhado
+    // na coluna do cartão 2 da Fileira 0 (5 * 200 - 600 = 400..580, centro ix = 490)!
+    row1Container.scrollLeft = 600;
+    const row1Cards = Array.from(row1Container.querySelectorAll<HTMLElement>('[data-row-card-index]'));
+    row1Cards.forEach((card, idx) => {
+      (card as any).getBoundingClientRect = () => mockRect(idx * 200 - 600, 370, 180, 200);
+    });
+
+    focusElementSafely(getRowCard(0, 2)!);
+    assert.strictEqual(doc.activeElement, getRowCard(0, 2));
+
+    const visuallyAlignedTarget = moveSpatialFocus('down');
+    assert.strictEqual(
+      visuallyAlignedTarget?.getAttribute('data-test-pos'),
+      'r1-c5',
+      `Ao descer da coluna visual (cx=490) da fileira 0 (cartão 2) para a fileira 1 rolada (scrollLeft=600), o caminho rápido deve selecionar o cartão visualmente alinhado r1-c5 e não o mesmo índice numérico r1-c2 (obtido: ${visuallyAlignedTarget?.getAttribute('data-test-pos')})`
+    );
+
+    // Subir de volta (r1-c5 -> r0-c2) também deve preservar o alinhamento visual
+    const visuallyAlignedBackUp = moveSpatialFocus('up');
+    assert.strictEqual(
+      visuallyAlignedBackUp?.getAttribute('data-test-pos'),
+      'r0-c2',
+      `Ao subir de r1-c5 (cx=490) para a fileira 0, deve retornar ao cartão visualmente alinhado r0-c2 (obtido: ${visuallyAlignedBackUp?.getAttribute('data-test-pos')})`
+    );
+
+    // Limpar mocks geométricos das fileiras 0 e 1
+    delete (row0Container as any).getBoundingClientRect;
+    delete (row1Container as any).getBoundingClientRect;
+    row1Container.scrollLeft = 0;
+    row0Cards.forEach((card) => delete (card as any).getBoundingClientRect);
+    row1Cards.forEach((card) => delete (card as any).getBoundingClientRect);
+
+    // -------------------------------------------------------------------------
+    // 5.3. Travessia de janela virtualizada de fileiras (0 -> 9 -> 0) e
+    //      fronteiras superior/inferior
+    // -------------------------------------------------------------------------
+    contentScrollEl.scrollTop = 0;
+    focusElementSafely(getRowCard(0, 0)!);
+    resetSpatialNavPerfStats();
+
+    for (let r = 1; r < totalShowcaseRows; r++) {
+      const moved = moveSpatialFocus('down');
+      assert.strictEqual(
+        moved?.getAttribute('data-test-pos'),
+        `r${r}-c0`,
+        `Travessia vertical virtualizada deve montar e focar a fileira ${r}`
+      );
+    }
+
+    const rowCrossingStats = getSpatialNavPerfStats();
+    assert(
+      rowCrossingStats.virtualWindowExpansions > 0,
+      'Atravessar fileiras além da janela inicial deve expandir sincronicamente a janela de fileiras'
+    );
+
+    // Na última fileira (r9), ArrowDown deve manter o foco na última fileira sem saltar para o topo
+    const atBottomRow = moveSpatialFocus('down');
+    assert.strictEqual(
+      atBottomRow?.getAttribute('data-test-pos'),
+      'r9-c0',
+      'ArrowDown na última fileira deve permanecer na última fileira'
+    );
+
+    // Subir de r9 de volta até r0
+    for (let r = totalShowcaseRows - 2; r >= 0; r--) {
+      const movedUp = moveSpatialFocus('up');
+      assert.strictEqual(
+        movedUp?.getAttribute('data-test-pos'),
+        `r${r}-c0`,
+        `Subida vertical virtualizada deve montar e focar a fileira ${r}`
+      );
+    }
+
+    // Na fileira 0, ArrowUp deve cair no fallback de fronteira superior e focar a barra de categorias ("Todos")
+    const exitedUpToCategory = moveSpatialFocus('up');
+    assert.strictEqual(
+      exitedUpToCategory,
+      selectedCategoryBtn,
+      'ArrowUp a partir da fileira 0 deve acionar o fallback de fronteira e focar a categoria ativa ("Todos")'
+    );
+
+    // -------------------------------------------------------------------------
+    // 5.4. Navegação vertical rápida em grades virtualizadas
+    //      ([data-virtual-container="true"][data-nav-grid="true"])
+    // -------------------------------------------------------------------------
+    unregisterShowcaseRowController(showcaseContainerEl);
+    showcaseContainerEl.remove();
+    showcaseContainerEl = null;
+    contentScrollEl.scrollTop = 0;
+
+    virtualGridEl = doc.createElement('div');
+    virtualGridEl.setAttribute('data-nav-grid', 'true');
+    virtualGridEl.setAttribute('data-virtual-container', 'true');
+    const gridCols = 6;
+    const gridTotalItems = 60; // 10 linhas de 6 colunas
+    const gridWindowSize = 24; // 4 linhas montadas por vez
+    let gridWindowStart = 0;
+    const gridNodesByIndex = new Map<number, HTMLElement>();
+
+    const renderVirtualGridWindow = (startIdx: number) => {
+      if (!virtualGridEl) return;
+      const endIdx = Math.min(gridTotalItems, startIdx + gridWindowSize);
+      for (const [idx, node] of Array.from(gridNodesByIndex.entries())) {
+        if (idx < startIdx || idx >= endIdx) {
+          node.remove();
+          gridNodesByIndex.delete(idx);
+        }
+      }
+      let prevItem: HTMLElement | null = null;
+      for (let idx = startIdx; idx < endIdx; idx++) {
+        let item = gridNodesByIndex.get(idx);
+        if (!item) {
+          item = doc.createElement('div');
+          item.setAttribute('tabindex', '0');
+          item.setAttribute('role', 'button');
+          item.setAttribute('data-nav-item', 'true');
+          item.setAttribute('data-virtual-index', String(idx));
+          item.textContent = `Item Grade ${idx}`;
+          gridNodesByIndex.set(idx, item);
+        }
+        if (item.parentElement !== virtualGridEl) {
+          const refNode = prevItem ? prevItem.nextSibling : virtualGridEl.firstChild;
+          virtualGridEl.insertBefore(item, refNode);
+        }
+        prevItem = item;
+      }
+    };
+
+    renderVirtualGridWindow(0);
+    contentScrollEl.appendChild(virtualGridEl);
+
+    registerVirtualContainer(virtualGridEl, {
+      totalCount: gridTotalItems,
+      getColumns: () => gridCols,
+      ensureIndexMounted: (targetIndex: number) => {
+        const curEnd = gridWindowStart + gridWindowSize;
+        if (targetIndex >= gridWindowStart + gridCols && targetIndex < curEnd - gridCols) {
+          return false;
+        }
+        const targetRow = Math.floor(targetIndex / gridCols);
+        const desiredStartRow = Math.max(0, Math.min(6, targetRow - 1));
+        const nextStart = desiredStartRow * gridCols;
+        if (nextStart === gridWindowStart) {
+          return false;
+        }
+        gridWindowStart = nextStart;
+        renderVirtualGridWindow(gridWindowStart);
+        return true;
+      },
+    });
+
+    const getGridItem = (idx: number) =>
+      virtualGridEl!.querySelector<HTMLElement>(`[data-virtual-index="${idx}"]`);
+
+    // Focar item na coluna 3 da linha 0 (índice 3)
+    focusElementSafely(getGridItem(3)!);
+    assert.strictEqual(doc.activeElement, getGridItem(3));
+
+    // A) Medir 3 movimentos verticais dentro da janela montada (3 -> 9 -> 15 -> 21) no CAMINHO RÁPIDO
+    invalidateCandidateCache();
+    resetSpatialNavPerfStats();
+    setFastVerticalNavEnabledForTest(true);
+
+    for (let row = 1; row <= 3; row++) {
+      const expectedIdx = row * gridCols + 3;
+      const next = moveSpatialFocus('down');
+      assert.strictEqual(
+        next?.getAttribute('data-virtual-index'),
+        String(expectedIdx),
+        `Passo vertical rápido na grade deve focar o índice ${expectedIdx} mantendo a coluna 3`
+      );
+    }
+
+    const fastGridStats = getSpatialNavPerfStats();
+
+    // Voltar para linha 0 coluna 3 (21 -> 15 -> 9 -> 3)
+    for (let row = 2; row >= 0; row--) {
+      const expectedIdx = row * gridCols + 3;
+      const prev = moveSpatialFocus('up');
+      assert.strictEqual(
+        prev?.getAttribute('data-virtual-index'),
+        String(expectedIdx),
+        `Subida rápida na grade deve focar o índice ${expectedIdx} mantendo a coluna 3`
+      );
+    }
+
+    // B) Medir os mesmos 3 movimentos (3 -> 9 -> 15 -> 21) no CAMINHO TRADICIONAL
+    invalidateCandidateCache();
+    resetSpatialNavPerfStats();
+    setFastVerticalNavEnabledForTest(false);
+
+    for (let row = 1; row <= 3; row++) {
+      const expectedIdx = row * gridCols + 3;
+      const next = moveSpatialFocus('down');
+      assert.strictEqual(
+        next?.getAttribute('data-virtual-index'),
+        String(expectedIdx),
+        `Passo vertical tradicional na grade deve focar o índice ${expectedIdx}`
+      );
+    }
+
+    const tradGridStats = getSpatialNavPerfStats();
+    setFastVerticalNavEnabledForTest(true);
+
+    assert.strictEqual(
+      fastGridStats.querySelectorCalls,
+      0,
+      `Caminho vertical rápido na grade virtualizada não deve executar querySelectorAll global (obtido: ${fastGridStats.querySelectorCalls})`
+    );
+    assert(
+      fastGridStats.querySelectorCalls < tradGridStats.querySelectorCalls,
+      `Caminho rápido na grade deve realizar menos varreduras globais que o tradicional (fast=${fastGridStats.querySelectorCalls}, trad=${tradGridStats.querySelectorCalls})`
+    );
+    assert(
+      fastGridStats.boundingRectCalls <= 3,
+      `Caminho rápido na grade virtualizada deve restringir getBoundingClientRect apenas ao contêiner de scroll por passo (obtido: ${fastGridStats.boundingRectCalls})`
+    );
+    assert(
+      fastGridStats.boundingRectCalls < tradGridStats.boundingRectCalls,
+      `Caminho rápido na grade deve realizar menos leituras de geometria que o tradicional (fast=${fastGridStats.boundingRectCalls}, trad=${tradGridStats.boundingRectCalls})`
+    );
+    assert(
+      fastGridStats.computedStyleCalls < tradGridStats.computedStyleCalls,
+      `Caminho rápido na grade deve realizar menos chamadas a getComputedStyle que o tradicional (fast=${fastGridStats.computedStyleCalls}, trad=${tradGridStats.computedStyleCalls})`
+    );
+
+    // C) Atravessar até a última linha da grade virtualizada (linha 9, índice 57) e voltar ao topo (índice 3)
+    for (let row = 4; row <= 9; row++) {
+      const expectedIdx = row * gridCols + 3;
+      const next = moveSpatialFocus('down');
+      assert.strictEqual(
+        next?.getAttribute('data-virtual-index'),
+        String(expectedIdx),
+        `Travessia vertical na grade deve montar e focar o índice ${expectedIdx}`
+      );
+    }
+
+    for (let row = 8; row >= 0; row--) {
+      const expectedIdx = row * gridCols + 3;
+      const prev = moveSpatialFocus('up');
+      assert.strictEqual(
+        prev?.getAttribute('data-virtual-index'),
+        String(expectedIdx),
+        `Retorno vertical na grade deve montar e focar o índice ${expectedIdx}`
+      );
+    }
+
+    // D) Na linha 0 da grade (índice 3), ArrowUp deve cair no fallback e subir para a barra de categorias
+    const gridExitUp = moveSpatialFocus('up');
+    assert.strictEqual(
+      gridExitUp,
+      selectedCategoryBtn,
+      'ArrowUp na primeira linha da grade virtualizada deve sair para o botão de categoria ativa ("Todos")'
+    );
+  } finally {
+    if (showcaseContainerEl) {
+      unregisterShowcaseRowController(showcaseContainerEl);
+    }
+    if (virtualGridEl) {
+      unregisterVirtualContainer(virtualGridEl);
+    }
+    setFastHorizontalRowNavEnabledForTest(true);
+    setFastVerticalNavEnabledForTest(true);
+    clearAllBackHandlersForTest();
+    clearFocusMemory();
+    shellEl.remove();
+  }
+
+  console.log('✅ Ciclo 12.30-c (caminho rápido vertical D-Pad, fileiras, grades virtualizadas, alinhamento visual e fallbacks) validado!');
+}
+
 async function main(): Promise<void> {
-  console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — CICLO 12.30-b\n');
+  console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — CICLO 12.30-c\n');
   runEssentialTrackAndSecurityTests();
   await runLiveTvFullscreenAndPreviewTransitionTests();
   await runWhitePaletteAndControlsIntegrationTests();
   await runCycle1230bSpatialNavOptimizationTests();
+  await runCycle1230cVerticalNavOptimizationTests();
   for (const timer of rafTimers.values()) {
     clearTimeout(timer);
   }
   rafTimers.clear();
-  console.log('\n🎉 TODOS OS TESTES DO CICLO 12.30-b FORAM EXECUTADOS COM SUCESSO!');
+  console.log('\n🎉 TODOS OS TESTES DO CICLO 12.30-c FORAM EXECUTADOS COM SUCESSO!');
   process.exit(0);
 }
 
@@ -1288,4 +1816,5 @@ main().catch((err) => {
   console.error('\n❌ ERRO NA EXECUÇÃO DOS TESTES:', err);
   process.exit(1);
 });
+
 

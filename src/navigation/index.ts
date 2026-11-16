@@ -34,6 +34,7 @@ export {
   getSpatialNavPerfStats,
   resetSpatialNavPerfStats,
   setFastHorizontalRowNavEnabledForTest,
+  setFastVerticalNavEnabledForTest,
 } from './spatialNav';
 export type {
   NavMode,
