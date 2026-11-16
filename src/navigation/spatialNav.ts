@@ -167,6 +167,25 @@ let cachedScopeRoot: HTMLElement | null = null;
 let cachedScopeMutationVersion = -1;
 let cachedRawCandidates: HTMLElement[] = [];
 
+interface LastVertAlignedRowState {
+  rowContainer: HTMLElement;
+  targetBlock: HTMLElement;
+  scrollContainer: HTMLElement | null;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  scrollChildCount: number;
+  blockOffsetTop: number;
+  parentOffsetTop: number;
+  blockOffsetHeight: number;
+  viewportW: number;
+  viewportH: number;
+  blockRectFn: typeof HTMLElement.prototype.getBoundingClientRect;
+  scrollRectFn: typeof HTMLElement.prototype.getBoundingClientRect | null;
+}
+
+let lastVertAlignedRowState: LastVertAlignedRowState | null = null;
+
 export function invalidateCandidateCache(): void {
   domMutationVersion++;
   cachedScopeMutationVersion = -1;
@@ -555,36 +574,87 @@ export function ensureElementScrolledIntoView(
   }
 
   // 2. Vertical scroll container
-  if (rowContainer && (direction === 'left' || direction === 'right')) {
-    if ((rowContainer as any).__ncVertAlignedChecked === true) {
-      const cachedScrollEl = (rowContainer as any).__ncVertAlignedScrollEl as HTMLElement | null;
+  ensureDomMutationObserver();
+  const topAnchor = el.closest<HTMLElement>('[data-scroll-top-anchor="true"]');
+  const homeRowWrapper = el.closest<HTMLElement>('[data-home-row-index]');
+  const blockCandidate =
+    el.closest<HTMLElement>('[data-scroll-block="true"]') ||
+    homeRowWrapper ||
+    rowContainer ||
+    el;
+  const blockParent = blockCandidate.parentElement;
+
+  if (rowContainer && (direction === 'left' || direction === 'right') && lastVertAlignedRowState) {
+    const st = lastVertAlignedRowState;
+    const vw = typeof window !== 'undefined' ? window.innerWidth || 0 : 0;
+    const vh = typeof window !== 'undefined' ? window.innerHeight || 0 : 0;
+    const hasCustomBlockRect =
+      Object.prototype.hasOwnProperty.call(blockCandidate, 'getBoundingClientRect') ||
+      Object.prototype.hasOwnProperty.call(rowContainer, 'getBoundingClientRect');
+    const sameRowAndLayout =
+      !hasCustomBlockRect &&
+      st.rowContainer === rowContainer &&
+      st.targetBlock === blockCandidate &&
+      st.viewportW === vw &&
+      st.viewportH === vh &&
+      st.blockOffsetTop === ((blockCandidate as any).offsetTop || 0) &&
+      st.parentOffsetTop === ((blockParent as any)?.offsetTop || 0) &&
+      st.blockOffsetHeight === ((blockCandidate as any).offsetHeight || 0) &&
+      st.blockRectFn === blockCandidate.getBoundingClientRect;
+
+    if (sameRowAndLayout && !topAnchor) {
+      const cachedScrollEl = st.scrollContainer;
       if (cachedScrollEl === null) {
         return;
       }
+      const hasCustomScrollRect = Object.prototype.hasOwnProperty.call(
+        cachedScrollEl,
+        'getBoundingClientRect'
+      );
       if (
-        cachedScrollEl &&
+        !hasCustomScrollRect &&
         cachedScrollEl.isConnected &&
-        (cachedScrollEl.scrollTop || 0) === (rowContainer as any).__ncVertAlignedScrollTop
+        (cachedScrollEl.scrollTop || 0) === st.scrollTop &&
+        (cachedScrollEl.scrollHeight || 0) === st.scrollHeight &&
+        (cachedScrollEl.clientHeight || 0) === st.clientHeight &&
+        cachedScrollEl.childElementCount === st.scrollChildCount &&
+        cachedScrollEl.getBoundingClientRect === st.scrollRectFn
       ) {
         return;
       }
     }
   }
 
-  const recordRowVerticalAlignment = (vScrollEl: HTMLElement | null) => {
+  lastVertAlignedRowState = null;
+
+  const recordRowVerticalAlignment = (
+    vScrollEl: HTMLElement | null,
+    resolvedBlock: HTMLElement
+  ) => {
     if (!rowContainer) return;
-    (rowContainer as any).__ncVertAlignedChecked = true;
-    (rowContainer as any).__ncVertAlignedScrollEl = vScrollEl;
-    (rowContainer as any).__ncVertAlignedScrollTop = vScrollEl ? vScrollEl.scrollTop || 0 : 0;
+    const resolvedParent = resolvedBlock.parentElement;
+    lastVertAlignedRowState = {
+      rowContainer,
+      targetBlock: resolvedBlock,
+      scrollContainer: vScrollEl,
+      scrollTop: vScrollEl ? vScrollEl.scrollTop || 0 : 0,
+      scrollHeight: vScrollEl ? vScrollEl.scrollHeight || 0 : 0,
+      clientHeight: vScrollEl ? vScrollEl.clientHeight || 0 : 0,
+      scrollChildCount: vScrollEl ? vScrollEl.childElementCount : 0,
+      blockOffsetTop: (resolvedBlock as any).offsetTop || 0,
+      parentOffsetTop: (resolvedParent as any)?.offsetTop || 0,
+      blockOffsetHeight: (resolvedBlock as any).offsetHeight || 0,
+      viewportW: typeof window !== 'undefined' ? window.innerWidth || 0 : 0,
+      viewportH: typeof window !== 'undefined' ? window.innerHeight || 0 : 0,
+      blockRectFn: resolvedBlock.getBoundingClientRect,
+      scrollRectFn: vScrollEl ? vScrollEl.getBoundingClientRect : null,
+    };
   };
 
   const scrollContainer = findScrollContainer(el);
   if (scrollContainer) {
-    spatialPerfStats.boundingRectCalls += 2;
+    spatialPerfStats.boundingRectCalls++;
     const containerRect = scrollContainer.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
-    const topAnchor = el.closest<HTMLElement>('[data-scroll-top-anchor="true"]');
-    const homeRowWrapper = el.closest<HTMLElement>('[data-home-row-index]');
     const showcaseRowsContainer = homeRowWrapper?.closest<HTMLElement>(
       '[data-showcase-rows-container="true"]'
     );
@@ -607,6 +677,11 @@ export function ensureElementScrolledIntoView(
       (scrollContainer as any).__ncDpadTargetTop = scrollContainer.scrollTop || 0;
     }
 
+    const targetBlock =
+      blockCandidate && scrollContainer.contains(blockCandidate) && blockCandidate !== scrollContainer
+        ? blockCandidate
+        : el;
+
     const applyVerticalScrollTop = (nextTop: number) => {
       const clampedTop = Math.max(0, nextTop);
       if (isInsideVirtualContainer) {
@@ -618,10 +693,12 @@ export function ensureElementScrolledIntoView(
       } else {
         scrollContainer.scrollTop = clampedTop;
       }
-      recordRowVerticalAlignment(scrollContainer);
+      recordRowVerticalAlignment(scrollContainer, targetBlock);
     };
 
     if (topAnchor && scrollContainer.contains(topAnchor)) {
+      spatialPerfStats.boundingRectCalls++;
+      const elRect = el.getBoundingClientRect();
       if (containerRect.height > 0 && elRect.height > 0) {
         const elBottomAtTopZero = elRect.bottom - containerRect.top + scrollContainer.scrollTop;
         if (elBottomAtTopZero <= containerRect.height - 12) {
@@ -634,23 +711,8 @@ export function ensureElementScrolledIntoView(
       }
     }
 
-    const blockCandidate =
-      el.closest<HTMLElement>('[data-scroll-block="true"]') ||
-      homeRowWrapper ||
-      el.closest<HTMLElement>('[data-nav-row="true"]') ||
-      el;
-    const targetBlock =
-      blockCandidate && scrollContainer.contains(blockCandidate) && blockCandidate !== scrollContainer
-        ? blockCandidate
-        : el;
-
-    const blockRect =
-      targetBlock === el
-        ? elRect
-        : (() => {
-            spatialPerfStats.boundingRectCalls++;
-            return targetBlock.getBoundingClientRect();
-          })();
+    spatialPerfStats.boundingRectCalls++;
+    const blockRect = targetBlock.getBoundingClientRect();
 
     if (containerRect.height > 0 && blockRect.height > 0) {
       const padY = 24;
@@ -669,13 +731,13 @@ export function ensureElementScrolledIntoView(
           );
         }
       } else {
-        recordRowVerticalAlignment(scrollContainer);
+        recordRowVerticalAlignment(scrollContainer, targetBlock);
       }
       return;
     }
 
     // Fallback for simulated DOM environments where getBoundingClientRect() returns 0x0
-    recordRowVerticalAlignment(scrollContainer);
+    recordRowVerticalAlignment(scrollContainer, targetBlock);
     if (isVirtualizedGrid) {
       return;
     }
@@ -704,7 +766,7 @@ export function ensureElementScrolledIntoView(
     return;
   }
 
-  recordRowVerticalAlignment(null);
+  recordRowVerticalAlignment(null, blockCandidate);
 
   try {
     if (typeof el.scrollIntoView === 'function') {

@@ -775,7 +775,7 @@ function HomeContent({ credentials }: { credentials: any }) {
         {logoutError && (
           <div
             role="alert"
-            className="nc-android-no-blur fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[120] bg-red-600/90 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2"
+            className="fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[120] bg-red-600/90 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2"
           >
             <div className="flex items-center gap-2 min-w-0">
               <AlertCircle className="w-5 h-5 text-white shrink-0" />
@@ -802,7 +802,7 @@ function HomeContent({ credentials }: { credentials: any }) {
           aria-label="Recuperação de acesso"
           data-focus-scope="modal"
           data-auth-recovery="true"
-          className="nc-android-overlay-opaque fixed inset-0 z-[130] bg-nc-bg/95 backdrop-blur-md nc-safe-overlay flex flex-col items-center justify-center text-center select-none"
+          className="fixed inset-0 z-[130] bg-nc-bg/95 backdrop-blur-md nc-safe-overlay flex flex-col items-center justify-center text-center select-none"
         >
           <div className="w-full max-w-md bg-nc-bg-card border border-nc-border rounded-2xl p-6 sm:p-8 shadow-2xl flex flex-col items-center">
             <div className="w-14 h-14 rounded-2xl bg-red-500/15 border border-red-500/40 flex items-center justify-center mb-4">
@@ -858,10 +858,10 @@ function HomeContent({ credentials }: { credentials: any }) {
           aria-hidden={isDisplaySetupOpen ? 'true' : undefined}
           inert={isDisplaySetupOpen ? true : undefined}
           aria-label="Carregando programação"
-          className="nc-android-overlay-opaque fixed inset-0 z-[100] bg-nc-bg/95 backdrop-blur-md nc-safe-overlay flex flex-col items-center justify-center text-center select-none"
+          className="fixed inset-0 z-[100] bg-nc-bg/95 backdrop-blur-md nc-safe-overlay flex flex-col items-center justify-center text-center select-none"
         >
           <div className="relative mb-6">
-            <div className="nc-android-no-blur w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-white/[0.04] border border-nc-border/60 flex items-center justify-center shadow-2xl backdrop-blur-sm">
+            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-white/[0.04] border border-nc-border/60 flex items-center justify-center shadow-2xl backdrop-blur-sm">
               <Loader2 className="w-8 h-8 sm:w-10 sm:h-10 animate-spin motion-reduce:animate-none text-nc-primary" />
             </div>
             <div className="absolute inset-0 bg-white/[0.06] blur-2xl rounded-full pointer-events-none" />

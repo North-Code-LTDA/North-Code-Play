@@ -1203,6 +1203,55 @@ async function runCycle1230bSpatialNavOptimizationTests(): Promise<void> {
     );
     liveRowEl.remove();
 
+    // -------------------------------------------------------------------------
+    // 4.6. Cache de alinhamento vertical em ensureElementScrolledIntoView():
+    //      se a posição real da fileira mudar sem alteração do scrollTop,
+    //      a rolagem vertical necessária deve ocorrer normalmente
+    // -------------------------------------------------------------------------
+    const scrollContainerEl = doc.querySelector<HTMLElement>('[data-scroll-container="true"]')!;
+    const row0Wrapper = row0.closest<HTMLElement>('[data-home-row-index="0"]')!;
+    await act(async () => {
+      const c0 = row0.querySelector<HTMLElement>('[data-row-card-index="0"]')!;
+      focusElementSafely(c0);
+    });
+    assert.strictEqual(scrollContainerEl.scrollTop, 0);
+
+    // Simular que a posição real de row0Wrapper mudou para abaixo da área visível
+    // sem qualquer alteração em scrollContainerEl.scrollTop (que permanece 0)
+    (scrollContainerEl as any).getBoundingClientRect = () => ({
+      top: 0,
+      bottom: 500,
+      left: 0,
+      right: 1280,
+      width: 1280,
+      height: 500,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    (row0Wrapper as any).getBoundingClientRect = () => ({
+      top: 400,
+      bottom: 650,
+      left: 0,
+      right: 1280,
+      width: 1280,
+      height: 250,
+      x: 0,
+      y: 400,
+      toJSON: () => ({}),
+    });
+
+    await act(async () => {
+      moveSpatialFocus('right');
+    });
+    assert(
+      scrollContainerEl.scrollTop > 0,
+      `Quando a posição real da fileira mudar para fora da viewport sem alterar scrollTop, ensureElementScrolledIntoView deve rolar verticalmente (scrollTop=${scrollContainerEl.scrollTop})`
+    );
+    delete (scrollContainerEl as any).getBoundingClientRect;
+    delete (row0Wrapper as any).getBoundingClientRect;
+    scrollContainerEl.scrollTop = 0;
+
     // Ausência de regressão entre modos pointer (mouse/toque) e remote (D-Pad)
     setNavMode('pointer');
     assert.strictEqual(getNavMode(), 'pointer');
