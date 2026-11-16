@@ -244,7 +244,8 @@ import {
 import { VideoPlayer } from '../src/components/VideoPlayer';
 import { LiveTvView } from '../src/views/LiveTvView';
 import { XtreamProvider } from '../src/context/XtreamContext';
-import { XtreamService, XtreamCredentials } from '../src/services/xtreamService';
+import { XtreamService } from '../src/services/xtreamService';
+import type { XtreamCredentials } from '../src/types';
 import {
   executeBackAction,
   clearAllBackHandlersForTest,
@@ -351,8 +352,8 @@ async function runLiveTvFullscreenAndPreviewTransitionTests(): Promise<void> {
       'Preview normal da TV ao Vivo deve usar apresentação compact-preview'
     );
     assert.strictEqual(
-      doc.querySelector('[data-player-center-title="true"]'),
-      null,
+      doc.querySelector('[data-player-center-title="true"]') === null,
+      true,
       'No modo compact-preview não deve renderizar a barra centralizada de tela cheia'
     );
 
@@ -364,11 +365,11 @@ async function runLiveTvFullscreenAndPreviewTransitionTests(): Promise<void> {
     });
     (playerContainer as any).requestFullscreen = async () => {
       currentFsElement = playerContainer;
-      doc.dispatchEvent(new windowInstance.Event('fullscreenchange'));
+      doc.dispatchEvent(new Event('fullscreenchange'));
     };
     (doc as any).exitFullscreen = async () => {
       currentFsElement = null;
-      doc.dispatchEvent(new windowInstance.Event('fullscreenchange'));
+      doc.dispatchEvent(new Event('fullscreenchange'));
     };
 
     const fsBtnInPreview = doc.querySelector<HTMLButtonElement>(
@@ -397,18 +398,18 @@ async function runLiveTvFullscreenAndPreviewTransitionTests(): Promise<void> {
 
     // Verificação 5: TV ao Vivo em fullscreen NÃO apresenta velocidade nem avanço/retrocesso de 10s
     assert.strictEqual(
-      doc.querySelector('button[data-player-control="speed"]'),
-      null,
+      doc.querySelector('button[data-player-control="speed"]') === null,
+      true,
       'TV ao Vivo em tela cheia NÃO deve exibir botão de Velocidade'
     );
     assert.strictEqual(
-      doc.querySelector('button[data-player-control="seek-back"]'),
-      null,
+      doc.querySelector('button[data-player-control="seek-back"]') === null,
+      true,
       'TV ao Vivo sem suporte de seeking NÃO deve exibir botão Retroceder 10s'
     );
     assert.strictEqual(
-      doc.querySelector('button[data-player-control="seek-forward"]'),
-      null,
+      doc.querySelector('button[data-player-control="seek-forward"]') === null,
+      true,
       'TV ao Vivo sem suporte de seeking NÃO deve exibir botão Avançar 10s'
     );
     assert(
@@ -428,8 +429,8 @@ async function runLiveTvFullscreenAndPreviewTransitionTests(): Promise<void> {
       'Ao sair de fullscreen nativo, deve restaurar os controles compactos do preview'
     );
     assert.strictEqual(
-      doc.querySelector('video'),
-      initialVideoEl,
+      doc.querySelector('video') === initialVideoEl,
+      true,
       'O elemento <video> não deve ser desmontado nem recriado ao alternar entre preview e fullscreen'
     );
     assert.strictEqual(
@@ -521,6 +522,17 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
   doc.body.appendChild(container);
   const root = createRoot(container);
 
+  const origXtreamMethods = {
+    authenticate: XtreamService.authenticate,
+    getLiveCategories: XtreamService.getLiveCategories,
+    getVodCategories: XtreamService.getVodCategories,
+    getSeriesCategories: XtreamService.getSeriesCategories,
+    getLiveStreams: XtreamService.getLiveStreams,
+    getVodStreams: XtreamService.getVodStreams,
+    getSeries: XtreamService.getSeries,
+    getShortEpg: XtreamService.getShortEpg,
+  };
+
   try {
     // Renderizar Série com carregando ativo inicialmente para inspecionar spinner, progresso, thumb, volume e indicador de legenda
     await act(async () => {
@@ -536,6 +548,8 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
           onPrevious: () => {},
         })
       );
+    });
+    await act(async () => {
       await new Promise((r) => setTimeout(r, 25));
     });
 
@@ -594,7 +608,9 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
     )!;
     await act(async () => {
       audioSubBtn.click();
-      await new Promise((r) => setTimeout(r, 15));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
     });
 
     const settingsMenu = doc.querySelector<HTMLElement>('[data-player-settings-menu="true"]');
@@ -603,19 +619,27 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
 
     await act(async () => {
       executeBackAction();
-      await new Promise((r) => setTimeout(r, 15));
     });
-    assert.strictEqual(doc.querySelector('[data-player-settings-menu="true"]'), null);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
     assert.strictEqual(
-      doc.activeElement,
-      doc.querySelector('button[data-player-control="audio-subtitles"]'),
+      doc.querySelector('[data-player-settings-menu="true"]') === null,
+      true,
+      'Menu deve fechar ao pressionar Voltar'
+    );
+    assert.strictEqual(
+      doc.activeElement === doc.querySelector('button[data-player-control="audio-subtitles"]'),
+      true,
       'Voltar deve devolver o foco exatamente para o botão Áudio e Legendas'
     );
 
     const speedBtn = doc.querySelector<HTMLButtonElement>('button[data-player-control="speed"]')!;
     await act(async () => {
       speedBtn.click();
-      await new Promise((r) => setTimeout(r, 15));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
     });
     assert.strictEqual(
       doc.querySelector('[data-player-settings-menu="true"]')?.getAttribute('data-active-submenu'),
@@ -624,11 +648,13 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
 
     await act(async () => {
       executeBackAction();
-      await new Promise((r) => setTimeout(r, 15));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
     });
     assert.strictEqual(
-      doc.activeElement,
-      doc.querySelector('button[data-player-control="speed"]'),
+      doc.activeElement === doc.querySelector('button[data-player-control="speed"]'),
+      true,
       'Voltar deve devolver o foco exatamente para o botão Velocidade'
     );
 
@@ -644,6 +670,25 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
       username: 'u',
       password: 'p',
     };
+    (XtreamService as any).authenticate = async () => ({
+      user_info: { auth: 1, status: 'Active' },
+      server_info: {},
+    });
+    (XtreamService as any).getLiveCategories = async () => [
+      { category_id: '10', category_name: 'Esportes' },
+    ];
+    (XtreamService as any).getVodCategories = async () => [];
+    (XtreamService as any).getSeriesCategories = async () => [];
+    (XtreamService as any).getLiveStreams = async () => [
+      {
+        stream_id: 501,
+        name: 'SporTV HD',
+        category_id: '10',
+        stream_icon: '',
+      },
+    ];
+    (XtreamService as any).getVodStreams = async () => [];
+    (XtreamService as any).getSeries = async () => [];
     (XtreamService as any).getShortEpg = async () => ({ epg_listings: [] });
 
     await act(async () => {
@@ -652,30 +697,27 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
           XtreamProvider,
           { credentials: testCreds },
           React.createElement(LiveTvView, {
-            categories: [{ category_id: '10', category_name: 'Esportes' }],
-            streams: [
-              {
-                stream_id: 501,
-                name: 'SporTV HD',
-                category_id: '10',
-                stream_icon: '',
-              } as any,
-            ],
-            selectedCategory: '10',
-            onSelectCategory: () => {},
             searchQuery: '',
-            onPlayStream: () => {},
           })
         )
       );
-      await new Promise((r) => setTimeout(r, 30));
     });
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (doc.querySelector('[data-live-channel-id="501"]')) {
+        break;
+      }
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 15));
+      });
+    }
 
     assert(
       doc.querySelector('[data-live-channel-id="501"]'),
       'LiveTvView deve renderizar cartões de canais sem regressão'
     );
   } finally {
+    Object.assign(XtreamService, origXtreamMethods);
     clearAllBackHandlersForTest();
     await act(async () => {
       root.unmount();
