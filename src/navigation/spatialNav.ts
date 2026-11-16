@@ -1349,9 +1349,12 @@ function pickPreferredZoneEntry(
           10
         );
         if (!isNaN(rawRowIdx) && rawRowIdx >= 0) {
+          let expandedAny = false;
           const rowController = showcaseRowControllers.get(liveRowsContainer);
           if (rowController) {
-            rowController.ensureRowMounted(rawRowIdx);
+            if (rowController.ensureRowMounted(rawRowIdx)) {
+              expandedAny = true;
+            }
           }
           if (!isNaN(rawCardIdx) && rawCardIdx >= 0) {
             const targetRowEl = liveRowsContainer.querySelector<HTMLElement>(
@@ -1359,12 +1362,14 @@ function pickPreferredZoneEntry(
             );
             if (targetRowEl) {
               const horizController = virtualControllers.get(targetRowEl);
-              if (horizController) {
-                horizController.ensureIndexMounted(rawCardIdx);
+              if (horizController && horizController.ensureIndexMounted(rawCardIdx)) {
+                expandedAny = true;
               }
             }
           }
-          invalidateCandidateCache();
+          if (expandedAny) {
+            invalidateCandidateCache();
+          }
           const mountedOrigin = liveRowsContainer.querySelector<HTMLElement>(
             '[data-live-channel-origin="true"], [data-live-channel-selected="true"]'
           );
@@ -1497,8 +1502,9 @@ function tryScrollFocusedSynopsis(
 function ensureVirtualTargetMountedIfNeeded(
   activeEl: HTMLElement | null,
   direction: SpatialDirection
-): void {
-  if (!activeEl) return;
+): { rowsContainer: HTMLElement; targetRowIndex: number } | null {
+  if (!activeEl) return null;
+  let ensuredRow: { rowsContainer: HTMLElement; targetRowIndex: number } | null = null;
 
   // 1. Vertical showcase row window expansion (reaching unmounted showcase rows with ArrowDown/ArrowUp)
   if (direction === 'down' || direction === 'up') {
@@ -1513,6 +1519,7 @@ function ensureVirtualTargetMountedIfNeeded(
             direction === 'down' ? currentRowIndex + 1 : currentRowIndex - 1;
           if (targetRowIndex >= 0 && targetRowIndex < rowController.totalRows) {
             const expanded = rowController.ensureRowMounted(targetRowIndex, currentRowIndex);
+            ensuredRow = { rowsContainer, targetRowIndex };
             if (expanded) {
               spatialPerfStats.virtualWindowExpansions++;
               invalidateCandidateCache();
@@ -1562,16 +1569,16 @@ function ensureVirtualTargetMountedIfNeeded(
 
   // 2. Virtualized grid or horizontal row item window expansion
   const virtualItemEl = activeEl.closest<HTMLElement>('[data-virtual-index]');
-  if (!virtualItemEl) return;
+  if (!virtualItemEl) return ensuredRow;
 
   const virtualContainer = virtualItemEl.closest<HTMLElement>('[data-virtual-container="true"]');
-  if (!virtualContainer) return;
+  if (!virtualContainer) return ensuredRow;
 
   const controller = virtualControllers.get(virtualContainer);
-  if (!controller || controller.totalCount <= 0) return;
+  if (!controller || controller.totalCount <= 0) return ensuredRow;
 
   const currentIndex = parseInt(virtualItemEl.getAttribute('data-virtual-index') || '-1', 10);
-  if (isNaN(currentIndex) || currentIndex < 0) return;
+  if (isNaN(currentIndex) || currentIndex < 0) return ensuredRow;
 
   const isHorizontalRow = virtualContainer.getAttribute('data-nav-row') === 'true';
   const cols = Math.max(1, controller.getColumns());
@@ -1606,7 +1613,7 @@ function ensureVirtualTargetMountedIfNeeded(
         spatialPerfStats.virtualWindowExpansions++;
         invalidateCandidateCache();
       }
-      return;
+      return ensuredRow;
     }
 
     const existingTarget = virtualContainer.querySelector<HTMLElement>(
@@ -1665,6 +1672,7 @@ function ensureVirtualTargetMountedIfNeeded(
       }
     }
   }
+  return ensuredRow;
 }
 
 /**
@@ -1683,7 +1691,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
     document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
   // Expand virtual window synchronously if navigating near/across a virtualized list boundary
-  ensureVirtualTargetMountedIfNeeded(initialActive, direction);
+  const ensuredRowTarget = ensureVirtualTargetMountedIfNeeded(initialActive, direction);
 
   const ctx = createNavPassContext();
   const scopeRoot = getActiveScopeRoot(ctx.ancestorCache);
@@ -1834,7 +1842,11 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
             direction === 'down' ? currentRowIndex + 1 : currentRowIndex - 1;
 
           if (targetRowIndex >= 0 && targetRowIndex < totalRows) {
-            if (rowController) {
+            const alreadyEnsured =
+              ensuredRowTarget !== null &&
+              ensuredRowTarget.rowsContainer === showcaseRowsContainer &&
+              ensuredRowTarget.targetRowIndex === targetRowIndex;
+            if (rowController && !alreadyEnsured) {
               const expanded = rowController.ensureRowMounted(
                 targetRowIndex,
                 currentRowIndex

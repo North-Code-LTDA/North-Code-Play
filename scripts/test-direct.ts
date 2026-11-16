@@ -246,11 +246,23 @@ import { LiveTvView } from '../src/views/LiveTvView';
 import { XtreamProvider } from '../src/context/XtreamContext';
 import { XtreamService } from '../src/services/xtreamService';
 import type { XtreamCredentials } from '../src/types';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   executeBackAction,
   clearAllBackHandlersForTest,
   setNavMode,
+  moveSpatialFocus,
+  pushFocusMemory,
+  popFocusMemory,
+  clearFocusMemory,
 } from '../src/navigation';
+import { HorizontalRow } from '../src/components/HorizontalRow';
+import {
+  syncNativeRuntimeAttributes,
+  isNativeAndroidRuntime,
+} from '../src/platform/nativeRuntime';
+import { confirmDisplayPreferences } from '../src/platform/tvEnvironment';
 
 // ============================================================================
 // 1. TESTES ESSENCIAIS DE REGRESSÃO (LEGENDAS, ÁUDIO E SEGURANÇA — CICLO 12.29-a)
@@ -729,16 +741,224 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
   console.log('✅ Identidade visual branca, controles responsivos, submenus e foco validados!');
 }
 
+// ============================================================================
+// 4. CICLO 12.30-a — REGRESSÃO DE FLUIDEZ ANDROID APK, SEPARAÇÃO WEB E D-PAD
+// ============================================================================
+async function runAndroidApkOptimizationRegressionTests(): Promise<void> {
+  console.log('--- 4. Ciclo 12.30-a: Runtime Android APK, CSS isolado, D-Pad e Virtualização ---');
+
+  const doc: Document = windowInstance.document as unknown as Document;
+  setNavMode('remote');
+  clearAllBackHandlersForTest();
+  clearFocusMemory();
+
+  // 4.1 Detecção segura antes do render e separação estrita Web vs Android APK vs display-mode TV
+  confirmDisplayPreferences('tv');
+  syncNativeRuntimeAttributes(doc, { isNativePlatform: () => false, getPlatform: () => 'web' });
+  assert.strictEqual(doc.documentElement.getAttribute('data-display-mode'), 'tv');
+  assert.strictEqual(doc.documentElement.getAttribute('data-native-runtime'), 'web');
+  assert.strictEqual(doc.documentElement.getAttribute('data-android-apk'), null);
+  assert.strictEqual(isNativeAndroidRuntime(doc), false);
+
+  syncNativeRuntimeAttributes(doc, { isNativePlatform: () => true, getPlatform: () => 'android' });
+  assert.strictEqual(doc.documentElement.getAttribute('data-native-runtime'), 'capacitor-android');
+  assert.strictEqual(doc.documentElement.getAttribute('data-android-apk'), 'true');
+  assert.strictEqual(isNativeAndroidRuntime(doc), true);
+
+  // 4.2 Conferir que as regras de index.css otimizam apenas Android APK mantendo Web intacta
+  const cssText = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf8');
+  assert(
+    cssText.includes('html[data-android-apk="true"] .nc-card-visual-layer') &&
+      cssText.includes('html[data-android-apk="true"] .nc-top-header') &&
+      cssText.includes('html[data-android-apk="true"] [data-details-backdrop="true"]'),
+    'Regras de otimização gráfica devem estar escopadas exclusivamente em html[data-android-apk="true"]'
+  );
+  assert(
+    cssText.includes('transform 150ms cubic-bezier(0.22, 1, 0.36, 1)') &&
+      cssText.includes('box-shadow 150ms cubic-bezier(0.22, 1, 0.36, 1)'),
+    'Transições padrão da Web devem permanecer intactas em src/index.css'
+  );
+
+  // 4.3 Navegação D-Pad horizontal, virtualização e restauração de foco em HorizontalRow (Android APK)
+  const container = doc.createElement('div');
+  doc.body.appendChild(container);
+  const root = createRoot(container);
+
+  const origXtreamMethods = {
+    authenticate: XtreamService.authenticate,
+    getLiveCategories: XtreamService.getLiveCategories,
+    getVodCategories: XtreamService.getVodCategories,
+    getSeriesCategories: XtreamService.getSeriesCategories,
+    getLiveStreams: XtreamService.getLiveStreams,
+    getVodStreams: XtreamService.getVodStreams,
+    getSeries: XtreamService.getSeries,
+    getShortEpg: XtreamService.getShortEpg,
+  };
+
+  try {
+    const manyItems = Array.from({ length: 30 }, (_, i) => ({
+      stream_id: 1000 + i,
+      name: `Filme ${i + 1}`,
+      stream_icon: '',
+      rating: '8.5',
+    }));
+
+    let clickedItem: any = null;
+    await act(async () => {
+      root.render(
+        React.createElement(
+          XtreamProvider,
+          {
+            credentials: {
+              serverUrl: 'http://provider.tv:8080',
+              username: 'u',
+              password: 'p',
+            },
+          },
+          React.createElement(
+            'main',
+            { 'data-nav-zone': 'content', 'data-scroll-container': 'true' },
+            React.createElement(HorizontalRow, {
+              title: 'Filmes em Alta',
+              items: manyItems,
+              type: 'vod',
+              rowIndex: 0,
+              virtualize: true,
+              onItemClick: (item: any) => {
+                clickedItem = item;
+              },
+            })
+          )
+        )
+      );
+    });
+
+    const firstCard = doc.querySelector<HTMLElement>('[data-row-card-index="0"]')!;
+    assert(firstCard, 'Primeiro cartão da HorizontalRow virtualizada deve existir');
+    await act(async () => {
+      firstCard.focus();
+    });
+    assert.strictEqual(firstCard.getAttribute('data-card-focused'), 'true');
+
+    await act(async () => {
+      moveSpatialFocus('right');
+      moveSpatialFocus('right');
+    });
+    const thirdCard = doc.activeElement as HTMLElement;
+    assert.strictEqual(thirdCard?.getAttribute('data-row-card-index'), '2');
+    assert.strictEqual(thirdCard?.getAttribute('data-card-focused'), 'true');
+
+    await act(async () => {
+      pushFocusMemory(thirdCard);
+      thirdCard.click();
+    });
+    assert.strictEqual(clickedItem?.stream_id, 1002);
+
+    // Simular fechamento de modal restaurando o foco salvo
+    const tempBtn = doc.createElement('button');
+    tempBtn.textContent = 'Fechar';
+    doc.body.appendChild(tempBtn);
+    tempBtn.focus();
+    tempBtn.remove();
+    await act(async () => {
+      popFocusMemory();
+    });
+    assert.strictEqual(
+      (doc.activeElement as HTMLElement)?.getAttribute('data-row-card-index'),
+      '2',
+      'Foco deve restaurar para o cartão exato após retorno'
+    );
+
+    // 4.4 LiveTvView: navegação D-Pad entre categorias/canais e rastreio DOM de origem sem quebrar seleção
+    (XtreamService as any).authenticate = async () => ({
+      user_info: { auth: 1, status: 'Active' },
+      server_info: {},
+    });
+    (XtreamService as any).getLiveCategories = async () => [
+      { category_id: '10', category_name: 'Esportes' },
+      { category_id: '20', category_name: 'Filmes TV' },
+    ];
+    (XtreamService as any).getVodCategories = async () => [];
+    (XtreamService as any).getSeriesCategories = async () => [];
+    (XtreamService as any).getLiveStreams = async () => [
+      { stream_id: 501, name: 'SporTV HD', category_id: '10', stream_icon: '' },
+      { stream_id: 502, name: 'ESPN HD', category_id: '10', stream_icon: '' },
+      { stream_id: 601, name: 'Telecine HD', category_id: '20', stream_icon: '' },
+    ];
+    (XtreamService as any).getVodStreams = async () => [];
+    (XtreamService as any).getSeries = async () => [];
+    (XtreamService as any).getShortEpg = async () => ({ epg_listings: [] });
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          XtreamProvider,
+          {
+            credentials: {
+              serverUrl: 'http://provider.tv:8080',
+              username: 'u',
+              password: 'p',
+            },
+          },
+          React.createElement(LiveTvView, { searchQuery: '' })
+        )
+      );
+    });
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (doc.querySelector('[data-live-channel-id="601"]')) break;
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 15));
+      });
+    }
+
+    const ch501 = doc.querySelector<HTMLButtonElement>('button[data-live-channel-id="501"]')!;
+    assert(ch501, 'Canal 501 deve estar montado');
+    await act(async () => {
+      ch501.focus();
+    });
+    assert.strictEqual(ch501.getAttribute('data-live-channel-origin'), 'true');
+
+    await act(async () => {
+      moveSpatialFocus('right');
+    });
+    const activeAfterRight = doc.activeElement as HTMLElement;
+    assert.strictEqual(activeAfterRight?.getAttribute('data-live-channel-id'), '502');
+    assert.strictEqual(activeAfterRight?.getAttribute('data-live-channel-origin'), 'true');
+    assert.strictEqual(ch501.getAttribute('data-live-channel-origin'), null);
+
+    await act(async () => {
+      moveSpatialFocus('down');
+    });
+    const activeAfterDown = doc.activeElement as HTMLElement;
+    assert.strictEqual(activeAfterDown?.getAttribute('data-live-channel-id'), '601');
+    assert.strictEqual(activeAfterDown?.getAttribute('data-live-channel-origin'), 'true');
+  } finally {
+    Object.assign(XtreamService, origXtreamMethods);
+    syncNativeRuntimeAttributes(doc, { isNativePlatform: () => false, getPlatform: () => 'web' });
+    confirmDisplayPreferences('default');
+    clearAllBackHandlersForTest();
+    clearFocusMemory();
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  }
+
+  console.log('✅ Ciclo 12.30-a: Runtime Android APK, CSS isolado, D-Pad e origem Live TV validados!');
+}
+
 async function main(): Promise<void> {
-  console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — CICLO 12.29-b.1\n');
+  console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — CICLO 12.30-a\n');
   runEssentialTrackAndSecurityTests();
   await runLiveTvFullscreenAndPreviewTransitionTests();
   await runWhitePaletteAndControlsIntegrationTests();
+  await runAndroidApkOptimizationRegressionTests();
   for (const timer of rafTimers.values()) {
     clearTimeout(timer);
   }
   rafTimers.clear();
-  console.log('\n🎉 TODOS OS TESTES DO CICLO 12.29-b.1 FORAM EXECUTADOS COM SUCESSO!');
+  console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
   process.exit(0);
 }
 

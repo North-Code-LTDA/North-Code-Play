@@ -4,6 +4,7 @@ import { motion } from 'motion/react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useXtreamCredentials } from '../context/XtreamContext';
 import { useDisplayPreferences, DisplayMode } from '../platform/tvEnvironment';
+import { isNativeAndroidRuntime } from '../platform/nativeRuntime';
 import {
   registerVirtualContainer,
   unregisterVirtualContainer,
@@ -453,6 +454,8 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   const windowStateRef = useRef<HorizontalRowWindowState>(windowState);
   windowStateRef.current = windowState;
 
+  const cardRefCallbacksRef = useRef<Map<number, (el: HTMLElement | null) => void>>(new Map());
+
   const setCardElementRef = useCallback((idx: number, el: HTMLElement | null) => {
     if (el) {
       cardElementsRef.current.set(idx, el);
@@ -460,6 +463,18 @@ export const HorizontalRow = React.memo(function HorizontalRow({
       cardElementsRef.current.delete(idx);
     }
   }, []);
+
+  const getCardElementRefCallback = useCallback(
+    (idx: number) => {
+      let cb = cardRefCallbacksRef.current.get(idx);
+      if (!cb) {
+        cb = (el: HTMLElement | null) => setCardElementRef(idx, el);
+        cardRefCallbacksRef.current.set(idx, cb);
+      }
+      return cb;
+    },
+    [setCardElementRef]
+  );
 
   const applyWindowState = useCallback(
     (
@@ -1322,16 +1337,92 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                 virtualize,
                 isAuthorized: isCardAuthorized,
                 isFocused: focusedCardIndex === idx,
-                setCardRef: (el) => setCardElementRef(idx, el),
+                setCardRef: getCardElementRefCallback(idx),
                 onFocusCard: () => setFocusedCardIndex(idx),
                 onBlurCard: () => setFocusedCardIndex((prev) => (prev === idx ? null : prev)),
               });
             }
 
+            const cardClassName = `nc-showcase-card relative z-0 hover:z-20 focus:z-20 focus-visible:z-20 shrink-0 snap-start select-none group cursor-pointer overflow-visible rounded-xl ${
+              type === 'live'
+                ? 'nc-tv-row-card-live w-64 md:w-72 aspect-video'
+                : 'nc-tv-row-card-poster w-36 md:w-44 aspect-[2/3]'
+            }`;
+            const cardVisualContent = (
+              <div
+                data-card-visual="true"
+                className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card"
+              >
+                <MediaImage
+                  src={item.stream_icon || item.cover}
+                  serverUrl={credentials?.serverUrl}
+                  alt={item.name}
+                  itemId={item.stream_id || item.series_id || item.id}
+                  itemName={item.name}
+                  active={isCardAuthorized}
+                  priority={false}
+                  loading="lazy"
+                  decoding="async"
+                  className={`w-full h-full ${
+                    type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'
+                  }`}
+                />
+
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-end p-4">
+                  <p className="text-white font-medium text-sm truncate w-full">{item.name}</p>
+                  {type !== 'live' && item.rating && item.rating !== '0' && (
+                    <p className="absolute top-2 right-2 text-xs text-yellow-500 bg-black/50 px-1 py-0.5 rounded">
+                      ★ {item.rating}
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+            const handleCardClick = (e: React.MouseEvent<HTMLDivElement>) => {
+              const el = e.currentTarget as HTMLElement;
+              if (typeof document !== 'undefined' && document.activeElement !== el) {
+                try {
+                  el.focus({ preventScroll: true });
+                } catch {}
+              }
+              pushFocusMemory(el);
+              onItemClick(item, el);
+            };
+            const handleCardFocus = () => {
+              setFocusedCardIndex((prev) => (prev === idx ? prev : idx));
+            };
+            const handleCardBlur = () => {
+              setFocusedCardIndex((prev) => (prev === idx ? null : prev));
+            };
+
+            if (isNativeAndroidRuntime()) {
+              return (
+                <div
+                  key={itemKey}
+                  ref={getCardElementRefCallback(idx)}
+                  tabIndex={0}
+                  role="button"
+                  data-nav-item="true"
+                  data-row-card-index={idx}
+                  data-virtual-index={virtualize ? idx : undefined}
+                  data-row-item-key={itemKey}
+                  data-showcase-card="true"
+                  data-card-focused={focusedCardIndex === idx ? 'true' : 'false'}
+                  aria-label={item.name}
+                  onClick={handleCardClick}
+                  onFocus={handleCardFocus}
+                  onBlur={handleCardBlur}
+                  className={cardClassName}
+                >
+                  {cardVisualContent}
+                </div>
+              );
+            }
+
             return (
               <motion.div
                 key={itemKey}
-                ref={(el) => setCardElementRef(idx, el)}
+                ref={getCardElementRefCallback(idx)}
                 tabIndex={0}
                 role="button"
                 data-nav-item="true"
@@ -1341,53 +1432,13 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                 data-showcase-card="true"
                 data-card-focused={focusedCardIndex === idx ? 'true' : 'false'}
                 aria-label={item.name}
-                onClick={(e) => {
-                  const el = e.currentTarget as HTMLElement;
-                  if (typeof document !== 'undefined' && document.activeElement !== el) {
-                    try {
-                      el.focus({ preventScroll: true });
-                    } catch {}
-                  }
-                  pushFocusMemory(el);
-                  onItemClick(item, el);
-                }}
-                onFocus={() => setFocusedCardIndex(idx)}
-                onBlur={() => setFocusedCardIndex((prev) => (prev === idx ? null : prev))}
+                onClick={handleCardClick}
+                onFocus={handleCardFocus}
+                onBlur={handleCardBlur}
                 whileTap={{ scale: 0.97 }}
-                className={`nc-showcase-card relative z-0 hover:z-20 focus:z-20 focus-visible:z-20 shrink-0 snap-start select-none group cursor-pointer overflow-visible rounded-xl ${
-                  type === 'live'
-                    ? 'nc-tv-row-card-live w-64 md:w-72 aspect-video'
-                    : 'nc-tv-row-card-poster w-36 md:w-44 aspect-[2/3]'
-                }`}
+                className={cardClassName}
               >
-                <div
-                  data-card-visual="true"
-                  className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card"
-                >
-                  <MediaImage
-                    src={item.stream_icon || item.cover}
-                    serverUrl={credentials?.serverUrl}
-                    alt={item.name}
-                    itemId={item.stream_id || item.series_id || item.id}
-                    itemName={item.name}
-                    active={isCardAuthorized}
-                    priority={false}
-                    loading="lazy"
-                    decoding="async"
-                    className={`w-full h-full ${
-                      type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'
-                    }`}
-                  />
-
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-end p-4">
-                    <p className="text-white font-medium text-sm truncate w-full">{item.name}</p>
-                    {type !== 'live' && item.rating && item.rating !== '0' && (
-                      <p className="absolute top-2 right-2 text-xs text-yellow-500 bg-black/50 px-1 py-0.5 rounded">
-                        ★ {item.rating}
-                      </p>
-                    )}
-                  </div>
-                </div>
+                {cardVisualContent}
               </motion.div>
             );
           })}
