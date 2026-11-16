@@ -1236,3 +1236,135 @@ html[data-display-mode="tv"] .nc-tv-episode-icon {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================================
+ * Android APK Graphical & Focus Optimizations (Ciclo 12.30-a)
+ * Strictly scoped to html[data-android-apk="true"] (Capacitor native Android).
+ * Standard Web browsers do not carry this attribute and remain 100% unchanged.
+ * ============================================================================ */
+html[data-android-apk="true"][data-nav-mode="remote"] button,
+html[data-android-apk="true"][data-nav-mode="remote"] input,
+html[data-android-apk="true"][data-nav-mode="remote"] select,
+html[data-android-apk="true"][data-nav-mode="remote"] textarea,
+html[data-android-apk="true"][data-nav-mode="remote"] a,
+html[data-android-apk="true"][data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]),
+html[data-android-apk="true"][data-nav-mode="remote"] [data-nav-item="true"] {
+  transition: none;
+}
+
+html[data-android-apk="true"][data-nav-mode="remote"] button:focus,
+html[data-android-apk="true"][data-nav-mode="remote"] input:focus,
+html[data-android-apk="true"][data-nav-mode="remote"] select:focus,
+html[data-android-apk="true"][data-nav-mode="remote"] textarea:focus,
+html[data-android-apk="true"][data-nav-mode="remote"] a:focus,
+html[data-android-apk="true"][data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]):focus,
+html[data-android-apk="true"][data-nav-mode="remote"] [data-nav-item="true"]:focus,
+html[data-android-apk="true"][data-nav-mode="remote"] .nc-tv-epg-card:focus,
+html[data-android-apk="true"][data-nav-mode="remote"] .nc-tv-epg-card:focus-visible,
+html[data-android-apk="true"][data-nav-mode="remote"] .nc-tv-epg-state:focus,
+html[data-android-apk="true"][data-nav-mode="remote"] .nc-tv-epg-state:focus-visible {
+  outline: 2px solid #ffffff !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.85) !important;
+  transform: none !important;
+}
+
+html[data-android-apk="true"][data-nav-mode="remote"] [data-scroll-container="true"],
+html[data-android-apk="true"][data-nav-mode="remote"] [data-nav-row="true"],
+html[data-android-apk="true"][data-nav-mode="remote"] [data-synopsis-focus="true"] {
+  scroll-behavior: auto !important;
+}
+
+/* Cards: eliminate box-shadow animation & heavy blur shadows on Android WebView */
+html[data-android-apk="true"] .nc-card-visual-layer {
+  transition: transform 110ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: auto;
+}
+
+html[data-android-apk="true"] .nc-card-visual-layer::after {
+  transition: opacity 90ms ease-out;
+}
+
+html[data-android-apk="true"] .nc-showcase-card:hover .nc-card-visual-layer,
+html[data-android-apk="true"] .nc-showcase-card:focus .nc-card-visual-layer,
+html[data-android-apk="true"] .nc-showcase-card:focus-visible .nc-card-visual-layer,
+html[data-android-apk="true"] .nc-showcase-card[data-card-focused="true"] .nc-card-visual-layer,
+html[data-android-apk="true"] [data-showcase-rows-container="true"] [data-row-card-index]:hover .nc-card-visual-layer,
+html[data-android-apk="true"] [data-showcase-rows-container="true"] [data-row-card-index]:focus .nc-card-visual-layer,
+html[data-android-apk="true"] [data-showcase-rows-container="true"] [data-row-card-index]:focus-visible .nc-card-visual-layer {
+  transform: scale(1.05);
+  will-change: transform;
+  box-shadow: none;
+}
+
+html[data-android-apk="true"] .nc-showcase-card:active .nc-card-visual-layer {
+  transform: scale(0.97);
+}
+
+html[data-android-apk="true"] .nc-showcase-card:focus .nc-card-visual-layer::after,
+html[data-android-apk="true"] .nc-showcase-card:focus-visible .nc-card-visual-layer::after,
+html[data-android-apk="true"] .nc-showcase-card[data-card-focused="true"] .nc-card-visual-layer::after,
+html[data-android-apk="true"][data-nav-mode="remote"] .nc-showcase-card:focus .nc-card-visual-layer::after,
+html[data-android-apk="true"][data-nav-mode="remote"] .nc-showcase-card:focus-visible .nc-card-visual-layer::after,
+html[data-android-apk="true"] [data-showcase-rows-container="true"] [data-row-card-index]:focus .nc-card-visual-layer::after,
+html[data-android-apk="true"] [data-showcase-rows-container="true"] [data-row-card-index]:focus-visible .nc-card-visual-layer::after,
+html[data-android-apk="true"][data-nav-mode="remote"] [data-showcase-rows-container="true"] [data-row-card-index]:focus .nc-card-visual-layer::after,
+html[data-android-apk="true"][data-nav-mode="remote"] [data-showcase-rows-container="true"] [data-row-card-index]:focus-visible .nc-card-visual-layer::after {
+  opacity: 1;
+  border: 2px solid #d1d5db;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.88);
+}
+
+html[data-android-apk="true"][data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer {
+  transform: scale(1.03);
+  will-change: transform;
+  box-shadow: none;
+}
+
+html[data-android-apk="true"][data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer::after {
+  opacity: 1;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.65);
+}
+
+/* Selective backdrop-filter replacement on frequent-navigation & per-card surfaces */
+html[data-android-apk="true"] .nc-top-header {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: rgba(0, 0, 0, 0.96) !important;
+}
+
+html[data-android-apk="true"] [data-details-backdrop="true"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: rgba(0, 0, 0, 0.86) !important;
+}
+
+html[data-android-apk="true"] .nc-hero-info-btn {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: rgba(34, 34, 38, 0.84) !important;
+}
+
+html[data-android-apk="true"] .nc-hero-info-btn:hover,
+html[data-android-apk="true"] .nc-hero-info-btn:focus-visible {
+  background-color: rgba(54, 54, 60, 0.92) !important;
+}
+
+html[data-android-apk="true"] .nc-fav-remove-btn {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: rgba(0, 0, 0, 0.84) !important;
+}
+
+html[data-android-apk="true"] .nc-android-no-blur {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-android-apk="true"] .nc-android-overlay-opaque {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: rgba(0, 0, 0, 0.96) !important;
+}
+

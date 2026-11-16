@@ -33,6 +33,7 @@ export {
   invalidateCandidateCache,
   getSpatialNavPerfStats,
   resetSpatialNavPerfStats,
+  setFastHorizontalRowNavEnabledForTest,
 } from './spatialNav';
 export type {
   NavMode,

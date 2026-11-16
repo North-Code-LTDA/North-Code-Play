@@ -38,6 +38,13 @@ export function resetSpatialNavPerfStats(): void {
   spatialPerfStats.virtualWindowExpansions = 0;
 }
 
+let fastHorizontalRowNavEnabled = true;
+
+export function setFastHorizontalRowNavEnabledForTest(enabled: boolean): void {
+  fastHorizontalRowNavEnabled = Boolean(enabled);
+}
+
+
 export interface ShowcaseRowController {
   totalRows: number;
   ensureRowMounted: (targetRowIndex: number, preserveRowIndex?: number) => boolean;
@@ -470,7 +477,11 @@ export function ensureElementScrolledIntoView(
       rowContainer.getAttribute('data-live-category-row-scroll') === 'true';
 
     if (isVirtualRow && virtualController) {
-      if (isLiveCategoryRow || direction === 'up' || direction === 'down') {
+      if (
+        (isLiveCategoryRow && direction !== 'left' && direction !== 'right') ||
+        direction === 'up' ||
+        direction === 'down'
+      ) {
         const rawIdx =
           el.getAttribute('data-virtual-index') ??
           el.getAttribute('data-row-card-index') ??
@@ -544,6 +555,29 @@ export function ensureElementScrolledIntoView(
   }
 
   // 2. Vertical scroll container
+  if (rowContainer && (direction === 'left' || direction === 'right')) {
+    if ((rowContainer as any).__ncVertAlignedChecked === true) {
+      const cachedScrollEl = (rowContainer as any).__ncVertAlignedScrollEl as HTMLElement | null;
+      if (cachedScrollEl === null) {
+        return;
+      }
+      if (
+        cachedScrollEl &&
+        cachedScrollEl.isConnected &&
+        (cachedScrollEl.scrollTop || 0) === (rowContainer as any).__ncVertAlignedScrollTop
+      ) {
+        return;
+      }
+    }
+  }
+
+  const recordRowVerticalAlignment = (vScrollEl: HTMLElement | null) => {
+    if (!rowContainer) return;
+    (rowContainer as any).__ncVertAlignedChecked = true;
+    (rowContainer as any).__ncVertAlignedScrollEl = vScrollEl;
+    (rowContainer as any).__ncVertAlignedScrollTop = vScrollEl ? vScrollEl.scrollTop || 0 : 0;
+  };
+
   const scrollContainer = findScrollContainer(el);
   if (scrollContainer) {
     spatialPerfStats.boundingRectCalls += 2;
@@ -584,6 +618,7 @@ export function ensureElementScrolledIntoView(
       } else {
         scrollContainer.scrollTop = clampedTop;
       }
+      recordRowVerticalAlignment(scrollContainer);
     };
 
     if (topAnchor && scrollContainer.contains(topAnchor)) {
@@ -633,11 +668,14 @@ export function ensureElementScrolledIntoView(
             scrollContainer.scrollTop + (blockRect.bottom - containerRect.bottom) + padY
           );
         }
+      } else {
+        recordRowVerticalAlignment(scrollContainer);
       }
       return;
     }
 
     // Fallback for simulated DOM environments where getBoundingClientRect() returns 0x0
+    recordRowVerticalAlignment(scrollContainer);
     if (isVirtualizedGrid) {
       return;
     }
@@ -665,6 +703,8 @@ export function ensureElementScrolledIntoView(
     }
     return;
   }
+
+  recordRowVerticalAlignment(null);
 
   try {
     if (typeof el.scrollIntoView === 'function') {
@@ -1667,6 +1707,118 @@ function ensureVirtualTargetMountedIfNeeded(
   }
 }
 
+interface FastHorizontalRowMoveResult {
+  handled: boolean;
+  target: HTMLElement | null;
+  virtualExpansionHandled: boolean;
+}
+
+/**
+ * Conservative fast path for predictable horizontal ('left' | 'right') movements
+ * between adjacent cards inside a known horizontal row ([data-nav-row="true"]).
+ * When all safety conditions hold, resolves the target card directly by logical index
+ * without scanning all focusable candidates on the page or reading layout geometry.
+ * Falls back to the full algorithm whenever any boundary or special condition applies.
+ */
+function tryFastHorizontalRowCardMove(
+  initialActive: HTMLElement | null,
+  direction: SpatialDirection,
+  ctx: NavPassContext
+): FastHorizontalRowMoveResult {
+  if (!fastHorizontalRowNavEnabled) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+  if (direction !== 'left' && direction !== 'right') {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+  if (!initialActive || !initialActive.isConnected) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  // Secondary action buttons inside a card (such as Live TV channel favorite buttons) use the full path
+  if (initialActive.getAttribute('data-live-channel-fav') === 'true') {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  const rawCardIdx = initialActive.getAttribute('data-row-card-index');
+  if (rawCardIdx === null) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+  const currentCardIdx = parseInt(rawCardIdx, 10);
+  if (isNaN(currentCardIdx) || currentCardIdx < 0) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  const currentRow = getLogicalRow(initialActive, ctx);
+  if (!currentRow || currentRow.getAttribute('data-nav-row') !== 'true') {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  // Header bars and vertical dropdown menus have dedicated rules
+  if (
+    initialActive.closest(
+      '[data-header-account-menu="true"], [data-categories-menu="true"], header, [data-nav-zone="header"]'
+    )
+  ) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  const targetCardIdx = direction === 'right' ? currentCardIdx + 1 : currentCardIdx - 1;
+  if (targetCardIdx < 0) {
+    // Left boundary (index 0 -> ArrowLeft): fall back to full zone-transition logic
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  const rowController = virtualControllers.get(currentRow);
+  if (rowController) {
+    if (rowController.totalCount <= 0 || targetCardIdx >= rowController.totalCount) {
+      // Right boundary of virtualized row: fall back to full zone-transition logic
+      return { handled: false, target: null, virtualExpansionHandled: true };
+    }
+  }
+
+  const scopeRoot = getActiveScopeRoot(ctx.ancestorCache);
+  if (!scopeRoot.contains(initialActive) || !scopeRoot.contains(currentRow)) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  if (!isElementFocusable(initialActive, ctx.ancestorCache)) {
+    return { handled: false, target: null, virtualExpansionHandled: false };
+  }
+
+  let virtualExpansionHandled = false;
+  if (rowController && rowController.totalCount > 0) {
+    const expanded = rowController.ensureIndexMounted(targetCardIdx, currentCardIdx);
+    virtualExpansionHandled = true;
+    if (expanded) {
+      spatialPerfStats.virtualWindowExpansions++;
+      invalidateCandidateCache();
+    }
+    if (!currentRow.isConnected || !scopeRoot.contains(currentRow)) {
+      return { handled: false, target: null, virtualExpansionHandled };
+    }
+  }
+
+  const isLiveCategoryRow =
+    currentRow.getAttribute('data-live-category-row-scroll') === 'true';
+  const targetSelector = isLiveCategoryRow
+    ? `[data-row-card-index="${targetCardIdx}"][data-live-channel-btn="true"]`
+    : `[data-row-card-index="${targetCardIdx}"], [data-virtual-index="${targetCardIdx}"]`;
+
+  const targetEl = currentRow.querySelector<HTMLElement>(targetSelector);
+  if (
+    targetEl &&
+    targetEl !== initialActive &&
+    scopeRoot.contains(targetEl) &&
+    isElementFocusable(targetEl, ctx.ancestorCache)
+  ) {
+    focusElementSafely(targetEl, direction);
+    return { handled: true, target: targetEl, virtualExpansionHandled };
+  }
+
+  return { handled: false, target: null, virtualExpansionHandled };
+}
+
 /**
  * Moves focus in the requested direction ('up' | 'down' | 'left' | 'right').
  * Follows visual/DOM zone structure so vertical navigation inside content scrolls through rows
@@ -1682,10 +1834,19 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
   const initialActive =
     document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
-  // Expand virtual window synchronously if navigating near/across a virtualized list boundary
-  ensureVirtualTargetMountedIfNeeded(initialActive, direction);
-
   const ctx = createNavPassContext();
+
+  // Fast, conservative path for horizontal moves between adjacent cards in known rows
+  const fastResult = tryFastHorizontalRowCardMove(initialActive, direction, ctx);
+  if (fastResult.handled) {
+    return fastResult.target;
+  }
+
+  // Expand virtual window synchronously if navigating near/across a virtualized list boundary
+  if (!fastResult.virtualExpansionHandled) {
+    ensureVirtualTargetMountedIfNeeded(initialActive, direction);
+  }
+
   const scopeRoot = getActiveScopeRoot(ctx.ancestorCache);
   const candidates = getFocusableElements(scopeRoot, ctx.ancestorCache);
   if (candidates.length === 0) return null;
@@ -2074,7 +2235,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
               ? `[data-row-card-index="${nextLogicalIdx}"][data-live-channel-btn="true"]`
               : `[data-virtual-index="${nextLogicalIdx}"], [data-row-card-index="${nextLogicalIdx}"]`;
             let nextEl = currentRow.querySelector<HTMLElement>(targetSelector);
-            if (!nextEl || isLiveCategoryRow) {
+            if (!nextEl && !fastResult.virtualExpansionHandled) {
               const expanded = rowController.ensureIndexMounted(nextLogicalIdx, currentVirtualIdx);
               if (expanded) {
                 spatialPerfStats.virtualWindowExpansions++;
@@ -2082,7 +2243,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
               }
               nextEl = currentRow.querySelector<HTMLElement>(targetSelector);
             }
-            if (nextEl && isElementFocusable(nextEl)) {
+            if (nextEl && isElementFocusable(nextEl, ctx.ancestorCache)) {
               focusElementSafely(nextEl, direction);
               return nextEl;
             }
@@ -2108,7 +2269,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
             const sameCardMain = currentRow.querySelector<HTMLElement>(
               `[data-row-card-index="${currentVirtualIdx}"][data-live-channel-btn="true"]`
             );
-            if (sameCardMain && isElementFocusable(sameCardMain)) {
+            if (sameCardMain && isElementFocusable(sameCardMain, ctx.ancestorCache)) {
               focusElementSafely(sameCardMain, direction);
               return sameCardMain;
             }
@@ -2120,7 +2281,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
               ? `[data-row-card-index="${prevLogicalIdx}"][data-live-channel-btn="true"]`
               : `[data-virtual-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"]`;
             let prevEl = currentRow.querySelector<HTMLElement>(prevSelector);
-            if (!prevEl || isLiveCategoryRow) {
+            if (!prevEl && !fastResult.virtualExpansionHandled) {
               const expanded = rowController.ensureIndexMounted(prevLogicalIdx, currentVirtualIdx);
               if (expanded) {
                 spatialPerfStats.virtualWindowExpansions++;
@@ -2128,7 +2289,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
               }
               prevEl = currentRow.querySelector<HTMLElement>(prevSelector);
             }
-            if (prevEl && isElementFocusable(prevEl)) {
+            if (prevEl && isElementFocusable(prevEl, ctx.ancestorCache)) {
               focusElementSafely(prevEl, direction);
               return prevEl;
             }

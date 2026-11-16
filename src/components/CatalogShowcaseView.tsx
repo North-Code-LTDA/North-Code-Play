@@ -2657,7 +2657,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       {playError && (
         <div
           role="alert"
-          className="fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[100] bg-red-600/95 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2"
+          className="nc-android-no-blur fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[100] bg-red-600/95 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2"
         >
           <AlertCircle className="w-5 h-5 text-white shrink-0" />
           <span className="whitespace-normal break-words">{playError}</span>

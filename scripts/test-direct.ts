@@ -250,7 +250,21 @@ import {
   executeBackAction,
   clearAllBackHandlersForTest,
   setNavMode,
+  getNavMode,
+  moveSpatialFocus,
+  focusElementSafely,
+  pushFocusMemory,
+  popFocusMemory,
+  clearFocusMemory,
+  getSpatialNavPerfStats,
+  resetSpatialNavPerfStats,
+  setFastHorizontalRowNavEnabledForTest,
+  invalidateCandidateCache,
 } from '../src/navigation';
+import { HorizontalRow } from '../src/components/HorizontalRow';
+
+
+
 
 // ============================================================================
 // 1. TESTES ESSENCIAIS DE REGRESSÃO (LEGENDAS, ÁUDIO E SEGURANÇA — CICLO 12.29-a)
@@ -729,16 +743,495 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
   console.log('✅ Identidade visual branca, controles responsivos, submenus e foco validados!');
 }
 
+// ============================================================================
+// 4. CICLO 12.30-b — OTIMIZAÇÃO CIRÚRGICA DA NAVEGAÇÃO D-PAD EM MOVIMENTOS RÁPIDOS
+// ============================================================================
+async function runCycle1230bSpatialNavOptimizationTests(): Promise<void> {
+  console.log('--- 4. Ciclo 12.30-b: Caminho Rápido D-Pad, Virtualização, HorizontalRow e Regressão ---');
+
+  const doc: Document = windowInstance.document as unknown as Document;
+  setNavMode('remote');
+  clearAllBackHandlersForTest();
+  clearFocusMemory();
+  setFastHorizontalRowNavEnabledForTest(true);
+
+  const container = doc.createElement('div');
+  doc.body.appendChild(container);
+  const root = createRoot(container);
+
+  const testCreds: XtreamCredentials = {
+    serverUrl: 'http://provider.tv:8080',
+    username: 'u',
+    password: 'p',
+  };
+
+  try {
+    // -------------------------------------------------------------------------
+    // 4.1. Caminho rápido vs Caminho tradicional (métricas determinísticas de
+    //      consultas globais e leituras de geometria) + HorizontalRow sem
+    //      re-renderizações desnecessárias em sequência rápida de setas
+    // -------------------------------------------------------------------------
+    const items40 = Array.from({ length: 40 }, (_, i) => ({
+      stream_id: 1000 + i,
+      name: `Filme ${i}`,
+      stream_icon: `http://img.test/${i}.jpg`,
+      rating: '8.5',
+    }));
+
+    let customCardRenderCalls = 0;
+    const renderStates = new Map<number, { isAuthorized: boolean; isFocused: boolean }>();
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: testCreds },
+          React.createElement(
+            'div',
+            { 'data-nav-zone': ' main-shell' },
+            // Sidebar para testar fronteira esquerda (índice 0 -> ArrowLeft)
+            React.createElement(
+              'aside',
+              { 'data-nav-zone': 'sidebar' },
+              React.createElement(
+                'button',
+                {
+                  type: 'button',
+                  'data-nav-item': 'true',
+                  'data-sidebar-item': 'home',
+                },
+                'Início'
+              )
+            ),
+            // Barra de filtros estilo Favoritos para testar fronteira superior
+            React.createElement(
+              'div',
+              { 'data-favorites-view': 'true' },
+              React.createElement(
+                'div',
+                {
+                  'data-nav-zone': 'categories',
+                  'data-showcase-categories-bar': 'true',
+                },
+                React.createElement(
+                  'button',
+                  {
+                    type: 'button',
+                    'data-nav-item': 'true',
+                    'data-category-selected': 'true',
+                    'data-fav-filter': 'all',
+                  },
+                  'Todos'
+                )
+              ),
+              // Zona de conteúdo com múltiplos candidatos extras para evidenciar custo de varredura global
+              React.createElement(
+                'div',
+                {
+                  'data-nav-zone': 'content',
+                  'data-scroll-container': 'true',
+                  style: { overflowY: 'auto', height: '720px' },
+                },
+                React.createElement(HorizontalRow, {
+                  title: 'Destaques',
+                  items: items40,
+                  type: 'vod',
+                  virtualize: true,
+                  rowIndex: 0,
+                  onItemClick: () => {},
+                  renderCardItem: (params) => {
+                    customCardRenderCalls++;
+                    renderStates.set(params.index, {
+                      isAuthorized: params.isAuthorized,
+                      isFocused: params.isFocused,
+                    });
+                    return React.createElement(
+                      'div',
+                      {
+                        key: params.itemKey,
+                        ref: params.setCardRef,
+                        tabIndex: 0,
+                        role: 'button',
+                        'data-nav-item': 'true',
+                        'data-row-card-index': params.index,
+                        'data-virtual-index': params.virtualize ? params.index : undefined,
+                        'data-row-item-key': params.itemKey,
+                        'data-card-focused': params.isFocused ? 'true' : 'false',
+                        'data-card-authorized': params.isAuthorized ? 'true' : 'false',
+                        onFocus: params.onFocusCard,
+                        onBlur: params.onBlurCard,
+                      },
+                      params.item.name
+                    );
+                  },
+                }),
+                // Segunda fileira para testar navegação vertical entre fileiras
+                React.createElement(HorizontalRow, {
+                  title: 'Lançamentos',
+                  items: items40.slice(0, 12),
+                  type: 'vod',
+                  virtualize: true,
+                  rowIndex: 1,
+                  onItemClick: () => {},
+                })
+              )
+            )
+          )
+        )
+      );
+    });
+
+    const row0 = doc.querySelectorAll<HTMLElement>('[data-nav-row="true"]')[0]!;
+    const card0 = row0.querySelector<HTMLElement>('[data-row-card-index="0"]')!;
+    assert(row0 && card0, 'Fileira 0 e cartão 0 devem estar montados');
+
+    // Focar cartão 0 inicialmente
+    await act(async () => {
+      focusElementSafely(card0);
+    });
+    assert.strictEqual(doc.activeElement, card0, 'Cartão 0 deve estar focado');
+    assert.strictEqual(
+      card0.getAttribute('data-card-focused'),
+      'true',
+      'Cartão 0 deve ter data-card-focused="true"'
+    );
+    assert.strictEqual(
+      card0.getAttribute('data-card-authorized'),
+      'true',
+      'Cartão 0 deve ativar autorização de imagem imediatamente ao receber foco'
+    );
+
+    // A) Medir 5 movimentos rápidos (0 -> 1 -> 2 -> 3 -> 4 -> 5) no CAMINHO RÁPIDO
+    invalidateCandidateCache();
+    resetSpatialNavPerfStats();
+    setFastHorizontalRowNavEnabledForTest(true);
+
+    await act(async () => {
+      for (let step = 1; step <= 5; step++) {
+        const next = moveSpatialFocus('right');
+        assert.strictEqual(
+          next?.getAttribute('data-row-card-index'),
+          String(step),
+          `Passo ${step} (rápido) deve focar o cartão ${step}`
+        );
+      }
+    });
+
+    const fastStats = getSpatialNavPerfStats();
+    const card5 = row0.querySelector<HTMLElement>('[data-row-card-index="5"]')!;
+    assert.strictEqual(doc.activeElement, card5, 'Foco deve estar no cartão 5 após sequência rápida');
+    assert.strictEqual(
+      card0.getAttribute('data-card-focused'),
+      'false',
+      'Cartão 0 deve ter data-card-focused="false" após perder foco'
+    );
+    assert.strictEqual(
+      card5.getAttribute('data-card-focused'),
+      'true',
+      'Cartão 5 deve ter data-card-focused="true" ao receber foco'
+    );
+
+    // Agora os cartões 0..5 já estão autorizados. Verificar que navegar de volta 5 -> 4 -> 3 -> 2 -> 1 -> 0
+    // NÃO dispara nenhuma re-renderização da fileira inteira em HorizontalRow!
+    const renderCallsBeforeAuthorizedBackSequence = customCardRenderCalls;
+    await act(async () => {
+      for (let step = 4; step >= 0; step--) {
+        const prev = moveSpatialFocus('left');
+        assert.strictEqual(
+          prev?.getAttribute('data-row-card-index'),
+          String(step),
+          `Passo reverso para ${step} deve focar cartão ${step}`
+        );
+      }
+    });
+    const renderCallsAfterAuthorizedBackSequence = customCardRenderCalls;
+    assert.strictEqual(
+      renderCallsAfterAuthorizedBackSequence,
+      renderCallsBeforeAuthorizedBackSequence,
+      `HorizontalRow não deve re-renderizar a fileira inteira ao mover foco entre cartões já autorizados (antes=${renderCallsBeforeAuthorizedBackSequence}, depois=${renderCallsAfterAuthorizedBackSequence})`
+    );
+    assert.strictEqual(
+      card0.getAttribute('data-card-focused'),
+      'true',
+      'Cartão 0 deve voltar a ter data-card-focused="true" sem exigir re-render da fileira'
+    );
+    assert.strictEqual(
+      card5.getAttribute('data-card-focused'),
+      'false',
+      'Cartão 5 deve voltar a ter data-card-focused="false"'
+    );
+
+    // B) Medir os mesmos 5 movimentos (0 -> 1 -> 2 -> 3 -> 4 -> 5) no CAMINHO TRADICIONAL
+    invalidateCandidateCache();
+    resetSpatialNavPerfStats();
+    setFastHorizontalRowNavEnabledForTest(false);
+
+    await act(async () => {
+      for (let step = 1; step <= 5; step++) {
+        const next = moveSpatialFocus('right');
+        assert.strictEqual(
+          next?.getAttribute('data-row-card-index'),
+          String(step),
+          `Passo ${step} (tradicional) deve focar o cartão ${step}`
+        );
+      }
+    });
+
+    const traditionalStats = getSpatialNavPerfStats();
+    setFastHorizontalRowNavEnabledForTest(true);
+
+    assert.strictEqual(
+      fastStats.querySelectorCalls,
+      0,
+      `Caminho rápido não deve executar querySelectorAll global de candidatos (obtido: ${fastStats.querySelectorCalls})`
+    );
+    assert(
+      fastStats.querySelectorCalls < traditionalStats.querySelectorCalls,
+      `Caminho rápido deve realizar menos consultas globais que o caminho tradicional (fast=${fastStats.querySelectorCalls}, trad=${traditionalStats.querySelectorCalls})`
+    );
+    assert.strictEqual(
+      fastStats.boundingRectCalls,
+      0,
+      `Caminho rápido entre cartões montados na mesma fileira virtualizada não deve ler getBoundingClientRect desnecessariamente (obtido: ${fastStats.boundingRectCalls})`
+    );
+    assert(
+      fastStats.boundingRectCalls < traditionalStats.boundingRectCalls,
+      `Caminho rápido deve realizar menos leituras de geometria que o caminho tradicional (fast=${fastStats.boundingRectCalls}, trad=${traditionalStats.boundingRectCalls})`
+    );
+    assert(
+      fastStats.computedStyleCalls < traditionalStats.computedStyleCalls,
+      `Caminho rápido deve realizar menos chamadas a getComputedStyle que o caminho tradicional (fast=${fastStats.computedStyleCalls}, trad=${traditionalStats.computedStyleCalls})`
+    );
+
+    // -------------------------------------------------------------------------
+    // 4.2. Fronteira esquerda (índice 0 -> ArrowLeft para sidebar) e travessia
+    //      de janelas virtualizadas (0 -> 22 -> 0)
+    // -------------------------------------------------------------------------
+    await act(async () => {
+      focusElementSafely(card0);
+    });
+    assert.strictEqual(doc.activeElement, card0);
+
+    // No índice 0, ArrowLeft deve cair no fallback e sair para a sidebar
+    const leftBoundaryTarget = moveSpatialFocus('left');
+    assert.strictEqual(
+      leftBoundaryTarget?.getAttribute('data-sidebar-item'),
+      'home',
+      'ArrowLeft a partir do cartão 0 deve usar o fallback de fronteira e focar a sidebar'
+    );
+
+    // Voltar para o cartão 0 e atravessar a janela virtualizada até o cartão 22
+    await act(async () => {
+      focusElementSafely(card0);
+    });
+    resetSpatialNavPerfStats();
+
+    await act(async () => {
+      for (let idx = 1; idx <= 22; idx++) {
+        const focused = moveSpatialFocus('right');
+        assert.strictEqual(
+          focused?.getAttribute('data-row-card-index'),
+          String(idx),
+          `Travessia virtualizada deve montar e focar o cartão ${idx}`
+        );
+      }
+    });
+
+    const virtualCrossingStats = getSpatialNavPerfStats();
+    assert(
+      virtualCrossingStats.virtualWindowExpansions > 0,
+      'Atravessar além da janela inicial deve expandir a janela virtualizada sincronicamente'
+    );
+    assert.strictEqual(
+      doc.activeElement?.getAttribute('data-row-card-index'),
+      '22',
+      'Cartão 22 deve estar montado e focado após expansão da janela virtual'
+    );
+
+    // -------------------------------------------------------------------------
+    // 4.3. Restauração de foco (pushFocusMemory / popFocusMemory) após abrir e
+    //      fechar detalhes ou player em fileira virtualizada
+    // -------------------------------------------------------------------------
+    const activeCard22 = doc.activeElement as HTMLElement;
+    pushFocusMemory(activeCard22);
+
+    // Simular abertura de modal de detalhes/player com escopo próprio [data-focus-scope="modal"]
+    const modalEl = doc.createElement('div');
+    modalEl.setAttribute('data-focus-scope', 'modal');
+    const modalBtn1 = doc.createElement('button');
+    modalBtn1.setAttribute('data-nav-item', 'true');
+    modalBtn1.setAttribute('data-row-card-index', '0');
+    modalBtn1.textContent = 'Assistir Agora';
+    modalEl.appendChild(modalBtn1);
+    doc.body.appendChild(modalEl);
+
+    await act(async () => {
+      focusElementSafely(modalBtn1);
+    });
+    assert.strictEqual(doc.activeElement, modalBtn1, 'Foco deve entrar no modal');
+
+    // Dentro do modal, moveSpatialFocus('right') não deve escapar para a fileira de fundo
+    const insideModalMove = moveSpatialFocus('right');
+    assert.strictEqual(
+      insideModalMove,
+      modalBtn1,
+      'Movimento horizontal dentro de um modal não deve escapar do escopo [data-focus-scope="modal"]'
+    );
+
+    // Fechar o modal e restaurar foco via popFocusMemory()
+    modalEl.remove();
+    let restoredOk = false;
+    await act(async () => {
+      restoredOk = popFocusMemory();
+    });
+    assert.strictEqual(
+      restoredOk,
+      true,
+      'popFocusMemory deve retornar true ao restaurar o foco após fechar detalhes/player'
+    );
+    assert.strictEqual(
+      doc.activeElement?.getAttribute('data-row-card-index'),
+      '22',
+      'document.activeElement deve ser o cartão 22 restaurado'
+    );
+
+    // -------------------------------------------------------------------------
+    // 4.4. Navegação vertical entre fileiras e subida para o filtro de Favoritos
+    // -------------------------------------------------------------------------
+    await act(async () => {
+      const c0 = row0.querySelector<HTMLElement>('[data-row-card-index="0"]');
+      if (c0) {
+        focusElementSafely(c0);
+      } else {
+        // Garantir montagem do índice 0 voltando à esquerda
+        for (let idx = 21; idx >= 0; idx--) {
+          moveSpatialFocus('left');
+        }
+      }
+    });
+    assert.strictEqual(
+      doc.activeElement?.getAttribute('data-row-card-index'),
+      '0',
+      'Deve voltar ao cartão 0 da 1ª fileira'
+    );
+
+    let downToRow1: HTMLElement | null = null;
+    await act(async () => {
+      downToRow1 = moveSpatialFocus('down');
+    });
+    const row1 = doc.querySelectorAll<HTMLElement>('[data-nav-row="true"]')[1]!;
+    assert(
+      downToRow1 && row1.contains(downToRow1),
+      'ArrowDown a partir da fileira 0 deve descer para a fileira 1'
+    );
+
+    let upToRow0: HTMLElement | null = null;
+    await act(async () => {
+      upToRow0 = moveSpatialFocus('up');
+    });
+    assert(
+      upToRow0 && row0.contains(upToRow0),
+      'ArrowUp a partir da fileira 1 deve subir de volta para a fileira 0'
+    );
+
+    let upToFavFilter: HTMLElement | null = null;
+    await act(async () => {
+      upToFavFilter = moveSpatialFocus('up');
+    });
+    assert.strictEqual(
+      upToFavFilter?.getAttribute('data-fav-filter'),
+      'all',
+      'ArrowUp da 1ª seção em Favoritos deve subir diretamente para o filtro ativo ("Todos")'
+    );
+
+    // -------------------------------------------------------------------------
+    // 4.5. TV ao Vivo (LiveCategoryRow: botão principal do canal via caminho
+    //      rápido e botão secundário de favorito via fallback) + Grade de Busca
+    // -------------------------------------------------------------------------
+    const liveRowEl = doc.createElement('div');
+    liveRowEl.setAttribute('data-nav-zone', 'categories');
+    liveRowEl.setAttribute('data-nav-row', 'true');
+    liveRowEl.setAttribute('data-live-category-row-scroll', 'true');
+
+    const chCard0 = doc.createElement('div');
+    chCard0.setAttribute('data-live-channel-card', 'true');
+    const chBtn0 = doc.createElement('button');
+    chBtn0.setAttribute('data-nav-item', 'true');
+    chBtn0.setAttribute('data-row-card-index', '0');
+    chBtn0.setAttribute('data-live-channel-btn', 'true');
+    const chFav0 = doc.createElement('button');
+    chFav0.setAttribute('data-nav-item', 'true');
+    chFav0.setAttribute('data-row-fav-index', '0');
+    chFav0.setAttribute('data-live-channel-fav', 'true');
+    chCard0.appendChild(chBtn0);
+    chCard0.appendChild(chFav0);
+
+    const chCard1 = doc.createElement('div');
+    chCard1.setAttribute('data-live-channel-card', 'true');
+    const chBtn1 = doc.createElement('button');
+    chBtn1.setAttribute('data-nav-item', 'true');
+    chBtn1.setAttribute('data-row-card-index', '1');
+    chBtn1.setAttribute('data-live-channel-btn', 'true');
+    chCard1.appendChild(chBtn1);
+
+    liveRowEl.appendChild(chCard0);
+    liveRowEl.appendChild(chCard1);
+    doc.body.appendChild(liveRowEl);
+
+    await act(async () => {
+      focusElementSafely(chBtn0);
+    });
+    resetSpatialNavPerfStats();
+    const movedToCh1 = moveSpatialFocus('right');
+    const liveFastStats = getSpatialNavPerfStats();
+    assert.strictEqual(movedToCh1, chBtn1, 'Caminho rápido deve avançar de chBtn0 para chBtn1 na TV ao Vivo');
+    assert.strictEqual(
+      liveFastStats.querySelectorCalls,
+      0,
+      'Caminho rápido na fileira de canais da TV ao Vivo não deve realizar varredura global'
+    );
+
+    // Quando focado no botão secundário de favorito (data-live-channel-fav="true"), ArrowLeft deve voltar ao chBtn0 via fallback
+    await act(async () => {
+      focusElementSafely(chFav0);
+    });
+    const backToChMain = moveSpatialFocus('left');
+    assert.strictEqual(
+      backToChMain,
+      chBtn0,
+      'ArrowLeft no botão de favorito do canal deve retornar ao botão principal do mesmo cartão via fallback'
+    );
+    liveRowEl.remove();
+
+    // Ausência de regressão entre modos pointer (mouse/toque) e remote (D-Pad)
+    setNavMode('pointer');
+    assert.strictEqual(getNavMode(), 'pointer');
+    setNavMode('remote');
+    assert.strictEqual(getNavMode(), 'remote');
+  } finally {
+    setFastHorizontalRowNavEnabledForTest(true);
+    clearAllBackHandlersForTest();
+    clearFocusMemory();
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  }
+
+  console.log('✅ Ciclo 12.30-b (caminho rápido D-Pad, virtualização, HorizontalRow e regressão) validado!');
+}
+
 async function main(): Promise<void> {
-  console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — CICLO 12.29-b.1\n');
+  console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — CICLO 12.30-b\n');
   runEssentialTrackAndSecurityTests();
   await runLiveTvFullscreenAndPreviewTransitionTests();
   await runWhitePaletteAndControlsIntegrationTests();
+  await runCycle1230bSpatialNavOptimizationTests();
   for (const timer of rafTimers.values()) {
     clearTimeout(timer);
   }
   rafTimers.clear();
-  console.log('\n🎉 TODOS OS TESTES DO CICLO 12.29-b.1 FORAM EXECUTADOS COM SUCESSO!');
+  console.log('\n🎉 TODOS OS TESTES DO CICLO 12.30-b FORAM EXECUTADOS COM SUCESSO!');
   process.exit(0);
 }
 
@@ -746,3 +1239,4 @@ main().catch((err) => {
   console.error('\n❌ ERRO NA EXECUÇÃO DOS TESTES:', err);
   process.exit(1);
 });
+

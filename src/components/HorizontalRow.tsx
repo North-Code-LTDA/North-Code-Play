@@ -413,7 +413,63 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   const [horizontallyVisibleIndices, setHorizontallyVisibleIndices] = useState<Set<number>>(
     () => new Set()
   );
-  const [focusedCardIndex, setFocusedCardIndex] = useState<number | null>(null);
+  const [, setFocusAuthRevision] = useState<number>(0);
+
+  const isRowVerticallyVisibleRef = useRef<boolean>(isRowVerticallyVisible);
+  isRowVerticallyVisibleRef.current = isRowVerticallyVisible;
+  const horizontallyVisibleIndicesRef = useRef<Set<number>>(horizontallyVisibleIndices);
+  horizontallyVisibleIndicesRef.current = horizontallyVisibleIndices;
+  const focusedCardIndexRef = useRef<number | null>(null);
+  const focusAuthorizedIndicesRef = useRef<Set<number>>(new Set());
+
+  const syncFocusedCardDom = useCallback((nextIdx: number | null) => {
+    const prevIdx = focusedCardIndexRef.current;
+    if (prevIdx === nextIdx) return;
+    focusedCardIndexRef.current = nextIdx;
+    if (prevIdx !== null) {
+      const prevEl = cardElementsRef.current.get(prevIdx);
+      if (prevEl && prevEl.hasAttribute('data-card-focused')) {
+        prevEl.setAttribute('data-card-focused', 'false');
+      }
+    }
+    if (nextIdx !== null) {
+      const nextEl = cardElementsRef.current.get(nextIdx);
+      if (nextEl && nextEl.hasAttribute('data-card-focused')) {
+        nextEl.setAttribute('data-card-focused', 'true');
+      }
+    }
+  }, []);
+
+  const handleCardFocus = useCallback(
+    (idx: number) => {
+      syncFocusedCardDom(idx);
+      const alreadyAuthorized =
+        (isRowVerticallyVisibleRef.current && horizontallyVisibleIndicesRef.current.has(idx)) ||
+        focusAuthorizedIndicesRef.current.has(idx);
+      if (!alreadyAuthorized) {
+        focusAuthorizedIndicesRef.current.add(idx);
+        setFocusAuthRevision((r) => r + 1);
+      }
+    },
+    [syncFocusedCardDom]
+  );
+
+  const handleCardBlur = useCallback(
+    (idx: number, relatedTarget?: EventTarget | null) => {
+      if (
+        relatedTarget &&
+        typeof Node !== 'undefined' &&
+        relatedTarget instanceof Node &&
+        rowRef.current?.contains(relatedTarget)
+      ) {
+        return;
+      }
+      if (focusedCardIndexRef.current === idx) {
+        syncFocusedCardDom(null);
+      }
+    },
+    [syncFocusedCardDom]
+  );
 
   const metricsRef = useRef<HorizontalRowMetrics>(
     resolveCssRowMetrics(type, displayMode, tvScale, cardVariant)
@@ -456,6 +512,12 @@ export const HorizontalRow = React.memo(function HorizontalRow({
   const setCardElementRef = useCallback((idx: number, el: HTMLElement | null) => {
     if (el) {
       cardElementsRef.current.set(idx, el);
+      if (el.hasAttribute('data-card-focused')) {
+        el.setAttribute(
+          'data-card-focused',
+          focusedCardIndexRef.current === idx ? 'true' : 'false'
+        );
+      }
     } else {
       cardElementsRef.current.delete(idx);
     }
@@ -909,7 +971,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
     const rowEl = rowRef.current;
     if (!rowEl || items.length === 0) return;
 
-    let pinnedIdx: number | null = focusedCardIndex;
+    let pinnedIdx: number | null = focusedCardIndexRef.current;
     if (typeof document !== 'undefined' && rowEl.contains(document.activeElement)) {
       const activeCard = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
         '[data-row-card-index]'
@@ -1082,6 +1144,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
 
     if (itemsChanged) {
       prevItemsRef.current = items;
+      focusAuthorizedIndicesRef.current.clear();
       subs.forEach((sub) => sub.unsubscribe());
       subs.clear();
     } else {
@@ -1200,7 +1263,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
       if (rawIdx !== null) {
         const parsedIdx = Number(rawIdx);
         if (Number.isFinite(parsedIdx)) {
-          setFocusedCardIndex(parsedIdx);
+          handleCardFocus(parsedIdx);
         }
       }
     };
@@ -1209,7 +1272,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
     return () => {
       rowEl.removeEventListener('focusin', handleFocusIn);
     };
-  }, [items.length]);
+  }, [items.length, handleCardFocus]);
 
   if (items.length === 0) return null;
 
@@ -1310,9 +1373,11 @@ export const HorizontalRow = React.memo(function HorizontalRow({
           {visibleSlice.map((item, offset) => {
             const idx = effectiveStartIndex + offset;
             const itemKey = getHorizontalRowItemKey(item, idx);
+            const isCardFocused = focusedCardIndexRef.current === idx;
             const isCardAuthorized =
               (isRowVerticallyVisible && horizontallyVisibleIndices.has(idx)) ||
-              focusedCardIndex === idx;
+              focusAuthorizedIndicesRef.current.has(idx) ||
+              isCardFocused;
 
             if (renderCardItem) {
               return renderCardItem({
@@ -1321,10 +1386,10 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                 itemKey,
                 virtualize,
                 isAuthorized: isCardAuthorized,
-                isFocused: focusedCardIndex === idx,
+                isFocused: isCardFocused,
                 setCardRef: (el) => setCardElementRef(idx, el),
-                onFocusCard: () => setFocusedCardIndex(idx),
-                onBlurCard: () => setFocusedCardIndex((prev) => (prev === idx ? null : prev)),
+                onFocusCard: () => handleCardFocus(idx),
+                onBlurCard: () => handleCardBlur(idx),
               });
             }
 
@@ -1339,7 +1404,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                 data-virtual-index={virtualize ? idx : undefined}
                 data-row-item-key={itemKey}
                 data-showcase-card="true"
-                data-card-focused={focusedCardIndex === idx ? 'true' : 'false'}
+                data-card-focused={isCardFocused ? 'true' : 'false'}
                 aria-label={item.name}
                 onClick={(e) => {
                   const el = e.currentTarget as HTMLElement;
@@ -1351,8 +1416,8 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                   pushFocusMemory(el);
                   onItemClick(item, el);
                 }}
-                onFocus={() => setFocusedCardIndex(idx)}
-                onBlur={() => setFocusedCardIndex((prev) => (prev === idx ? null : prev))}
+                onFocus={() => handleCardFocus(idx)}
+                onBlur={(e) => handleCardBlur(idx, e.relatedTarget)}
                 whileTap={{ scale: 0.97 }}
                 className={`nc-showcase-card relative z-0 hover:z-20 focus:z-20 focus-visible:z-20 shrink-0 snap-start select-none group cursor-pointer overflow-visible rounded-xl ${
                   type === 'live'
