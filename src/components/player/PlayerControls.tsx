@@ -564,7 +564,7 @@ export function PlayerControls({
                         onVolumeChange(nextVol);
                       }
                     }}
-                    className="w-full h-1.5 bg-white/30 rounded-lg appearance-none cursor-pointer accent-nc-primary"
+                    className="nc-player-volume-slider w-full h-1.5 bg-white/30 rounded-lg appearance-none cursor-pointer accent-nc-primary"
                     title="Ajustar Volume"
                   />
                 </div>
@@ -692,7 +692,10 @@ export function PlayerControls({
       {(isBuffering || isLoading) && (
         <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
           <div className="flex flex-col items-center justify-center p-4 bg-black/55 backdrop-blur-sm rounded-2xl pointer-events-none select-none animate-in fade-in duration-200">
-            <div className="w-9 h-9 border-2 border-[#E50914] border-t-transparent rounded-full animate-spin mb-2" />
+            <div
+              data-player-spinner="true"
+              className="w-9 h-9 border-2 border-nc-primary border-t-transparent rounded-full animate-spin mb-2"
+            />
             <span className="text-xs text-white/90 font-medium">Carregando...</span>
           </div>
         </div>
@@ -700,9 +703,9 @@ export function PlayerControls({
 
       {/* Bottom Scrim, Timeline & Control Row */}
       <div
-        className={`absolute bottom-0 left-0 right-0 z-20 w-full nc-player-bottom-scrim flex flex-col gap-1.5 sm:gap-2 transition-all duration-300 ${
+        className={`absolute bottom-0 left-0 right-0 z-20 w-full nc-player-bottom-scrim flex flex-col gap-1 sm:gap-2 transition-all duration-300 ${
           isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
-        } px-4 pb-3.5 pt-10 sm:px-7 sm:pb-5 sm:pt-12 nc-safe-player-bottom`}
+        } px-3 pb-3 pt-8 sm:px-7 sm:pb-5 sm:pt-12 nc-safe-player-bottom`}
         onClick={stopProp}
         onPointerDown={stopProp}
         aria-hidden={!isVisible}
@@ -721,15 +724,15 @@ export function PlayerControls({
           formatTime={formatTime}
         />
 
-        {/* Reference Bottom Row: 3-column grid so the center title is truly centered across the full player width */}
+        {/* Reference Bottom Row: 3-column grid on desktop/TV/landscape, stacked rows on mobile portrait */}
         <div
           data-nav-row="player-bottom"
-          className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:gap-4 text-white select-none"
+          className="nc-player-bottom-layout text-white select-none"
         >
           {/* Left Group: Play/Pause, Seek -10s, Seek +10s, Volume */}
           <div
             data-player-group="left"
-            className="justify-self-start flex items-center gap-1 sm:gap-2 min-w-0"
+            className="nc-player-left-group"
           >
             {/* 1. Play/Pause */}
             <button
@@ -808,7 +811,7 @@ export function PlayerControls({
               <div
                 className={`transition-all duration-200 overflow-hidden flex items-center px-1 ${
                   isVolumeSliderExpanded
-                    ? 'w-20 sm:w-24 opacity-100'
+                    ? 'w-16 sm:w-24 opacity-100'
                     : 'w-0 opacity-0 pointer-events-none invisible'
                 }`}
                 onClick={stopProp}
@@ -841,7 +844,7 @@ export function PlayerControls({
                       onVolumeChange(nextVol);
                     }
                   }}
-                  className="w-full h-1 bg-white/35 rounded-lg appearance-none cursor-pointer accent-[#E50914]"
+                  className="nc-player-volume-slider w-full h-1 bg-white/35 rounded-lg appearance-none cursor-pointer accent-nc-primary"
                   title="Ajustar Volume"
                 />
               </div>
@@ -855,14 +858,19 @@ export function PlayerControls({
                 onClick={(e) => handleControlClick(e, onSeekToLive)}
                 disabled={isAtLiveEdge}
                 tabIndex={isControlFocusable && !isAtLiveEdge ? 0 : -1}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wider uppercase transition-all ml-1 ${
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wider uppercase transition-all ml-1 shrink-0 ${
                   isAtLiveEdge
-                    ? 'bg-[#E50914]/20 text-white cursor-default'
+                    ? 'bg-nc-primary text-black cursor-default'
                     : 'bg-white/20 text-white hover:bg-white/30 cursor-pointer animate-pulse'
                 }`}
                 title={isAtLiveEdge ? 'Sincronizado ao vivo' : 'Voltar ao vivo'}
               >
-                <span className="w-2 h-2 rounded-full bg-[#E50914]" />
+                <span
+                  data-player-live-dot="true"
+                  className={`w-2 h-2 rounded-full ${
+                    isAtLiveEdge ? 'bg-black animate-pulse' : 'bg-nc-primary'
+                  }`}
+                />
                 <span>{isAtLiveEdge ? 'AO VIVO' : 'IR AO VIVO'}</span>
               </button>
             )}
@@ -871,7 +879,7 @@ export function PlayerControls({
           {/* Center: Truly Centered Content Title */}
           <div
             data-player-center-title="true"
-            className="justify-self-center min-w-0 max-w-[40vw] sm:max-w-[44vw] px-2 text-center pointer-events-none"
+            className="nc-player-title-cell"
           >
             <div className="nc-player-center-title truncate">
               {centerTitleParts.isBoldSplit ? (
@@ -899,7 +907,7 @@ export function PlayerControls({
           {/* Right Group: Contextual Episode Controls + PiP + Audio & Subtitles + Speed + Fullscreen */}
           <div
             data-player-group="right"
-            className="justify-self-end flex items-center gap-1 sm:gap-2 shrink-0"
+            className="nc-player-right-group"
           >
             {/* Previous Episode (only when available) */}
             {onPrevious && (
@@ -962,7 +970,7 @@ export function PlayerControls({
               {hasActiveSubtitles && (
                 <span
                   data-player-subtitles-active-dot="true"
-                  className="absolute bottom-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-[#E50914]"
+                  className="absolute bottom-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-nc-primary"
                 />
               )}
             </button>

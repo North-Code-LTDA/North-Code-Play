@@ -889,10 +889,13 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     }
   };
 
+  const isCompactPreview = !isPlayerInFullLayer;
+
   const playerContent = (
     <motion.div
       ref={containerRef}
       data-player-container="true"
+      data-player-presentation={isCompactPreview ? 'compact-preview' : 'full-layer'}
       data-focus-scope={isPlayerInFullLayer ? 'modal' : undefined}
       data-player-active-shortcuts={
         isPlayerActive(playerId, isFullscreen || isVisuallyExpanded, false) ? 'true' : undefined
@@ -915,9 +918,9 @@ export const VideoPlayer = React.memo(function VideoPlayer({
       onKeyDownCapture={handlePlayerKeyDownCapture}
       onClick={handleContainerClick}
       className={`${
-        embedded && !isVisuallyExpanded
+        isCompactPreview
           ? 'relative w-full aspect-video rounded-2xl overflow-hidden bg-black border border-nc-border/40 shadow-2xl select-none group'
-          : 'fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center select-none overflow-hidden'
+          : 'fixed inset-0 z-[100] w-full h-full bg-black flex flex-col items-center justify-center select-none overflow-hidden'
       }`}
     >
       {/* Video Element */}
@@ -930,7 +933,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
 
       {/* Unified React Player Controls */}
       <PlayerControls
-        embedded={embedded && !isVisuallyExpanded}
+        embedded={isCompactPreview}
         disableRemoteFocus={Boolean(
           embedded && disableEmbeddedControlsFocus && !isPlayerInFullLayer
         )}
@@ -1001,7 +1004,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
           setShowDiagnostics((p) => !p);
           resetInactivityTimer();
         }}
-        onBack={onBack ? handleBack : undefined}
+        onBack={onBack || (embedded && isPlayerInFullLayer) ? handleBack : undefined}
         onNext={onNext}
         onPrevious={onPrevious}
         onUserInteraction={resetInactivityTimer}
@@ -1049,29 +1052,29 @@ export const VideoPlayer = React.memo(function VideoPlayer({
         <div
           data-player-error-overlay="true"
           className={`absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md text-center pointer-events-auto overflow-y-auto ${
-            embedded && !isVisuallyExpanded ? 'p-2.5 sm:p-3.5' : 'p-6'
+            isCompactPreview ? 'p-2.5 sm:p-3.5' : 'p-6'
           }`}
           onClick={(e) => e.stopPropagation()}
         >
           <div
             className={`rounded-full bg-red-500/20 flex items-center justify-center shrink-0 ${
-              embedded && !isVisuallyExpanded ? 'w-8 h-8 mb-1.5' : 'w-14 h-14 mb-4'
+              isCompactPreview ? 'w-8 h-8 mb-1.5' : 'w-14 h-14 mb-4'
             }`}
           >
             <AlertCircle
-              className={embedded && !isVisuallyExpanded ? 'w-4 h-4 text-red-500' : 'w-7 h-7 text-red-500'}
+              className={isCompactPreview ? 'w-4 h-4 text-red-500' : 'w-7 h-7 text-red-500'}
             />
           </div>
           <h3
             className={`font-bold text-white ${
-              embedded && !isVisuallyExpanded ? 'text-xs sm:text-sm mb-1' : 'text-lg mb-2'
+              isCompactPreview ? 'text-xs sm:text-sm mb-1' : 'text-lg mb-2'
             }`}
           >
             Erro de Reprodução Direta
           </h3>
           <p
             className={`text-red-400 max-w-lg leading-snug ${
-              embedded && !isVisuallyExpanded
+              isCompactPreview
                 ? 'text-[11px] sm:text-xs line-clamp-2 mb-2'
                 : 'text-sm leading-relaxed mb-6'
             }`}
@@ -1082,7 +1085,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
           <div
             data-nav-row="player-error"
             className={`flex flex-wrap justify-center ${
-              embedded && !isVisuallyExpanded ? 'gap-1.5 sm:gap-2' : 'gap-3'
+              isCompactPreview ? 'gap-1.5 sm:gap-2' : 'gap-3'
             }`}
           >
             <button
@@ -1090,10 +1093,10 @@ export const VideoPlayer = React.memo(function VideoPlayer({
               data-player-error-primary="true"
               onClick={handleRetry}
               className={`bg-nc-primary text-black font-semibold rounded-xl transition-all hover:brightness-110 flex items-center gap-1.5 cursor-pointer ${
-                embedded && !isVisuallyExpanded ? 'px-3 py-1.5 text-xs' : 'px-5 py-2.5 text-sm gap-2'
+                isCompactPreview ? 'px-3 py-1.5 text-xs' : 'px-5 py-2.5 text-sm gap-2'
               }`}
             >
-              <RefreshCw className={embedded && !isVisuallyExpanded ? 'w-3.5 h-3.5' : 'w-4 h-4'} /> Tentar Novamente
+              <RefreshCw className={isCompactPreview ? 'w-3.5 h-3.5' : 'w-4 h-4'} /> Tentar Novamente
             </button>
             <button
               type="button"
@@ -1103,15 +1106,15 @@ export const VideoPlayer = React.memo(function VideoPlayer({
                 resetInactivityTimer();
               }}
               className={`bg-white/10 hover:bg-white/20 text-white font-medium rounded-xl transition-colors border border-nc-border/40 flex items-center gap-1.5 cursor-pointer ${
-                embedded && !isVisuallyExpanded ? 'px-2.5 py-1.5 text-xs' : 'px-5 py-2.5 text-sm gap-2'
+                isCompactPreview ? 'px-2.5 py-1.5 text-xs' : 'px-5 py-2.5 text-sm gap-2'
               }`}
             >
-              <Wrench className={embedded && !isVisuallyExpanded ? 'w-3.5 h-3.5 text-nc-primary' : 'w-4 h-4 text-nc-primary'} /> Diagnóstico
+              <Wrench className={isCompactPreview ? 'w-3.5 h-3.5 text-nc-primary' : 'w-4 h-4 text-nc-primary'} /> Diagnóstico
             </button>
-            {onBack && (!embedded || isVisuallyExpanded) && (
+            {(onBack || (embedded && isPlayerInFullLayer)) && !isCompactPreview && (
               <button
                 type="button"
-                onClick={onBack}
+                onClick={handleBack}
                 className="px-5 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-nc-text-secondary hover:text-white font-medium rounded-xl transition-colors border border-nc-border/50 text-sm cursor-pointer flex items-center gap-1.5"
               >
                 <ArrowLeft className="w-4 h-4" /> Voltar

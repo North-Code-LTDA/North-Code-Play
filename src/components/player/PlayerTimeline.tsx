@@ -126,17 +126,21 @@ export function PlayerTimeline({
 
     return (
       <div
+        data-nav-row="player-timeline"
         data-player-live-timeline="true"
         className="relative w-full flex items-center gap-3 py-1 select-none"
         onClick={handleClick}
         onPointerDown={(e) => e.stopPropagation()}
       >
         <div className="relative flex-1 h-[3px] bg-white/25 rounded-full overflow-hidden">
-          <div className="w-full h-full bg-[#E50914] rounded-full" />
+          <div
+            data-player-progress-bar="true"
+            className="w-full h-full bg-nc-primary rounded-full"
+          />
         </div>
         <span
           data-player-timeline-time="true"
-          className="text-xs font-semibold tabular-nums text-white/90 tracking-wide shrink-0"
+          className="text-xs font-semibold tabular-nums text-white/95 tracking-wide shrink-0"
         >
           AO VIVO
         </span>
@@ -193,7 +197,7 @@ export function PlayerTimeline({
             embedded
               ? 'h-1.5 group-hover:h-2 group-focus:h-2'
               : 'h-[3px] group-hover:h-[5px] group-focus:h-[5px]'
-          } bg-white/30 rounded-full transition-all duration-150 overflow-hidden`}
+          } bg-white/25 rounded-full transition-all duration-150 overflow-hidden`}
         >
           {/* Buffered Ranges */}
           {effectiveDuration > 0 &&
@@ -211,7 +215,7 @@ export function PlayerTimeline({
                 <div
                   key={idx}
                   data-player-buffer-range="true"
-                  className="absolute top-0 bottom-0 bg-white/35 rounded-full"
+                  className="absolute top-0 bottom-0 bg-white/45 rounded-full"
                   style={{ left: `${startPct}%`, width: `${widthPct}%` }}
                 />
               );
@@ -220,9 +224,7 @@ export function PlayerTimeline({
           {/* Played Progress Bar */}
           <div
             data-player-progress-bar="true"
-            className={`absolute top-0 bottom-0 left-0 ${
-              embedded ? 'bg-nc-primary' : 'bg-[#E50914]'
-            } rounded-full transition-[width] duration-75`}
+            className="absolute top-0 bottom-0 left-0 bg-nc-primary rounded-full transition-[width] duration-75"
             style={{ width: `${progressPercent}%` }}
           />
         </div>
@@ -230,10 +232,10 @@ export function PlayerTimeline({
         {/* Circular Scrubber Thumb */}
         <div
           data-player-timeline-thumb="true"
-          className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 rounded-full shadow-md transition-transform duration-150 pointer-events-none ${
+          className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 rounded-full bg-nc-primary shadow-md transition-transform duration-150 pointer-events-none ${
             embedded
-              ? 'w-3.5 h-3.5 bg-nc-primary scale-0 group-hover:scale-100 group-focus:scale-100'
-              : 'w-3 h-3 bg-[#E50914] scale-100 group-hover:scale-125 group-focus:scale-125'
+              ? 'w-3.5 h-3.5 scale-0 group-hover:scale-100 group-focus:scale-100'
+              : 'w-3 h-3 scale-100 group-hover:scale-125 group-focus:scale-125'
           }`}
           style={{ left: `${progressPercent}%` }}
         />
