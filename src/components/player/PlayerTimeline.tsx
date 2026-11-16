@@ -2,6 +2,7 @@ import React, { useRef, useState, useCallback } from 'react';
 import { BufferedTimeRange } from './types';
 
 interface PlayerTimelineProps {
+  embedded?: boolean;
   currentTime: number;
   duration: number;
   bufferedRanges: BufferedTimeRange[];
@@ -14,10 +15,12 @@ interface PlayerTimelineProps {
 }
 
 export function PlayerTimeline({
+  embedded = false,
   currentTime,
   duration,
   bufferedRanges,
   isLive,
+  liveEdgeDistance = 0,
   isVisible = true,
   onSeek,
   onUserInteraction,
@@ -29,14 +32,28 @@ export function PlayerTimeline({
   const [isDragging, setIsDragging] = useState(false);
 
   const effectiveDuration = duration > 0 && isFinite(duration) ? duration : 0;
-  const progressPercent = effectiveDuration > 0 ? Math.min(100, Math.max(0, (currentTime / effectiveDuration) * 100)) : 0;
+  const progressPercent =
+    effectiveDuration > 0
+      ? Math.min(100, Math.max(0, (currentTime / effectiveDuration) * 100))
+      : 0;
   const canSeek = effectiveDuration > 0 && isVisible;
+  const remainingSeconds = Math.max(0, effectiveDuration - currentTime);
 
   const calculateTimeFromEvent = useCallback(
-    (e: React.MouseEvent | MouseEvent | React.TouchEvent | TouchEvent | React.PointerEvent): number => {
+    (
+      e:
+        | React.MouseEvent
+        | MouseEvent
+        | React.TouchEvent
+        | TouchEvent
+        | React.PointerEvent
+    ): number => {
       if (!barRef.current || effectiveDuration <= 0) return 0;
       const rect = barRef.current.getBoundingClientRect();
-      const clientX = 'touches' in e && e.touches.length > 0 ? e.touches[0].clientX : (e as MouseEvent).clientX;
+      const clientX =
+        'touches' in e && e.touches.length > 0
+          ? e.touches[0].clientX
+          : (e as MouseEvent).clientX;
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
       return ratio * effectiveDuration;
     },
@@ -93,96 +110,159 @@ export function PlayerTimeline({
   };
 
   if (isLive && effectiveDuration <= 0) {
-    // Live stream without a seekable window: subtle live pulse bar with identical h-4 container height
+    if (embedded) {
+      return (
+        <div
+          className="relative w-full h-4 flex items-center group py-1"
+          onClick={handleClick}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden">
+            <div className="w-full h-full bg-nc-primary/50 animate-pulse rounded-full" />
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div
-        className="relative w-full h-4 flex items-center group py-1"
+        data-player-live-timeline="true"
+        className="relative w-full flex items-center gap-3 py-1 select-none"
         onClick={handleClick}
         onPointerDown={(e) => e.stopPropagation()}
       >
-        <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden">
-          <div className="w-full h-full bg-nc-primary/50 animate-pulse rounded-full" />
+        <div className="relative flex-1 h-[3px] bg-white/25 rounded-full overflow-hidden">
+          <div className="w-full h-full bg-[#E50914] rounded-full" />
         </div>
+        <span
+          data-player-timeline-time="true"
+          className="text-xs font-semibold tabular-nums text-white/90 tracking-wide shrink-0"
+        >
+          AO VIVO
+        </span>
       </div>
     );
   }
 
   return (
     <div
-      ref={barRef}
       data-nav-row="player-timeline"
-      data-player-control="timeline"
+      className="relative w-full flex items-center gap-3 select-none"
       onClick={handleClick}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onFocus={() => onUserInteraction?.()}
-      role="slider"
-      aria-label="Linha do tempo"
-      aria-valuenow={Math.floor(currentTime)}
-      aria-valuemin={0}
-      aria-valuemax={Math.floor(effectiveDuration)}
-      aria-disabled={!canSeek}
-      tabIndex={canSeek ? 0 : -1}
-      onKeyDown={(e) => {
-        if (e.key === 'ArrowLeft') {
-          e.preventDefault();
-          e.stopPropagation();
-          onUserInteraction?.();
-          if (effectiveDuration > 0) {
-            onSeek(Math.max(0, currentTime - 10));
-          }
-        } else if (e.key === 'ArrowRight') {
-          e.preventDefault();
-          e.stopPropagation();
-          onUserInteraction?.();
-          if (effectiveDuration > 0) {
-            onSeek(Math.min(effectiveDuration, currentTime + 10));
-          }
-        }
-      }}
-      className="relative w-full h-5 flex items-center cursor-pointer group py-1 px-1 select-none touch-none focus:outline-none rounded-lg"
+      onPointerDown={(e) => e.stopPropagation()}
     >
-      {/* Background Track */}
-      <div className="relative w-full h-1.5 group-hover:h-2 group-focus:h-2 bg-white/25 rounded-full transition-all duration-150 overflow-hidden">
-        {/* Buffered Ranges */}
-        {effectiveDuration > 0 &&
-          bufferedRanges.map((range, idx) => {
-            const startPct = Math.min(100, Math.max(0, (range.start / effectiveDuration) * 100));
-            const endPct = Math.min(100, Math.max(0, (range.end / effectiveDuration) * 100));
-            const widthPct = Math.max(0, endPct - startPct);
-            return (
-              <div
-                key={idx}
-                className="absolute top-0 bottom-0 bg-white/30 rounded-full"
-                style={{ left: `${startPct}%`, width: `${widthPct}%` }}
-              />
-            );
-          })}
-
-        {/* Played Progress Bar */}
+      <div
+        ref={barRef}
+        data-player-control="timeline"
+        onClick={handleClick}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onFocus={() => onUserInteraction?.()}
+        role="slider"
+        aria-label="Linha do tempo"
+        aria-valuenow={Math.floor(currentTime)}
+        aria-valuemin={0}
+        aria-valuemax={Math.floor(effectiveDuration)}
+        aria-disabled={!canSeek}
+        tabIndex={canSeek ? 0 : -1}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            e.stopPropagation();
+            onUserInteraction?.();
+            if (effectiveDuration > 0) {
+              onSeek(Math.max(0, currentTime - 10));
+            }
+          } else if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            e.stopPropagation();
+            onUserInteraction?.();
+            if (effectiveDuration > 0) {
+              onSeek(Math.min(effectiveDuration, currentTime + 10));
+            }
+          }
+        }}
+        className="relative flex-1 h-5 flex items-center cursor-pointer group py-1 select-none touch-none focus:outline-none rounded-lg"
+      >
+        {/* Background Track */}
         <div
-          className="absolute top-0 bottom-0 left-0 bg-nc-primary rounded-full transition-[width] duration-75"
-          style={{ width: `${progressPercent}%` }}
+          className={`relative w-full ${
+            embedded
+              ? 'h-1.5 group-hover:h-2 group-focus:h-2'
+              : 'h-[3px] group-hover:h-[5px] group-focus:h-[5px]'
+          } bg-white/30 rounded-full transition-all duration-150 overflow-hidden`}
+        >
+          {/* Buffered Ranges */}
+          {effectiveDuration > 0 &&
+            bufferedRanges.map((range, idx) => {
+              const startPct = Math.min(
+                100,
+                Math.max(0, (range.start / effectiveDuration) * 100)
+              );
+              const endPct = Math.min(
+                100,
+                Math.max(0, (range.end / effectiveDuration) * 100)
+              );
+              const widthPct = Math.max(0, endPct - startPct);
+              return (
+                <div
+                  key={idx}
+                  data-player-buffer-range="true"
+                  className="absolute top-0 bottom-0 bg-white/35 rounded-full"
+                  style={{ left: `${startPct}%`, width: `${widthPct}%` }}
+                />
+              );
+            })}
+
+          {/* Played Progress Bar */}
+          <div
+            data-player-progress-bar="true"
+            className={`absolute top-0 bottom-0 left-0 ${
+              embedded ? 'bg-nc-primary' : 'bg-[#E50914]'
+            } rounded-full transition-[width] duration-75`}
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+
+        {/* Circular Scrubber Thumb */}
+        <div
+          data-player-timeline-thumb="true"
+          className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 rounded-full shadow-md transition-transform duration-150 pointer-events-none ${
+            embedded
+              ? 'w-3.5 h-3.5 bg-nc-primary scale-0 group-hover:scale-100 group-focus:scale-100'
+              : 'w-3 h-3 bg-[#E50914] scale-100 group-hover:scale-125 group-focus:scale-125'
+          }`}
+          style={{ left: `${progressPercent}%` }}
         />
+
+        {/* Hover Time Tooltip */}
+        {hoverTime !== null && effectiveDuration > 0 && (
+          <div
+            className="absolute bottom-6 -translate-x-1/2 px-2 py-1 bg-nc-bg-card/95 border border-nc-border rounded text-[11px] font-mono tabular-nums text-white pointer-events-none shadow-xl whitespace-nowrap z-30"
+            style={{ left: `${hoverPosition}%` }}
+          >
+            {isLive
+              ? `-${formatTime(Math.max(0, effectiveDuration - hoverTime))}`
+              : formatTime(hoverTime)}
+          </div>
+        )}
       </div>
 
-      {/* Scrubber Thumb */}
-      <div
-        className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-nc-primary rounded-full shadow-lg scale-0 group-hover:scale-100 group-focus:scale-100 transition-transform duration-150 pointer-events-none"
-        style={{ left: `${progressPercent}%` }}
-      />
-
-      {/* Hover Time Tooltip */}
-      {hoverTime !== null && effectiveDuration > 0 && (
-        <div
-          className="absolute bottom-6 -translate-x-1/2 px-2 py-1 bg-nc-bg-card/95 border border-nc-border rounded text-[11px] font-mono text-white pointer-events-none shadow-xl whitespace-nowrap z-30"
-          style={{ left: `${hoverPosition}%` }}
+      {/* Right-aligned Duration / Remaining Time Indicator (Full-layer mode, matching references) */}
+      {!embedded && (
+        <span
+          data-player-timeline-time="true"
+          className="text-xs sm:text-[13px] font-medium tabular-nums text-white/95 shrink-0 tracking-tight"
         >
-          {isLive ? `-${formatTime(Math.max(0, effectiveDuration - hoverTime))}` : formatTime(hoverTime)}
-        </div>
+          {isLive
+            ? liveEdgeDistance > 6
+              ? `-${formatTime(liveEdgeDistance)}`
+              : 'AO VIVO'
+            : formatTime(currentTime > 0 ? remainingSeconds : effectiveDuration)}
+        </span>
       )}
     </div>
   );

@@ -39,6 +39,8 @@ interface PlayerControlsProps {
   isFullscreen: boolean;
   isAtLiveEdge: boolean;
   liveEdgeDistance: number;
+  hasActiveSubtitles?: boolean;
+  playbackRate?: number;
   onTogglePlay: () => void;
   onSeek: (time: number) => void;
   onSeekBy: (delta: number) => void;
@@ -48,6 +50,8 @@ interface PlayerControlsProps {
   onToggleFullscreen: () => void;
   onTogglePiP: () => void;
   onOpenSettings: () => void;
+  onOpenAudioSubtitles?: () => void;
+  onOpenSpeed?: () => void;
   onOpenDiagnostics: () => void;
   onBack?: () => void;
   onNext?: () => void;
@@ -66,6 +70,209 @@ export function formatTime(secs: number): string {
     return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   }
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function parseCenteredTitleParts(
+  title: string,
+  channelName?: string,
+  programTitle?: string,
+  isLive?: boolean
+): { primary: string; secondary: string | null; isBoldSplit: boolean } {
+  if (isLive) {
+    const primary = (channelName || title || '').trim();
+    const secondary = programTitle && programTitle.trim() !== primary ? programTitle.trim() : null;
+    return { primary, secondary, isBoldSplit: Boolean(secondary) };
+  }
+
+  const rawTitle = (title || '').trim();
+  const dashSeriesMatch = rawTitle.match(/^(.*?)\s+-\s+(S\d+E\d+|E\d+)(?:\s*[-·:]?\s*(.*))?$/i);
+  if (dashSeriesMatch) {
+    const seriesName = dashSeriesMatch[1].trim();
+    const epCode = dashSeriesMatch[2].trim();
+    const inlineEpTitle = (dashSeriesMatch[3] || '').trim();
+    let epTitle = (programTitle || inlineEpTitle || '').trim();
+    if (epTitle) {
+      // Remove redundant series name or episode code prefix if present in Xtream episode title
+      const escapedSeries = seriesName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedCode = epCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      epTitle = epTitle
+        .replace(new RegExp(`^${escapedSeries}\\s*[-·:]?\\s*`, 'i'), '')
+        .replace(new RegExp(`^${escapedCode}\\s*[-·:]?\\s*`, 'i'), '')
+        .trim();
+    }
+    const secondary = epTitle ? `${epCode} ${epTitle}` : epCode;
+    return { primary: seriesName, secondary, isBoldSplit: true };
+  }
+
+  const inlineSeriesMatch = rawTitle.match(/^(.*?)\s+(S\d+E\d+|E\d+)\s+(.+)$/i);
+  if (inlineSeriesMatch) {
+    return {
+      primary: inlineSeriesMatch[1].trim(),
+      secondary: `${inlineSeriesMatch[2].trim()} ${inlineSeriesMatch[3].trim()}`,
+      isBoldSplit: true,
+    };
+  }
+
+  if (programTitle && programTitle.trim() && programTitle.trim() !== rawTitle) {
+    return {
+      primary: rawTitle,
+      secondary: programTitle.trim(),
+      isBoldSplit: true,
+    };
+  }
+
+  return { primary: rawTitle, secondary: null, isBoldSplit: false };
+}
+
+function Seek10Icon({ direction }: { direction: 'back' | 'forward' }) {
+  const isBack = direction === 'back';
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className="nc-player-icon"
+      aria-hidden="true"
+    >
+      {isBack ? (
+        <>
+          <path
+            d="M12 5a7.5 7.5 0 1 1-6.45 3.68"
+            stroke="currentColor"
+            strokeWidth="1.85"
+            strokeLinecap="round"
+          />
+          <path
+            d="M8.5 3.5L5.2 5.4l2.1 3.2"
+            stroke="currentColor"
+            strokeWidth="1.85"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </>
+      ) : (
+        <>
+          <path
+            d="M12 5a7.5 7.5 0 1 0 6.45 3.68"
+            stroke="currentColor"
+            strokeWidth="1.85"
+            strokeLinecap="round"
+          />
+          <path
+            d="M15.5 3.5l3.3 1.9-2.1 3.2"
+            stroke="currentColor"
+            strokeWidth="1.85"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </>
+      )}
+      <text
+        x="12"
+        y="15.1"
+        textAnchor="middle"
+        fill="currentColor"
+        fontSize="7.4"
+        fontWeight="700"
+        fontFamily="Inter, system-ui, sans-serif"
+      >
+        10
+      </text>
+    </svg>
+  );
+}
+
+function NextEpisodeRefIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="nc-player-icon" aria-hidden="true">
+      <path
+        d="M5.5 5.2L15.2 12L5.5 18.8V5.2Z"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M18.5 5.5V18.5"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function PrevEpisodeRefIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="nc-player-icon" aria-hidden="true">
+      <path
+        d="M18.5 5.2L8.8 12L18.5 18.8V5.2Z"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M5.5 5.5V18.5"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function SubtitlesDialogRefIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="nc-player-icon" aria-hidden="true">
+      <path
+        d="M4 5.5C4 4.67 4.67 4 5.5 4h13c.83 0 1.5.67 1.5 1.5v10c0 .83-.67 1.5-1.5 1.5H13l-3.8 3.2c-.48.4-1.2.06-1.2-.57V17H5.5C4.67 17 4 16.33 4 15.5v-10Z"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M7.5 9.25h5M14.5 9.25h2M7.5 12.75h2.5M12 12.75h4.5"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function SpeedometerRefIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="nc-player-icon" aria-hidden="true">
+      <path
+        d="M4.8 17.5a8.5 8.5 0 1 1 14.4 0"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+      />
+      <path
+        d="M12 13l3.6-3.6"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+      />
+      <circle cx="12" cy="13" r="1.5" fill="currentColor" />
+    </svg>
+  );
+}
+
+function FullscreenCornersRefIcon({ isFullscreen }: { isFullscreen: boolean }) {
+  if (isFullscreen) {
+    return <Minimize className="nc-player-icon stroke-[1.85]" />;
+  }
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="nc-player-icon" aria-hidden="true">
+      <path
+        d="M4 9V5.5C4 4.67 4.67 4 5.5 4H9M15 4h3.5C19.33 4 20 4.67 20 5.5V9M20 15v3.5c0 .83-.67 1.5-1.5 1.5H15M9 20H5.5C4.67 20 4 19.33 4 18.5V15"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 export function PlayerControls({
@@ -87,6 +294,8 @@ export function PlayerControls({
   isFullscreen,
   isAtLiveEdge,
   liveEdgeDistance,
+  hasActiveSubtitles = false,
+  playbackRate = 1,
   onTogglePlay,
   onSeek,
   onSeekBy,
@@ -96,6 +305,8 @@ export function PlayerControls({
   onToggleFullscreen,
   onTogglePiP,
   onOpenSettings,
+  onOpenAudioSubtitles,
+  onOpenSpeed,
   onOpenDiagnostics,
   onBack,
   onNext,
@@ -118,8 +329,8 @@ export function PlayerControls({
     effectiveVolume === 0 || isMuted
       ? VolumeX
       : effectiveVolume < 0.5
-      ? Volume1
-      : Volume2;
+        ? Volume1
+        : Volume2;
 
   const handleControlClick = (e: React.MouseEvent, action: () => void) => {
     e.stopPropagation();
@@ -136,23 +347,303 @@ export function PlayerControls({
     e.stopPropagation();
   };
 
+  // Preserve the compact embedded Live TV preview layout untouched
+  if (embedded) {
+    return (
+      <div
+        data-nav-ignore={disableRemoteFocus ? 'true' : undefined}
+        onFocusCapture={() => onUserInteraction?.()}
+        className="absolute inset-0 z-20 pointer-events-none overflow-hidden select-none"
+      >
+        {/* Top Header Bar (Embedded Preview) */}
+        <div
+          data-nav-row="player-top"
+          className={`absolute top-0 left-0 right-0 z-20 w-full bg-gradient-to-b from-black/85 via-black/40 to-transparent flex items-center justify-between transition-all duration-300 ${
+            isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
+          } p-2 sm:p-2.5`}
+          onClick={stopProp}
+          onPointerDown={stopProp}
+          aria-hidden={!isVisible}
+        >
+          <div className="flex items-center gap-2 min-w-0 max-w-[75%]">
+            {onBack && (
+              <button
+                type="button"
+                data-player-control="back"
+                data-player-primary="true"
+                onClick={(e) => handleControlClick(e, onBack)}
+                tabIndex={isControlFocusable ? 0 : -1}
+                className="bg-white/10 hover:bg-white/20 active:scale-95 backdrop-blur-md rounded-full text-white transition-all cursor-pointer shrink-0 p-1.5"
+                title="Voltar"
+                aria-label="Voltar"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+            )}
+
+            <div className="min-w-0 flex flex-col">
+              <div className="flex items-center gap-1.5">
+                {isLive && (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold bg-nc-primary text-black shrink-0 uppercase tracking-wider">
+                    <span className="w-1.5 h-1.5 rounded-full bg-black animate-pulse" />
+                    AO VIVO
+                  </span>
+                )}
+                <h2 className="font-bold text-white truncate text-xs sm:text-sm">
+                  {channelName || title}
+                </h2>
+              </div>
+              {programTitle && (
+                <p className="text-[10px] sm:text-xs text-nc-text-secondary truncate mt-0.5">
+                  {programTitle}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              data-player-control="diagnostics"
+              onClick={(e) => handleControlClick(e, onOpenDiagnostics)}
+              tabIndex={isControlFocusable ? 0 : -1}
+              className="bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors cursor-pointer flex items-center gap-1 text-xs p-1.5 px-2"
+              title="Diagnóstico da Conexão Direta"
+              aria-label="Diagnóstico da Conexão Direta"
+            >
+              <Wrench className="w-3.5 h-3.5 text-nc-primary" />
+            </button>
+
+            <button
+              type="button"
+              data-player-control="settings"
+              onClick={(e) => handleControlClick(e, onOpenSettings)}
+              tabIndex={isControlFocusable ? 0 : -1}
+              className="bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors cursor-pointer p-1.5"
+              title="Configurações de Reprodução"
+              aria-label="Configurações de Reprodução"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Center Buffering / Loading Indicator */}
+        {(isBuffering || isLoading) && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+            <div className="flex flex-col items-center justify-center p-3 bg-black/60 backdrop-blur-sm rounded-2xl pointer-events-none select-none">
+              <div className="w-8 h-8 border-2 border-nc-primary border-t-transparent rounded-full animate-spin mb-2" />
+              <span className="text-[11px] text-white font-medium">Carregando...</span>
+            </div>
+          </div>
+        )}
+
+        {/* Center Play Button on Pause */}
+        {!isPlaying && !isLoading && !isBuffering && (
+          <div
+            className={`absolute inset-0 z-10 flex items-center justify-center pointer-events-none transition-all duration-300 ${
+              isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
+            }`}
+            aria-hidden={!isVisible}
+          >
+            <button
+              type="button"
+              onClick={(e) => handleControlClick(e, onTogglePlay)}
+              tabIndex={-1}
+              className="bg-white/15 hover:bg-white/25 active:scale-95 backdrop-blur-md rounded-full text-white transition-all shadow-2xl pointer-events-auto cursor-pointer p-3 sm:p-3.5"
+              title="Reproduzir"
+              aria-label="Reproduzir no centro"
+            >
+              <Play className="w-5 h-5 fill-white translate-x-0.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Bottom Controls Bar (Embedded Preview) */}
+        <div
+          className={`absolute bottom-0 left-0 right-0 z-20 w-full bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col gap-1 transition-all duration-300 ${
+            isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
+          } px-2.5 pb-2 pt-3`}
+          onClick={stopProp}
+          onPointerDown={stopProp}
+          aria-hidden={!isVisible}
+        >
+          <PlayerTimeline
+            embedded={true}
+            currentTime={currentTime}
+            duration={effectiveDuration}
+            bufferedRanges={bufferedRanges}
+            isLive={isLive}
+            liveEdgeDistance={liveEdgeDistance}
+            isVisible={isControlFocusable}
+            onSeek={onSeek}
+            onUserInteraction={onUserInteraction}
+            formatTime={formatTime}
+          />
+
+          <div
+            data-nav-row="player-bottom"
+            className="flex items-center justify-between text-white text-xs select-none"
+          >
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                data-player-control="play-pause"
+                data-player-primary="true"
+                data-autofocus={disableRemoteFocus ? undefined : 'true'}
+                onClick={(e) => handleControlClick(e, onTogglePlay)}
+                tabIndex={isControlFocusable ? 0 : -1}
+                className="p-1.5 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+                title={isPlaying ? 'Pausar (Espaço/K)' : 'Reproduzir (Espaço/K)'}
+                aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
+              >
+                {isPlaying ? (
+                  <Pause className="w-4 h-4 fill-white" />
+                ) : (
+                  <Play className="w-4 h-4 fill-white translate-x-0.5" />
+                )}
+              </button>
+
+              <div
+                className="relative flex items-center gap-1"
+                onMouseEnter={() => setShowVolumeSlider(true)}
+                onMouseLeave={() => setShowVolumeSlider(false)}
+                onFocusCapture={() => setIsVolumeGroupFocused(true)}
+                onBlurCapture={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                    setIsVolumeGroupFocused(false);
+                  }
+                }}
+                onClick={stopProp}
+              >
+                <button
+                  type="button"
+                  data-player-control="mute"
+                  onClick={(e) => handleControlClick(e, onToggleMute)}
+                  tabIndex={isControlFocusable ? 0 : -1}
+                  className="hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white p-1.5"
+                  title={isMuted ? 'Ativar Som (M)' : 'Mudo (M)'}
+                  aria-label={isMuted ? 'Ativar Som' : 'Silenciar'}
+                >
+                  <VolumeIcon className="w-4 h-4" />
+                </button>
+
+                <div
+                  className={`transition-all duration-200 overflow-hidden flex items-center px-1 ${
+                    isVolumeSliderExpanded
+                      ? 'w-14 opacity-100'
+                      : 'w-0 opacity-0 pointer-events-none invisible'
+                  }`}
+                  onClick={stopProp}
+                  onPointerDown={stopProp}
+                >
+                  <input
+                    type="range"
+                    data-player-control="volume-slider"
+                    aria-label="Volume"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={effectiveVolume}
+                    tabIndex={isControlFocusable && isVolumeSliderExpanded ? 0 : -1}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      onUserInteraction?.();
+                      onVolumeChange(parseFloat(e.target.value));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onUserInteraction?.();
+                        const delta = e.key === 'ArrowRight' ? 0.05 : -0.05;
+                        const nextVol = Math.max(
+                          0,
+                          Math.min(1, Number((effectiveVolume + delta).toFixed(2)))
+                        );
+                        onVolumeChange(nextVol);
+                      }
+                    }}
+                    className="w-full h-1.5 bg-white/30 rounded-lg appearance-none cursor-pointer accent-nc-primary"
+                    title="Ajustar Volume"
+                  />
+                </div>
+              </div>
+
+              {isLive && (
+                <div className="flex items-center gap-1.5 text-xs font-mono ml-1 text-gray-300">
+                  <button
+                    type="button"
+                    data-player-control="live-edge"
+                    onClick={(e) => handleControlClick(e, onSeekToLive)}
+                    disabled={isAtLiveEdge}
+                    tabIndex={isControlFocusable && !isAtLiveEdge ? 0 : -1}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all ${
+                      isAtLiveEdge
+                        ? 'bg-nc-primary/20 text-nc-primary cursor-default'
+                        : 'bg-white/20 text-white hover:bg-white/30 cursor-pointer animate-pulse'
+                    }`}
+                  >
+                    <Radio className="w-3 h-3" />
+                    <span>{isAtLiveEdge ? 'DIRETO' : 'IR PARA AO VIVO'}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1">
+              {hasPiP && (
+                <button
+                  type="button"
+                  data-player-control="pip"
+                  onClick={(e) => handleControlClick(e, onTogglePiP)}
+                  tabIndex={isControlFocusable ? 0 : -1}
+                  className="p-1.5 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+                  title="Picture-in-Picture"
+                  aria-label="Picture-in-Picture"
+                >
+                  <PictureInPicture2 className="w-4 h-4" />
+                </button>
+              )}
+
+              <button
+                type="button"
+                data-player-control="fullscreen"
+                onClick={(e) => handleControlClick(e, onToggleFullscreen)}
+                tabIndex={isControlFocusable ? 0 : -1}
+                className="p-1.5 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+                title={isFullscreen ? 'Sair da Tela Cheia (F)' : 'Tela Cheia (F)'}
+                aria-label={isFullscreen ? 'Sair da Tela Cheia' : 'Tela Cheia'}
+              >
+                {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Full-layer / Fullscreen Player (High-fidelity to Reference Images 1 & 2)
+  const centerTitleParts = parseCenteredTitleParts(title, channelName, programTitle, isLive);
+
   return (
     <div
       data-nav-ignore={disableRemoteFocus ? 'true' : undefined}
       onFocusCapture={() => onUserInteraction?.()}
       className="absolute inset-0 z-20 pointer-events-none overflow-hidden select-none"
     >
-      {/* Top Header Bar */}
+      {/* Top Scrim & Controls Bar (Back on top-left, discrete technical access on top-right, NO title duplication) */}
       <div
         data-nav-row="player-top"
-        className={`absolute top-0 left-0 right-0 z-20 w-full bg-gradient-to-b from-black/85 via-black/40 to-transparent flex items-center justify-between transition-all duration-300 ${
+        className={`absolute top-0 left-0 right-0 z-20 w-full nc-player-top-scrim flex items-center justify-between transition-all duration-300 ${
           isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
-        } ${embedded ? 'p-2 sm:p-2.5' : 'p-4 sm:p-6 nc-safe-player-top'}`}
+        } px-4 pt-3.5 pb-6 sm:px-7 sm:pt-5 sm:pb-8 nc-safe-player-top`}
         onClick={stopProp}
         onPointerDown={stopProp}
         aria-hidden={!isVisible}
       >
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0 max-w-[75%]">
+        <div className="flex items-center">
           {onBack && (
             <button
               type="button"
@@ -160,55 +651,27 @@ export function PlayerControls({
               data-player-primary="true"
               onClick={(e) => handleControlClick(e, onBack)}
               tabIndex={isControlFocusable ? 0 : -1}
-              className={`bg-white/10 hover:bg-white/20 active:scale-95 backdrop-blur-md rounded-full text-white transition-all cursor-pointer shrink-0 ${
-                embedded ? 'p-1.5' : 'p-2 sm:p-2.5'
-              }`}
+              className="nc-player-ctrl-btn text-white/95 hover:text-white"
               title="Voltar"
               aria-label="Voltar"
             >
-              <ArrowLeft className={embedded ? 'w-4 h-4' : 'w-5 h-5 sm:w-6 sm:h-6'} />
+              <ArrowLeft className="nc-player-icon stroke-[1.9]" />
             </button>
           )}
-
-          <div className="min-w-0 flex flex-col">
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              {isLive && (
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold bg-nc-primary text-black shrink-0 uppercase tracking-wider">
-                  <span className="w-1.5 h-1.5 rounded-full bg-black animate-pulse" />
-                  AO VIVO
-                </span>
-              )}
-              <h2
-                className={`font-bold text-white truncate ${
-                  embedded ? 'text-xs sm:text-sm' : 'text-sm sm:text-lg'
-                }`}
-              >
-                {channelName || title}
-              </h2>
-            </div>
-            {programTitle && (
-              <p className="text-[10px] sm:text-xs text-nc-text-secondary truncate mt-0.5">
-                {programTitle}
-              </p>
-            )}
-          </div>
         </div>
 
-        {/* Top Right Actions (Diagnostics & Settings) */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        {/* Top-Right Discrete Technical Controls (Diagnostics & Technical Settings) */}
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           <button
             type="button"
             data-player-control="diagnostics"
             onClick={(e) => handleControlClick(e, onOpenDiagnostics)}
             tabIndex={isControlFocusable ? 0 : -1}
-            className={`bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors cursor-pointer flex items-center gap-1 text-xs ${
-              embedded ? 'p-1.5 px-2' : 'px-2.5 py-2'
-            }`}
-            title="Diagnóstico da Conexão Direta"
-            aria-label="Diagnóstico da Conexão Direta"
+            className="nc-player-ctrl-btn text-white/80 hover:text-white"
+            title="Diagnóstico Técnico"
+            aria-label="Diagnóstico Técnico"
           >
-            <Wrench className="w-3.5 h-3.5 text-nc-primary" />
-            <span className={embedded ? 'hidden' : 'hidden sm:inline'}>Diagnóstico</span>
+            <Wrench className="nc-player-icon stroke-[1.75] scale-90" />
           </button>
 
           <button
@@ -216,63 +679,37 @@ export function PlayerControls({
             data-player-control="settings"
             onClick={(e) => handleControlClick(e, onOpenSettings)}
             tabIndex={isControlFocusable ? 0 : -1}
-            className={`bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors cursor-pointer ${
-              embedded ? 'p-1.5' : 'p-2'
-            }`}
+            className="nc-player-ctrl-btn text-white/80 hover:text-white"
             title="Configurações de Reprodução"
             aria-label="Configurações de Reprodução"
           >
-            <Settings className="w-4 h-4" />
+            <Settings className="nc-player-icon stroke-[1.75] scale-90" />
           </button>
         </div>
       </div>
 
-      {/* Center Buffering / Loading Indicator (Independent of Bars Visibility) */}
+      {/* Center Buffering / Loading Indicator */}
       {(isBuffering || isLoading) && (
         <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
-          <div
-            className="flex flex-col items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm rounded-2xl pointer-events-none select-none animate-in fade-in duration-200"
-          >
-            <div className="w-8 h-8 sm:w-10 sm:h-10 border-2 sm:border-3 border-nc-primary border-t-transparent rounded-full animate-spin mb-2" />
-            <span className="text-[11px] sm:text-xs text-white font-medium">Carregando...</span>
+          <div className="flex flex-col items-center justify-center p-4 bg-black/55 backdrop-blur-sm rounded-2xl pointer-events-none select-none animate-in fade-in duration-200">
+            <div className="w-9 h-9 border-2 border-[#E50914] border-t-transparent rounded-full animate-spin mb-2" />
+            <span className="text-xs text-white/90 font-medium">Carregando...</span>
           </div>
         </div>
       )}
 
-      {/* Center Play Button (Visible on Pause for mouse/touch click; D-pad uses bottom bar Play/Pause) */}
-      {!isPlaying && !isLoading && !isBuffering && (
-        <div
-          className={`absolute inset-0 z-10 flex items-center justify-center pointer-events-none transition-all duration-300 ${
-            isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
-          }`}
-          aria-hidden={!isVisible}
-        >
-          <button
-            type="button"
-            onClick={(e) => handleControlClick(e, onTogglePlay)}
-            tabIndex={-1}
-            className={`bg-white/15 hover:bg-white/25 active:scale-95 backdrop-blur-md rounded-full text-white transition-all shadow-2xl pointer-events-auto cursor-pointer ${
-              embedded ? 'p-3 sm:p-3.5' : 'p-5 sm:p-6'
-            }`}
-            title="Reproduzir"
-            aria-label="Reproduzir no centro"
-          >
-            <Play className={`${embedded ? 'w-5 h-5' : 'w-8 h-8 sm:w-10 sm:h-10'} fill-white translate-x-0.5`} />
-          </button>
-        </div>
-      )}
-
-      {/* Bottom Controls Bar */}
+      {/* Bottom Scrim, Timeline & Control Row */}
       <div
-        className={`absolute bottom-0 left-0 right-0 z-20 w-full bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col gap-1 transition-all duration-300 ${
+        className={`absolute bottom-0 left-0 right-0 z-20 w-full nc-player-bottom-scrim flex flex-col gap-1.5 sm:gap-2 transition-all duration-300 ${
           isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
-        } ${embedded ? 'px-2.5 pb-2 pt-3' : 'px-4 pb-4 sm:px-6 sm:pb-6 pt-8 nc-safe-player-bottom'}`}
+        } px-4 pb-3.5 pt-10 sm:px-7 sm:pb-5 sm:pt-12 nc-safe-player-bottom`}
         onClick={stopProp}
         onPointerDown={stopProp}
         aria-hidden={!isVisible}
       >
-        {/* Timeline */}
+        {/* Reference Timeline immediately above the bottom button bar */}
         <PlayerTimeline
+          embedded={false}
           currentTime={currentTime}
           duration={effectiveDuration}
           bufferedRanges={bufferedRanges}
@@ -284,14 +721,17 @@ export function PlayerControls({
           formatTime={formatTime}
         />
 
-        {/* Buttons Row */}
+        {/* Reference Bottom Row: 3-column grid so the center title is truly centered across the full player width */}
         <div
           data-nav-row="player-bottom"
-          className="flex items-center justify-between text-white text-xs select-none"
+          className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:gap-4 text-white select-none"
         >
-          {/* Left Group */}
-          <div className="flex items-center gap-1.5 sm:gap-3">
-            {/* Play/Pause */}
+          {/* Left Group: Play/Pause, Seek -10s, Seek +10s, Volume */}
+          <div
+            data-player-group="left"
+            className="justify-self-start flex items-center gap-1 sm:gap-2 min-w-0"
+          >
+            {/* 1. Play/Pause */}
             <button
               type="button"
               data-player-control="play-pause"
@@ -299,78 +739,48 @@ export function PlayerControls({
               data-autofocus={disableRemoteFocus ? undefined : 'true'}
               onClick={(e) => handleControlClick(e, onTogglePlay)}
               tabIndex={isControlFocusable ? 0 : -1}
-              className="p-1.5 sm:p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+              className="nc-player-ctrl-btn"
               title={isPlaying ? 'Pausar (Espaço/K)' : 'Reproduzir (Espaço/K)'}
               aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
             >
               {isPlaying ? (
-                <Pause className={embedded ? 'w-4 h-4 fill-white' : 'w-5 h-5 fill-white'} />
+                <Pause className="nc-player-icon fill-white stroke-[1.5]" />
               ) : (
-                <Play className={`${embedded ? 'w-4 h-4' : 'w-5 h-5'} fill-white translate-x-0.5`} />
+                <Play className="nc-player-icon fill-white stroke-[1.5] translate-x-[1px]" />
               )}
             </button>
 
-            {/* Previous Episode (if series) */}
-            {onPrevious && (
-              <button
-                type="button"
-                data-player-control="previous"
-                onClick={(e) => handleControlClick(e, onPrevious)}
-                tabIndex={isControlFocusable ? 0 : -1}
-                className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
-                title="Episódio Anterior"
-                aria-label="Episódio Anterior"
-              >
-                <SkipBack className="w-4 h-4" />
-              </button>
-            )}
-
-            {/* Quick Seek 10s backwards (for VOD/Series) */}
+            {/* 2. Seek 10s Backward (VOD / Series only) */}
             {!isLive && (
               <button
                 type="button"
                 data-player-control="seek-back"
                 onClick={(e) => handleControlClick(e, () => onSeekBy(-10))}
                 tabIndex={isControlFocusable ? 0 : -1}
-                className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
-                title="Voltar 10 segundos (Seta Esquerda)"
-                aria-label="Voltar 10 segundos"
+                className="nc-player-ctrl-btn"
+                title="Retroceder 10 segundos"
+                aria-label="Retroceder 10 segundos"
               >
-                <RotateCcw className="w-4 h-4" />
+                <Seek10Icon direction="back" />
               </button>
             )}
 
-            {/* Quick Seek 10s forward (for VOD/Series) */}
+            {/* 3. Seek 10s Forward (VOD / Series only) */}
             {!isLive && (
               <button
                 type="button"
                 data-player-control="seek-forward"
                 onClick={(e) => handleControlClick(e, () => onSeekBy(10))}
                 tabIndex={isControlFocusable ? 0 : -1}
-                className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
-                title="Avançar 10 segundos (Seta Direita)"
+                className="nc-player-ctrl-btn"
+                title="Avançar 10 segundos"
                 aria-label="Avançar 10 segundos"
               >
-                <RotateCw className="w-4 h-4" />
+                <Seek10Icon direction="forward" />
               </button>
             )}
 
-            {/* Next Episode (if series) */}
-            {onNext && (
-              <button
-                type="button"
-                data-player-control="next"
-                onClick={(e) => handleControlClick(e, onNext)}
-                tabIndex={isControlFocusable ? 0 : -1}
-                className="p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
-                title="Próximo Episódio"
-                aria-label="Próximo Episódio"
-              >
-                <SkipForward className="w-4 h-4" />
-              </button>
-            )}
-
-            {/* Volume Control */}
+            {/* 4. Volume / Mute + Contextual Slider */}
             <div
               className="relative flex items-center gap-1"
               onMouseEnter={() => setShowVolumeSlider(true)}
@@ -388,21 +798,17 @@ export function PlayerControls({
                 data-player-control="mute"
                 onClick={(e) => handleControlClick(e, onToggleMute)}
                 tabIndex={isControlFocusable ? 0 : -1}
-                className={`hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white ${
-                  embedded ? 'p-1.5' : 'p-2'
-                }`}
-                title={isMuted ? 'Ativar Som (M)' : 'Mudo (M)'}
+                className="nc-player-ctrl-btn"
+                title={isMuted ? 'Ativar Som (M)' : 'Silenciar (M)'}
                 aria-label={isMuted ? 'Ativar Som' : 'Silenciar'}
               >
-                <VolumeIcon className={embedded ? 'w-4 h-4' : 'w-5 h-5'} />
+                <VolumeIcon className="nc-player-icon stroke-[1.85]" />
               </button>
 
               <div
                 className={`transition-all duration-200 overflow-hidden flex items-center px-1 ${
                   isVolumeSliderExpanded
-                    ? embedded
-                      ? 'w-14 opacity-100'
-                      : 'w-20 opacity-100'
+                    ? 'w-20 sm:w-24 opacity-100'
                     : 'w-0 opacity-0 pointer-events-none invisible'
                 }`}
                 onClick={stopProp}
@@ -435,60 +841,146 @@ export function PlayerControls({
                       onVolumeChange(nextVol);
                     }
                   }}
-                  className="w-full h-1.5 bg-white/30 rounded-lg appearance-none cursor-pointer accent-nc-primary"
+                  className="w-full h-1 bg-white/35 rounded-lg appearance-none cursor-pointer accent-[#E50914]"
                   title="Ajustar Volume"
                 />
               </div>
             </div>
 
-            {/* Time / Live Info */}
-            <div className="flex items-center gap-2 text-xs font-mono ml-1 text-gray-300">
-              {isLive ? (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    data-player-control="live-edge"
-                    onClick={(e) => handleControlClick(e, onSeekToLive)}
-                    disabled={isAtLiveEdge}
-                    tabIndex={isControlFocusable && !isAtLiveEdge ? 0 : -1}
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold transition-all ${
-                      isAtLiveEdge
-                        ? 'bg-nc-primary/20 text-nc-primary cursor-default'
-                        : 'bg-white/20 text-white hover:bg-white/30 cursor-pointer animate-pulse'
-                    }`}
-                    title={isAtLiveEdge ? 'Sincronizado na borda ao vivo' : 'Ir para o momento ao vivo'}
-                  >
-                    <Radio className="w-3 h-3" />
-                    <span>{isAtLiveEdge ? 'DIRETO' : 'IR PARA AO VIVO'}</span>
-                  </button>
-                  {liveEdgeDistance > 6 && (
-                    <span className="text-[11px] text-nc-text-secondary">
-                      -{formatTime(liveEdgeDistance)}
+            {/* Live Edge Indicator / Action when Live */}
+            {isLive && (
+              <button
+                type="button"
+                data-player-control="live-edge"
+                onClick={(e) => handleControlClick(e, onSeekToLive)}
+                disabled={isAtLiveEdge}
+                tabIndex={isControlFocusable && !isAtLiveEdge ? 0 : -1}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wider uppercase transition-all ml-1 ${
+                  isAtLiveEdge
+                    ? 'bg-[#E50914]/20 text-white cursor-default'
+                    : 'bg-white/20 text-white hover:bg-white/30 cursor-pointer animate-pulse'
+                }`}
+                title={isAtLiveEdge ? 'Sincronizado ao vivo' : 'Voltar ao vivo'}
+              >
+                <span className="w-2 h-2 rounded-full bg-[#E50914]" />
+                <span>{isAtLiveEdge ? 'AO VIVO' : 'IR AO VIVO'}</span>
+              </button>
+            )}
+          </div>
+
+          {/* Center: Truly Centered Content Title */}
+          <div
+            data-player-center-title="true"
+            className="justify-self-center min-w-0 max-w-[40vw] sm:max-w-[44vw] px-2 text-center pointer-events-none"
+          >
+            <div className="nc-player-center-title truncate">
+              {centerTitleParts.isBoldSplit ? (
+                <>
+                  <span data-player-title-primary="true" className="font-bold text-white">
+                    {centerTitleParts.primary}
+                  </span>
+                  {centerTitleParts.secondary && (
+                    <span
+                      data-player-title-secondary="true"
+                      className="font-normal text-white/90 ml-2"
+                    >
+                      {centerTitleParts.secondary}
                     </span>
                   )}
-                </div>
+                </>
               ) : (
-                <span>
-                  {formatTime(currentTime)} / {formatTime(effectiveDuration)}
+                <span data-player-title-primary="true" className="font-semibold text-white">
+                  {centerTitleParts.primary}
                 </span>
               )}
             </div>
           </div>
 
-          {/* Right Group */}
-          <div className="flex items-center gap-1 sm:gap-2">
-            {/* Picture in Picture */}
+          {/* Right Group: Contextual Episode Controls + PiP + Audio & Subtitles + Speed + Fullscreen */}
+          <div
+            data-player-group="right"
+            className="justify-self-end flex items-center gap-1 sm:gap-2 shrink-0"
+          >
+            {/* Previous Episode (only when available) */}
+            {onPrevious && (
+              <button
+                type="button"
+                data-player-control="previous"
+                onClick={(e) => handleControlClick(e, onPrevious)}
+                tabIndex={isControlFocusable ? 0 : -1}
+                className="nc-player-ctrl-btn"
+                title="Episódio Anterior"
+                aria-label="Episódio Anterior"
+              >
+                <PrevEpisodeRefIcon />
+              </button>
+            )}
+
+            {/* Next Episode (only when available, matching Image 1) */}
+            {onNext && (
+              <button
+                type="button"
+                data-player-control="next"
+                onClick={(e) => handleControlClick(e, onNext)}
+                tabIndex={isControlFocusable ? 0 : -1}
+                className="nc-player-ctrl-btn"
+                title="Próximo Episódio"
+                aria-label="Próximo Episódio"
+              >
+                <NextEpisodeRefIcon />
+              </button>
+            )}
+
+            {/* Picture-in-Picture (only when supported) */}
             {hasPiP && (
               <button
                 type="button"
                 data-player-control="pip"
                 onClick={(e) => handleControlClick(e, onTogglePiP)}
                 tabIndex={isControlFocusable ? 0 : -1}
-                className="p-1.5 sm:p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+                className="nc-player-ctrl-btn"
                 title="Picture-in-Picture"
                 aria-label="Picture-in-Picture"
               >
-                <PictureInPicture2 className="w-4 h-4" />
+                <PictureInPicture2 className="nc-player-icon stroke-[1.85]" />
+              </button>
+            )}
+
+            {/* Audio & Subtitles (Direct access to Cycle 12.29-a menu, matching Images 1 & 2) */}
+            <button
+              type="button"
+              data-player-control="audio-subtitles"
+              onClick={(e) =>
+                handleControlClick(e, onOpenAudioSubtitles || onOpenSettings)
+              }
+              tabIndex={isControlFocusable ? 0 : -1}
+              className="nc-player-ctrl-btn relative"
+              title="Áudio e Legendas"
+              aria-label="Áudio e Legendas"
+            >
+              <SubtitlesDialogRefIcon />
+              {hasActiveSubtitles && (
+                <span
+                  data-player-subtitles-active-dot="true"
+                  className="absolute bottom-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-[#E50914]"
+                />
+              )}
+            </button>
+
+            {/* Playback Speed (VOD / Series only, matching Images 1 & 2; hidden on Live TV) */}
+            {!isLive && (
+              <button
+                type="button"
+                data-player-control="speed"
+                onClick={(e) =>
+                  handleControlClick(e, onOpenSpeed || onOpenSettings)
+                }
+                tabIndex={isControlFocusable ? 0 : -1}
+                className="nc-player-ctrl-btn relative"
+                title={`Velocidade de Reprodução (${playbackRate === 1 ? 'Normal' : `${playbackRate}x`})`}
+                aria-label="Velocidade de Reprodução"
+              >
+                <SpeedometerRefIcon />
               </button>
             )}
 
@@ -498,11 +990,11 @@ export function PlayerControls({
               data-player-control="fullscreen"
               onClick={(e) => handleControlClick(e, onToggleFullscreen)}
               tabIndex={isControlFocusable ? 0 : -1}
-              className="p-1.5 sm:p-2 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+              className="nc-player-ctrl-btn"
               title={isFullscreen ? 'Sair da Tela Cheia (F)' : 'Tela Cheia (F)'}
               aria-label={isFullscreen ? 'Sair da Tela Cheia' : 'Tela Cheia'}
             >
-              {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+              <FullscreenCornersRefIcon isFullscreen={isFullscreen} />
             </button>
           </div>
         </div>

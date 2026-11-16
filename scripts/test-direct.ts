@@ -1005,18 +1005,339 @@ async function runDetailsIntegrationDpadAndLiveTvRegressionTests(): Promise<void
   console.log('✅ Integração de detalhes, navegação Back em camadas, diagnóstico seguro e TV ao Vivo validados!');
 }
 
+// ============================================================================
+// 6. CICLO 12.29-b — MODERNIZAÇÃO VISUAL DO PLAYER (ALTA FIDELIDADE ÀS IMAGENS 1 E 2)
+// ============================================================================
+async function runCycle1229bPlayerVisualModernizationTests(): Promise<void> {
+  console.log('--- 6. Ciclo 12.29-b: Layout Série vs Filme vs Live, Título Centralizado e Submenus Diretos ---');
+
+  enableDeterministicHlsMock();
+  nextHlsInitialTracks = {
+    audioTracks: [
+      { id: 0, name: 'Português', lang: 'pt-BR', default: true },
+      { id: 1, name: 'Italiano Original', lang: 'it', default: false },
+    ],
+    subtitleTracks: [{ id: 0, name: 'Português', lang: 'pt-BR', forced: false }],
+    audioTrack: 0,
+    subtitleTrack: -1,
+  };
+
+  const doc: Document = windowInstance.document as unknown as Document;
+  (doc as any).pictureInPictureEnabled = true;
+  doc.documentElement.dataset.navMode = 'remote';
+
+  const container = doc.createElement('div');
+  doc.body.appendChild(container);
+  const root = createRoot(container);
+
+  try {
+    // 6.1 Imagem 2 — Filme ("Adão Negro"): sem botões de episódio, título centralizado na barra inferior e sem duplicação no topo
+    await act(async () => {
+      root.render(
+        React.createElement(VideoPlayer, {
+          streamUrl: 'http://server.tv:8080/movie/user/pass/2001.m3u8',
+          title: 'Adão Negro',
+          contentType: 'movie',
+          onBack: () => {},
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    const topBar = doc.querySelector<HTMLElement>('[data-nav-row="player-top"]');
+    const bottomBar = doc.querySelector<HTMLElement>('[data-nav-row="player-bottom"]');
+    assert(topBar && bottomBar, 'Barras superior e inferior do player devem existir');
+
+    assert(
+      !topBar.textContent?.includes('Adão Negro'),
+      'Em tela cheia (!embedded), a barra superior NÃO deve duplicar o título do filme'
+    );
+
+    const centerTitleEl = bottomBar.querySelector<HTMLElement>('[data-player-center-title="true"]');
+    assert(centerTitleEl, 'O título centralizado deve existir na barra inferior');
+    assert.strictEqual(
+      centerTitleEl.textContent?.trim(),
+      'Adão Negro',
+      'O título do filme deve ser exibido centralizado na barra inferior'
+    );
+
+    // Grupo esquerdo (Filme): play-pause, seek-back (-10s), seek-forward (+10s), mute
+    assert(
+      bottomBar.querySelector('button[data-player-control="play-pause"]'),
+      'Botão Play/Pause deve existir no grupo esquerdo'
+    );
+    assert(
+      bottomBar.querySelector('button[data-player-control="seek-back"]'),
+      'Botão Retroceder 10s deve existir para Filme'
+    );
+    assert(
+      bottomBar.querySelector('button[data-player-control="seek-forward"]'),
+      'Botão Avançar 10s deve existir para Filme'
+    );
+    assert(
+      bottomBar.querySelector('button[data-player-control="mute"]'),
+      'Botão Volume/Silenciar deve existir no grupo esquerdo'
+    );
+
+    // Grupo direito (Filme): NÃO deve exibir botões de episódio (previous / next), mas deve exibir audio-subtitles, speed e fullscreen
+    assert.strictEqual(
+      bottomBar.querySelector('button[data-player-control="previous"]'),
+      null,
+      'Filme NÃO deve exibir botão Episódio Anterior'
+    );
+    assert.strictEqual(
+      bottomBar.querySelector('button[data-player-control="next"]'),
+      null,
+      'Filme NÃO deve exibir botão Próximo Episódio'
+    );
+    assert(
+      bottomBar.querySelector('button[data-player-control="audio-subtitles"]'),
+      'Botão Áudio e Legendas deve existir no grupo direito'
+    );
+    assert(
+      bottomBar.querySelector('button[data-player-control="speed"]'),
+      'Botão Velocidade deve existir no grupo direito para Filme'
+    );
+    assert(
+      bottomBar.querySelector('button[data-player-control="fullscreen"]'),
+      'Botão Tela Cheia deve existir no extremo direito'
+    );
+
+    // Timeline acima da barra inferior com barra de progresso, thumb e tempo à direita
+    const timelineRow = doc.querySelector<HTMLElement>('[data-nav-row="player-timeline"]');
+    assert(timelineRow, 'Linha do tempo deve estar presente para Filme');
+    assert(
+      timelineRow.querySelector('[data-player-progress-bar="true"]'),
+      'Barra de progresso vermelha deve existir na linha do tempo'
+    );
+    assert(
+      timelineRow.querySelector('[data-player-timeline-thumb="true"]'),
+      'Marcador circular deve existir na linha do tempo'
+    );
+    assert(
+      timelineRow.querySelector('[data-player-timeline-time="true"]'),
+      'Indicador de tempo/duração deve existir à direita da linha do tempo'
+    );
+
+    // 6.2 Imagem 1 — Série ("Luna Nera - S1E1" + programTitle="Presságio"):
+    // título dividido em negrito + regular e controles contextuais de episódio
+    let nextClicked = 0;
+    let prevClicked = 0;
+    await act(async () => {
+      root.render(
+        React.createElement(VideoPlayer, {
+          streamUrl: 'http://server.tv:8080/series/user/pass/3001.m3u8',
+          title: 'Luna Nera - S1E1',
+          programTitle: 'Presságio',
+          contentType: 'episode',
+          onBack: () => {},
+          onNext: () => {
+            nextClicked++;
+          },
+          onPrevious: () => {
+            prevClicked++;
+          },
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    const primaryTitle = doc.querySelector<HTMLElement>('[data-player-title-primary="true"]');
+    const secondaryTitle = doc.querySelector<HTMLElement>('[data-player-title-secondary="true"]');
+    assert.strictEqual(
+      primaryTitle?.textContent?.trim(),
+      'Luna Nera',
+      'Em Série, o nome principal da série deve aparecer em destaque (negrito)'
+    );
+    assert.strictEqual(
+      secondaryTitle?.textContent?.trim(),
+      'S1E1 Presságio',
+      'Em Série, o código e título do episódio devem aparecer ao lado em peso regular'
+    );
+
+    const nextBtn = doc.querySelector<HTMLButtonElement>('button[data-player-control="next"]');
+    const prevBtn = doc.querySelector<HTMLButtonElement>('button[data-player-control="previous"]');
+    const pipBtn = doc.querySelector<HTMLButtonElement>('button[data-player-control="pip"]');
+    assert(nextBtn, 'Botão Próximo Episódio deve ser exibido quando onNext existe');
+    assert(prevBtn, 'Botão Episódio Anterior deve ser exibido quando onPrevious existe');
+    assert(pipBtn, 'Botão PiP deve ser exibido quando pictureInPictureEnabled é suportado');
+
+    await act(async () => {
+      nextBtn.click();
+      prevBtn.click();
+    });
+    assert.strictEqual(nextClicked, 1, 'Clicar em Próximo Episódio deve acionar onNext');
+    assert.strictEqual(prevClicked, 1, 'Clicar em Episódio Anterior deve acionar onPrevious');
+
+    // 6.3 Abertura direta de Áudio e Legendas + Velocidade e restauração de foco no Voltar
+    clearAllBackHandlersForTest();
+    await act(async () => {
+      root.render(
+        React.createElement(VideoPlayer, {
+          streamUrl: 'http://server.tv:8080/series/user/pass/3002.m3u8',
+          title: 'Luna Nera - S1E2',
+          programTitle: 'Presságio Parte 2',
+          contentType: 'episode',
+          onBack: () => {},
+          onNext: () => {},
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    const audioSubBtn = doc.querySelector<HTMLButtonElement>(
+      'button[data-player-control="audio-subtitles"]'
+    )!;
+    await act(async () => {
+      audioSubBtn.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const openMenu = doc.querySelector<HTMLElement>('[data-player-settings-menu="true"]');
+    assert(openMenu, 'Clicar em Áudio e Legendas deve abrir o menu do player');
+    assert.strictEqual(
+      openMenu.getAttribute('data-active-submenu'),
+      'subtitles',
+      'O botão Áudio e Legendas deve abrir diretamente a seção de Legendas/Áudio'
+    );
+
+    // Alternar para a aba Áudio dentro do popup rápido de Áudio e Legendas
+    const audioTabBtn = openMenu.querySelector<HTMLButtonElement>(
+      'button[data-settings-tab="audio"]'
+    );
+    assert(audioTabBtn, 'Deve exibir aba rápida de Áudio junto à seção de Legendas');
+    await act(async () => {
+      audioTabBtn.click();
+    });
+    assert.strictEqual(
+      openMenu.getAttribute('data-active-submenu'),
+      'audio',
+      'Clicar na aba Áudio deve alternar imediatamente para as faixas de áudio'
+    );
+
+    // Pressionar Voltar (Back) deve fechar o painel aberto diretamente e devolver o foco ao botão Áudio e Legendas
+    await act(async () => {
+      executeBackAction();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      doc.querySelector('[data-player-settings-menu="true"]'),
+      null,
+      'Voltar deve fechar o painel de Áudio e Legendas aberto diretamente'
+    );
+    assert.strictEqual(
+      doc.activeElement,
+      doc.querySelector('button[data-player-control="audio-subtitles"]'),
+      'Após fechar Áudio e Legendas com Voltar, o foco deve retornar ao botão audio-subtitles'
+    );
+
+    // Abrir diretamente o controle de Velocidade na barra inferior
+    const speedBtn = doc.querySelector<HTMLButtonElement>('button[data-player-control="speed"]')!;
+    await act(async () => {
+      speedBtn.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const speedMenu = doc.querySelector<HTMLElement>('[data-player-settings-menu="true"]');
+    assert(speedMenu, 'Clicar em Velocidade deve abrir o menu');
+    assert.strictEqual(
+      speedMenu.getAttribute('data-active-submenu'),
+      'speed',
+      'O botão Velocidade deve abrir diretamente o submenu de velocidade'
+    );
+
+    // Fechar Velocidade com Voltar e verificar restauração de foco no botão speed
+    await act(async () => {
+      executeBackAction();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      doc.activeElement,
+      doc.querySelector('button[data-player-control="speed"]'),
+      'Após fechar Velocidade com Voltar, o foco deve retornar ao botão speed'
+    );
+
+    // 6.4 TV ao Vivo em tela cheia (!embedded) vs Preview Incorporado (embedded=true)
+    await act(async () => {
+      root.render(
+        React.createElement(VideoPlayer, {
+          streamUrl: 'http://server.tv:8080/live/user/pass/901.m3u8',
+          title: 'Globonews HD',
+          channelName: 'Globonews HD',
+          programTitle: 'Jornal das Dez',
+          contentType: 'live',
+          embedded: false,
+          onBack: () => {},
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    assert.strictEqual(
+      doc.querySelector('button[data-player-control="seek-back"]'),
+      null,
+      'TV ao Vivo NÃO deve exibir botão Retroceder 10s'
+    );
+    assert.strictEqual(
+      doc.querySelector('button[data-player-control="seek-forward"]'),
+      null,
+      'TV ao Vivo NÃO deve exibir botão Avançar 10s'
+    );
+    assert.strictEqual(
+      doc.querySelector('button[data-player-control="speed"]'),
+      null,
+      'TV ao Vivo NÃO deve exibir botão de Velocidade'
+    );
+    assert(
+      doc.querySelector('[data-player-live-timeline="true"]'),
+      'TV ao Vivo sem janela de seek deve exibir linha indicadora AO VIVO sem slider falso'
+    );
+
+    // Verificar preview incorporado (embedded=true) preservado
+    await act(async () => {
+      root.render(
+        React.createElement(VideoPlayer, {
+          streamUrl: 'http://server.tv:8080/live/user/pass/901.m3u8',
+          title: 'Globonews HD',
+          channelName: 'Globonews HD',
+          programTitle: 'Jornal das Dez',
+          contentType: 'live',
+          embedded: true,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    const embeddedTopBar = doc.querySelector<HTMLElement>('[data-nav-row="player-top"]');
+    assert(
+      embeddedTopBar?.textContent?.includes('Globonews HD'),
+      'No preview incorporado da TV ao Vivo (embedded=true), o cabeçalho compacto do canal deve continuar preservado'
+    );
+  } finally {
+    clearAllBackHandlersForTest();
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    restoreHlsMock();
+  }
+
+  console.log('✅ Ciclo 12.29-b (Modernização visual do player, controles condicionais e submenus diretos) validado!');
+}
+
 async function main(): Promise<void> {
-  console.log('🚀 INICIANDO SUÍTE ENXUTA DE TESTES — CICLO 12.29-a\n');
+  console.log('🚀 INICIANDO SUÍTE ENXUTA DE TESTES — CICLO 12.29-b\n');
   runTrackUtilsUnitTests();
   await runHlsTracksAndSettingsMenuTests();
   await runHlsWithoutSubtitlesTests();
   await runProgressiveExternalSubtitlesAndContentSwitchTests();
   await runDetailsIntegrationDpadAndLiveTvRegressionTests();
+  await runCycle1229bPlayerVisualModernizationTests();
   for (const timer of rafTimers.values()) {
     clearTimeout(timer);
   }
   rafTimers.clear();
-  console.log('\n🎉 TODOS OS TESTES DO CICLO 12.29-a FORAM EXECUTADOS COM SUCESSO!');
+  console.log('\n🎉 TODOS OS TESTES DO CICLO 12.29-b FORAM EXECUTADOS COM SUCESSO!');
 }
 
 main().catch((err) => {

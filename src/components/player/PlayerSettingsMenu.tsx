@@ -7,6 +7,7 @@ import {
   Volume2,
   Subtitles,
   Activity,
+  Wrench,
   X,
 } from 'lucide-react';
 import { QualityLevel, MediaTrackInfo, BufferProfileKey } from './types';
@@ -17,9 +18,13 @@ import {
   focusElementSafely,
 } from '../../navigation';
 
+export type SubMenuType = 'main' | 'quality' | 'audio' | 'subtitles' | 'speed' | 'profile';
+
 interface PlayerSettingsMenuProps {
   isOpen: boolean;
+  initialSubMenu?: SubMenuType;
   onClose: () => void;
+  onOpenDiagnostics?: () => void;
   isLive: boolean;
   qualities: QualityLevel[];
   currentQuality: number;
@@ -36,11 +41,11 @@ interface PlayerSettingsMenuProps {
   onSelectBufferProfile: (key: BufferProfileKey) => void;
 }
 
-type SubMenuType = 'main' | 'quality' | 'audio' | 'subtitles' | 'speed' | 'profile';
-
 export function PlayerSettingsMenu({
   isOpen,
+  initialSubMenu = 'main',
   onClose,
+  onOpenDiagnostics,
   isLive,
   qualities,
   currentQuality,
@@ -56,29 +61,29 @@ export function PlayerSettingsMenu({
   bufferProfile,
   onSelectBufferProfile,
 }: PlayerSettingsMenuProps) {
-  const [activeSubMenu, setActiveSubMenu] = useState<SubMenuType>('main');
+  const [activeSubMenu, setActiveSubMenu] = useState<SubMenuType>(initialSubMenu);
   const menuContainerRef = useRef<HTMLDivElement>(null);
   const lastMainItemRef = useRef<SubMenuType | null>(null);
   const menuId = useId();
 
   useEffect(() => {
     if (isOpen) {
-      setActiveSubMenu('main');
+      setActiveSubMenu(initialSubMenu || 'main');
       lastMainItemRef.current = null;
     }
-  }, [isOpen]);
+  }, [isOpen, initialSubMenu]);
 
   useBackHandler(
     `player-settings-submenu-${menuId}`,
     BACK_PRIORITY.SUB_MODAL + 1,
     () => {
-      if (isOpen && activeSubMenu !== 'main') {
+      if (isOpen && activeSubMenu !== 'main' && lastMainItemRef.current !== null) {
         setActiveSubMenu('main');
         return true;
       }
       return false;
     },
-    isOpen && activeSubMenu !== 'main'
+    isOpen && activeSubMenu !== 'main' && lastMainItemRef.current !== null
   );
 
   useEffect(() => {
@@ -136,39 +141,72 @@ export function PlayerSettingsMenu({
 
   const currentProfileLabel = BUFFER_PROFILES[bufferProfile]?.label || 'Equilibrado';
 
+  const isAudioOrSubtitlesSubMenu = activeSubMenu === 'subtitles' || activeSubMenu === 'audio';
+
   return (
     <div
       ref={menuContainerRef}
       data-focus-scope="modal"
       data-player-settings-menu="true"
-      className="absolute bottom-12 sm:bottom-14 right-2 sm:right-4 z-40 w-[min(18rem,calc(100%-1rem))] max-h-[calc(100%-3rem)] flex flex-col bg-nc-bg-card/95 border border-nc-border/80 backdrop-blur-xl rounded-xl sm:rounded-2xl shadow-2xl overflow-hidden p-2.5 sm:p-3 text-white text-xs select-none animate-in fade-in zoom-in-95 duration-150"
+      data-active-submenu={activeSubMenu}
+      className="absolute bottom-16 sm:bottom-20 right-3 sm:right-6 z-40 w-[min(19.5rem,calc(100%-1.5rem))] max-h-[calc(100%-5rem)] flex flex-col bg-[#121214]/95 border border-white/15 backdrop-blur-xl rounded-xl sm:rounded-2xl shadow-2xl overflow-hidden p-2.5 sm:p-3.5 text-white text-xs select-none animate-in fade-in zoom-in-95 duration-150"
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
       {/* Top Header */}
       <div
         data-nav-row="settings-header"
-        className="flex items-center justify-between pb-2 mb-2 border-b border-nc-border/40 px-1 shrink-0"
+        className="flex items-center justify-between gap-1.5 pb-2 mb-2 border-b border-white/10 px-1 shrink-0"
       >
         {activeSubMenu === 'main' ? (
           <span className="font-semibold text-sm flex items-center gap-1.5 text-white">
             <Sliders className="w-4 h-4 text-nc-primary" /> Configurações
           </span>
         ) : (
-          <button
-            type="button"
-            data-settings-back="true"
-            onClick={() => setActiveSubMenu('main')}
-            className="text-nc-text-secondary hover:text-white flex items-center gap-1 text-xs font-medium cursor-pointer px-1.5 py-1 rounded-lg"
-          >
-            ← Voltar
-          </button>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <button
+              type="button"
+              data-settings-back="true"
+              onClick={() => setActiveSubMenu('main')}
+              className="text-nc-text-secondary hover:text-white flex items-center gap-1 text-xs font-medium cursor-pointer px-1.5 py-1 rounded-lg hover:bg-white/10 transition-colors shrink-0"
+            >
+              ← Voltar
+            </button>
+            {isAudioOrSubtitlesSubMenu && (
+              <div className="flex items-center gap-1 bg-white/5 p-0.5 rounded-lg border border-white/10">
+                <button
+                  type="button"
+                  data-settings-tab="subtitles"
+                  onClick={() => setActiveSubMenu('subtitles')}
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                    activeSubMenu === 'subtitles'
+                      ? 'bg-white/15 text-white'
+                      : 'text-nc-text-secondary hover:text-white'
+                  }`}
+                >
+                  Legendas
+                </button>
+                <button
+                  type="button"
+                  data-settings-tab="audio"
+                  onClick={() => setActiveSubMenu('audio')}
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                    activeSubMenu === 'audio'
+                      ? 'bg-white/15 text-white'
+                      : 'text-nc-text-secondary hover:text-white'
+                  }`}
+                >
+                  Áudio
+                </button>
+              </div>
+            )}
+          </div>
         )}
         <button
           type="button"
           data-settings-close="true"
           onClick={onClose}
-          className="p-1 hover:bg-white/10 rounded-full text-nc-text-secondary hover:text-white cursor-pointer"
+          className="p-1 hover:bg-white/10 rounded-full text-nc-text-secondary hover:text-white cursor-pointer shrink-0"
           title="Fechar"
           aria-label="Fechar configurações"
         >
@@ -275,6 +313,22 @@ export function PlayerSettingsMenu({
               <ChevronRight className="w-3.5 h-3.5" />
             </div>
           </button>
+
+          {/* Technical Diagnostics */}
+          {onOpenDiagnostics && (
+            <button
+              type="button"
+              data-settings-item="diagnostics"
+              onClick={() => onOpenDiagnostics()}
+              className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                <Wrench className="w-4 h-4 text-nc-text-secondary" />
+                <span>Diagnóstico Técnico</span>
+              </div>
+              <ChevronRight className="w-3.5 h-3.5 text-nc-text-secondary" />
+            </button>
+          )}
         </div>
       )}
 
@@ -441,20 +495,26 @@ export function PlayerSettingsMenu({
           data-scroll-container="true"
           className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5"
         >
-          {speedOptions.map((rate) => (
-            <button
-              type="button"
-              key={rate}
-              onClick={() => {
-                onSelectPlaybackRate(rate);
-                setActiveSubMenu('main');
-              }}
-              className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-            >
-              <span>{rate === 1 ? '1x (Normal)' : `${rate}x`}</span>
-              {playbackRate === rate && <Check className="w-4 h-4 text-nc-primary" />}
-            </button>
-          ))}
+          {speedOptions.map((rate) => {
+            const isSelected = playbackRate === rate;
+            return (
+              <button
+                type="button"
+                key={rate}
+                data-speed-rate={rate}
+                data-track-active={isSelected ? 'true' : 'false'}
+                aria-pressed={isSelected}
+                onClick={() => {
+                  onSelectPlaybackRate(rate);
+                  setActiveSubMenu('main');
+                }}
+                className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+              >
+                <span>{rate === 1 ? '1x (Normal)' : `${rate}x`}</span>
+                {isSelected && <Check className="w-4 h-4 text-nc-primary" />}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -469,6 +529,8 @@ export function PlayerSettingsMenu({
             <button
               type="button"
               key={p.key}
+              data-track-active={bufferProfile === p.key ? 'true' : 'false'}
+              aria-pressed={bufferProfile === p.key}
               onClick={() => {
                 onSelectBufferProfile(p.key);
                 setActiveSubMenu('main');
@@ -476,7 +538,7 @@ export function PlayerSettingsMenu({
               className={`w-full p-2.5 rounded-xl border text-left transition-colors cursor-pointer ${
                 bufferProfile === p.key
                   ? 'border-nc-primary/60 bg-nc-primary/10'
-                  : 'border-nc-border/40 hover:bg-white/5'
+                  : 'border-white/15 hover:bg-white/5'
               }`}
             >
               <div className="flex items-center justify-between font-medium text-white mb-0.5">

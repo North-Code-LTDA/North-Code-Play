@@ -5,7 +5,7 @@ import { AlertCircle, RefreshCw, Wrench, ArrowLeft } from 'lucide-react';
 import { VideoPlayerProps } from './player/types';
 import { usePlaybackSession } from './player/usePlaybackSession';
 import { PlayerControls } from './player/PlayerControls';
-import { PlayerSettingsMenu } from './player/PlayerSettingsMenu';
+import { PlayerSettingsMenu, SubMenuType } from './player/PlayerSettingsMenu';
 import { PlayerDiagnosticsModal } from './player/PlayerDiagnosticsModal';
 import { registerPlayer, setActivePlayer, isPlayerActive } from './player/playerRegistry';
 import { useOptionalXtreamCredentials } from '../context/XtreamContext';
@@ -48,6 +48,8 @@ export const VideoPlayer = React.memo(function VideoPlayer({
 
   // Modals state
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialSubMenu, setSettingsInitialSubMenu] = useState<SubMenuType>('main');
+  const settingsOriginControlRef = useRef<string>('settings');
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   // Fullscreen & PiP states
@@ -430,7 +432,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
 
   const closeSettingsMenu = useCallback(() => {
     setShowSettings(false);
-    pendingFocusControlRef.current = 'settings';
+    pendingFocusControlRef.current = settingsOriginControlRef.current || 'settings';
     resetInactivityTimer();
   }, [resetInactivityTimer]);
 
@@ -948,6 +950,8 @@ export const VideoPlayer = React.memo(function VideoPlayer({
         isFullscreen={isFullscreen || isVisuallyExpanded}
         isAtLiveEdge={session.isAtLiveEdge}
         liveEdgeDistance={session.liveEdgeDistance}
+        hasActiveSubtitles={session.currentSubtitleTrack !== -1}
+        playbackRate={session.playbackRate}
         onTogglePlay={session.togglePlay}
         onSeek={session.seek}
         onSeekBy={session.seekBy}
@@ -957,9 +961,40 @@ export const VideoPlayer = React.memo(function VideoPlayer({
         onToggleFullscreen={toggleFullscreen}
         onTogglePiP={togglePiP}
         onOpenSettings={() => {
+          settingsOriginControlRef.current = 'settings';
           setShowDiagnostics(false);
-          setShowSettings((p) => !p);
-          resetInactivityTimer();
+          if (showSettings && settingsInitialSubMenu === 'main') {
+            closeSettingsMenu();
+          } else {
+            setSettingsInitialSubMenu('main');
+            setShowSettings(true);
+            resetInactivityTimer();
+          }
+        }}
+        onOpenAudioSubtitles={() => {
+          settingsOriginControlRef.current = 'audio-subtitles';
+          setShowDiagnostics(false);
+          if (
+            showSettings &&
+            (settingsInitialSubMenu === 'subtitles' || settingsInitialSubMenu === 'audio')
+          ) {
+            closeSettingsMenu();
+          } else {
+            setSettingsInitialSubMenu('subtitles');
+            setShowSettings(true);
+            resetInactivityTimer();
+          }
+        }}
+        onOpenSpeed={() => {
+          settingsOriginControlRef.current = 'speed';
+          setShowDiagnostics(false);
+          if (showSettings && settingsInitialSubMenu === 'speed') {
+            closeSettingsMenu();
+          } else {
+            setSettingsInitialSubMenu('speed');
+            setShowSettings(true);
+            resetInactivityTimer();
+          }
         }}
         onOpenDiagnostics={() => {
           setShowSettings(false);
@@ -976,7 +1011,13 @@ export const VideoPlayer = React.memo(function VideoPlayer({
       {/* Settings Menu Overlay */}
       <PlayerSettingsMenu
         isOpen={showSettings}
+        initialSubMenu={settingsInitialSubMenu}
         onClose={closeSettingsMenu}
+        onOpenDiagnostics={() => {
+          setShowSettings(false);
+          setShowDiagnostics(true);
+          resetInactivityTimer();
+        }}
         isLive={session.isLive}
         qualities={session.qualities}
         currentQuality={session.currentQuality}

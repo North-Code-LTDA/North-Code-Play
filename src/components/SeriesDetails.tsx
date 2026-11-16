@@ -1022,6 +1022,11 @@ export const SeriesDetails = React.memo(function SeriesDetails({
               <VideoPlayer
                 streamUrl={playingEpisodeData.url}
                 title={playingEpisodeData.title}
+                programTitle={
+                  playingEpisodeData.episode?.title
+                    ? String(playingEpisodeData.episode.title)
+                    : undefined
+                }
                 contentType="episode"
                 startAt={playingEpisodeData.startAt}
                 streamId={playingEpisodeData.episode.id}
