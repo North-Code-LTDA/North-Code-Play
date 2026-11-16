@@ -34,6 +34,7 @@ import {
   buildDirectMediaUrl,
   normalizeImageSource,
 } from '../utils/mediaUtils';
+import { extractXtreamSubtitles } from './player/trackUtils';
 import { getValidYear } from '../utils/catalogRanking';
 import { useVirtualWindow } from '../hooks/useVirtualWindow';
 import {
@@ -133,7 +134,8 @@ export interface CatalogShowcaseViewProps {
     channelName?: string,
     programTitle?: string,
     onNext?: () => void,
-    onPrevious?: () => void
+    onPrevious?: () => void,
+    externalSubtitles?: any[]
   ) => void;
   onSelectLiveChannel?: (stream: any) => void;
 
@@ -1913,12 +1915,18 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                     containerExtension: confirmedExt,
                   });
                   if (directUrl) {
+                    const epSubs = extractXtreamSubtitles(foundEp, creds.serverUrl);
                     playFn(
                       directUrl,
                       epTitle,
                       latestEpisodeRecord.positionSec,
                       latestEpisodeRecord.id,
-                      'episode'
+                      'episode',
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      epSubs.length > 0 ? epSubs : undefined
                     );
                     return;
                   }
@@ -1952,7 +1960,19 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                   const sNum = String(seasons[0]).padStart(2, '0');
                   const epNum = String(firstEp.episode_num || 1).padStart(2, '0');
                   const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${firstEp.title || 'Episódio 1'}`;
-                  playFn(directUrl, epTitle, 0, epId, 'episode');
+                  const epSubs = extractXtreamSubtitles(firstEp, creds.serverUrl);
+                  playFn(
+                    directUrl,
+                    epTitle,
+                    0,
+                    epId,
+                    'episode',
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    epSubs.length > 0 ? epSubs : undefined
+                  );
                   return;
                 }
               }
@@ -2020,12 +2040,18 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
             records.find((r) => r.type === 'movie' && String(r.id) === String(movieId))
               ?.positionSec ?? 0;
           const resumeSec = Math.max(savedSec, recordSec);
+          const movieSubs = extractXtreamSubtitles(detailsResponse || item, creds.serverUrl);
           playFn(
             directUrl,
             item.name || item.title || 'Filme',
             resumeSec > 30 ? resumeSec : 0,
             movieId,
-            'movie'
+            'movie',
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            movieSubs.length > 0 ? movieSubs : undefined
           );
           return;
         }

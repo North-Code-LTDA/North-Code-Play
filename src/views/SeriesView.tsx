@@ -12,7 +12,8 @@ export interface SeriesViewProps {
     channelName?: string,
     programTitle?: string,
     onNext?: () => void,
-    onPrevious?: () => void
+    onPrevious?: () => void,
+    externalSubtitles?: any[]
   ) => void;
   searchQuery?: string;
   isPaused?: boolean;

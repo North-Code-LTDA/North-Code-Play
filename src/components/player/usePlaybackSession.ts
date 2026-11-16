@@ -6,11 +6,40 @@ import {
   BufferProfileKey,
   QualityLevel,
   MediaTrackInfo,
+  ExternalSubtitleTrackInput,
   BufferedTimeRange,
   PlaybackStats,
 } from './types';
 import { BUFFER_PROFILES } from './profiles';
+import {
+  formatMediaTrackLabel,
+  disambiguateTrackNames,
+  detectSubtitleFormat,
+  loadExternalSubtitleAsVttUrl,
+} from './trackUtils';
 import { recordPlaybackPosition, AccountIdentity, PlaybackType } from '../../utils/playbackHistory';
+
+interface InternalAudioTrackDescriptor extends MediaTrackInfo {
+  nativeTrackObj?: any;
+}
+
+interface InternalSubtitleTrackDescriptor extends MediaTrackInfo {
+  nativeTrackObj?: TextTrack | any;
+  trackElement?: HTMLTrackElement | null;
+}
+
+interface ResolvedExternalTrackEntry {
+  key: string;
+  url: string;
+  resolvedSrc: string;
+  isBlobUrl: boolean;
+  lang?: string;
+  label?: string;
+  format: 'vtt' | 'srt' | 'unknown';
+  isDefault?: boolean;
+  forced?: boolean;
+  trackEl: HTMLTrackElement;
+}
 
 interface UsePlaybackSessionOptions {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -25,6 +54,7 @@ interface UsePlaybackSessionOptions {
   onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
   isControlsVisible?: boolean;
   isDiagnosticsOpen?: boolean;
+  externalSubtitles?: ExternalSubtitleTrackInput[];
 }
 
 export const VOLUME_STORAGE_KEY = 'nc_player_volume';
@@ -73,6 +103,7 @@ export function usePlaybackSession({
   onPlaybackFinalError,
   isControlsVisible = true,
   isDiagnosticsOpen = false,
+  externalSubtitles,
 }: UsePlaybackSessionOptions) {
   const activeAccountRef = useRef<AccountIdentity | null>(credentials || null);
 
@@ -85,6 +116,13 @@ export function usePlaybackSession({
   const sessionIdRef = useRef(0);
   const hlsRef = useRef<Hls | null>(null);
   const recoveryTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const externalAbortControllerRef = useRef<AbortController | null>(null);
+  const createdBlobUrlsRef = useRef<string[]>([]);
+  const resolvedExternalTracksRef = useRef<ResolvedExternalTrackEntry[]>([]);
+  const audioTracksRef = useRef<InternalAudioTrackDescriptor[]>([]);
+  const subtitleTracksRef = useRef<InternalSubtitleTrackDescriptor[]>([]);
+  const selectedSubtitleTrackIdRef = useRef<number>(-1);
+  const syncSubtitleTracksFnRef = useRef<(() => void) | null>(null);
 
   // Buffer profile state
   const [bufferProfile, setBufferProfileState] = useState<BufferProfileKey>(() => {
@@ -230,10 +268,50 @@ export function usePlaybackSession({
     }
   }, [videoRef, playbackRate]);
 
+  const clearExternalTracksAndBlobs = useCallback(() => {
+    if (externalAbortControllerRef.current) {
+      try {
+        externalAbortControllerRef.current.abort();
+      } catch {}
+      externalAbortControllerRef.current = null;
+    }
+
+    for (const entry of resolvedExternalTracksRef.current) {
+      try {
+        if (entry.trackEl && entry.trackEl.track) {
+          entry.trackEl.track.mode = 'disabled';
+        }
+        entry.trackEl?.remove();
+      } catch {}
+    }
+    resolvedExternalTracksRef.current = [];
+
+    const video = videoRef.current;
+    if (video) {
+      try {
+        const lingeringTracks = video.querySelectorAll('track[data-nc-external-track="true"]');
+        lingeringTracks.forEach((el) => el.remove());
+      } catch {}
+    }
+
+    if (createdBlobUrlsRef.current.length > 0) {
+      for (const blobUrl of createdBlobUrlsRef.current) {
+        try {
+          if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+            URL.revokeObjectURL(blobUrl);
+          }
+        } catch {}
+      }
+      createdBlobUrlsRef.current = [];
+    }
+  }, [videoRef]);
+
   // Thorough cleanup of video pipeline and HLS instance
   const cleanup = useCallback(() => {
     recoveryTimersRef.current.forEach((t) => clearTimeout(t));
     recoveryTimersRef.current = [];
+
+    clearExternalTracksAndBlobs();
 
     if (hlsRef.current) {
       try {
@@ -249,6 +327,13 @@ export function usePlaybackSession({
     const video = videoRef.current;
     if (video) {
       try {
+        if (video.textTracks && video.textTracks.length > 0) {
+          for (let i = 0; i < video.textTracks.length; i++) {
+            try {
+              video.textTracks[i].mode = 'disabled';
+            } catch {}
+          }
+        }
         video.pause();
         video.removeAttribute('src');
         video.load();
@@ -256,7 +341,7 @@ export function usePlaybackSession({
         // ignore
       }
     }
-  }, [videoRef]);
+  }, [videoRef, clearExternalTracksAndBlobs]);
 
   // Helper to extract active buffer ranges & ahead time directly from HTMLMediaElement
   const calculateBufferStats = useCallback((video: HTMLVideoElement) => {
@@ -388,6 +473,12 @@ export function usePlaybackSession({
       setAudioTracks([]);
       setSubtitleTracks([]);
       setCurrentQuality(-1);
+      setCurrentAudioTrack(-1);
+      setCurrentSubtitleTrack(-1);
+      audioTracksRef.current = [];
+      subtitleTracksRef.current = [];
+      selectedSubtitleTrackIdRef.current = -1;
+      syncSubtitleTracksFnRef.current = null;
       rebufferingCountRef.current = 0;
       setLiveSyncPosition(null);
       setLiveEdgeDistance(0);
@@ -632,7 +723,278 @@ export function usePlaybackSession({
     video.addEventListener('progress', handleProgress);
     video.addEventListener('volumechange', handleVolumeChange);
     video.addEventListener('ratechange', handleRateChange);
+    // Unified Audio Track discovery (HLS.js -> Native HTMLMediaElement.audioTracks)
+    const syncAudioTracks = () => {
+      if (sessionIdRef.current !== currentSessionId) return;
+      const hlsInstance = hlsRef.current;
+
+      if (hlsInstance && Array.isArray(hlsInstance.audioTracks) && hlsInstance.audioTracks.length > 0) {
+        const rawList: InternalAudioTrackDescriptor[] = hlsInstance.audioTracks.map((tr, idx) => {
+          const hlsTrackId = typeof tr.id === 'number' ? tr.id : idx;
+          return {
+            id: hlsTrackId,
+            hlsTrackId,
+            source: 'hls',
+            lang: tr.lang,
+            channels: (tr as any).channels ? String((tr as any).channels) : undefined,
+            codec: (tr as any).audioCodec,
+            isDefault: Boolean((tr as any).default),
+            forced: Boolean((tr as any).forced),
+            name: formatMediaTrackLabel({
+              rawName: tr.name,
+              lang: tr.lang,
+              fallbackPrefix: 'Faixa',
+              index: idx,
+              isDefault: Boolean((tr as any).default),
+              forced: Boolean((tr as any).forced),
+              channels: (tr as any).channels,
+            }),
+          };
+        });
+        const disambiguated = disambiguateTrackNames(rawList) as InternalAudioTrackDescriptor[];
+        audioTracksRef.current = disambiguated;
+        setAudioTracks(disambiguated);
+
+        const activeHlsAudio = hlsInstance.audioTrack;
+        const matchedActive = disambiguated.find(
+          (t) => t.hlsTrackId === activeHlsAudio || t.id === activeHlsAudio
+        );
+        if (matchedActive) {
+          setCurrentAudioTrack(matchedActive.id);
+        } else if (disambiguated.length > 0) {
+          const defTrack = disambiguated.find((t) => t.isDefault) || disambiguated[0];
+          setCurrentAudioTrack(defTrack.id);
+        } else {
+          setCurrentAudioTrack(-1);
+        }
+        return;
+      }
+
+      const nativeAudioList = (video as any).audioTracks;
+      if (nativeAudioList && typeof nativeAudioList.length === 'number' && nativeAudioList.length > 0) {
+        const rawNative: InternalAudioTrackDescriptor[] = [];
+        let enabledId = -1;
+        for (let i = 0; i < nativeAudioList.length; i++) {
+          const nt = nativeAudioList[i];
+          if (!nt) continue;
+          if (nt.enabled && enabledId === -1) {
+            enabledId = i;
+          }
+          rawNative.push({
+            id: i,
+            nativeTrackIndex: i,
+            nativeTrackObj: nt,
+            source: 'native',
+            lang: nt.language || undefined,
+            isDefault: Boolean(nt.kind === 'main'),
+            name: formatMediaTrackLabel({
+              rawName: nt.label,
+              lang: nt.language,
+              fallbackPrefix: 'Faixa',
+              index: i,
+            }),
+          });
+        }
+        const disambiguated = disambiguateTrackNames(rawNative) as InternalAudioTrackDescriptor[];
+        audioTracksRef.current = disambiguated;
+        setAudioTracks(disambiguated);
+        setCurrentAudioTrack(enabledId !== -1 ? enabledId : disambiguated[0]?.id ?? -1);
+        return;
+      }
+
+      audioTracksRef.current = [];
+      setAudioTracks([]);
+      setCurrentAudioTrack(-1);
+    };
+
+    // Unified Subtitle Track discovery (HLS.js + Native HTMLMediaElement.textTracks + External tracks)
+    const syncSubtitleTracks = () => {
+      if (sessionIdRef.current !== currentSessionId) return;
+      const hlsInstance = hlsRef.current;
+      const combined: InternalSubtitleTrackDescriptor[] = [];
+
+      const hasHlsSubtitles = Boolean(
+        hlsInstance &&
+          Array.isArray(hlsInstance.subtitleTracks) &&
+          hlsInstance.subtitleTracks.length > 0
+      );
+
+      // 1. HLS subtitle tracks
+      if (hasHlsSubtitles && hlsInstance) {
+        hlsInstance.subtitleTracks.forEach((tr, idx) => {
+          const hlsTrackId = typeof tr.id === 'number' ? tr.id : idx;
+          combined.push({
+            id: combined.length,
+            hlsTrackId,
+            source: 'hls',
+            lang: tr.lang,
+            isDefault: Boolean((tr as any).default),
+            forced: Boolean((tr as any).forced),
+            name: formatMediaTrackLabel({
+              rawName: tr.name,
+              lang: tr.lang,
+              fallbackPrefix: 'Legenda',
+              index: idx,
+              isDefault: Boolean((tr as any).default),
+              forced: Boolean((tr as any).forced),
+            }),
+          });
+        });
+      }
+
+      // 2. Native in-band HTMLMediaElement.textTracks (only when HLS subtitleTracks are not active,
+      //    preventing duplicate entries for TextTracks created internally by Hls.js, and excluding
+      //    managed external <track data-nc-external-track="true"> elements)
+      const externalTextTrackSet = new Set<TextTrack>();
+      const externalLabelsSet = new Set<string>();
+      for (const ext of resolvedExternalTracksRef.current) {
+        if (ext.trackEl?.track) {
+          externalTextTrackSet.add(ext.trackEl.track);
+        }
+        if (ext.label) {
+          externalLabelsSet.add(ext.label.trim().toLowerCase());
+        }
+      }
+
+      if (!hasHlsSubtitles && video.textTracks && video.textTracks.length > 0) {
+        for (let i = 0; i < video.textTracks.length; i++) {
+          const tt = video.textTracks[i];
+          if (
+            !tt ||
+            externalTextTrackSet.has(tt) ||
+            Boolean((tt as any).__ncExternal) ||
+            (tt.label && externalLabelsSet.has(tt.label.trim().toLowerCase()))
+          ) {
+            continue;
+          }
+          const kind = (tt.kind || 'subtitles').toLowerCase();
+          if (kind !== 'subtitles' && kind !== 'captions') continue;
+          combined.push({
+            id: combined.length,
+            nativeTrackIndex: i,
+            nativeTrackObj: tt,
+            source: 'native',
+            lang: tt.language || undefined,
+            name: formatMediaTrackLabel({
+              rawName: tt.label,
+              lang: tt.language,
+              fallbackPrefix: 'Legenda',
+              index: combined.length,
+            }),
+          });
+        }
+      }
+
+      // 3. Resolved External Subtitle Tracks (.vtt / .srt)
+      resolvedExternalTracksRef.current.forEach((ext, extIdx) => {
+        combined.push({
+          id: combined.length,
+          source: 'external',
+          externalUrl: ext.url,
+          format: ext.format,
+          lang: ext.lang,
+          isDefault: ext.isDefault,
+          forced: ext.forced,
+          trackElement: ext.trackEl,
+          nativeTrackObj: ext.trackEl?.track,
+          name: formatMediaTrackLabel({
+            rawName: ext.label,
+            lang: ext.lang,
+            fallbackPrefix: 'Legenda',
+            index: extIdx,
+            isDefault: ext.isDefault,
+            forced: ext.forced,
+          }),
+        });
+      });
+
+      const disambiguated = disambiguateTrackNames(combined) as InternalSubtitleTrackDescriptor[];
+      subtitleTracksRef.current = disambiguated;
+      setSubtitleTracks(disambiguated);
+
+      // Synchronize active subtitle track
+      const prevSelectedId = selectedSubtitleTrackIdRef.current;
+      if (prevSelectedId >= 0) {
+        const stillExists = disambiguated.find((t) => t.id === prevSelectedId);
+        if (stillExists) {
+          setCurrentSubtitleTrack(stillExists.id);
+          return;
+        }
+      }
+
+      if (hasHlsSubtitles && hlsInstance && typeof hlsInstance.subtitleTrack === 'number' && hlsInstance.subtitleTrack >= 0 && hlsInstance.subtitleDisplay !== false) {
+        const matchedHls = disambiguated.find(
+          (t) => t.source === 'hls' && t.hlsTrackId === hlsInstance.subtitleTrack
+        );
+        if (matchedHls) {
+          selectedSubtitleTrackIdRef.current = matchedHls.id;
+          setCurrentSubtitleTrack(matchedHls.id);
+          return;
+        }
+      }
+
+      const showingNativeOrExternal = disambiguated.find(
+        (t) =>
+          (t.source === 'native' || t.source === 'external') &&
+          (t.trackElement?.track?.mode === 'showing' || t.nativeTrackObj?.mode === 'showing')
+      );
+      if (showingNativeOrExternal) {
+        selectedSubtitleTrackIdRef.current = showingNativeOrExternal.id;
+        setCurrentSubtitleTrack(showingNativeOrExternal.id);
+        return;
+      }
+
+      selectedSubtitleTrackIdRef.current = -1;
+      setCurrentSubtitleTrack(-1);
+    };
+
+    syncSubtitleTracksFnRef.current = syncSubtitleTracks;
+
+    const handleLoadedMetadataWithTracks = () => {
+      handleLoadedMetadata();
+      if (sessionIdRef.current !== currentSessionId) return;
+      syncAudioTracks();
+      syncSubtitleTracks();
+    };
+
+    // Attach listeners to video element
+    video.addEventListener('playing', handlePlaying);
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('waiting', handleWaiting);
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('durationchange', handleDurationChange);
+    video.addEventListener('loadedmetadata', handleLoadedMetadataWithTracks);
+    video.addEventListener('progress', handleProgress);
+    video.addEventListener('volumechange', handleVolumeChange);
+    video.addEventListener('ratechange', handleRateChange);
     video.addEventListener('error', handleError);
+
+    // Native textTracks & audioTracks dynamic event listeners
+    const textTrackList = video.textTracks;
+    const nativeAudioList = (video as any).audioTracks;
+
+    const handleNativeTextTracksChange = () => {
+      if (sessionIdRef.current !== currentSessionId) return;
+      syncSubtitleTracks();
+    };
+
+    const handleNativeAudioTracksChange = () => {
+      if (sessionIdRef.current !== currentSessionId) return;
+      syncAudioTracks();
+    };
+
+    if (textTrackList && typeof textTrackList.addEventListener === 'function') {
+      textTrackList.addEventListener('addtrack', handleNativeTextTracksChange);
+      textTrackList.addEventListener('removetrack', handleNativeTextTracksChange);
+      textTrackList.addEventListener('change', handleNativeTextTracksChange);
+    }
+
+    if (nativeAudioList && typeof nativeAudioList.addEventListener === 'function') {
+      nativeAudioList.addEventListener('addtrack', handleNativeAudioTracksChange);
+      nativeAudioList.addEventListener('removetrack', handleNativeAudioTracksChange);
+      nativeAudioList.addEventListener('change', handleNativeAudioTracksChange);
+    }
 
     // Engine attachment: HLS.js vs Native
     if (inferredTransport === 'hls' && Hls.isSupported()) {
@@ -667,29 +1029,8 @@ export function usePlaybackSession({
           setQualities(mappedQualities);
         }
 
-        // Map real audio tracks
-        if (hls.audioTracks && hls.audioTracks.length > 0) {
-          setAudioTracks(
-            hls.audioTracks.map((tr) => ({
-              id: tr.id,
-              name: tr.name || tr.lang || `Faixa ${tr.id + 1}`,
-              lang: tr.lang,
-            }))
-          );
-          setCurrentAudioTrack(hls.audioTrack);
-        }
-
-        // Map subtitle tracks
-        if (hls.subtitleTracks && hls.subtitleTracks.length > 0) {
-          setSubtitleTracks(
-            hls.subtitleTracks.map((tr) => ({
-              id: tr.id,
-              name: tr.name || tr.lang || `Legenda ${tr.id + 1}`,
-              lang: tr.lang,
-            }))
-          );
-          setCurrentSubtitleTrack(hls.subtitleTrack);
-        }
+        syncAudioTracks();
+        syncSubtitleTracks();
 
         applyStartAt();
         video.play().catch(() => {
@@ -697,6 +1038,16 @@ export function usePlaybackSession({
             setIsPlaying(false);
           }
         });
+      });
+
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+        if (sessionIdRef.current !== currentSessionId) return;
+        syncAudioTracks();
+      });
+
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
+        if (sessionIdRef.current !== currentSessionId) return;
+        syncSubtitleTracks();
       });
 
       hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
@@ -710,12 +1061,33 @@ export function usePlaybackSession({
 
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
         if (sessionIdRef.current !== currentSessionId) return;
-        setCurrentAudioTrack(data.id);
+        const matched = audioTracksRef.current.find(
+          (t) => t.source === 'hls' && (t.hlsTrackId === data.id || t.id === data.id)
+        );
+        setCurrentAudioTrack(matched ? matched.id : data.id);
       });
 
       hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
         if (sessionIdRef.current !== currentSessionId) return;
-        setCurrentSubtitleTrack(data.id);
+        if (data.id === -1) {
+          const activeCustom = subtitleTracksRef.current.find(
+            (t) =>
+              t.id === selectedSubtitleTrackIdRef.current &&
+              (t.source === 'external' || t.source === 'native')
+          );
+          if (activeCustom) {
+            return;
+          }
+          selectedSubtitleTrackIdRef.current = -1;
+          setCurrentSubtitleTrack(-1);
+          return;
+        }
+        const matched = subtitleTracksRef.current.find(
+          (t) => t.source === 'hls' && (t.hlsTrackId === data.id || t.id === data.id)
+        );
+        const resolvedId = matched ? matched.id : data.id;
+        selectedSubtitleTrackIdRef.current = resolvedId;
+        setCurrentSubtitleTrack(resolvedId);
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -784,11 +1156,23 @@ export function usePlaybackSession({
       video.removeEventListener('waiting', handleWaiting);
       video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('durationchange', handleDurationChange);
-      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      video.removeEventListener('loadedmetadata', handleLoadedMetadataWithTracks);
       video.removeEventListener('progress', handleProgress);
       video.removeEventListener('volumechange', handleVolumeChange);
       video.removeEventListener('ratechange', handleRateChange);
       video.removeEventListener('error', handleError);
+
+      if (textTrackList && typeof textTrackList.removeEventListener === 'function') {
+        textTrackList.removeEventListener('addtrack', handleNativeTextTracksChange);
+        textTrackList.removeEventListener('removetrack', handleNativeTextTracksChange);
+        textTrackList.removeEventListener('change', handleNativeTextTracksChange);
+      }
+
+      if (nativeAudioList && typeof nativeAudioList.removeEventListener === 'function') {
+        nativeAudioList.removeEventListener('addtrack', handleNativeAudioTracksChange);
+        nativeAudioList.removeEventListener('removetrack', handleNativeAudioTracksChange);
+        nativeAudioList.removeEventListener('change', handleNativeAudioTracksChange);
+      }
 
       // Save progress on exit if VOD/series
       if (!isLive && streamId && video.currentTime > 5) {
@@ -940,19 +1324,251 @@ export function usePlaybackSession({
     }
   }, []);
 
-  const setAudioTrack = useCallback((trackId: number) => {
-    if (hlsRef.current) {
-      hlsRef.current.audioTrack = trackId;
-      setCurrentAudioTrack(trackId);
-    }
-  }, []);
+  // External subtitle tracks resolution & attachment (decoupled from video pipeline restart)
+  const externalSubtitlesKey = (externalSubtitles || [])
+    .map((s) => `${s?.url || ''}|${s?.lang || ''}|${s?.label || ''}|${s?.format || ''}`)
+    .join(';;');
 
-  const setSubtitleTrack = useCallback((trackId: number) => {
-    if (hlsRef.current) {
-      hlsRef.current.subtitleTrack = trackId;
-      setCurrentSubtitleTrack(trackId);
+  useEffect(() => {
+    const video = videoRef.current;
+    clearExternalTracksAndBlobs();
+    syncSubtitleTracksFnRef.current?.();
+
+    if (!video || !streamUrl || !Array.isArray(externalSubtitles) || externalSubtitles.length === 0) {
+      return;
     }
-  }, []);
+
+    const activeSessionId = sessionIdRef.current;
+    const abortController = new AbortController();
+    externalAbortControllerRef.current = abortController;
+
+    let cancelled = false;
+
+    const attachExternalTracks = async () => {
+      const seenUrls = new Set<string>();
+
+      for (let i = 0; i < externalSubtitles.length; i++) {
+        if (cancelled || sessionIdRef.current !== activeSessionId) return;
+        const item = externalSubtitles[i];
+        if (!item || typeof item.url !== 'string' || !item.url.trim()) continue;
+
+        const rawUrl = item.url.trim();
+        if (seenUrls.has(rawUrl)) continue;
+        seenUrls.add(rawUrl);
+
+        const detectedFormat = detectSubtitleFormat(rawUrl, item.format);
+        if (detectedFormat === 'unsupported') continue;
+
+        const loaded = await loadExternalSubtitleAsVttUrl(rawUrl, abortController.signal);
+        if (cancelled || sessionIdRef.current !== activeSessionId) {
+          if (loaded?.isBlobUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+            try {
+              URL.revokeObjectURL(loaded.resolvedUrl);
+            } catch {}
+          }
+          return;
+        }
+
+        if (!loaded) {
+          continue;
+        }
+
+        if (loaded.isBlobUrl) {
+          createdBlobUrlsRef.current.push(loaded.resolvedUrl);
+        }
+
+        const computedLabel =
+          item.label ||
+          formatMediaTrackLabel({
+            rawName: item.label,
+            lang: item.lang,
+            fallbackPrefix: 'Legenda',
+            index: i,
+            isDefault: item.isDefault,
+            forced: item.forced,
+          });
+
+        const trackEl = document.createElement('track');
+        trackEl.kind = 'subtitles';
+        trackEl.setAttribute('data-nc-external-track', 'true');
+        trackEl.setAttribute('data-nc-external-url', rawUrl);
+        trackEl.setAttribute('data-subtitle-mode', 'disabled');
+        trackEl.label = computedLabel;
+        if (item.lang) {
+          trackEl.srclang = item.lang;
+        }
+        trackEl.src = loaded.resolvedUrl;
+
+        const entryObj = {
+          key: `${rawUrl}#${i}`,
+          url: rawUrl,
+          resolvedSrc: loaded.resolvedUrl,
+          isBlobUrl: loaded.isBlobUrl,
+          lang: item.lang,
+          label: computedLabel,
+          format: (detectedFormat === 'unknown' ? 'vtt' : detectedFormat) as 'vtt' | 'srt',
+          isDefault: item.isDefault,
+          forced: item.forced,
+          trackEl,
+        };
+        resolvedExternalTracksRef.current.push(entryObj);
+
+        const beforeTrackCount = video.textTracks ? video.textTracks.length : 0;
+        video.appendChild(trackEl);
+        const afterTrackCount = video.textTracks ? video.textTracks.length : 0;
+
+        const linkedTextTrack =
+          trackEl.track ||
+          (video.textTracks && afterTrackCount > beforeTrackCount
+            ? video.textTracks[afterTrackCount - 1]
+            : undefined);
+
+        if (linkedTextTrack) {
+          try {
+            (linkedTextTrack as any).__ncExternal = true;
+            linkedTextTrack.mode = 'disabled';
+          } catch {}
+        }
+
+        syncSubtitleTracksFnRef.current?.();
+      }
+    };
+
+    attachExternalTracks();
+
+    return () => {
+      cancelled = true;
+      abortController.abort();
+    };
+  }, [streamUrl, retryTrigger, externalSubtitlesKey, videoRef, clearExternalTracksAndBlobs]);
+
+  const setAudioTrack = useCallback(
+    (trackId: number) => {
+      const target = audioTracksRef.current.find((t) => t.id === trackId);
+      if (hlsRef.current && (!target || target.source === 'hls')) {
+        const hlsTargetId = target?.hlsTrackId ?? trackId;
+        hlsRef.current.audioTrack = hlsTargetId;
+        setCurrentAudioTrack(trackId);
+        return;
+      }
+
+      const video = videoRef.current;
+      const nativeAudioList = video ? (video as any).audioTracks : null;
+      if (nativeAudioList && typeof nativeAudioList.length === 'number' && nativeAudioList.length > 0) {
+        const targetIndex = target?.nativeTrackIndex ?? trackId;
+        for (let i = 0; i < nativeAudioList.length; i++) {
+          try {
+            nativeAudioList[i].enabled = i === targetIndex;
+          } catch {}
+        }
+        setCurrentAudioTrack(trackId);
+      }
+    },
+    [videoRef]
+  );
+
+  const setSubtitleTrack = useCallback(
+    (trackId: number) => {
+      const video = videoRef.current;
+
+      if (trackId === -1) {
+        selectedSubtitleTrackIdRef.current = -1;
+        if (hlsRef.current) {
+          hlsRef.current.subtitleTrack = -1;
+          hlsRef.current.subtitleDisplay = false;
+        }
+        for (const ext of resolvedExternalTracksRef.current) {
+          try {
+            ext.trackEl?.removeAttribute('default');
+            ext.trackEl?.setAttribute('data-subtitle-mode', 'disabled');
+            if (ext.trackEl?.track) {
+              ext.trackEl.track.mode = 'disabled';
+            }
+          } catch {}
+        }
+        if (video && video.textTracks) {
+          for (let i = 0; i < video.textTracks.length; i++) {
+            try {
+              video.textTracks[i].mode = 'disabled';
+            } catch {}
+          }
+        }
+        setCurrentSubtitleTrack(-1);
+        return;
+      }
+
+      const target = subtitleTracksRef.current.find((t) => t.id === trackId);
+      if (!target) {
+        if (hlsRef.current) {
+          selectedSubtitleTrackIdRef.current = trackId;
+          hlsRef.current.subtitleDisplay = true;
+          hlsRef.current.subtitleTrack = trackId;
+          setCurrentSubtitleTrack(trackId);
+        }
+        return;
+      }
+
+      selectedSubtitleTrackIdRef.current = target.id;
+
+      if (target.source === 'hls') {
+        for (const ext of resolvedExternalTracksRef.current) {
+          try {
+            ext.trackEl?.removeAttribute('default');
+            ext.trackEl?.setAttribute('data-subtitle-mode', 'disabled');
+            if (ext.trackEl?.track) {
+              ext.trackEl.track.mode = 'disabled';
+            }
+          } catch {}
+        }
+        if (hlsRef.current) {
+          hlsRef.current.subtitleDisplay = true;
+          hlsRef.current.subtitleTrack = target.hlsTrackId ?? target.id;
+        }
+        setCurrentSubtitleTrack(target.id);
+        return;
+      }
+
+      // External or Native subtitle track
+      if (hlsRef.current) {
+        hlsRef.current.subtitleTrack = -1;
+        hlsRef.current.subtitleDisplay = false;
+      }
+
+      const targetTextTrack = target.trackElement?.track || target.nativeTrackObj;
+      for (const ext of resolvedExternalTracksRef.current) {
+        const isTargetExt =
+          (target.trackElement && ext.trackEl === target.trackElement) ||
+          (targetTextTrack && ext.trackEl?.track === targetTextTrack);
+        try {
+          if (isTargetExt) {
+            ext.trackEl?.setAttribute('default', '');
+            ext.trackEl?.setAttribute('data-subtitle-mode', 'showing');
+          } else {
+            ext.trackEl?.removeAttribute('default');
+            ext.trackEl?.setAttribute('data-subtitle-mode', 'disabled');
+          }
+          if (ext.trackEl?.track) {
+            ext.trackEl.track.mode = isTargetExt ? 'showing' : 'disabled';
+          }
+        } catch {}
+      }
+      if (video && video.textTracks) {
+        for (let i = 0; i < video.textTracks.length; i++) {
+          const tt = video.textTracks[i];
+          try {
+            tt.mode = tt === targetTextTrack ? 'showing' : 'disabled';
+          } catch {}
+        }
+      }
+      if (targetTextTrack) {
+        try {
+          targetTextTrack.mode = 'showing';
+        } catch {}
+      }
+      setCurrentSubtitleTrack(target.id);
+    },
+    [videoRef]
+  );
 
   const setProfile = useCallback((profileKey: BufferProfileKey) => {
     setBufferProfileState(profileKey);

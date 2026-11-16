@@ -14,6 +14,8 @@ import { useXtreamCredentials } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { VideoPlayer } from './VideoPlayer';
+import { ExternalSubtitleTrackInput } from './player/types';
+import { extractXtreamSubtitles } from './player/trackUtils';
 import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { MediaImage } from './MediaImage';
 import { DetailsModalShell } from './DetailsModalShell';
@@ -187,6 +189,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     title: string;
     startAt: number;
     episode: any;
+    subtitles?: ExternalSubtitleTrackInput[];
   } | null>(null);
   const [playError, setPlayError] = useState<string | null>(null);
   const [failedEpisode, setFailedEpisode] = useState<{ episode: any; startAt: number } | null>(
@@ -776,11 +779,13 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         containerExtension: ext,
       });
 
+      const episodeSubs = extractXtreamSubtitles(episode, credentials.serverUrl);
       setPlayingEpisodeData({
         url: mediaUrl,
         title: `${displayTitle} - S${activeSeasonForPlay}E${episode.episode_num || episode.id}`,
         startAt,
         episode,
+        subtitles: episodeSubs.length > 0 ? episodeSubs : undefined,
       });
       setShowResumeModal(false);
     } catch (err: any) {
@@ -1020,6 +1025,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                 contentType="episode"
                 startAt={playingEpisodeData.startAt}
                 streamId={playingEpisodeData.episode.id}
+                externalSubtitles={playingEpisodeData.subtitles}
                 onBack={() => {
                   setPlayingEpisodeData(null);
                   restoreEpisodeFocus();

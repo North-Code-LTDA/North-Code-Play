@@ -12,7 +12,8 @@ export interface HomeViewProps {
     channelName?: string,
     programTitle?: string,
     onNext?: () => void,
-    onPrevious?: () => void
+    onPrevious?: () => void,
+    externalSubtitles?: any[]
   ) => void;
   onSelectLiveChannel?: (stream: any) => void;
   searchQuery?: string;

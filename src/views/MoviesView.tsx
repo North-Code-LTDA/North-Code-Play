@@ -12,7 +12,8 @@ export interface MoviesViewProps {
     channelName?: string,
     programTitle?: string,
     onNext?: () => void,
-    onPrevious?: () => void
+    onPrevious?: () => void,
+    externalSubtitles?: any[]
   ) => void;
   searchQuery?: string;
   isPaused?: boolean;

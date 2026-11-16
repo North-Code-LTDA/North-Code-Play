@@ -39,6 +39,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   onRetry,
   onPlaybackSuccess,
   onPlaybackFinalError,
+  externalSubtitles,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -91,6 +92,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     isControlsVisible:
       isControlsVisible || !hasStartedPlaying || showSettings || showDiagnostics,
     isDiagnosticsOpen: showDiagnostics,
+    externalSubtitles,
   });
 
   const activeError = externalError || session.error;

@@ -12,10 +12,31 @@ export interface QualityLevel {
   name: string;
 }
 
+export type MediaTrackSource = 'hls' | 'native' | 'external';
+
+export interface ExternalSubtitleTrackInput {
+  id?: string | number;
+  url: string;
+  lang?: string;
+  label?: string;
+  format?: 'vtt' | 'srt' | 'unknown';
+  isDefault?: boolean;
+  forced?: boolean;
+}
+
 export interface MediaTrackInfo {
   id: number;
   name: string;
   lang?: string;
+  source?: MediaTrackSource;
+  hlsTrackId?: number;
+  nativeTrackIndex?: number;
+  externalUrl?: string;
+  format?: 'vtt' | 'srt' | 'unknown';
+  channels?: string;
+  codec?: string;
+  isDefault?: boolean;
+  forced?: boolean;
 }
 
 export interface BufferedTimeRange {
@@ -60,6 +81,7 @@ export interface VideoPlayerProps {
   onRetry?: () => void;
   onPlaybackSuccess?: (attemptId?: number) => void;
   onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
+  externalSubtitles?: ExternalSubtitleTrackInput[];
 }
 
 

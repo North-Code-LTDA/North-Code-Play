@@ -15,6 +15,8 @@ import {
   clearItemProgress,
 } from '../utils/playbackHistory';
 import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
+import { ExternalSubtitleTrackInput } from './player/types';
+import { extractXtreamSubtitles } from './player/trackUtils';
 import { MediaImage } from './MediaImage';
 import { DetailsModalShell } from './DetailsModalShell';
 import {
@@ -47,7 +49,8 @@ export interface MovieDetailsProps {
     channelName?: string,
     programTitle?: string,
     onNext?: () => void,
-    onPrevious?: () => void
+    onPrevious?: () => void,
+    externalSubtitles?: ExternalSubtitleTrackInput[]
   ) => void;
 }
 
@@ -537,7 +540,19 @@ export const MovieDetails = React.memo(function MovieDetails({
         streamId: activeStreamId,
         containerExtension: containerExt,
       });
-      onPlay(url, displayTitle, startAt, activeStreamId, 'movie');
+      const extractedSubs = extractXtreamSubtitles(details, credentials.serverUrl);
+      onPlay(
+        url,
+        displayTitle,
+        startAt,
+        activeStreamId,
+        'movie',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        extractedSubs.length > 0 ? extractedSubs : undefined
+      );
     } catch (err: any) {
       console.error('Erro ao construir URL de filme:', err.message);
       setPlayError(err?.message || 'Falha ao iniciar reprodução do filme.');

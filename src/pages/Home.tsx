@@ -152,6 +152,7 @@ function HomeContent({ credentials }: { credentials: any }) {
     programTitle?: string;
     onNext?: () => void;
     onPrevious?: () => void;
+    externalSubtitles?: any[];
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const debouncedSearchQuery = useDebounce(searchQuery, 500);
@@ -480,7 +481,8 @@ function HomeContent({ credentials }: { credentials: any }) {
       channelName?: string,
       programTitle?: string,
       onNext?: () => void,
-      onPrevious?: () => void
+      onPrevious?: () => void,
+      externalSubtitles?: any[]
     ) => {
       pushFocusMemory();
       setActiveVideo({
@@ -493,6 +495,7 @@ function HomeContent({ credentials }: { credentials: any }) {
         programTitle,
         onNext,
         onPrevious,
+        externalSubtitles,
       });
     },
     []
@@ -686,6 +689,7 @@ function HomeContent({ credentials }: { credentials: any }) {
               streamId={activeVideo.streamId}
               onNext={activeVideo.onNext}
               onPrevious={activeVideo.onPrevious}
+              externalSubtitles={activeVideo.externalSubtitles}
             />
           )}
         </AnimatePresence>

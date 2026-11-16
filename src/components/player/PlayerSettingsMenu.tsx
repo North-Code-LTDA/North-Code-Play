@@ -97,11 +97,12 @@ export function PlayerSettingsMenu({
         }
       }
 
-      const firstOption =
+      const activeOption =
+        root.querySelector<HTMLElement>('[data-settings-list="true"] button[data-track-active="true"]') ||
         root.querySelector<HTMLElement>('[data-settings-list="true"] button') ||
         root.querySelector<HTMLElement>('button');
-      if (firstOption) {
-        focusElementSafely(firstOption);
+      if (activeOption) {
+        focusElementSafely(activeOption);
       }
     }, 0);
     return () => clearTimeout(timer);
@@ -122,12 +123,16 @@ export function PlayerSettingsMenu({
       : qualities.find((q) => q.id === currentQuality)?.name || 'Automático';
 
   const currentAudioLabel =
-    audioTracks.find((a) => a.id === currentAudioTrack)?.name || 'Padrão';
+    audioTracks.length > 0
+      ? audioTracks.find((a) => a.id === currentAudioTrack)?.name || audioTracks[0].name
+      : 'Padrão';
 
   const currentSubtitleLabel =
-    currentSubtitleTrack === -1
-      ? 'Desativado'
-      : subtitleTracks.find((s) => s.id === currentSubtitleTrack)?.name || 'Desativado';
+    subtitleTracks.length === 0
+      ? 'Indisponível'
+      : currentSubtitleTrack === -1
+        ? 'Desativado'
+        : subtitleTracks.find((s) => s.id === currentSubtitleTrack)?.name || 'Desativado';
 
   const currentProfileLabel = BUFFER_PROFILES[bufferProfile]?.label || 'Equilibrado';
 
@@ -135,6 +140,7 @@ export function PlayerSettingsMenu({
     <div
       ref={menuContainerRef}
       data-focus-scope="modal"
+      data-player-settings-menu="true"
       className="absolute bottom-12 sm:bottom-14 right-2 sm:right-4 z-40 w-[min(18rem,calc(100%-1rem))] max-h-[calc(100%-3rem)] flex flex-col bg-nc-bg-card/95 border border-nc-border/80 backdrop-blur-xl rounded-xl sm:rounded-2xl shadow-2xl overflow-hidden p-2.5 sm:p-3 text-white text-xs select-none animate-in fade-in zoom-in-95 duration-150"
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
@@ -151,6 +157,7 @@ export function PlayerSettingsMenu({
         ) : (
           <button
             type="button"
+            data-settings-back="true"
             onClick={() => setActiveSubMenu('main')}
             className="text-nc-text-secondary hover:text-white flex items-center gap-1 text-xs font-medium cursor-pointer px-1.5 py-1 rounded-lg"
           >
@@ -159,6 +166,7 @@ export function PlayerSettingsMenu({
         )}
         <button
           type="button"
+          data-settings-close="true"
           onClick={onClose}
           className="p-1 hover:bg-white/10 rounded-full text-nc-text-secondary hover:text-white cursor-pointer"
           title="Fechar"
@@ -188,49 +196,49 @@ export function PlayerSettingsMenu({
                 <span>Qualidade</span>
               </div>
               <div className="flex items-center gap-1 text-nc-text-secondary">
-                <span className="truncate max-w-[100px]">{currentQualityLabel}</span>
+                <span className="truncate max-w-[110px]">{currentQualityLabel}</span>
                 <ChevronRight className="w-3.5 h-3.5" />
               </div>
             </button>
           )}
 
-          {/* Audio tracks if available */}
-          {audioTracks.length > 1 && (
-            <button
-              type="button"
-              data-settings-item="audio"
-              onClick={() => openSubMenu('audio')}
-              className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-            >
-              <div className="flex items-center gap-2">
-                <Volume2 className="w-4 h-4 text-nc-text-secondary" />
-                <span>Áudio</span>
-              </div>
-              <div className="flex items-center gap-1 text-nc-text-secondary">
-                <span className="truncate max-w-[100px]">{currentAudioLabel}</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </div>
-            </button>
-          )}
+          {/* Audio tracks (always accessible so user can inspect or switch real tracks) */}
+          <button
+            type="button"
+            data-settings-item="audio"
+            onClick={() => openSubMenu('audio')}
+            className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+          >
+            <div className="flex items-center gap-2">
+              <Volume2 className="w-4 h-4 text-nc-text-secondary" />
+              <span>Áudio</span>
+            </div>
+            <div className="flex items-center gap-1 text-nc-text-secondary">
+              <span data-settings-audio-summary="true" className="truncate max-w-[110px]">
+                {currentAudioLabel}
+              </span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </div>
+          </button>
 
-          {/* Subtitles if available */}
-          {subtitleTracks.length > 0 && (
-            <button
-              type="button"
-              data-settings-item="subtitles"
-              onClick={() => openSubMenu('subtitles')}
-              className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-            >
-              <div className="flex items-center gap-2">
-                <Subtitles className="w-4 h-4 text-nc-text-secondary" />
-                <span>Legendas</span>
-              </div>
-              <div className="flex items-center gap-1 text-nc-text-secondary">
-                <span className="truncate max-w-[100px]">{currentSubtitleLabel}</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </div>
-            </button>
-          )}
+          {/* Subtitles (always accessible so user can enable, disable, or see availability) */}
+          <button
+            type="button"
+            data-settings-item="subtitles"
+            onClick={() => openSubMenu('subtitles')}
+            className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+          >
+            <div className="flex items-center gap-2">
+              <Subtitles className="w-4 h-4 text-nc-text-secondary" />
+              <span>Legendas</span>
+            </div>
+            <div className="flex items-center gap-1 text-nc-text-secondary">
+              <span data-settings-subtitles-summary="true" className="truncate max-w-[110px]">
+                {currentSubtitleLabel}
+              </span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </div>
+          </button>
 
           {/* Speed option (only for VOD / Series) */}
           {!isLive && (
@@ -279,6 +287,8 @@ export function PlayerSettingsMenu({
         >
           <button
             type="button"
+            data-track-active={currentQuality === -1 ? 'true' : 'false'}
+            aria-pressed={currentQuality === -1}
             onClick={() => {
               onSelectQuality(-1);
               setActiveSubMenu('main');
@@ -292,6 +302,8 @@ export function PlayerSettingsMenu({
             <button
               type="button"
               key={q.id}
+              data-track-active={currentQuality === q.id ? 'true' : 'false'}
+              aria-pressed={currentQuality === q.id}
               onClick={() => {
                 onSelectQuality(q.id);
                 setActiveSubMenu('main');
@@ -312,20 +324,60 @@ export function PlayerSettingsMenu({
           data-scroll-container="true"
           className="flex-1 overflow-y-auto custom-scrollbar min-h-0 space-y-1 pr-0.5"
         >
-          {audioTracks.map((tr) => (
-            <button
-              type="button"
-              key={tr.id}
-              onClick={() => {
-                onSelectAudioTrack(tr.id);
-                setActiveSubMenu('main');
-              }}
-              className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-            >
-              <span>{tr.name}</span>
-              {currentAudioTrack === tr.id && <Check className="w-4 h-4 text-nc-primary" />}
-            </button>
-          ))}
+          {audioTracks.length > 0 ? (
+            <>
+              {audioTracks.map((tr) => {
+                const isSelected =
+                  currentAudioTrack === tr.id ||
+                  (currentAudioTrack === -1 && audioTracks[0]?.id === tr.id);
+                return (
+                  <button
+                    type="button"
+                    key={tr.id}
+                    data-audio-track-id={tr.id}
+                    data-track-active={isSelected ? 'true' : 'false'}
+                    aria-pressed={isSelected}
+                    onClick={() => {
+                      onSelectAudioTrack(tr.id);
+                      setActiveSubMenu('main');
+                    }}
+                    className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+                  >
+                    <span className="truncate pr-2">{tr.name}</span>
+                    {isSelected && <Check className="w-4 h-4 text-nc-primary shrink-0" />}
+                  </button>
+                );
+              })}
+              {audioTracks.length === 1 && (
+                <p
+                  data-audio-single-note="true"
+                  className="px-2 py-1.5 text-[11px] text-nc-text-secondary leading-snug"
+                >
+                  Faixa única disponível nesta transmissão.
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                data-audio-default-only="true"
+                data-track-active="true"
+                aria-pressed="true"
+                onClick={() => setActiveSubMenu('main')}
+                className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+              >
+                <span>Padrão da mídia</span>
+                <Check className="w-4 h-4 text-nc-primary shrink-0" />
+              </button>
+              <p
+                data-audio-empty-state="true"
+                className="px-2 py-1.5 text-[11px] text-nc-text-secondary leading-snug"
+              >
+                Nenhuma faixa de áudio adicional exposta pelo fluxo ou navegador.
+              </p>
+            </>
+          )}
         </div>
       )}
 
@@ -338,6 +390,9 @@ export function PlayerSettingsMenu({
         >
           <button
             type="button"
+            data-subtitle-track-id="-1"
+            data-track-active={currentSubtitleTrack === -1 ? 'true' : 'false'}
+            aria-pressed={currentSubtitleTrack === -1}
             onClick={() => {
               onSelectSubtitleTrack(-1);
               setActiveSubMenu('main');
@@ -345,22 +400,37 @@ export function PlayerSettingsMenu({
             className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
           >
             <span>Desativado</span>
-            {currentSubtitleTrack === -1 && <Check className="w-4 h-4 text-nc-primary" />}
+            {currentSubtitleTrack === -1 && <Check className="w-4 h-4 text-nc-primary shrink-0" />}
           </button>
-          {subtitleTracks.map((st) => (
-            <button
-              type="button"
-              key={st.id}
-              onClick={() => {
-                onSelectSubtitleTrack(st.id);
-                setActiveSubMenu('main');
-              }}
-              className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+          {subtitleTracks.length > 0 ? (
+            subtitleTracks.map((st) => {
+              const isSelected = currentSubtitleTrack === st.id;
+              return (
+                <button
+                  type="button"
+                  key={st.id}
+                  data-subtitle-track-id={st.id}
+                  data-track-active={isSelected ? 'true' : 'false'}
+                  aria-pressed={isSelected}
+                  onClick={() => {
+                    onSelectSubtitleTrack(st.id);
+                    setActiveSubMenu('main');
+                  }}
+                  className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
+                >
+                  <span className="truncate pr-2">{st.name}</span>
+                  {isSelected && <Check className="w-4 h-4 text-nc-primary shrink-0" />}
+                </button>
+              );
+            })
+          ) : (
+            <p
+              data-subtitles-empty-state="true"
+              className="px-2 py-1.5 text-[11px] text-nc-text-secondary leading-snug"
             >
-              <span>{st.name}</span>
-              {currentSubtitleTrack === st.id && <Check className="w-4 h-4 text-nc-primary" />}
-            </button>
-          ))}
+              Nenhuma legenda compatível disponível para este conteúdo.
+            </p>
+          )}
         </div>
       )}
 

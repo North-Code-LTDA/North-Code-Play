@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Wrench, Copy, Check, X, ShieldAlert } from 'lucide-react';
 import { PlaybackStats, PlayerContentType, PlayerTransport } from './types';
+import { redactStreamUrlCredentials } from './trackUtils';
 import { focusElementSafely } from '../../navigation';
 
 interface PlayerDiagnosticsModalProps {
@@ -35,9 +36,11 @@ export function PlayerDiagnosticsModal({
 
   if (!isOpen) return null;
 
+  const redactedUrl = streamUrl ? redactStreamUrlCredentials(streamUrl) : '';
+
   const copyUrl = () => {
-    if (streamUrl) {
-      navigator.clipboard.writeText(streamUrl).then(() => {
+    if (redactedUrl) {
+      navigator.clipboard.writeText(redactedUrl).then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       });
@@ -92,14 +95,16 @@ export function PlayerDiagnosticsModal({
         {/* URL Card */}
         <div className="space-y-1.5 text-xs">
           <span className="font-semibold text-nc-text-secondary block">
-            URL Direta da Mídia (sem proxies):
+            URL Direta da Mídia (credenciais ocultadas):
           </span>
           <div
             data-nav-row="diagnostics-url"
             className="flex items-center gap-2 bg-nc-bg-input p-2.5 rounded-xl border border-nc-border/40 font-mono text-[11px] text-gray-300 break-all select-all"
           >
-            <span className="flex-1">{streamUrl || 'Nenhuma URL ativa'}</span>
-            {streamUrl && (
+            <span data-diagnostics-url-text="true" className="flex-1">
+              {redactedUrl || 'Nenhuma URL ativa'}
+            </span>
+            {redactedUrl && (
               <button
                 type="button"
                 onClick={copyUrl}
