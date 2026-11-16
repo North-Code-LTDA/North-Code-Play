@@ -366,13 +366,7 @@ interface LiveChannelCardProps {
   rowScrollEl: HTMLElement | null;
   onSelectGroup: (group: LiveChannelGroup, categoryId: string, rowIndex: number, cardIndex: number) => void;
   onToggleFavorite: (group: LiveChannelGroup) => void;
-  onFocusCard: (
-    groupId: string,
-    categoryId: string,
-    rowIndex: number,
-    cardIndex: number,
-    cardWrapEl?: HTMLElement | null
-  ) => void;
+  onFocusCard: (groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => void;
 }
 
 const LiveChannelCard = React.memo(function LiveChannelCard({
@@ -566,7 +560,7 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
           onKeyUp={handleCardKeyUp}
           onFocus={() => {
             setIsFocused(true);
-            onFocusCard(group.groupId, categoryId, rowIndex, cardIndex, cardWrapRef.current);
+            onFocusCard(group.groupId, categoryId, rowIndex, cardIndex);
           }}
           onBlur={() => {
             enterHoldStartRef.current = null;
@@ -624,7 +618,7 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
           onKeyDown={handleCardShortcutKeyDown}
           onFocus={() => {
             setIsFocused(true);
-            onFocusCard(group.groupId, categoryId, rowIndex, cardIndex, cardWrapRef.current);
+            onFocusCard(group.groupId, categoryId, rowIndex, cardIndex);
           }}
           onBlur={() => setIsFocused(false)}
           className="nc-tv-channel-fav shrink-0 p-2 mr-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors focus:outline-none"
@@ -780,30 +774,18 @@ function computeHorizWindow(
   };
 }
 
-interface LiveOriginState {
-  groupId: string | null;
-  categoryId: string | null;
-  rowIndex: number;
-  cardIndex: number;
-}
-
 interface LiveCategoryRowProps {
   row: LiveCategoryRowDescriptor;
   rowIndex: number;
   credentials: XtreamCredentials | null;
   leftScrollEl: HTMLElement | null;
   selectedGroupId: string | null;
-  originRef: React.RefObject<LiveOriginState>;
+  originGroupId: string | null;
+  originCategoryId: string | null;
   isGroupFavorite: (group: LiveChannelGroup) => boolean;
   onSelectGroup: (group: LiveChannelGroup, categoryId: string, rowIndex: number, cardIndex: number) => void;
   onToggleFavorite: (group: LiveChannelGroup) => void;
-  onFocusCard: (
-    groupId: string,
-    categoryId: string,
-    rowIndex: number,
-    cardIndex: number,
-    cardWrapEl?: HTMLElement | null
-  ) => void;
+  onFocusCard: (groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => void;
 }
 
 const LiveCategoryRow = React.memo(function LiveCategoryRow({
@@ -812,7 +794,8 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
   credentials,
   leftScrollEl,
   selectedGroupId,
-  originRef,
+  originGroupId,
+  originCategoryId,
   isGroupFavorite,
   onSelectGroup,
   onToggleFavorite,
@@ -1169,10 +1152,7 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
                 cardIndex={cardIdx}
                 credentials={credentials}
                 isSelected={selectedGroupId === group.groupId}
-                isOrigin={
-                  originRef.current.groupId === group.groupId &&
-                  originRef.current.categoryId === row.categoryId
-                }
+                isOrigin={originGroupId === group.groupId && originCategoryId === row.categoryId}
                 isFavorite={isGroupFavorite(group)}
                 isRowVisible={isRowVisible}
                 rowScrollEl={rowElState}
@@ -1294,15 +1274,17 @@ export const LiveTvView = React.memo(function LiveTvView({
   const [rightPaneEpgLoading, setRightPaneEpgLoading] = useState<boolean>(false);
 
   // Focus origin tracking for spatial navigation between left catalog and right pane
-  // Kept in refs + synchronized DOM attributes to avoid full-view re-renders on every card focus.
-  const originStateRef = useRef<LiveOriginState>({
+  const [originState, setOriginState] = useState<{
+    groupId: string | null;
+    categoryId: string | null;
+    rowIndex: number;
+    cardIndex: number;
+  }>({
     groupId: null,
     categoryId: null,
     rowIndex: -1,
     cardIndex: -1,
   });
-  const activeOriginBtnRef = useRef<HTMLButtonElement | null>(null);
-  const categoryRowsRef = useRef<LiveCategoryRowDescriptor[]>([]);
 
   // Playback fallback state & cleanup refs
   const isMountedRef = useRef<boolean>(true);
@@ -1507,9 +1489,6 @@ export const LiveTvView = React.memo(function LiveTvView({
     resolveGroupByStreamId,
   ]);
 
-  // Keep categoryRowsRef synced for O(1) lookup without re-creating focus callbacks
-  categoryRowsRef.current = categoryRows;
-
   // Schedule 28s fallback timer if a playback attempt stalls before reporting success
   const startPlaybackAttempt = useCallback(
     (group: LiveChannelGroup, variant: ChannelVariant, variantSelection: string) => {
@@ -1547,59 +1526,16 @@ export const LiveTvView = React.memo(function LiveTvView({
     [clearFallbackTimer]
   );
 
-  const syncOriginDomState = useCallback(
-    (
-      groupId: string,
-      categoryId: string,
-      rowIndex: number,
-      cardIndex: number,
-      cardWrapEl?: HTMLElement | null
-    ) => {
-      originStateRef.current = { groupId, categoryId, rowIndex, cardIndex };
-
-      const scrollEl = leftScrollRef.current;
-      if (scrollEl) {
-        const dynamicRowIdx = categoryId
-          ? categoryRowsRef.current.findIndex((r) => r.categoryId === categoryId)
-          : -1;
-        const effectiveRowIdx = dynamicRowIdx >= 0 ? dynamicRowIdx : rowIndex;
-        if (effectiveRowIdx >= 0) {
-          scrollEl.setAttribute('data-live-origin-row-index', String(effectiveRowIdx));
-        } else {
-          scrollEl.removeAttribute('data-live-origin-row-index');
-        }
-        if (cardIndex >= 0) {
-          scrollEl.setAttribute('data-live-origin-card-index', String(cardIndex));
-        } else {
-          scrollEl.removeAttribute('data-live-origin-card-index');
-        }
-      }
-
-      const nextOriginBtn =
-        cardWrapEl?.querySelector<HTMLButtonElement>('button[data-live-channel-btn="true"]') ??
-        scrollEl?.querySelector<HTMLButtonElement>(
-          `button[data-live-channel-btn="true"][data-live-channel-group-id="${CSS?.escape ? CSS.escape(groupId) : groupId}"][data-live-channel-category-id="${CSS?.escape ? CSS.escape(categoryId) : categoryId}"]`
-        ) ??
-        null;
-      const prevOriginBtn = activeOriginBtnRef.current;
-      if (prevOriginBtn && prevOriginBtn !== nextOriginBtn) {
-        prevOriginBtn.removeAttribute('data-live-channel-origin');
-      }
-      if (nextOriginBtn) {
-        nextOriginBtn.setAttribute('data-live-channel-origin', 'true');
-        activeOriginBtnRef.current = nextOriginBtn;
-      } else if (prevOriginBtn && prevOriginBtn.getAttribute('data-live-channel-group-id') !== groupId) {
-        activeOriginBtnRef.current = null;
-      }
-    },
-    []
-  );
-
   // Select a channel group from left pane (or enter fullscreen on 2nd click on desktop)
   const handleSelectGroup = useCallback(
     (group: LiveChannelGroup, categoryId?: string, rowIndex?: number, cardIndex?: number) => {
       if (typeof categoryId === 'string' && typeof rowIndex === 'number' && typeof cardIndex === 'number') {
-        syncOriginDomState(group.groupId, categoryId, rowIndex, cardIndex);
+        setOriginState({
+          groupId: group.groupId,
+          categoryId,
+          rowIndex,
+          cardIndex,
+        });
       }
 
       const isAlreadySelected = selectedGroup?.groupId === group.groupId && selectedChannel !== null;
@@ -1828,13 +1764,12 @@ export const LiveTvView = React.memo(function LiveTvView({
       const allChannelBtns = Array.from(
         document.querySelectorAll<HTMLButtonElement>('button[data-live-channel-btn="true"]')
       );
-      const originCategoryId = originStateRef.current.categoryId;
       const targetBtn =
-        (prevGroupId && originCategoryId
+        (prevGroupId && originState.categoryId
           ? allChannelBtns.find(
               (btn) =>
                 btn.getAttribute('data-live-channel-group-id') === prevGroupId &&
-                btn.getAttribute('data-live-channel-category-id') === originCategoryId
+                btn.getAttribute('data-live-channel-category-id') === originState.categoryId
             ) || null
           : null) ||
         (prevGroupId
@@ -1853,7 +1788,7 @@ export const LiveTvView = React.memo(function LiveTvView({
         focusElementSafely(targetBtn);
       }
     }
-  }, [selectedChannel, selectedGroup, clearFallbackTimer]);
+  }, [selectedChannel, selectedGroup, originState.categoryId, clearFallbackTimer]);
 
   const handleMobileBackToChannels = useCallback(() => {
     if (isMobilePlayerOpen) {
@@ -1934,24 +1869,15 @@ export const LiveTvView = React.memo(function LiveTvView({
     };
   }, [leftScrollNode, categoryRows.length, ensureRowMounted]);
 
-  const handleFocusCard = useCallback(
-    (
-      groupId: string,
-      categoryId: string,
-      rowIndex: number,
-      cardIndex: number,
-      cardWrapEl?: HTMLElement | null
-    ) => {
-      syncOriginDomState(groupId, categoryId, rowIndex, cardIndex, cardWrapEl);
-    },
-    [syncOriginDomState]
-  );
+  const handleFocusCard = useCallback((groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => {
+    setOriginState({ groupId, categoryId, rowIndex, cardIndex });
+  }, []);
 
-  const initialOriginRowIdx = originStateRef.current.categoryId
-    ? categoryRows.findIndex((r) => r.categoryId === originStateRef.current.categoryId)
-    : originStateRef.current.rowIndex;
-  const effectiveOriginRowIndex =
-    initialOriginRowIdx >= 0 ? initialOriginRowIdx : originStateRef.current.rowIndex;
+  const effectiveOriginRowIndex = useMemo(() => {
+    if (!originState.categoryId) return originState.rowIndex;
+    const dynamicIdx = categoryRows.findIndex((r) => r.categoryId === originState.categoryId);
+    return dynamicIdx >= 0 ? dynamicIdx : originState.rowIndex;
+  }, [categoryRows, originState.categoryId, originState.rowIndex]);
 
   // Derived playback URL for VideoPlayer
   const activeStreamUrl = useMemo(() => {
@@ -2009,7 +1935,7 @@ export const LiveTvView = React.memo(function LiveTvView({
           data-showcase-virtualized="true"
           data-showcase-total-rows={categoryRows.length}
           data-live-origin-row-index={effectiveOriginRowIndex >= 0 ? effectiveOriginRowIndex : undefined}
-          data-live-origin-card-index={originStateRef.current.cardIndex >= 0 ? originStateRef.current.cardIndex : undefined}
+          data-live-origin-card-index={originState.cardIndex >= 0 ? originState.cardIndex : undefined}
           onScroll={() => notifyContainerScrollForFallback(leftScrollRef.current)}
           style={{ overflowAnchor: 'none' }}
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar touch-pan-y px-4 sm:px-6 py-4"
@@ -2063,7 +1989,8 @@ export const LiveTvView = React.memo(function LiveTvView({
                       credentials={credentials}
                       leftScrollEl={leftScrollNode}
                       selectedGroupId={selectedGroup?.groupId ?? null}
-                      originRef={originStateRef}
+                      originGroupId={originState.groupId}
+                      originCategoryId={originState.categoryId}
                       isGroupFavorite={isGroupFavorite}
                       onSelectGroup={handleSelectGroup}
                       onToggleFavorite={handleToggleFavorite}

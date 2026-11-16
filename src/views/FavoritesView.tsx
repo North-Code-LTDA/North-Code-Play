@@ -739,7 +739,7 @@ export const FavoritesView = React.memo(function FavoritesView({
                 );
                 handleToggleFavorite(fav, fav.type, index, cardEl);
               }}
-              className="nc-fav-remove-btn absolute top-2.5 right-2.5 z-20 p-1.5 rounded-lg bg-black/65 hover:bg-black/90 text-nc-primary hover:text-red-400 border border-white/10 backdrop-blur-sm transition-colors cursor-pointer"
+              className="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-lg bg-black/65 hover:bg-black/90 text-nc-primary hover:text-red-400 border border-white/10 backdrop-blur-sm transition-colors cursor-pointer"
             >
               <Heart className="w-4 h-4 fill-current" />
             </button>
@@ -1081,7 +1081,7 @@ export const FavoritesView = React.memo(function FavoritesView({
       {(favActionError || favoriteError) && (
         <div
           role="alert"
-          className="nc-android-no-blur fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[110] bg-red-600/90 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2"
+          className="fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[110] bg-red-600/90 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2"
         >
           <div className="flex items-center gap-2 min-w-0">
             <AlertCircle className="w-5 h-5 text-white shrink-0" />

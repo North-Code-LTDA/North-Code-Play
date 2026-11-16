@@ -308,7 +308,7 @@ export const HeroBanner = React.memo(function HeroBanner({
               type="button"
               data-hero-action="info"
               onClick={() => onInfo(currentItem)}
-              className="nc-hero-info-btn flex-1 sm:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white border border-white/15 px-5 sm:px-7 py-2.5 sm:py-3 rounded-full font-semibold transition-all active:scale-95"
+              className="flex-1 sm:flex-none items-center justify-center flex gap-2 bg-white/20 hover:bg-white/30 backdrop-blur-md text-white border border-white/15 px-5 sm:px-7 py-2.5 sm:py-3 rounded-full font-semibold transition-all active:scale-95"
             >
               <Info className="w-5 h-5 shrink-0" />
               <span>Mais informações</span>
