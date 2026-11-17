@@ -271,6 +271,30 @@ import {
   invalidateCandidateCache,
 } from '../src/navigation';
 import { HorizontalRow } from '../src/components/HorizontalRow';
+import { MediaImage, setMediaImageRetryDelayMsForTest } from '../src/components/MediaImage';
+import { CatalogShowcaseView } from '../src/components/CatalogShowcaseView';
+import {
+  createSimulatedPersistentImageDiskHarness,
+  createValidTestJpegBytes,
+  acquireCachedImage,
+  getInstantCachedImageSrc,
+  configureImageCacheStorageBudget,
+  clearImageCacheOnLogout,
+  buildHomeStartupImagePlan,
+  executeHomeStartupImagePreparation,
+  recordVisitedShowcaseCategory,
+  getVisitedShowcaseCategories,
+  getImageCacheRuntimeStatsSnapshot,
+  isAndroidPersistentImageCacheAvailable,
+} from '../src/services/androidImageCache';
+import {
+  resetCatalogDiagnosticsForTest,
+  startCatalogDiagnosticsSession,
+  getCatalogDiagnosticsSnapshot,
+  formatCatalogDiagnosticsReport,
+} from '../src/utils/catalogDiagnostics';
+import fs from 'node:fs';
+import path from 'node:path';
 
 
 
@@ -2422,19 +2446,761 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
   );
 }
 
+// ============================================================================
+// 7. CACHE PERSISTENTE DE IMAGENS E PRÉ-CARREGAMENTO INTELIGENTE (ETAPA 1 — APK ANDROID)
+// ============================================================================
+async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
+  console.log(
+    '\n--- 7. Etapa 1: Cache Persistente de Imagens, Pré-Carregamento e Diagnóstico (APK Android) ---'
+  );
+
+  // 7.0. Validar arquivos nativos do overlay Android (ImageDiskCachePlugin.java e MainActivity.java)
+  const rootDir = process.cwd();
+  const pluginJavaPath = path.join(
+    rootDir,
+    'tooling/android/overlay/app/src/main/java/com/northcode/play/ImageDiskCachePlugin.java'
+  );
+  const mainActivityJavaPath = path.join(
+    rootDir,
+    'tooling/android/overlay/app/src/main/java/com/northcode/play/MainActivity.java'
+  );
+  assert(
+    fs.existsSync(pluginJavaPath),
+    'ImageDiskCachePlugin.java deve existir no overlay Android'
+  );
+  const pluginJavaContent = fs.readFileSync(pluginJavaPath, 'utf8');
+  assert(
+    pluginJavaContent.includes('@CapacitorPlugin(name = "ImageDiskCache")') &&
+      pluginJavaContent.includes('nc_image_cache') &&
+      !pluginJavaContent.includes('file.setReadable(true, false)') &&
+      pluginJavaContent.includes('getFilesDir()'),
+    'ImageDiskCachePlugin.java deve usar diretório persistente nc_image_cache separado de nc_catalog_transfers'
+  );
+  const mainActivityJavaContent = fs.readFileSync(mainActivityJavaPath, 'utf8');
+  assert(
+    mainActivityJavaContent.includes('registerPlugin(ImageDiskCachePlugin.class);') &&
+      mainActivityJavaContent.indexOf('registerPlugin(ImageDiskCachePlugin.class);') <
+        mainActivityJavaContent.indexOf('super.onCreate(savedInstanceState);'),
+    'MainActivity.java deve registrar ImageDiskCachePlugin antes de super.onCreate'
+  );
+
+  // 7.11. Preservação do fallback web quando o plugin nativo não estiver disponível
+  assert.strictEqual(
+    isAndroidPersistentImageCacheAvailable(),
+    false,
+    'No ambiente web padrão (sem plugin Android), o cache persistente nativo deve estar desativado'
+  );
+  const webFallbackRes = await acquireCachedImage('http://img.provider.tv/covers/web_only.jpg');
+  assert.strictEqual(
+    webFallbackRes.isLocalFile,
+    false,
+    'Fallback web deve manter a URL remota direta sem exigir o plugin nativo'
+  );
+  assert.strictEqual(
+    webFallbackRes.src,
+    'http://img.provider.tv/covers/web_only.jpg',
+    'Fallback web deve retornar exatamente a URL resolvida original'
+  );
+
+  // Configurar harness de disco persistente simulado para os cenários Android
+  let customResponderFn:
+    | ((
+        url: string,
+        reqHeaders: { ifNoneMatch?: string; ifModifiedSince?: string }
+      ) => any)
+    | null = null;
+
+  const harness = createSimulatedPersistentImageDiskHarness({
+    initialMaxBytes: 120 * 1024 * 1024,
+    defaultByteSize: 2048,
+    customResponder: (url, reqHeaders) => {
+      if (customResponderFn) {
+        return customResponderFn(url, reqHeaders);
+      }
+      return {
+        status: 200,
+        contentType: 'image/jpeg',
+        bodyBytes: createValidTestJpegBytes(2048),
+      };
+    },
+  });
+
+  const doc = windowInstance.document;
+  const container = doc.createElement('div');
+  doc.body.appendChild(container);
+  let root = createRoot(container);
+
+  try {
+    harness.install();
+    setMediaImageRetryDelayMsForTest(25);
+    resetCatalogDiagnosticsForTest(true);
+    startCatalogDiagnosticsSession(7001, 2);
+
+    // -------------------------------------------------------------------------
+    // 7.5. Deduplicação de requisições simultâneas para a mesma URL
+    // -------------------------------------------------------------------------
+    const sharedUrl = 'http://img.provider.tv:8080/images/shared_cover_101.jpg';
+    customResponderFn = () => ({
+      status: 200,
+      contentType: 'image/jpeg',
+      bodyBytes: createValidTestJpegBytes(4096),
+      delayMs: 15,
+    });
+
+    const [dupRes1, dupRes2, dupRes3] = await Promise.all([
+      acquireCachedImage(sharedUrl, { priority: 'high' }),
+      acquireCachedImage(sharedUrl, { priority: 'high' }),
+      acquireCachedImage(sharedUrl, { priority: 'critical' }),
+    ]);
+
+    assert.strictEqual(
+      harness.getNetworkFetchCount(sharedUrl),
+      1,
+      'Requisições simultâneas para a mesma URL devem realizar apenas 1 download na rede'
+    );
+    assert.strictEqual(
+      dupRes1.src,
+      dupRes2.src,
+      'Todas as requisições deduplicadas devem receber o mesmo caminho local'
+    );
+    assert.strictEqual(
+      dupRes2.src,
+      dupRes3.src,
+      'Todas as requisições deduplicadas devem receber o mesmo caminho local'
+    );
+    assert(
+      dupRes1.src.includes('/_capacitor_file_/data/user/0/com.northcode.play/files/nc_image_cache/'),
+      'A URL retornada deve apontar para o diretório persistente nc_image_cache via Capacitor'
+    );
+    assert.strictEqual(
+      getImageCacheRuntimeStatsSnapshot().deduplicatedDownloadsCount,
+      2,
+      'O gerenciador deve contabilizar exatamente 2 downloads deduplicados'
+    );
+    customResponderFn = null;
+
+    // -------------------------------------------------------------------------
+    // 7.4. Reaproveitamento do cache persistente entre fechamento e reabertura do app
+    // -------------------------------------------------------------------------
+    const fetchesBeforeRestart = harness.getNetworkFetchCount(sharedUrl);
+    harness.simulateAppRestart();
+
+    // Hidratar e adquirir após reiniciar o app
+    const afterRestartRes = await acquireCachedImage(sharedUrl, { priority: 'high' });
+    assert.strictEqual(
+      afterRestartRes.fromCache,
+      true,
+      'Após fechar e reabrir o aplicativo, a imagem já persistida deve resultar em cache hit local'
+    );
+    assert.strictEqual(
+      harness.getNetworkFetchCount(sharedUrl),
+      fetchesBeforeRestart,
+      'Reabrir o aplicativo não deve baixar novamente da rede a imagem já persistida no disco'
+    );
+    assert.strictEqual(
+      getInstantCachedImageSrc(sharedUrl),
+      afterRestartRes.src,
+      'A consulta síncrona em memória deve retornar imediatamente o arquivo local hidratado'
+    );
+
+    // -------------------------------------------------------------------------
+    // 7.6. Rejeição de respostas inválidas sem corromper o cache persistente
+    // -------------------------------------------------------------------------
+    // 7.6a. HTTP 404 / 500 / 403
+    customResponderFn = (url) => {
+      if (url.includes('err404')) return { status: 404, contentType: 'text/plain' };
+      if (url.includes('err403')) return { status: 403, contentType: 'text/plain' };
+      if (url.includes('html_error')) {
+        return {
+          status: 200,
+          contentType: 'text/html; charset=utf-8',
+          bodyBytes: new TextEncoder().encode('<!DOCTYPE html><html><body>Erro</body></html>'),
+        };
+      }
+      if (url.includes('fake_image_json')) {
+        return {
+          status: 200,
+          contentType: 'image/jpeg',
+          bodyBytes: new TextEncoder().encode('{"error":"rate_limit_exceeded","status":false}'),
+        };
+      }
+      if (url.includes('truncated_body')) {
+        return {
+          status: 200,
+          contentType: 'image/jpeg',
+          declaredContentLength: 8192,
+          bodyBytes: createValidTestJpegBytes(1024),
+        };
+      }
+      if (url.includes('no_store_img')) {
+        return {
+          status: 200,
+          contentType: 'image/jpeg',
+          cacheControl: 'private, no-store, max-age=0',
+          bodyBytes: createValidTestJpegBytes(2048),
+        };
+      }
+      return {
+        status: 200,
+        contentType: 'image/jpeg',
+        bodyBytes: createValidTestJpegBytes(2048),
+      };
+    };
+
+    const invalidUrls = [
+      'http://img.provider.tv/err404.jpg',
+      'http://img.provider.tv/err403.jpg',
+      'http://img.provider.tv/html_error.jpg',
+      'http://img.provider.tv/fake_image_json.jpg',
+      'http://img.provider.tv/truncated_body.jpg',
+    ];
+
+    for (const badUrl of invalidUrls) {
+      let rejected = false;
+      try {
+        await acquireCachedImage(badUrl);
+      } catch {
+        rejected = true;
+      }
+      assert.strictEqual(
+        rejected,
+        true,
+        `A resposta inválida (${badUrl}) deve ser rejeitada pela camada de cache`
+      );
+      assert.strictEqual(
+        harness.hasPhysicalFileForUrl(badUrl),
+        false,
+        `A resposta inválida (${badUrl}) nunca deve ser persistida em disco`
+      );
+      assert.strictEqual(
+        getInstantCachedImageSrc(badUrl),
+        null,
+        `A resposta inválida (${badUrl}) nunca deve entrar no índice em memória`
+      );
+    }
+
+    // Cache-Control: no-store deve fazer bypass sem gravar em disco
+    const noStoreUrl = 'http://img.provider.tv/no_store_img.jpg';
+    const noStoreRes = await acquireCachedImage(noStoreUrl);
+    assert.strictEqual(
+      noStoreRes.bypassedNoStore,
+      true,
+      'Respostas com Cache-Control: no-store devem ser sinalizadas como bypass'
+    );
+    assert.strictEqual(
+      noStoreRes.isLocalFile,
+      false,
+      'Respostas com Cache-Control: no-store não devem gerar arquivo local persistido'
+    );
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(noStoreUrl),
+      false,
+      'Respostas com Cache-Control: no-store não devem deixar arquivo em nc_image_cache'
+    );
+    customResponderFn = null;
+
+    // -------------------------------------------------------------------------
+    // 7.7. Respeito ao limite de espaço e remoção LRU das entradas mais antigas
+    // -------------------------------------------------------------------------
+    await clearImageCacheOnLogout();
+    await configureImageCacheStorageBudget(6000); // Cabe no máximo 2 imagens de 2048 bytes (4096 <= 6000; 3ª = 6144 > 6000)
+
+    const lruUrl1 = 'http://img.provider.tv/lru_1.jpg';
+    const lruUrl2 = 'http://img.provider.tv/lru_2.jpg';
+    const lruUrl3 = 'http://img.provider.tv/lru_3.jpg';
+
+    await acquireCachedImage(lruUrl1);
+    await acquireCachedImage(lruUrl2);
+    // Acessar lruUrl1 novamente para torná-la mais recente que lruUrl2
+    await acquireCachedImage(lruUrl1);
+    // Adicionar lruUrl3 deve remover lruUrl2 (a menos recentemente utilizada)
+    await acquireCachedImage(lruUrl3);
+
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(lruUrl2),
+      false,
+      'A entrada menos recentemente utilizada (lru_2) deve ser removida do disco ao atingir o limite de bytes'
+    );
+    assert.strictEqual(
+      getInstantCachedImageSrc(lruUrl2),
+      null,
+      'A entrada removida por LRU (lru_2) deve sair do índice síncrono em memória'
+    );
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(lruUrl1),
+      true,
+      'A entrada acessada recentemente (lru_1) deve permanecer no cache'
+    );
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(lruUrl3),
+      true,
+      'A nova entrada (lru_3) deve estar armazenada no cache'
+    );
+    assert(
+      getImageCacheRuntimeStatsSnapshot().bytesStoredCurrently <= 6000,
+      'O total de bytes armazenados deve respeitar estritamente o orçamento configurado'
+    );
+    assert(
+      getImageCacheRuntimeStatsSnapshot().evictedEntriesCount >= 1,
+      'A métrica de entradas removidas por limite de espaço (LRU) deve ser incrementada'
+    );
+
+    // Restaurar orçamento padrão de 120 MB
+    await configureImageCacheStorageBudget(120 * 1024 * 1024);
+
+    // -------------------------------------------------------------------------
+    // 7.8. Recuperação automática sob demanda quando arquivo local estiver ausente ou corrompido
+    // -------------------------------------------------------------------------
+    const corruptibleUrl = 'http://img.provider.tv/corruptible_poster.jpg';
+    await acquireCachedImage(corruptibleUrl);
+    assert.strictEqual(
+      harness.getNetworkFetchCount(corruptibleUrl),
+      1,
+      'Deve baixar inicialmente 1 vez'
+    );
+
+    // Simular corrupção do arquivo físico local
+    harness.corruptPhysicalFileForUrl(corruptibleUrl);
+
+    await act(async () => {
+      root.render(
+        React.createElement(MediaImage, {
+          src: corruptibleUrl,
+          alt: 'Poster Corrompido',
+          itemId: '999',
+          active: true,
+        })
+      );
+      await new Promise((r) => setTimeout(r, 25));
+    });
+
+    assert.strictEqual(
+      harness.getNetworkFetchCount(corruptibleUrl),
+      2,
+      'MediaImage deve invalidar a entrada local corrompida e buscar novamente na rede sob demanda'
+    );
+    const renderedImgAfterRecovery = container.querySelector('img');
+    assert(
+      renderedImgAfterRecovery &&
+        renderedImgAfterRecovery.getAttribute('src')?.includes('/_capacitor_file_/'),
+      'Após recuperação corretiva, MediaImage deve renderizar o novo arquivo local íntegro'
+    );
+    assert(
+      getImageCacheRuntimeStatsSnapshot().corruptedLocalRecoveriesCount >= 1,
+      'A recuperação corretiva de arquivo local corrompido deve ser registrada nas métricas'
+    );
+
+    // -------------------------------------------------------------------------
+    // 7.2. Reaproveitamento de imagem após desmontagem e remontagem por virtualização horizontal
+    // -------------------------------------------------------------------------
+    const horizItems = Array.from({ length: 30 }, (_, idx) => ({
+      stream_id: 5000 + idx,
+      name: `Filme Horizontal ${idx}`,
+      stream_icon: `http://img.provider.tv/horiz/poster_${idx}.jpg`,
+    }));
+
+    // Pré-carregar os primeiros 12 cartões no cache persistente
+    for (let i = 0; i < 12; i++) {
+      await acquireCachedImage(horizItems[i].stream_icon);
+    }
+    const fetchCountCard0BeforeHoriz = harness.getNetworkFetchCount(horizItems[0].stream_icon);
+    assert.strictEqual(fetchCountCard0BeforeHoriz, 1, 'Cartão 0 foi baixado apenas 1 vez');
+
+    const mockCreds: XtreamCredentials = {
+      serverUrl: 'http://provider.tv:8080',
+      username: 'user1',
+      password: 'pw1',
+    };
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: mockCreds },
+          React.createElement(HorizontalRow, {
+            title: 'Fileira Virtualizada',
+            items: horizItems,
+            type: 'vod',
+            rowIndex: 0,
+            virtualize: true,
+            onItemClick: () => {},
+          })
+        )
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const rowTrackEl = container.querySelector('[data-nav-row="true"]') as any;
+    assert(rowTrackEl, 'Trilha horizontal deve estar montada');
+
+    // Deslocar horizontalmente para o final (desmontando o cartão 0)
+    await act(async () => {
+      rowTrackEl.scrollLeft = 3600;
+      rowTrackEl.dispatchEvent(new Event('scroll'));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      rowTrackEl.querySelector('[data-row-card-index="0"]'),
+      null,
+      'Cartão 0 deve ter sido desmontado pela virtualização horizontal ao rolar para a direita'
+    );
+
+    // Retornar ao início (remontando o cartão 0)
+    await act(async () => {
+      rowTrackEl.scrollLeft = 0;
+      rowTrackEl.dispatchEvent(new Event('scroll'));
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const remountedCard0 = rowTrackEl.querySelector('[data-row-card-index="0"]') as any;
+    assert(remountedCard0, 'Cartão 0 deve ser remontado ao voltar ao início da fileira');
+    assert.strictEqual(
+      harness.getNetworkFetchCount(horizItems[0].stream_icon),
+      fetchCountCard0BeforeHoriz,
+      'Remontar o cartão 0 na virtualização horizontal NÃO deve gerar novo download de rede'
+    );
+
+    // -------------------------------------------------------------------------
+    // 7.1 & 7.3. Reaproveitamento após desmontagem/remontagem vertical na Home (8 fileiras)
+    //            e ao alternar entre Início, Filmes e Séries
+    // -------------------------------------------------------------------------
+    const testVodCategories = Array.from({ length: 12 }, (_, idx) => ({
+      category_id: String(10 + idx),
+      category_name: `Categoria Filmes ${idx + 1}`,
+    }));
+    const testVodStreams = testVodCategories.flatMap((cat, catIdx) =>
+      Array.from({ length: 6 }, (_, itemIdx) => ({
+        stream_id: 10000 + catIdx * 100 + itemIdx,
+        name: `Filme Cat ${catIdx + 1} #${itemIdx + 1}`,
+        category_id: cat.category_id,
+        stream_icon: `http://img.provider.tv/vod/cat_${catIdx}_item_${itemIdx}.jpg`,
+        rating: '8.0',
+        year: '2025',
+      }))
+    );
+    const testSeriesCategories = [
+      { category_id: '201', category_name: 'Séries Drama' },
+    ];
+    const testSeriesStreams = Array.from({ length: 6 }, (_, idx) => ({
+      series_id: 20000 + idx,
+      name: `Série Drama #${idx + 1}`,
+      category_id: '201',
+      cover: `http://img.provider.tv/series/drama_${idx}.jpg`,
+      rating: '8.5',
+      year: '2025',
+    }));
+
+    // 7.9. Ordem de prioridade do pré-carregamento inicial e adaptação por largura da tela
+    recordVisitedShowcaseCategory('vod_cat_19'); // Categoria visitada anteriormente
+    const planMobile = buildHomeStartupImagePlan({
+      serverUrl: mockCreds.serverUrl,
+      allVodStreams: testVodStreams,
+      allSeriesStreams: testSeriesStreams,
+      vodCategories: testVodCategories,
+      seriesCategories: testSeriesCategories,
+      viewportWidth: 390,
+      viewportHeight: 844,
+      displayMode: 'default',
+      tvScale: 100,
+    });
+    const planFullHdTv = buildHomeStartupImagePlan({
+      serverUrl: mockCreds.serverUrl,
+      allVodStreams: testVodStreams,
+      allSeriesStreams: testSeriesStreams,
+      vodCategories: testVodCategories,
+      seriesCategories: testSeriesCategories,
+      viewportWidth: 1920,
+      viewportHeight: 1080,
+      displayMode: 'tv',
+      tvScale: 85,
+    });
+
+    assert(
+      planFullHdTv.posterCardsPerRow > planMobile.posterCardsPerRow,
+      `A quantidade de capas preparadas por fileira deve adaptar-se à largura real da tela (TV 1920px=${planFullHdTv.posterCardsPerRow} > Mobile 390px=${planMobile.posterCardsPerRow})`
+    );
+    assert(
+      planFullHdTv.tier1HeroUrls.length > 0 &&
+        planFullHdTv.tier2FirstRowsVisibleUrls.length > 0 &&
+        planFullHdTv.tier3NextRowsUrls.length > 0 &&
+        planFullHdTv.tier4VisitedCategoryUrls.length > 0,
+      'O plano de abertura deve preencher as 4 camadas de prioridade (HeroBanner, primeiras fileiras, fileiras seguintes e categorias visitadas)'
+    );
+    assert.strictEqual(
+      planFullHdTv.priorityUrls[0],
+      planFullHdTv.tier1HeroUrls[0],
+      'A 1ª prioridade obrigatória deve ser a imagem principal do HeroBanner'
+    );
+
+    const prepRes1 = await executeHomeStartupImagePreparation(planFullHdTv);
+    assert(
+      prepRes1.preparedCount >= planFullHdTv.priorityUrls.length,
+      'A preparação inicial deve armazenar todas as capas prioritárias no cache persistente'
+    );
+
+    // Executar novamente quando já estão em cache: 0ms de atraso artificial
+    const prepRes2 = await executeHomeStartupImagePreparation(planFullHdTv);
+    assert.strictEqual(
+      prepRes2.allAlreadyCached,
+      true,
+      'Quando as imagens prioritárias já estão no cache local, allAlreadyCached deve ser true'
+    );
+    assert.strictEqual(
+      prepRes2.durationMs,
+      0,
+      'Quando as imagens prioritárias já estão no cache local, não deve haver atraso artificial (0ms)'
+    );
+
+    // Pré-aquecer todas as capas de testVodStreams para testar navegação vertical entre as 12 fileiras
+    for (const m of testVodStreams) {
+      await acquireCachedImage(m.stream_icon);
+    }
+    for (const s of testSeriesStreams) {
+      await acquireCachedImage(s.cover);
+    }
+    const totalFetchesAfterWarmup = harness.getNetworkFetchCount();
+
+    // Montar CatalogShowcaseView na seção 'inicio' (que virtualiza verticalmente em janela de 8 fileiras)
+    await act(async () => {
+      root.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: mockCreds },
+          React.createElement(CatalogShowcaseView, {
+            section: 'inicio',
+            credentials: mockCreds,
+            onPlay: () => {},
+            vodCategories: testVodCategories,
+            vodStreams: testVodStreams,
+            allVodStreams: testVodStreams,
+            seriesCategories: testSeriesCategories,
+            seriesStreams: testSeriesStreams,
+            allSeriesStreams: testSeriesStreams,
+            sessionReady: true,
+          })
+        )
+      );
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const showcaseContainer = container.querySelector(
+      '[data-showcase-rows-container="true"]'
+    ) as any;
+    assert(showcaseContainer, 'Container de fileiras da Home deve estar montado');
+    assert.strictEqual(
+      showcaseContainer.getAttribute('data-showcase-virtualized'),
+      'true',
+      'A Home com mais de 11 fileiras deve ativar a virtualização vertical de 8 fileiras'
+    );
+
+    const mainScrollEl = container.querySelector('main[data-scroll-container="true"]') as any;
+    // Rolar até o fundo da Home (desmontando as fileiras iniciais 0..3 e montando as finais)
+    await act(async () => {
+      mainScrollEl.scrollTop = 3200;
+      mainScrollEl.dispatchEvent(new Event('scroll'));
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    assert(
+      showcaseContainer.querySelector('[data-showcase-unmounted-row="0"]') !== null,
+      'A fileira 0 deve estar desmontada após rolar para o final da Home'
+    );
+    assert(
+      getVisitedShowcaseCategories().length > 0,
+      'Rolar pelas categorias da Home deve registrar as categorias visitadas no armazenamento local'
+    );
+
+    // Rolar de volta ao topo da Home (remontando as fileiras iniciais 0..3)
+    await act(async () => {
+      mainScrollEl.scrollTop = 0;
+      mainScrollEl.dispatchEvent(new Event('scroll'));
+      await new Promise((r) => setTimeout(r, 25));
+    });
+    assert(
+      showcaseContainer.querySelector('[data-home-row-index="0"]') !== null,
+      'A fileira 0 deve ser remontada ao retornar ao topo da Home'
+    );
+    assert.strictEqual(
+      harness.getNetworkFetchCount(),
+      totalFetchesAfterWarmup,
+      'Retornar às categorias já visitadas na Home após desmontagem/remontagem vertical NÃO deve baixar imagens novamente da rede'
+    );
+
+    // 7.3. Alternar entre Início -> Filmes -> Séries -> Início sem novos downloads
+    await act(async () => {
+      root.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: mockCreds },
+          React.createElement(CatalogShowcaseView, {
+            section: 'movies',
+            credentials: mockCreds,
+            onPlay: () => {},
+            vodCategories: testVodCategories,
+            vodStreams: testVodStreams,
+            allVodStreams: testVodStreams,
+            sessionReady: true,
+          })
+        )
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    await act(async () => {
+      root.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: mockCreds },
+          React.createElement(CatalogShowcaseView, {
+            section: 'series',
+            credentials: mockCreds,
+            onPlay: () => {},
+            seriesCategories: testSeriesCategories,
+            seriesStreams: testSeriesStreams,
+            allSeriesStreams: testSeriesStreams,
+            sessionReady: true,
+          })
+        )
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    await act(async () => {
+      root.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: mockCreds },
+          React.createElement(CatalogShowcaseView, {
+            section: 'inicio',
+            credentials: mockCreds,
+            onPlay: () => {},
+            vodCategories: testVodCategories,
+            vodStreams: testVodStreams,
+            allVodStreams: testVodStreams,
+            seriesCategories: testSeriesCategories,
+            seriesStreams: testSeriesStreams,
+            allSeriesStreams: testSeriesStreams,
+            sessionReady: true,
+          })
+        )
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    assert.strictEqual(
+      harness.getNetworkFetchCount(),
+      totalFetchesAfterWarmup,
+      'Alternar entre Início, Filmes e Séries e retornar NÃO deve transferir novamente imagens já armazenadas no cache persistente'
+    );
+
+    // -------------------------------------------------------------------------
+    // 7.12. Diagnóstico sanitizado de imagens em catalogDiagnostics.ts
+    // -------------------------------------------------------------------------
+    // Simular eventos <img onLoad> em cartões montados para comprovar distinção entre eventos DOM e rede
+    const mountedImgs = container.querySelectorAll('img');
+    assert(mountedImgs.length > 0, 'Devem existir tags <img> montadas na vitrine');
+    await act(async () => {
+      (mountedImgs[0] as any).dispatchEvent(new Event('load'));
+      if (mountedImgs[1]) (mountedImgs[1] as any).dispatchEvent(new Event('load'));
+    });
+
+    const diagSnap = getCatalogDiagnosticsSnapshot();
+    assert(diagSnap, 'Snapshot de diagnóstico deve existir quando ativo');
+    assert(
+      diagSnap.imageCache.uniqueCatalogImageUrls > 0 &&
+        diagSnap.imageCache.uniqueHomeImageUrls > 0,
+      'Diagnóstico deve registrar total de URLs únicas no catálogo e nas fileiras da Home'
+    );
+    assert(
+      diagSnap.imageCache.persistentCacheHits > 0 &&
+        diagSnap.imageCache.cacheLayerDownloads > 0 &&
+        diagSnap.imageCache.bytesTransferredByCache > 0 &&
+        diagSnap.imageCache.bytesStoredCurrently > 0 &&
+        diagSnap.imageCache.imgElementLoadEventsCount >= 2 &&
+        diagSnap.imageCache.localRecoveryTimeMs !== null &&
+        diagSnap.imageCache.priorityCoversPreparationMs !== null,
+      'Diagnóstico deve registrar cache hits, downloads, bytes transferidos/armazenados, eventos <img> e tempos de recuperação/preparação'
+    );
+
+    const formattedReport = formatCatalogDiagnosticsReport(diagSnap);
+    assert(
+      formattedReport.includes('[Cache Persistente e Pré-Carregamento de Imagens]') &&
+        formattedReport.includes('Distinção explícita (renderização vs. rede): eventos <img onLoad>=') &&
+        !formattedReport.includes('pw1') &&
+        !formattedReport.includes('http://img.provider.tv'),
+      'Relatório formatado deve incluir a seção de imagens e manter sanitização completa sem expor credenciais nem URLs completas'
+    );
+
+    // -------------------------------------------------------------------------
+    // 7.10. Limpeza completa no logout e proteção contra gravação tardia de downloads em andamento
+    // -------------------------------------------------------------------------
+    const slowInFlightUrl = 'http://img.provider.tv/slow_before_logout.jpg';
+    customResponderFn = () => ({
+      status: 200,
+      contentType: 'image/jpeg',
+      bodyBytes: createValidTestJpegBytes(2048),
+      delayMs: 40,
+    });
+
+    const inFlightBeforeLogoutPromise = acquireCachedImage(slowInFlightUrl).catch((err) => err);
+    // Acionar logout enquanto o download ainda está em andamento
+    await clearImageCacheOnLogout();
+    const inFlightOutcome = await inFlightBeforeLogoutPromise;
+    await new Promise((r) => setTimeout(r, 50));
+
+    assert(
+      inFlightOutcome instanceof Error,
+      'Download em andamento iniciado antes do logout deve ser cancelado/rejeitado'
+    );
+    assert.strictEqual(
+      harness.getPhysicalFileCount(),
+      0,
+      'Após logout (mesmo com download em andamento antes do logout), nenhum arquivo deve permanecer ou ser gravado tardiamente no disco'
+    );
+    assert.strictEqual(
+      getImageCacheRuntimeStatsSnapshot().storedEntriesCount,
+      0,
+      'Após logout, o índice em memória deve ficar completamente vazio'
+    );
+    assert.strictEqual(
+      getImageCacheRuntimeStatsSnapshot().bytesStoredCurrently,
+      0,
+      'Após logout, bytesStoredCurrently deve ser zero'
+    );
+    assert.strictEqual(
+      getVisitedShowcaseCategories().length,
+      0,
+      'Após logout, o histórico local de categorias visitadas para pré-carregamento deve ser limpo'
+    );
+  } finally {
+    customResponderFn = null;
+    harness.uninstall();
+    setMediaImageRetryDelayMsForTest(2000);
+    resetCatalogDiagnosticsForTest(false);
+    clearAllBackHandlersForTest();
+    clearFocusMemory();
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  }
+
+  console.log(
+    '✅ Etapa 1 (cache persistente Android, deduplicação, validação HTTP/assinatura, LRU, recuperação de corrupção, preparação prioritária, logout e diagnóstico) validada!'
+  );
+}
+
 async function main(): Promise<void> {
-  console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — CICLO 12.30-d\n');
+  console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — NORTH CODE PLAY\n');
   runEssentialTrackAndSecurityTests();
   await runLiveTvFullscreenAndPreviewTransitionTests();
   await runWhitePaletteAndControlsIntegrationTests();
   await runCycle1230bSpatialNavOptimizationTests();
   await runCycle1230cVerticalNavOptimizationTests();
   await runCycle1230dLiveTvLatencyAndFullscreenTests();
+  await runStep1PersistentImageCacheAndPreloadTests();
   for (const timer of rafTimers.values()) {
     clearTimeout(timer);
   }
   rafTimers.clear();
-  console.log('\n🎉 TODOS OS TESTES DO CICLO 12.30-d FORAM EXECUTADOS COM SUCESSO!');
+  console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
   await windowInstance.close();
 }
 

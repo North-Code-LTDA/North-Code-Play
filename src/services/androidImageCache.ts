@@ -1,0 +1,1889 @@
+import { Capacitor, registerPlugin } from '@capacitor/core';
+import {
+  nowMonotonicMs,
+  recordCatalogImageCacheDiagnosticsUpdate,
+} from '../utils/catalogDiagnostics';
+import { buildDirectImageUrl, normalizeImageSource } from '../utils/mediaUtils';
+import { safeReadStorage, safeSetStorage } from '../utils/accountUtils';
+import { getOrCreateVodIndex, getOrCreateSeriesIndex, getHeroBannerItems } from '../utils/catalogIndex';
+import type { DisplayMode } from '../platform/tvEnvironment';
+
+export const IMAGE_DISK_CACHE_PLUGIN_NAME = 'ImageDiskCache';
+export const IMAGE_CACHE_SUBDIR_NAME = 'nc_image_cache';
+export const DEFAULT_IMAGE_CACHE_MAX_BYTES = 120 * 1024 * 1024; // 120 MB
+export const VISITED_CATEGORIES_STORAGE_KEY = 'nc_visited_image_categories_v1';
+export const MAX_VISITED_CATEGORIES_HISTORY = 16;
+
+const SAFE_IMAGE_FILE_NAME_REGEX =
+  /^img_[a-f0-9]{64}\.(?:jpg|png|webp|gif|bmp|ico|avif|svg|bin)$/;
+const DEDICATED_ANDROID_IMAGE_CACHE_DIR_REGEX =
+  /^\/data\/(?:user(?:_de)?\/\d+|data)\/com\.northcode\.play\/files\/nc_image_cache$/;
+const CAPACITOR_FILE_PATH_PREFIX = '/_capacitor_file_';
+
+export type ImagePreloadPriority = 'critical' | 'high' | 'normal' | 'low';
+
+export interface HydratedImageCacheEntry {
+  key: string;
+  fileName: string;
+  filePath: string;
+  byteSize: number;
+  contentType?: string;
+  lastAccessedAtMs?: number;
+}
+
+export interface HydratedImageCacheIndexResult {
+  cacheDir?: string;
+  maxBytes?: number;
+  totalBytes?: number;
+  evictedEntriesCount?: number;
+  corruptedRecoveriesCount?: number;
+  entries?: HydratedImageCacheEntry[];
+}
+
+export interface AcquireImageNativeOptions {
+  url: string;
+  forceRefresh?: boolean;
+  revalidate?: boolean;
+  connectTimeout?: number;
+  readTimeout?: number;
+}
+
+export interface AcquireImageNativeResult {
+  hit: boolean;
+  revalidated304?: boolean;
+  bypassedNoStore?: boolean;
+  deduplicated?: boolean;
+  key?: string;
+  fileName?: string | null;
+  filePath?: string | null;
+  cacheDir?: string | null;
+  byteSize?: number;
+  contentType?: string;
+  totalBytes?: number;
+  storedEntriesCount?: number;
+  evictedEntriesCount?: number;
+}
+
+export interface ImageDiskCacheNativePlugin {
+  getHydratedIndex(): Promise<HydratedImageCacheIndexResult>;
+  configureCache(options: { maxBytes: number }): Promise<{
+    maxBytes?: number;
+    totalBytes?: number;
+    storedEntriesCount?: number;
+    evictedEntriesCount?: number;
+  }>;
+  acquireImage(options: AcquireImageNativeOptions): Promise<AcquireImageNativeResult>;
+  invalidateImage(options: {
+    url?: string;
+    key?: string;
+    corruptedRecovery?: boolean;
+  }): Promise<{
+    removed?: boolean;
+    totalBytes?: number;
+    corruptedRecoveriesCount?: number;
+  }>;
+  clearAll(): Promise<{
+    cleared?: boolean;
+    epoch?: number;
+    totalBytes?: number;
+  }>;
+}
+
+export interface ImageCacheRuntimeStats {
+  uniqueCatalogImageUrls: number;
+  uniqueHomeImageUrls: number;
+  persistentCacheHits: number;
+  cacheLayerDownloads: number;
+  deduplicatedDownloadsCount: number;
+  downloadFailuresCount: number;
+  bytesTransferredByCache: number;
+  bytesStoredCurrently: number;
+  storedEntriesCount: number;
+  evictedEntriesCount: number;
+  corruptedLocalRecoveriesCount: number;
+  localRecoveryTimeMs: number | null;
+  priorityCoversPreparationMs: number | null;
+  configuredMaxBytes: number;
+}
+
+interface InMemoryResolvedEntry {
+  url: string;
+  key: string;
+  fileName: string;
+  filePath: string;
+  convertedSrc: string;
+  byteSize: number;
+  lastAccessedAtMs: number;
+}
+
+interface QueuedAcquireTask {
+  url: string;
+  priority: ImagePreloadPriority;
+  forceRefresh: boolean;
+  epochAtEnqueue: number;
+  resolvers: Array<{
+    resolve: (res: AcquireCachedImageOutcome) => void;
+    reject: (err: Error) => void;
+  }>;
+}
+
+export interface AcquireCachedImageOutcome {
+  src: string;
+  fromCache: boolean;
+  isLocalFile: boolean;
+  bypassedNoStore: boolean;
+  byteSize: number;
+}
+
+let registeredPlugin: ImageDiskCacheNativePlugin | null = null;
+let pluginOverrideForTest: ImageDiskCacheNativePlugin | null = null;
+let convertFileSrcOverrideForTest: ((filePath: string) => string) | null = null;
+let forceAndroidImageCacheEnabledForTest: boolean | null = null;
+
+// Estado em memória sincronizado com o disco
+const resolvedUrlToEntryMap = new Map<string, InMemoryResolvedEntry>();
+const shaKeyToUrlMap = new Map<string, string>();
+const inFlightTasksByUrl = new Map<string, QueuedAcquireTask>();
+const pendingQueue: QueuedAcquireTask[] = [];
+
+let activeWorkersCount = 0;
+let currentSessionEpoch = 1;
+let hydrationPromise: Promise<void> | null = null;
+let isHydrated = false;
+let isVideoPlaybackActive = false;
+let lastDpadActivityTimestampMs = 0;
+let dpadThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+
+const runtimeStats: ImageCacheRuntimeStats = {
+  uniqueCatalogImageUrls: 0,
+  uniqueHomeImageUrls: 0,
+  persistentCacheHits: 0,
+  cacheLayerDownloads: 0,
+  deduplicatedDownloadsCount: 0,
+  downloadFailuresCount: 0,
+  bytesTransferredByCache: 0,
+  bytesStoredCurrently: 0,
+  storedEntriesCount: 0,
+  evictedEntriesCount: 0,
+  corruptedLocalRecoveriesCount: 0,
+  localRecoveryTimeMs: null,
+  priorityCoversPreparationMs: null,
+  configuredMaxBytes: DEFAULT_IMAGE_CACHE_MAX_BYTES,
+};
+
+function syncStatsToCatalogDiagnostics(): void {
+  recordCatalogImageCacheDiagnosticsUpdate({
+    uniqueCatalogImageUrls: runtimeStats.uniqueCatalogImageUrls,
+    uniqueHomeImageUrls: runtimeStats.uniqueHomeImageUrls,
+    persistentCacheHits: runtimeStats.persistentCacheHits,
+    cacheLayerDownloads: runtimeStats.cacheLayerDownloads,
+    deduplicatedDownloads: runtimeStats.deduplicatedDownloadsCount,
+    downloadFailures: runtimeStats.downloadFailuresCount,
+    bytesTransferredByCache: runtimeStats.bytesTransferredByCache,
+    bytesStoredCurrently: runtimeStats.bytesStoredCurrently,
+    storedEntriesCount: runtimeStats.storedEntriesCount,
+    evictedEntriesCount: runtimeStats.evictedEntriesCount,
+    corruptedLocalRecoveriesCount: runtimeStats.corruptedLocalRecoveriesCount,
+    localRecoveryTimeMs: runtimeStats.localRecoveryTimeMs,
+    priorityCoversPreparationMs: runtimeStats.priorityCoversPreparationMs,
+  });
+}
+
+export function getImageCacheRuntimeStatsSnapshot(): ImageCacheRuntimeStats {
+  return { ...runtimeStats };
+}
+
+export function isAndroidPersistentImageCacheAvailable(): boolean {
+  if (forceAndroidImageCacheEnabledForTest !== null) {
+    return forceAndroidImageCacheEnabledForTest;
+  }
+  if (pluginOverrideForTest !== null) {
+    return true;
+  }
+  try {
+    return (
+      typeof Capacitor !== 'undefined' &&
+      typeof Capacitor.isNativePlatform === 'function' &&
+      Capacitor.isNativePlatform() &&
+      typeof Capacitor.getPlatform === 'function' &&
+      Capacitor.getPlatform() === 'android'
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function setAndroidImageCacheTestOverride(config: {
+  plugin?: ImageDiskCacheNativePlugin | null;
+  convertFileSrc?: ((filePath: string) => string) | null;
+  enabled?: boolean | null;
+}): void {
+  if (config.plugin !== undefined) {
+    pluginOverrideForTest = config.plugin;
+  }
+  if (config.convertFileSrc !== undefined) {
+    convertFileSrcOverrideForTest = config.convertFileSrc;
+  }
+  if (config.enabled !== undefined) {
+    forceAndroidImageCacheEnabledForTest = config.enabled;
+  }
+}
+
+function getNativeImageCachePlugin(): ImageDiskCacheNativePlugin {
+  if (pluginOverrideForTest) {
+    return pluginOverrideForTest;
+  }
+  if (!registeredPlugin) {
+    registeredPlugin = registerPlugin<ImageDiskCacheNativePlugin>(IMAGE_DISK_CACHE_PLUGIN_NAME);
+  }
+  return registeredPlugin;
+}
+
+function convertImageFilePathToWebViewUrl(filePath: string): string {
+  if (convertFileSrcOverrideForTest) {
+    return convertFileSrcOverrideForTest(filePath);
+  }
+  if (typeof Capacitor?.convertFileSrc === 'function') {
+    return Capacitor.convertFileSrc(filePath);
+  }
+  return `http://localhost${CAPACITOR_FILE_PATH_PREFIX}${filePath}`;
+}
+
+/**
+ * Valida que o arquivo local retornado pelo plugin pertence estritamente ao diretório
+ * persistente privado `<filesDir>/nc_image_cache/img_<sha256>.<ext>`.
+ */
+export function isValidPersistentImageFileReference(
+  fileName: unknown,
+  filePath: unknown
+): fileName is string {
+  if (typeof fileName !== 'string' || !SAFE_IMAGE_FILE_NAME_REGEX.test(fileName)) {
+    return false;
+  }
+  if (
+    typeof filePath !== 'string' ||
+    !filePath ||
+    filePath !== filePath.trim() ||
+    !filePath.startsWith('/') ||
+    filePath.startsWith('//') ||
+    filePath.includes('..') ||
+    filePath.includes('\\') ||
+    filePath.includes('?') ||
+    filePath.includes('#')
+  ) {
+    return false;
+  }
+  const slashIdx = filePath.lastIndexOf('/');
+  if (slashIdx <= 0) return false;
+  const parentDir = filePath.slice(0, slashIdx);
+  const finalSeg = filePath.slice(slashIdx + 1);
+  if (finalSeg !== fileName) return false;
+  return DEDICATED_ANDROID_IMAGE_CACHE_DIR_REGEX.test(parentDir);
+}
+
+/**
+ * Calcula o hash SHA-256 hex determinístico de 64 caracteres de uma URL em UTF-8
+ * (idêntico ao algoritmo MessageDigest("SHA-256") do plugin Java).
+ */
+export function computeDeterministicUrlSha256Hex(url: string): string {
+  const normalized = String(url || '').trim();
+  const K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+
+  const utf8Bytes: number[] = [];
+  for (let i = 0; i < normalized.length; i++) {
+    let code = normalized.charCodeAt(i);
+    if (code < 0x80) {
+      utf8Bytes.push(code);
+    } else if (code < 0x800) {
+      utf8Bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    } else if (code < 0xd800 || code >= 0xe000) {
+      utf8Bytes.push(
+        0xe0 | (code >> 12),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f)
+      );
+    } else {
+      i++;
+      code = 0x10000 + (((code & 0x3ff) << 10) | (normalized.charCodeAt(i) & 0x3ff));
+      utf8Bytes.push(
+        0xf0 | (code >> 18),
+        0x80 | ((code >> 12) & 0x3f),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f)
+      );
+    }
+  }
+
+  const bitLen = utf8Bytes.length * 8;
+  utf8Bytes.push(0x80);
+  while ((utf8Bytes.length % 64) !== 56) {
+    utf8Bytes.push(0);
+  }
+  const highBits = Math.floor(bitLen / 0x100000000);
+  const lowBits = bitLen >>> 0;
+  utf8Bytes.push(
+    (highBits >>> 24) & 0xff,
+    (highBits >>> 16) & 0xff,
+    (highBits >>> 8) & 0xff,
+    highBits & 0xff,
+    (lowBits >>> 24) & 0xff,
+    (lowBits >>> 16) & 0xff,
+    (lowBits >>> 8) & 0xff,
+    lowBits & 0xff
+  );
+
+  let h0 = 0x6a09e667;
+  let h1 = 0xbb67ae85;
+  let h2 = 0x3c6ef372;
+  let h3 = 0xa54ff53a;
+  let h4 = 0x510e527f;
+  let h5 = 0x9b05688c;
+  let h6 = 0x1f83d9ab;
+  let h7 = 0x5be0cd19;
+
+  const w = new Int32Array(64);
+  const rotr = (n: number, x: number) => (x >>> n) | (x << (32 - n));
+
+  for (let i = 0; i < utf8Bytes.length; i += 64) {
+    for (let t = 0; t < 16; t++) {
+      const idx = i + t * 4;
+      w[t] =
+        ((utf8Bytes[idx] << 24) |
+          (utf8Bytes[idx + 1] << 16) |
+          (utf8Bytes[idx + 2] << 8) |
+          utf8Bytes[idx + 3]) |
+        0;
+    }
+    for (let t = 16; t < 64; t++) {
+      const s0 = rotr(7, w[t - 15]) ^ rotr(18, w[t - 15]) ^ (w[t - 15] >>> 3);
+      const s1 = rotr(17, w[t - 2]) ^ rotr(19, w[t - 2]) ^ (w[t - 2] >>> 10);
+      w[t] = (w[t - 16] + s0 + w[t - 7] + s1) | 0;
+    }
+
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    let f = h5;
+    let g = h6;
+    let h = h7;
+
+    for (let t = 0; t < 64; t++) {
+      const S1 = rotr(6, e) ^ rotr(11, e) ^ rotr(25, e);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + K[t] + w[t]) | 0;
+      const S0 = rotr(2, a) ^ rotr(13, a) ^ rotr(22, a);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) | 0;
+
+      h = g;
+      g = f;
+      f = e;
+      e = (d + temp1) | 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) | 0;
+    }
+
+    h0 = (h0 + a) | 0;
+    h1 = (h1 + b) | 0;
+    h2 = (h2 + c) | 0;
+    h3 = (h3 + d) | 0;
+    h4 = (h4 + e) | 0;
+    h5 = (h5 + f) | 0;
+    h6 = (h6 + g) | 0;
+    h7 = (h7 + h) | 0;
+  }
+
+  const toHex = (n: number) => (n >>> 0).toString(16).padStart(8, '0');
+  return (
+    toHex(h0) +
+    toHex(h1) +
+    toHex(h2) +
+    toHex(h3) +
+    toHex(h4) +
+    toHex(h5) +
+    toHex(h6) +
+    toHex(h7)
+  );
+}
+
+/**
+ * Hidrata o mapa em memória a partir do índice persistente do plugin Android.
+ * Seguro para chamar múltiplas vezes; reconcilia entradas por hash SHA-256.
+ */
+const hydratedByShaKeyMap = new Map<string, InMemoryResolvedEntry>();
+
+export async function ensureAndroidImageCacheHydrated(): Promise<void> {
+  if (!isAndroidPersistentImageCacheAvailable()) {
+    return;
+  }
+  if (isHydrated) {
+    return;
+  }
+  if (hydrationPromise) {
+    return hydrationPromise;
+  }
+
+  const epochAtStart = currentSessionEpoch;
+  const startMono = nowMonotonicMs();
+
+  hydrationPromise = (async () => {
+    try {
+      const plugin = getNativeImageCachePlugin();
+      const res = await plugin.getHydratedIndex();
+      if (currentSessionEpoch !== epochAtStart) {
+        return;
+      }
+
+      const elapsedMs = Math.max(0, nowMonotonicMs() - startMono);
+      runtimeStats.localRecoveryTimeMs = elapsedMs;
+      if (typeof res?.maxBytes === 'number' && res.maxBytes > 0) {
+        runtimeStats.configuredMaxBytes = res.maxBytes;
+      }
+      if (typeof res?.totalBytes === 'number' && res.totalBytes >= 0) {
+        runtimeStats.bytesStoredCurrently = res.totalBytes;
+      }
+      if (typeof res?.evictedEntriesCount === 'number' && res.evictedEntriesCount >= 0) {
+        runtimeStats.evictedEntriesCount = res.evictedEntriesCount;
+      }
+      if (typeof res?.corruptedRecoveriesCount === 'number' && res.corruptedRecoveriesCount >= 0) {
+        runtimeStats.corruptedLocalRecoveriesCount = res.corruptedRecoveriesCount;
+      }
+
+      const entries = Array.isArray(res?.entries) ? res.entries : [];
+      for (const item of entries) {
+        if (
+          !item ||
+          typeof item.key !== 'string' ||
+          item.key.length !== 64 ||
+          !isValidPersistentImageFileReference(item.fileName, item.filePath)
+        ) {
+          continue;
+        }
+        const convertedSrc = convertImageFilePathToWebViewUrl(item.filePath);
+        const entryObj: InMemoryResolvedEntry = {
+          url: shaKeyToUrlMap.get(item.key) || '',
+          key: item.key,
+          fileName: item.fileName,
+          filePath: item.filePath,
+          convertedSrc,
+          byteSize: typeof item.byteSize === 'number' ? item.byteSize : 0,
+          lastAccessedAtMs:
+            typeof item.lastAccessedAtMs === 'number' ? item.lastAccessedAtMs : Date.now(),
+        };
+        hydratedByShaKeyMap.set(item.key, entryObj);
+        if (entryObj.url) {
+          resolvedUrlToEntryMap.set(entryObj.url, entryObj);
+        }
+      }
+
+      runtimeStats.storedEntriesCount = hydratedByShaKeyMap.size;
+      isHydrated = true;
+      syncStatsToCatalogDiagnostics();
+    } catch {
+      // Se falhar na hidratação inicial, opera sob demanda sem bloquear a UI
+      isHydrated = true;
+    } finally {
+      hydrationPromise = null;
+    }
+  })();
+
+  return hydrationPromise;
+}
+
+/**
+ * Consulta síncrona imediata para `MediaImage.tsx`:
+ * Se a imagem já estiver mapeada no cache persistente local, retorna a URL local convertida
+ * (`Capacitor.convertFileSrc`) imediatamente na montagem/remontagem do cartão, evitando
+ * qualquer piscar ou nova requisição de rede.
+ */
+export function getInstantCachedImageSrc(
+  resolvedRemoteUrl: string | null | undefined,
+  options?: { countHit?: boolean }
+): string | null {
+  if (!resolvedRemoteUrl || !isAndroidPersistentImageCacheAvailable()) {
+    return null;
+  }
+  const trimmed = resolvedRemoteUrl.trim();
+  if (!trimmed) return null;
+
+  const direct = resolvedUrlToEntryMap.get(trimmed);
+  if (direct) {
+    direct.lastAccessedAtMs = Date.now();
+    if (options?.countHit) {
+      runtimeStats.persistentCacheHits++;
+      syncStatsToCatalogDiagnostics();
+    }
+    return direct.convertedSrc;
+  }
+
+  const shaKey = computeDeterministicUrlSha256Hex(trimmed);
+  shaKeyToUrlMap.set(shaKey, trimmed);
+  const bySha = hydratedByShaKeyMap.get(shaKey);
+  if (bySha) {
+    bySha.url = trimmed;
+    bySha.lastAccessedAtMs = Date.now();
+    resolvedUrlToEntryMap.set(trimmed, bySha);
+    if (options?.countHit) {
+      runtimeStats.persistentCacheHits++;
+      syncStatsToCatalogDiagnostics();
+    }
+    return bySha.convertedSrc;
+  }
+
+  return null;
+}
+
+const PRIORITY_WEIGHT: Record<ImagePreloadPriority, number> = {
+  critical: 4,
+  high: 3,
+  normal: 2,
+  low: 1,
+};
+
+function getEffectiveMaxConcurrency(): number {
+  if (isVideoPlaybackActive) {
+    return 1;
+  }
+  const now = nowMonotonicMs();
+  if (now - lastDpadActivityTimestampMs < 220) {
+    // Durante rajadas rápidas de D-Pad, restringe o background para não disputar CPU/IO
+    return 2;
+  }
+  return 4;
+}
+
+export function notifyDpadNavigationActivityForImagePreload(): void {
+  lastDpadActivityTimestampMs = nowMonotonicMs();
+  if (dpadThrottleTimer !== null) {
+    clearTimeout(dpadThrottleTimer);
+  }
+  dpadThrottleTimer = setTimeout(() => {
+    dpadThrottleTimer = null;
+    pumpAcquireQueue();
+  }, 240);
+}
+
+export function setVideoPlaybackActiveForImagePreload(active: boolean): void {
+  const next = Boolean(active);
+  if (isVideoPlaybackActive !== next) {
+    isVideoPlaybackActive = next;
+    if (!next) {
+      pumpAcquireQueue();
+    }
+  }
+}
+
+function sortPendingQueue(): void {
+  pendingQueue.sort((a, b) => PRIORITY_WEIGHT[b.priority] - PRIORITY_WEIGHT[a.priority]);
+}
+
+function pumpAcquireQueue(): void {
+  if (!isAndroidPersistentImageCacheAvailable()) {
+    return;
+  }
+  const maxConc = getEffectiveMaxConcurrency();
+  while (activeWorkersCount < maxConc && pendingQueue.length > 0) {
+    // Durante navegação D-Pad intensa ou vídeo ativo, tarefas de prioridade 'low' aguardam
+    const now = nowMonotonicMs();
+    const isDpadBurst = now - lastDpadActivityTimestampMs < 220;
+    if ((isDpadBurst || isVideoPlaybackActive) && pendingQueue[0].priority === 'low') {
+      break;
+    }
+
+    const nextTask = pendingQueue.shift();
+    if (!nextTask) break;
+    activeWorkersCount++;
+    void executeQueuedAcquireTask(nextTask).finally(() => {
+      activeWorkersCount = Math.max(0, activeWorkersCount - 1);
+      pumpAcquireQueue();
+    });
+  }
+}
+
+async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> {
+  const { url, forceRefresh, epochAtEnqueue } = task;
+  try {
+    await ensureAndroidImageCacheHydrated();
+
+    if (currentSessionEpoch !== epochAtEnqueue) {
+      throw new Error('Sessão de imagens reiniciada (logout).');
+    }
+
+    if (!forceRefresh) {
+      const existingInstant = getInstantCachedImageSrc(url);
+      if (existingInstant) {
+        const entry = resolvedUrlToEntryMap.get(url);
+        runtimeStats.persistentCacheHits++;
+        syncStatsToCatalogDiagnostics();
+        const hitOutcome: AcquireCachedImageOutcome = {
+          src: existingInstant,
+          fromCache: true,
+          isLocalFile: true,
+          bypassedNoStore: false,
+          byteSize: entry?.byteSize ?? 0,
+        };
+        settleTaskResolvers(task, hitOutcome, null);
+        return;
+      }
+    }
+
+    const plugin = getNativeImageCachePlugin();
+    const nativeRes = await plugin.acquireImage({
+      url,
+      forceRefresh,
+      connectTimeout: 10000,
+      readTimeout: 15000,
+    });
+
+    if (currentSessionEpoch !== epochAtEnqueue) {
+      throw new Error('Sessão de imagens encerrada após transferência.');
+    }
+
+    if (typeof nativeRes?.totalBytes === 'number' && nativeRes.totalBytes >= 0) {
+      runtimeStats.bytesStoredCurrently = nativeRes.totalBytes;
+    }
+    if (typeof nativeRes?.storedEntriesCount === 'number' && nativeRes.storedEntriesCount >= 0) {
+      runtimeStats.storedEntriesCount = nativeRes.storedEntriesCount;
+    }
+    if (typeof nativeRes?.evictedEntriesCount === 'number' && nativeRes.evictedEntriesCount >= 0) {
+      runtimeStats.evictedEntriesCount = nativeRes.evictedEntriesCount;
+    }
+
+    // Caso o servidor tenha retornado Cache-Control: no-store, usa a URL remota sem persistir
+    if (nativeRes?.bypassedNoStore) {
+      syncStatsToCatalogDiagnostics();
+      settleTaskResolvers(
+        task,
+        {
+          src: url,
+          fromCache: false,
+          isLocalFile: false,
+          bypassedNoStore: true,
+          byteSize: 0,
+        },
+        null
+      );
+      return;
+    }
+
+    const fileName = nativeRes?.fileName ?? null;
+    const filePath = nativeRes?.filePath ?? null;
+    if (!isValidPersistentImageFileReference(fileName, filePath)) {
+      throw new Error('Referência de arquivo de imagem persistente inválida.');
+    }
+
+    const validFilePath = filePath as string;
+    const convertedSrc = convertImageFilePathToWebViewUrl(validFilePath);
+    const shaKey = nativeRes?.key || computeDeterministicUrlSha256Hex(url);
+    const byteSize = typeof nativeRes?.byteSize === 'number' ? nativeRes.byteSize : 0;
+
+    const entryObj: InMemoryResolvedEntry = {
+      url,
+      key: shaKey,
+      fileName,
+      filePath: validFilePath,
+      convertedSrc,
+      byteSize,
+      lastAccessedAtMs: Date.now(),
+    };
+
+    shaKeyToUrlMap.set(shaKey, url);
+    hydratedByShaKeyMap.set(shaKey, entryObj);
+    resolvedUrlToEntryMap.set(url, entryObj);
+
+    // Sincronizar o mapa em memória caso o plugin tenha removido entradas antigas por LRU
+    if (
+      typeof nativeRes?.storedEntriesCount === 'number' &&
+      hydratedByShaKeyMap.size > nativeRes.storedEntriesCount
+    ) {
+      await reconcileInMemoryEntriesWithNativeIndex(epochAtEnqueue);
+    }
+
+    if (nativeRes.hit) {
+      runtimeStats.persistentCacheHits++;
+    } else {
+      runtimeStats.cacheLayerDownloads++;
+      runtimeStats.bytesTransferredByCache += byteSize;
+    }
+    syncStatsToCatalogDiagnostics();
+
+    settleTaskResolvers(
+      task,
+      {
+        src: convertedSrc,
+        fromCache: Boolean(nativeRes.hit),
+        isLocalFile: true,
+        bypassedNoStore: false,
+        byteSize,
+      },
+      null
+    );
+  } catch (err: any) {
+    if (currentSessionEpoch === epochAtEnqueue) {
+      runtimeStats.downloadFailuresCount++;
+      syncStatsToCatalogDiagnostics();
+    }
+    const errorObj = err instanceof Error ? err : new Error(String(err || 'Falha no cache de imagem'));
+    settleTaskResolvers(task, null, errorObj);
+  }
+}
+
+async function reconcileInMemoryEntriesWithNativeIndex(expectedEpoch: number): Promise<void> {
+  try {
+    const plugin = getNativeImageCachePlugin();
+    const snap = await plugin.getHydratedIndex();
+    if (currentSessionEpoch !== expectedEpoch) return;
+    const validKeys = new Set<string>();
+    const entries = Array.isArray(snap?.entries) ? snap.entries : [];
+    for (const e of entries) {
+      if (e && typeof e.key === 'string') {
+        validKeys.add(e.key);
+      }
+    }
+    for (const [k, entry] of Array.from(hydratedByShaKeyMap.entries())) {
+      if (!validKeys.has(k)) {
+        hydratedByShaKeyMap.delete(k);
+        if (entry.url) {
+          resolvedUrlToEntryMap.delete(entry.url);
+        }
+      }
+    }
+    if (typeof snap?.totalBytes === 'number') {
+      runtimeStats.bytesStoredCurrently = snap.totalBytes;
+    }
+    runtimeStats.storedEntriesCount = hydratedByShaKeyMap.size;
+  } catch {
+    // Ignora falha de reconciliação secundária
+  }
+}
+
+function settleTaskResolvers(
+  task: QueuedAcquireTask,
+  outcome: AcquireCachedImageOutcome | null,
+  error: Error | null
+): void {
+  inFlightTasksByUrl.delete(task.url);
+  for (const r of task.resolvers) {
+    if (outcome) {
+      r.resolve(outcome);
+    } else {
+      r.reject(error || new Error('Falha ao adquirir imagem.'));
+    }
+  }
+}
+
+/**
+ * Adquire uma imagem do cache persistente (ou baixa e persiste sob demanda com deduplicação).
+ * No navegador Web (fora do APK Android), retorna diretamente a URL remota resolvida.
+ */
+export async function acquireCachedImage(
+  resolvedRemoteUrl: string,
+  options?: {
+    priority?: ImagePreloadPriority;
+    forceRefresh?: boolean;
+  }
+): Promise<AcquireCachedImageOutcome> {
+  const trimmed = String(resolvedRemoteUrl || '').trim();
+  if (!trimmed) {
+    throw new Error('URL de imagem vazia.');
+  }
+
+  if (!isAndroidPersistentImageCacheAvailable()) {
+    return {
+      src: trimmed,
+      fromCache: false,
+      isLocalFile: false,
+      bypassedNoStore: false,
+      byteSize: 0,
+    };
+  }
+
+  const priority: ImagePreloadPriority = options?.priority ?? 'normal';
+  const forceRefresh = Boolean(options?.forceRefresh);
+
+  if (!forceRefresh) {
+    const instantSrc = getInstantCachedImageSrc(trimmed);
+    if (instantSrc) {
+      const entry = resolvedUrlToEntryMap.get(trimmed);
+      runtimeStats.persistentCacheHits++;
+      syncStatsToCatalogDiagnostics();
+      return {
+        src: instantSrc,
+        fromCache: true,
+        isLocalFile: true,
+        bypassedNoStore: false,
+        byteSize: entry?.byteSize ?? 0,
+      };
+    }
+  }
+
+  const existingTask = inFlightTasksByUrl.get(trimmed);
+  if (existingTask && existingTask.epochAtEnqueue === currentSessionEpoch) {
+    runtimeStats.deduplicatedDownloadsCount++;
+    if (PRIORITY_WEIGHT[priority] > PRIORITY_WEIGHT[existingTask.priority]) {
+      existingTask.priority = priority;
+      sortPendingQueue();
+    }
+    syncStatsToCatalogDiagnostics();
+    return new Promise<AcquireCachedImageOutcome>((resolve, reject) => {
+      existingTask.resolvers.push({ resolve, reject });
+    });
+  }
+
+  return new Promise<AcquireCachedImageOutcome>((resolve, reject) => {
+    const newTask: QueuedAcquireTask = {
+      url: trimmed,
+      priority,
+      forceRefresh,
+      epochAtEnqueue: currentSessionEpoch,
+      resolvers: [{ resolve, reject }],
+    };
+    inFlightTasksByUrl.set(trimmed, newTask);
+    pendingQueue.push(newTask);
+    sortPendingQueue();
+    pumpAcquireQueue();
+  });
+}
+
+/**
+ * Quando um arquivo local falha ao decodificar/renderizar no `<img>` (arquivo truncado,
+ * removido externamente ou corrompido), invalida imediatamente a entrada no índice em memória
+ * e no disco nativo e baixa novamente da URL original do provedor sob demanda.
+ */
+export async function recoverFromCorruptedLocalImage(
+  resolvedRemoteUrl: string
+): Promise<AcquireCachedImageOutcome> {
+  const trimmed = String(resolvedRemoteUrl || '').trim();
+  if (!trimmed || !isAndroidPersistentImageCacheAvailable()) {
+    return {
+      src: trimmed,
+      fromCache: false,
+      isLocalFile: false,
+      bypassedNoStore: false,
+      byteSize: 0,
+    };
+  }
+
+  const shaKey = computeDeterministicUrlSha256Hex(trimmed);
+  resolvedUrlToEntryMap.delete(trimmed);
+  hydratedByShaKeyMap.delete(shaKey);
+
+  try {
+    const plugin = getNativeImageCachePlugin();
+    const invRes = await plugin.invalidateImage({
+      url: trimmed,
+      key: shaKey,
+      corruptedRecovery: true,
+    });
+    runtimeStats.corruptedLocalRecoveriesCount =
+      typeof invRes?.corruptedRecoveriesCount === 'number'
+        ? invRes.corruptedRecoveriesCount
+        : runtimeStats.corruptedLocalRecoveriesCount + 1;
+    if (typeof invRes?.totalBytes === 'number') {
+      runtimeStats.bytesStoredCurrently = invRes.totalBytes;
+    }
+    runtimeStats.storedEntriesCount = hydratedByShaKeyMap.size;
+    syncStatsToCatalogDiagnostics();
+  } catch {
+    runtimeStats.corruptedLocalRecoveriesCount++;
+    syncStatsToCatalogDiagnostics();
+  }
+
+  return acquireCachedImage(trimmed, {
+    priority: 'critical',
+    forceRefresh: true,
+  });
+}
+
+/**
+ * Configura o limite máximo em bytes do cache persistente (padrão 120 MB) e aplica LRU imediatamente.
+ */
+export async function configureImageCacheStorageBudget(maxBytes: number): Promise<void> {
+  const clamped = Math.max(1024, Math.floor(maxBytes));
+  runtimeStats.configuredMaxBytes = clamped;
+  if (!isAndroidPersistentImageCacheAvailable()) {
+    return;
+  }
+  const epochNow = currentSessionEpoch;
+  try {
+    const plugin = getNativeImageCachePlugin();
+    const res = await plugin.configureCache({ maxBytes: clamped });
+    if (typeof res?.evictedEntriesCount === 'number') {
+      runtimeStats.evictedEntriesCount = res.evictedEntriesCount;
+    }
+    await reconcileInMemoryEntriesWithNativeIndex(epochNow);
+    syncStatsToCatalogDiagnostics();
+  } catch {
+    // Ignora erro de configuração
+  }
+}
+
+/**
+ * Limpa integralmente o cache de imagens (memória, fila de pré-carregamento, downloads em andamento,
+ * categorias visitadas e diretório persistente no disco) durante o logout.
+ */
+export async function clearImageCacheOnLogout(): Promise<void> {
+  currentSessionEpoch++;
+  resolvedUrlToEntryMap.clear();
+  hydratedByShaKeyMap.clear();
+  shaKeyToUrlMap.clear();
+  isHydrated = false;
+  hydrationPromise = null;
+
+  // Cancelar todas as tarefas pendentes na fila e em andamento
+  const tasksToCancel = [
+    ...pendingQueue.splice(0, pendingQueue.length),
+    ...Array.from(inFlightTasksByUrl.values()),
+  ];
+  inFlightTasksByUrl.clear();
+  for (const t of tasksToCancel) {
+    for (const r of t.resolvers) {
+      r.reject(new Error('Cache de imagens limpo no logout.'));
+    }
+  }
+
+  runtimeStats.bytesStoredCurrently = 0;
+  runtimeStats.storedEntriesCount = 0;
+  clearVisitedShowcaseCategories();
+
+  if (isAndroidPersistentImageCacheAvailable()) {
+    try {
+      const plugin = getNativeImageCachePlugin();
+      await plugin.clearAll();
+    } catch {
+      // Ignora erro de limpeza nativa
+    }
+  }
+  syncStatsToCatalogDiagnostics();
+}
+
+// ============================================================================
+// Histórico leve de categorias visitadas para pré-carregamento inteligente
+// ============================================================================
+
+export function recordVisitedShowcaseCategory(categoryKey: string): void {
+  const clean = String(categoryKey || '').trim();
+  if (!clean) return;
+  const current = getVisitedShowcaseCategories();
+  const filtered = current.filter((k) => k !== clean);
+  filtered.unshift(clean);
+  if (filtered.length > MAX_VISITED_CATEGORIES_HISTORY) {
+    filtered.length = MAX_VISITED_CATEGORIES_HISTORY;
+  }
+  safeSetStorage(VISITED_CATEGORIES_STORAGE_KEY, JSON.stringify(filtered));
+}
+
+export function getVisitedShowcaseCategories(): string[] {
+  const res = safeReadStorage(VISITED_CATEGORIES_STORAGE_KEY);
+  if (!res.success || !res.value) return [];
+  try {
+    const parsed = JSON.parse(res.value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function clearVisitedShowcaseCategories(): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(VISITED_CATEGORIES_STORAGE_KEY);
+      return;
+    }
+  } catch {
+    // Fallback to safeSetStorage
+  }
+  safeSetStorage(VISITED_CATEGORIES_STORAGE_KEY, '[]');
+}
+
+// ============================================================================
+// Cálculo adaptativo e preparação inicial de capas prioritárias na abertura
+// ============================================================================
+
+export interface AdaptiveInitialImageBudget {
+  posterCardsPerRow: number;
+  landscapeCardsPerRow: number;
+  visibleRowsCount: number;
+  nextRowsCount: number;
+}
+
+/**
+ * Calcula quantos cartões cabem horizontalmente na viewport atual do dispositivo
+ * (Android TV 1080p/4K, TV Box 720p, tablet ou celular), somando 2 cartões de margem
+ * para rolagem horizontal imediata.
+ */
+export function computeAdaptiveInitialCardsPerRow(params?: {
+  viewportWidth?: number;
+  viewportHeight?: number;
+  displayMode?: DisplayMode;
+  tvScale?: number;
+}): AdaptiveInitialImageBudget {
+  const width =
+    typeof params?.viewportWidth === 'number' && params.viewportWidth > 0
+      ? params.viewportWidth
+      : typeof window !== 'undefined' && window.innerWidth > 0
+        ? window.innerWidth
+        : 1280;
+
+  const isTv = params?.displayMode === 'tv';
+  const scaleFactor =
+    isTv && typeof params?.tvScale === 'number' && params.tvScale > 0
+      ? params.tvScale / 100
+      : 1;
+
+  // Largura aproximada de cada cartão poster (md:w-[190px] + gap 16px) e landscape (md:w-[270px] + gap 16px)
+  const basePosterWidthPx = width >= 768 ? 206 : 148;
+  const baseLandscapeWidthPx = width >= 768 ? 286 : 212;
+
+  const effectivePosterWidth = Math.max(100, Math.round(basePosterWidthPx * scaleFactor));
+  const effectiveLandscapeWidth = Math.max(140, Math.round(baseLandscapeWidthPx * scaleFactor));
+
+  const visiblePosters = Math.max(3, Math.ceil(width / effectivePosterWidth));
+  const visibleLandscapes = Math.max(2, Math.ceil(width / effectiveLandscapeWidth));
+
+  return {
+    posterCardsPerRow: Math.min(14, visiblePosters + 2),
+    landscapeCardsPerRow: Math.min(10, visibleLandscapes + 2),
+    visibleRowsCount: 3,
+    nextRowsCount: 2,
+  };
+}
+
+function extractRawCoverFromItem(item: any): unknown {
+  if (!item || typeof item !== 'object') return null;
+  const normalized = normalizeImageSource(item);
+  if (normalized) return normalized;
+  return (
+    item.stream_icon ||
+    item.cover ||
+    item.cover_big ||
+    item.movie_image ||
+    item.backdrop_path ||
+    null
+  );
+}
+
+export interface HomeStartupImagePlan {
+  /** 1. Imagem principal do HeroBanner */
+  tier1HeroUrls: string[];
+  /** 2. Capas visíveis das primeiras fileiras da Home */
+  tier2FirstRowsVisibleUrls: string[];
+  /** 3. Capas das próximas fileiras imediatas da Home */
+  tier3NextRowsUrls: string[];
+  /** 4. Capas das categorias seguintes / visitadas recentemente */
+  tier4VisitedCategoryUrls: string[];
+  /** Lista unificada deduplicada das camadas prioritárias (1 + 2 + 3) para o carregamento inicial */
+  priorityUrls: string[];
+  /** Total de URLs únicas de imagem no catálogo inteiro */
+  uniqueCatalogImageUrlsCount: number;
+  /** Total de URLs únicas de imagem nas fileiras montadas da Home */
+  uniqueHomeImageUrlsCount: number;
+  posterCardsPerRow: number;
+}
+
+/**
+ * Constrói o plano ordenado de imagens da Home (idêntico à seleção de fileiras do CatalogShowcaseView)
+ * e contabiliza as métricas de URLs únicas do catálogo e da Home.
+ */
+export function buildHomeStartupImagePlan(params: {
+  serverUrl?: string | null;
+  allLiveStreams?: any[];
+  allVodStreams?: any[];
+  allSeriesStreams?: any[];
+  vodCategories?: any[];
+  seriesCategories?: any[];
+  viewportWidth?: number;
+  viewportHeight?: number;
+  displayMode?: DisplayMode;
+  tvScale?: number;
+}): HomeStartupImagePlan {
+  const {
+    serverUrl,
+    allLiveStreams = [],
+    allVodStreams = [],
+    allSeriesStreams = [],
+    vodCategories = [],
+    seriesCategories = [],
+  } = params;
+
+  const budget = computeAdaptiveInitialCardsPerRow({
+    viewportWidth: params.viewportWidth,
+    viewportHeight: params.viewportHeight,
+    displayMode: params.displayMode,
+    tvScale: params.tvScale,
+  });
+
+  // Contabilizar URLs únicas em todo o catálogo
+  const allCatalogUrlsSet = new Set<string>();
+  const addItemUrlToSet = (item: any, targetSet: Set<string>) => {
+    const raw = extractRawCoverFromItem(item);
+    const resolved = buildDirectImageUrl(raw, serverUrl);
+    if (resolved) {
+      targetSet.add(resolved);
+    }
+  };
+
+  for (const ch of allLiveStreams) addItemUrlToSet(ch, allCatalogUrlsSet);
+  for (const m of allVodStreams) addItemUrlToSet(m, allCatalogUrlsSet);
+  for (const s of allSeriesStreams) addItemUrlToSet(s, allCatalogUrlsSet);
+
+  const vodIndex = getOrCreateVodIndex(allVodStreams);
+  const seriesIndex = getOrCreateSeriesIndex(allSeriesStreams);
+  const heroItems = getHeroBannerItems(allVodStreams, allSeriesStreams);
+
+  const tier1HeroUrls: string[] = [];
+  const tier2FirstRowsVisibleUrls: string[] = [];
+  const tier3NextRowsUrls: string[] = [];
+  const tier4VisitedCategoryUrls: string[] = [];
+  const homeRowsUrlsSet = new Set<string>();
+  const seenPriority = new Set<string>();
+
+  const pushUnique = (url: string | null, bucket: string[]) => {
+    if (!url) return;
+    homeRowsUrlsSet.add(url);
+    if (!seenPriority.has(url)) {
+      seenPriority.add(url);
+      bucket.push(url);
+    }
+  };
+
+  // Camada 1: Imagem principal do HeroBanner (e segundo slide imediato)
+  for (let i = 0; i < Math.min(2, heroItems.length); i++) {
+    const item = heroItems[i];
+    const backdropRaw =
+      (Array.isArray(item?.backdrop_path) ? item.backdrop_path[0] : item?.backdrop_path) ||
+      item?.cover_big ||
+      extractRawCoverFromItem(item);
+    const backdropUrl = buildDirectImageUrl(backdropRaw, serverUrl);
+    pushUnique(backdropUrl, tier1HeroUrls);
+  }
+
+  // Reconstruir a sequência de fileiras da Home (mesma ordem do CatalogShowcaseView)
+  const homeRows: Array<{ key: string; items: any[] }> = [];
+  if (allLiveStreams.length > 0) {
+    homeRows.push({ key: 'live_highlights', items: allLiveStreams.slice(0, 30) });
+  }
+  const featuredMovies = vodIndex.getSortedAll().slice(0, 30);
+  if (featuredMovies.length > 0) {
+    homeRows.push({ key: 'featured_movies', items: featuredMovies });
+  }
+  const featuredSeries = seriesIndex.getSortedAll().slice(0, 30);
+  if (featuredSeries.length > 0) {
+    homeRows.push({ key: 'series_recent', items: featuredSeries });
+  }
+
+  const nonEmptyVodCats = (Array.isArray(vodCategories) ? vodCategories : []).filter(
+    (c) => c && vodIndex.getByCategory(c.category_id).length > 0
+  );
+  const nonEmptySeriesCats = (Array.isArray(seriesCategories) ? seriesCategories : []).filter(
+    (c) => c && seriesIndex.getByCategory(c.category_id).length > 0
+  );
+  const maxCatLen = Math.max(nonEmptyVodCats.length, nonEmptySeriesCats.length);
+  for (let i = 0; i < maxCatLen; i++) {
+    if (i < nonEmptyVodCats.length) {
+      const cat = nonEmptyVodCats[i];
+      homeRows.push({
+        key: `vod_cat_${cat.category_id}`,
+        items: vodIndex.getByCategory(cat.category_id).slice(0, 30),
+      });
+    }
+    if (i < nonEmptySeriesCats.length) {
+      const cat = nonEmptySeriesCats[i];
+      homeRows.push({
+        key: `series_cat_${cat.category_id}`,
+        items: seriesIndex.getByCategory(cat.category_id).slice(0, 30),
+      });
+    }
+  }
+
+  for (const row of homeRows) {
+    for (const item of row.items) {
+      addItemUrlToSet(item, homeRowsUrlsSet);
+    }
+  }
+
+  // Camada 2: Capas visíveis das primeiras fileiras da Home
+  const firstRowsLimit = Math.min(budget.visibleRowsCount, homeRows.length);
+  for (let r = 0; r < firstRowsLimit; r++) {
+    const rowItems = homeRows[r].items;
+    const cardsLimit = Math.min(budget.posterCardsPerRow, rowItems.length);
+    for (let c = 0; c < cardsLimit; c++) {
+      const resolved = buildDirectImageUrl(extractRawCoverFromItem(rowItems[c]), serverUrl);
+      pushUnique(resolved, tier2FirstRowsVisibleUrls);
+    }
+  }
+
+  // Camada 3: Capas das próximas fileiras imediatas da Home
+  const nextRowsEnd = Math.min(firstRowsLimit + budget.nextRowsCount, homeRows.length);
+  for (let r = firstRowsLimit; r < nextRowsEnd; r++) {
+    const rowItems = homeRows[r].items;
+    const cardsLimit = Math.min(budget.posterCardsPerRow, rowItems.length);
+    for (let c = 0; c < cardsLimit; c++) {
+      const resolved = buildDirectImageUrl(extractRawCoverFromItem(rowItems[c]), serverUrl);
+      pushUnique(resolved, tier3NextRowsUrls);
+    }
+  }
+
+  // Camada 4: Categorias visitadas recentemente pelo usuário + fileiras seguintes em segundo plano
+  const visitedKeys = new Set(getVisitedShowcaseCategories());
+  for (let r = nextRowsEnd; r < homeRows.length; r++) {
+    const row = homeRows[r];
+    if (visitedKeys.has(row.key)) {
+      const cardsLimit = Math.min(budget.posterCardsPerRow, row.items.length);
+      for (let c = 0; c < cardsLimit; c++) {
+        const resolved = buildDirectImageUrl(extractRawCoverFromItem(row.items[c]), serverUrl);
+        pushUnique(resolved, tier4VisitedCategoryUrls);
+      }
+    }
+  }
+  // Complementar camada 4 com as próximas 3 fileiras além da janela imediata
+  for (let r = nextRowsEnd; r < Math.min(nextRowsEnd + 3, homeRows.length); r++) {
+    const row = homeRows[r];
+    const cardsLimit = Math.min(budget.posterCardsPerRow, row.items.length);
+    for (let c = 0; c < cardsLimit; c++) {
+      const resolved = buildDirectImageUrl(extractRawCoverFromItem(row.items[c]), serverUrl);
+      pushUnique(resolved, tier4VisitedCategoryUrls);
+    }
+  }
+
+  runtimeStats.uniqueCatalogImageUrls = allCatalogUrlsSet.size;
+  runtimeStats.uniqueHomeImageUrls = homeRowsUrlsSet.size;
+  syncStatsToCatalogDiagnostics();
+
+  const priorityUrls = [
+    ...tier1HeroUrls,
+    ...tier2FirstRowsVisibleUrls,
+    ...tier3NextRowsUrls,
+  ];
+
+  return {
+    tier1HeroUrls,
+    tier2FirstRowsVisibleUrls,
+    tier3NextRowsUrls,
+    tier4VisitedCategoryUrls,
+    priorityUrls,
+    uniqueCatalogImageUrlsCount: allCatalogUrlsSet.size,
+    uniqueHomeImageUrlsCount: homeRowsUrlsSet.size,
+    posterCardsPerRow: budget.posterCardsPerRow,
+  };
+}
+
+export interface StartupImagePreparationResult {
+  allAlreadyCached: boolean;
+  preparedCount: number;
+  totalTargetCount: number;
+  durationMs: number;
+}
+
+/**
+ * Executa a preparação das capas prioritárias da abertura em ordem estrita de prioridade:
+ * 1. HeroBanner ('critical')
+ * 2. Primeiras fileiras visíveis ('high')
+ * 3. Próximas fileiras imediatas ('normal')
+ * E agenda a Camada 4 ('low') em segundo plano sem bloquear a liberação da Home.
+ * Se todas as imagens prioritárias já estiverem no cache local, conclui imediatamente sem atraso artificial.
+ */
+export async function executeHomeStartupImagePreparation(
+  plan: HomeStartupImagePlan,
+  options?: {
+    signal?: AbortSignal;
+    maxWaitMs?: number;
+    onProgress?: (preparedCount: number, totalCount: number) => void;
+  }
+): Promise<StartupImagePreparationResult> {
+  const totalTargetCount = plan.priorityUrls.length;
+  if (totalTargetCount === 0 || !isAndroidPersistentImageCacheAvailable()) {
+    runtimeStats.priorityCoversPreparationMs = 0;
+    syncStatsToCatalogDiagnostics();
+    return {
+      allAlreadyCached: true,
+      preparedCount: totalTargetCount,
+      totalTargetCount,
+      durationMs: 0,
+    };
+  }
+
+  const startMono = nowMonotonicMs();
+  await ensureAndroidImageCacheHydrated();
+
+  // Verificar se todas as URLs prioritárias já estão disponíveis sincronicamente no cache local
+  let alreadyCachedCount = 0;
+  for (const url of plan.priorityUrls) {
+    if (getInstantCachedImageSrc(url, { countHit: true })) {
+      alreadyCachedCount++;
+    }
+  }
+
+  if (alreadyCachedCount === totalTargetCount) {
+    // Sem atraso artificial quando já estão em cache!
+    runtimeStats.priorityCoversPreparationMs = 0;
+    syncStatsToCatalogDiagnostics();
+    options?.onProgress?.(totalTargetCount, totalTargetCount);
+    // Disparar pré-carregamento oportunista da Camada 4 em segundo plano
+    scheduleBackgroundLowPriorityPreload(plan.tier4VisitedCategoryUrls);
+    return {
+      allAlreadyCached: true,
+      preparedCount: totalTargetCount,
+      totalTargetCount,
+      durationMs: 0,
+    };
+  }
+
+  let preparedCount = 0;
+  const maxWaitMs = options?.maxWaitMs ?? 4500;
+
+  const enqueueTier = (urls: string[], priority: ImagePreloadPriority) =>
+    urls.map((url) =>
+      acquireCachedImage(url, { priority })
+        .then(() => {
+          preparedCount++;
+          options?.onProgress?.(preparedCount, totalTargetCount);
+        })
+        .catch(() => {
+          preparedCount++;
+          options?.onProgress?.(preparedCount, totalTargetCount);
+        })
+    );
+
+  const allPromises = [
+    ...enqueueTier(plan.tier1HeroUrls, 'critical'),
+    ...enqueueTier(plan.tier2FirstRowsVisibleUrls, 'high'),
+    ...enqueueTier(plan.tier3NextRowsUrls, 'normal'),
+  ];
+
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<void>((resolve) => {
+    timeoutId = setTimeout(resolve, maxWaitMs);
+  });
+
+  const abortPromise = new Promise<void>((resolve) => {
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        resolve();
+      } else {
+        options.signal.addEventListener('abort', () => resolve(), { once: true });
+      }
+    }
+  });
+
+  await Promise.race([
+    Promise.all(allPromises).then(() => {}),
+    timeoutPromise,
+    abortPromise,
+  ]);
+
+  if (timeoutId !== null) {
+    clearTimeout(timeoutId);
+  }
+
+  const durationMs = Math.max(0, nowMonotonicMs() - startMono);
+  runtimeStats.priorityCoversPreparationMs = durationMs;
+  syncStatsToCatalogDiagnostics();
+
+  // Agendar Camada 4 (categorias seguintes / visitadas) em segundo plano com prioridade 'low'
+  if (!options?.signal?.aborted) {
+    scheduleBackgroundLowPriorityPreload(plan.tier4VisitedCategoryUrls);
+  }
+
+  return {
+    allAlreadyCached: false,
+    preparedCount,
+    totalTargetCount,
+    durationMs,
+  };
+}
+
+export function scheduleBackgroundLowPriorityPreload(urls: string[]): void {
+  if (!isAndroidPersistentImageCacheAvailable() || !Array.isArray(urls) || urls.length === 0) {
+    return;
+  }
+  for (const url of urls) {
+    if (!url || getInstantCachedImageSrc(url)) continue;
+    void acquireCachedImage(url, { priority: 'low' }).catch(() => {
+      // Falhas de pré-carregamento em background nunca interrompem a aplicação
+    });
+  }
+}
+
+/**
+ * Reseta o estado do serviço de cache de imagens exclusivamente para suítes de teste automatizadas.
+ */
+export function resetAndroidImageCacheForTest(): void {
+  currentSessionEpoch++;
+  resolvedUrlToEntryMap.clear();
+  hydratedByShaKeyMap.clear();
+  shaKeyToUrlMap.clear();
+  inFlightTasksByUrl.clear();
+  pendingQueue.splice(0, pendingQueue.length);
+  activeWorkersCount = 0;
+  isHydrated = false;
+  hydrationPromise = null;
+  isVideoPlaybackActive = false;
+  lastDpadActivityTimestampMs = 0;
+  if (dpadThrottleTimer !== null) {
+    clearTimeout(dpadThrottleTimer);
+    dpadThrottleTimer = null;
+  }
+  runtimeStats.uniqueCatalogImageUrls = 0;
+  runtimeStats.uniqueHomeImageUrls = 0;
+  runtimeStats.persistentCacheHits = 0;
+  runtimeStats.cacheLayerDownloads = 0;
+  runtimeStats.deduplicatedDownloadsCount = 0;
+  runtimeStats.downloadFailuresCount = 0;
+  runtimeStats.bytesTransferredByCache = 0;
+  runtimeStats.bytesStoredCurrently = 0;
+  runtimeStats.storedEntriesCount = 0;
+  runtimeStats.evictedEntriesCount = 0;
+  runtimeStats.corruptedLocalRecoveriesCount = 0;
+  runtimeStats.localRecoveryTimeMs = null;
+  runtimeStats.priorityCoversPreparationMs = null;
+  runtimeStats.configuredMaxBytes = DEFAULT_IMAGE_CACHE_MAX_BYTES;
+  clearVisitedShowcaseCategories();
+}
+
+// ============================================================================
+// Simulador de Disco Persistente Android para Testes Automatizados (`npm test`)
+// ============================================================================
+
+export interface SimulatedDiskResponseConfig {
+  status?: number;
+  contentType?: string;
+  cacheControl?: string;
+  etag?: string;
+  lastModified?: string;
+  declaredContentLength?: number;
+  bodyBytes?: Uint8Array;
+  delayMs?: number;
+  networkError?: boolean;
+}
+
+export function createValidTestJpegBytes(byteLength: number = 2048): Uint8Array {
+  const len = Math.max(16, byteLength);
+  const buf = new Uint8Array(len);
+  // JPEG SOI magic bytes: FF D8 FF E0
+  buf[0] = 0xff;
+  buf[1] = 0xd8;
+  buf[2] = 0xff;
+  buf[3] = 0xe0;
+  for (let i = 4; i < len - 2; i++) {
+    buf[i] = (i * 31) & 0xff;
+  }
+  // JPEG EOI: FF D9
+  buf[len - 2] = 0xff;
+  buf[len - 1] = 0xd9;
+  return buf;
+}
+
+function hasValidSimulatedImageSignature(bytes: Uint8Array, contentType: string): boolean {
+  if (!bytes || bytes.length < 4) return false;
+  // Rejeitar JSON ou HTML disfarçados
+  let offset = 0;
+  while (
+    offset < bytes.length &&
+    (bytes[offset] === 0x20 || bytes[offset] === 0x09 || bytes[offset] === 0x0a || bytes[offset] === 0x0d)
+  ) {
+    offset++;
+  }
+  if (offset < bytes.length) {
+    const first = bytes[offset];
+    if (first === 0x7b /* { */ || first === 0x5b /* [ */) return false;
+    if (first === 0x3c /* < */) {
+      return contentType.toLowerCase().includes('svg');
+    }
+  }
+  // JPEG
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true;
+  // PNG
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return true;
+  // WebP
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return true;
+  }
+  // GIF
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return true;
+  return false;
+}
+
+/**
+ * Cria um harness de disco persistente simulado que replica fielmente o comportamento do
+ * `ImageDiskCachePlugin.java` (incluindo persistência entre reinicializações simuladas,
+ * validação de HTTP/Content-Type/Content-Length/magic bytes, ETag 304, LRU por orçamento de bytes,
+ * corrupção física de arquivos e bloqueio por época no logout).
+ */
+export function createSimulatedPersistentImageDiskHarness(options?: {
+  initialMaxBytes?: number;
+  defaultByteSize?: number;
+  customResponder?: (
+    url: string,
+    requestHeaders: { ifNoneMatch?: string; ifModifiedSince?: string }
+  ) => SimulatedDiskResponseConfig | null;
+}) {
+  const cacheDir = '/data/user/0/com.northcode.play/files/nc_image_cache';
+  let maxBytes = options?.initialMaxBytes ?? DEFAULT_IMAGE_CACHE_MAX_BYTES;
+  const defaultByteSize = options?.defaultByteSize ?? 2048;
+
+  interface DiskFileRecord {
+    key: string;
+    url: string;
+    fileName: string;
+    filePath: string;
+    bytes: Uint8Array;
+    contentType: string;
+    etag: string | null;
+    lastModified: string | null;
+    cacheControl: string | null;
+    createdAtMs: number;
+    lastAccessedAtMs: number;
+    corruptedOnDisk: boolean;
+  }
+
+  // Mapa persistente que sobrevive a `simulateAppRestart()`
+  const persistentDiskFiles = new Map<string, DiskFileRecord>();
+  const networkFetchCounterByUrl = new Map<string, number>();
+  let totalNetworkFetches = 0;
+  let evictedEntriesCount = 0;
+  let corruptedRecoveriesCount = 0;
+  let diskEpoch = 1;
+  let accessClock = 1000;
+
+  const getTotalDiskBytes = () => {
+    let sum = 0;
+    for (const rec of persistentDiskFiles.values()) {
+      sum += rec.bytes.byteLength;
+    }
+    return sum;
+  };
+
+  const enforceDiskLru = () => {
+    if (getTotalDiskBytes() <= maxBytes) return;
+    const sorted = Array.from(persistentDiskFiles.values()).sort(
+      (a, b) => a.lastAccessedAtMs - b.lastAccessedAtMs
+    );
+    for (const candidate of sorted) {
+      if (getTotalDiskBytes() <= maxBytes) break;
+      persistentDiskFiles.delete(candidate.key);
+      evictedEntriesCount++;
+    }
+  };
+
+  const plugin: ImageDiskCacheNativePlugin = {
+    async getHydratedIndex() {
+      const entries: HydratedImageCacheEntry[] = [];
+      for (const [k, rec] of Array.from(persistentDiskFiles.entries())) {
+        if (!rec.bytes || rec.bytes.byteLength === 0) {
+          persistentDiskFiles.delete(k);
+          continue;
+        }
+        entries.push({
+          key: rec.key,
+          fileName: rec.fileName,
+          filePath: rec.filePath,
+          byteSize: rec.bytes.byteLength,
+          contentType: rec.contentType,
+          lastAccessedAtMs: rec.lastAccessedAtMs,
+        });
+      }
+      return {
+        cacheDir,
+        maxBytes,
+        totalBytes: getTotalDiskBytes(),
+        evictedEntriesCount,
+        corruptedRecoveriesCount,
+        entries,
+      };
+    },
+
+    async configureCache({ maxBytes: newMax }) {
+      maxBytes = Math.max(1024, newMax);
+      enforceDiskLru();
+      return {
+        maxBytes,
+        totalBytes: getTotalDiskBytes(),
+        storedEntriesCount: persistentDiskFiles.size,
+        evictedEntriesCount,
+      };
+    },
+
+    async invalidateImage({ url, key, corruptedRecovery }) {
+      const targetKey =
+        key && key.length === 64 ? key : computeDeterministicUrlSha256Hex(String(url || '').trim());
+      const removed = persistentDiskFiles.delete(targetKey);
+      if (corruptedRecovery) {
+        corruptedRecoveriesCount++;
+      }
+      return {
+        removed,
+        totalBytes: getTotalDiskBytes(),
+        corruptedRecoveriesCount,
+      };
+    },
+
+    async clearAll() {
+      diskEpoch++;
+      persistentDiskFiles.clear();
+      return {
+        cleared: true,
+        epoch: diskEpoch,
+        totalBytes: 0,
+      };
+    },
+
+    async acquireImage({ url, forceRefresh, revalidate }) {
+      const trimmed = String(url || '').trim();
+      const key = computeDeterministicUrlSha256Hex(trimmed);
+      const epochAtCall = diskEpoch;
+
+      const existing = persistentDiskFiles.get(key);
+      if (existing && !forceRefresh && !revalidate) {
+        if (existing.bytes.byteLength > 0) {
+          existing.lastAccessedAtMs = ++accessClock;
+          return {
+            hit: true,
+            revalidated304: false,
+            bypassedNoStore: false,
+            key,
+            fileName: existing.fileName,
+            filePath: existing.filePath,
+            cacheDir,
+            byteSize: existing.bytes.byteLength,
+            contentType: existing.contentType,
+            totalBytes: getTotalDiskBytes(),
+            storedEntriesCount: persistentDiskFiles.size,
+            evictedEntriesCount,
+          };
+        } else {
+          persistentDiskFiles.delete(key);
+        }
+      }
+
+      const customCfg =
+        options?.customResponder?.(trimmed, {
+          ifNoneMatch: !forceRefresh ? existing?.etag ?? undefined : undefined,
+          ifModifiedSince: !forceRefresh ? existing?.lastModified ?? undefined : undefined,
+        }) ?? null;
+
+      const delayMs = customCfg?.delayMs ?? 2;
+      if (delayMs > 0) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+
+      if (diskEpoch !== epochAtCall) {
+        throw new Error('SESSION_CLEARED');
+      }
+
+      totalNetworkFetches++;
+      networkFetchCounterByUrl.set(trimmed, (networkFetchCounterByUrl.get(trimmed) ?? 0) + 1);
+
+      if (customCfg?.networkError) {
+        throw new Error('NETWORK_ERROR');
+      }
+
+      const status = customCfg?.status ?? 200;
+      if (status === 304 && existing && existing.bytes.byteLength > 0) {
+        existing.lastAccessedAtMs = ++accessClock;
+        return {
+          hit: true,
+          revalidated304: true,
+          bypassedNoStore: false,
+          key,
+          fileName: existing.fileName,
+          filePath: existing.filePath,
+          cacheDir,
+          byteSize: existing.bytes.byteLength,
+          contentType: existing.contentType,
+          totalBytes: getTotalDiskBytes(),
+          storedEntriesCount: persistentDiskFiles.size,
+          evictedEntriesCount,
+        };
+      }
+
+      if (status !== 200) {
+        throw new Error(`HTTP_${status}`);
+      }
+
+      const contentType = customCfg?.contentType ?? 'image/jpeg';
+      const lowerCt = contentType.toLowerCase();
+      if (
+        lowerCt.startsWith('text/html') ||
+        lowerCt.startsWith('text/plain') ||
+        lowerCt.startsWith('application/json') ||
+        (!lowerCt.startsWith('image/') && !lowerCt.startsWith('application/octet-stream'))
+      ) {
+        throw new Error(`INVALID_CONTENT_TYPE: ${contentType}`);
+      }
+
+      const cacheControl = customCfg?.cacheControl ?? 'public, max-age=86400';
+      if (cacheControl.toLowerCase().includes('no-store')) {
+        return {
+          hit: false,
+          revalidated304: false,
+          bypassedNoStore: true,
+          key,
+          fileName: null,
+          filePath: null,
+          cacheDir,
+          byteSize: 0,
+          contentType,
+          totalBytes: getTotalDiskBytes(),
+          storedEntriesCount: persistentDiskFiles.size,
+          evictedEntriesCount,
+        };
+      }
+
+      const bodyBytes = customCfg?.bodyBytes ?? createValidTestJpegBytes(defaultByteSize);
+      if (bodyBytes.byteLength === 0) {
+        throw new Error('EMPTY_BODY');
+      }
+      if (
+        typeof customCfg?.declaredContentLength === 'number' &&
+        customCfg.declaredContentLength !== bodyBytes.byteLength
+      ) {
+        throw new Error('TRUNCATED_BODY');
+      }
+      if (!hasValidSimulatedImageSignature(bodyBytes, contentType)) {
+        throw new Error('INVALID_IMAGE_SIGNATURE');
+      }
+
+      if (diskEpoch !== epochAtCall) {
+        throw new Error('SESSION_CLEARED');
+      }
+
+      const fileName = `img_${key}.jpg`;
+      const filePath = `${cacheDir}/${fileName}`;
+      const now = ++accessClock;
+
+      persistentDiskFiles.set(key, {
+        key,
+        url: trimmed,
+        fileName,
+        filePath,
+        bytes: bodyBytes,
+        contentType,
+        etag: customCfg?.etag ?? null,
+        lastModified: customCfg?.lastModified ?? null,
+        cacheControl,
+        createdAtMs: now,
+        lastAccessedAtMs: now,
+        corruptedOnDisk: false,
+      });
+
+      enforceDiskLru();
+
+      const saved = persistentDiskFiles.get(key);
+      if (!saved) {
+        throw new Error('BUDGET_EXCEEDED');
+      }
+
+      return {
+        hit: false,
+        revalidated304: false,
+        bypassedNoStore: false,
+        key,
+        fileName,
+        filePath,
+        cacheDir,
+        byteSize: bodyBytes.byteLength,
+        contentType,
+        totalBytes: getTotalDiskBytes(),
+        storedEntriesCount: persistentDiskFiles.size,
+        evictedEntriesCount,
+      };
+    },
+  };
+
+  return {
+    plugin,
+    install() {
+      resetAndroidImageCacheForTest();
+      setAndroidImageCacheTestOverride({
+        plugin,
+        enabled: true,
+        convertFileSrc: (fp: string) => {
+          // Verificar se o arquivo físico simulado está marcado como corrompido
+          const slashIdx = fp.lastIndexOf('/');
+          const fn = slashIdx >= 0 ? fp.slice(slashIdx + 1) : '';
+          const keyMatch = fn.match(/^img_([a-f0-9]{64})\./);
+          const key = keyMatch ? keyMatch[1] : '';
+          const rec = persistentDiskFiles.get(key);
+          if (!rec || rec.corruptedOnDisk) {
+            return `http://localhost${CAPACITOR_FILE_PATH_PREFIX}${fp}?corrupted=1`;
+          }
+          return `http://localhost${CAPACITOR_FILE_PATH_PREFIX}${fp}`;
+        },
+      });
+    },
+    uninstall() {
+      setAndroidImageCacheTestOverride({
+        plugin: null,
+        enabled: null,
+        convertFileSrc: null,
+      });
+      resetAndroidImageCacheForTest();
+    },
+    /**
+     * Simula o fechamento completo e reabertura do aplicativo Android:
+     * limpa toda a memória RAM do JavaScript, preservando apenas os arquivos e o índice no disco simulado.
+     */
+    simulateAppRestart() {
+      const savedVisited = safeReadStorage(VISITED_CATEGORIES_STORAGE_KEY);
+      resetAndroidImageCacheForTest();
+      if (savedVisited.success && savedVisited.value) {
+        safeSetStorage(VISITED_CATEGORIES_STORAGE_KEY, savedVisited.value);
+      }
+      setAndroidImageCacheTestOverride({
+        plugin,
+        enabled: true,
+      });
+    },
+    corruptPhysicalFileForUrl(url: string) {
+      const key = computeDeterministicUrlSha256Hex(url.trim());
+      const rec = persistentDiskFiles.get(key);
+      if (rec) {
+        rec.corruptedOnDisk = true;
+      }
+    },
+    isPhysicalFileMarkedCorrupted(fileSrc: string): boolean {
+      if (fileSrc.includes('?corrupted=1')) return true;
+      const match = fileSrc.match(/img_([a-f0-9]{64})\./);
+      if (!match) return false;
+      const rec = persistentDiskFiles.get(match[1]);
+      return !rec || rec.corruptedOnDisk;
+    },
+    getNetworkFetchCount(url?: string): number {
+      if (!url) return totalNetworkFetches;
+      return networkFetchCounterByUrl.get(url.trim()) ?? 0;
+    },
+    getPhysicalFileCount(): number {
+      return persistentDiskFiles.size;
+    },
+    getTotalDiskBytes,
+    hasPhysicalFileForUrl(url: string): boolean {
+      const key = computeDeterministicUrlSha256Hex(url.trim());
+      return persistentDiskFiles.has(key);
+    },
+  };
+}

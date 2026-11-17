@@ -32,8 +32,15 @@ import {
 } from '../utils/catalogIndex';
 import {
   buildDirectMediaUrl,
+  buildDirectImageUrl,
   normalizeImageSource,
 } from '../utils/mediaUtils';
+import {
+  recordVisitedShowcaseCategory,
+  scheduleBackgroundLowPriorityPreload,
+  computeAdaptiveInitialCardsPerRow,
+  isAndroidPersistentImageCacheAvailable,
+} from '../services/androidImageCache';
 import { extractXtreamSubtitles } from './player/trackUtils';
 import { getValidYear } from '../utils/catalogRanking';
 import { useVirtualWindow } from '../hooks/useVirtualWindow';
@@ -1442,6 +1449,72 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     effectiveRowEnd,
     liveViewportWidth,
     measureMountedShowcaseGeometry,
+  ]);
+
+  // Record visited categories when the user scrolls beyond the initial window and opportunistically
+  // preload the next adjacent rows' visible covers in low priority on Android
+  useEffect(() => {
+    if (isGridMode || (section === 'inicio' && hasSearch) || totalShowcaseRows === 0) {
+      return;
+    }
+
+    if (effectiveRowStart > 0) {
+      for (let r = effectiveRowStart; r < effectiveRowEnd; r++) {
+        const desc = showcaseRowDescriptors[r];
+        if (desc && (desc.kind === 'vod_category' || desc.kind === 'series_category')) {
+          recordVisitedShowcaseCategory(desc.key);
+        }
+      }
+    }
+
+    if (!isAndroidPersistentImageCacheAvailable()) {
+      return;
+    }
+
+    const budget = computeAdaptiveInitialCardsPerRow({
+      viewportWidth: liveViewportWidth,
+      viewportHeight: liveViewportHeight,
+    });
+    const preloadUrls: string[] = [];
+    const lookaheadEnd = Math.min(totalShowcaseRows, effectiveRowEnd + 2);
+
+    for (let r = Math.max(0, effectiveRowStart - 1); r < lookaheadEnd; r++) {
+      const desc = showcaseRowDescriptors[r];
+      if (!desc) continue;
+      let items: any[] = EMPTY_ARRAY;
+      if (desc.kind === 'fixed') {
+        items = desc.fixedItems;
+      } else if (desc.kind === 'vod_category') {
+        items = vodIndex.getByCategory(desc.categoryId);
+      } else if (desc.kind === 'series_category') {
+        items = seriesIndex.getByCategory(desc.categoryId);
+      }
+      const limit = Math.min(budget.posterCardsPerRow, items.length);
+      for (let c = 0; c < limit; c++) {
+        const raw = normalizeImageSource(items[c]);
+        const resolved = buildDirectImageUrl(raw, credentials?.serverUrl);
+        if (resolved) {
+          preloadUrls.push(resolved);
+        }
+      }
+    }
+
+    if (preloadUrls.length > 0) {
+      scheduleBackgroundLowPriorityPreload(preloadUrls);
+    }
+  }, [
+    isGridMode,
+    section,
+    hasSearch,
+    totalShowcaseRows,
+    effectiveRowStart,
+    effectiveRowEnd,
+    showcaseRowDescriptors,
+    vodIndex,
+    seriesIndex,
+    liveViewportWidth,
+    liveViewportHeight,
+    credentials?.serverUrl,
   ]);
 
   // Shift showcase row window for D-Pad / programmatic restore while preserving the anchor row's

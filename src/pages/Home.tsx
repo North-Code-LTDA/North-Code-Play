@@ -12,7 +12,13 @@ import { MoviesView } from '../views/MoviesView';
 import { SeriesView } from '../views/SeriesView';
 import { ConfigView } from '../views/ConfigView';
 import { FavoritesView } from '../views/FavoritesView';
-import { XtreamProvider, useXtreamSession } from '../context/XtreamContext';
+import {
+  XtreamProvider,
+  useXtreamSession,
+  useXtreamLive,
+  useXtreamVod,
+  useXtreamSeries,
+} from '../context/XtreamContext';
 import { useDebounce } from '../hooks/useDebounce';
 import { normalizeServerUrl } from '../utils/mediaUtils';
 import { markCredentialsAuthRejected, safeRemoveCredentials } from '../utils/accountUtils';
@@ -31,6 +37,16 @@ import {
   recordHomeOpeningMilestone,
   recordHomeManualContinueIntent,
 } from '../utils/catalogDiagnostics';
+import {
+  isAndroidPersistentImageCacheAvailable,
+  ensureAndroidImageCacheHydrated,
+  buildHomeStartupImagePlan,
+  executeHomeStartupImagePreparation,
+  clearImageCacheOnLogout,
+  notifyDpadNavigationActivityForImagePreload,
+  setVideoPlaybackActiveForImagePreload,
+} from '../services/androidImageCache';
+import { clearLoadedImageUrlCache } from '../components/MediaImage';
 
 export type ViewType = MainSectionId;
 
@@ -115,6 +131,91 @@ class ViewErrorBoundary extends React.Component<ViewErrorBoundaryProps, ViewErro
     }
     return this.props.children;
   }
+}
+
+/**
+ * Componente silencioso que prepara as capas prioritárias da abertura no cache persistente Android
+ * durante a tela "Carregando sua programação", sem causar re-renderizações desnecessárias no HomeContent.
+ */
+function StartupImageCacheCoordinator({
+  serverUrl,
+  allSixFinished,
+  isAuthRejected,
+  onReady,
+}: {
+  serverUrl?: string | null;
+  allSixFinished: boolean;
+  isAuthRejected: boolean;
+  onReady: () => void;
+}) {
+  const { allLiveStreams } = useXtreamLive();
+  const { allVodStreams, vodCategories } = useXtreamVod();
+  const { allSeriesStreams, seriesCategories } = useXtreamSeries();
+  const { mode, tvScale } = useDisplayPreferences();
+  const startedForSessionRef = useRef(false);
+
+  useEffect(() => {
+    void ensureAndroidImageCacheHydrated();
+  }, []);
+
+  useEffect(() => {
+    if (isAuthRejected) {
+      onReady();
+      return;
+    }
+    if (!allSixFinished) {
+      startedForSessionRef.current = false;
+      return;
+    }
+    if (startedForSessionRef.current) {
+      return;
+    }
+    startedForSessionRef.current = true;
+
+    const abortController = new AbortController();
+    const plan = buildHomeStartupImagePlan({
+      serverUrl,
+      allLiveStreams,
+      allVodStreams,
+      allSeriesStreams,
+      vodCategories,
+      seriesCategories,
+      displayMode: mode,
+      tvScale,
+    });
+
+    if (!isAndroidPersistentImageCacheAvailable() || plan.priorityUrls.length === 0) {
+      onReady();
+      return;
+    }
+
+    executeHomeStartupImagePreparation(plan, {
+      signal: abortController.signal,
+      maxWaitMs: 3500,
+    }).finally(() => {
+      if (!abortController.signal.aborted) {
+        onReady();
+      }
+    });
+
+    return () => {
+      abortController.abort();
+    };
+  }, [
+    allSixFinished,
+    isAuthRejected,
+    serverUrl,
+    allLiveStreams,
+    allVodStreams,
+    allSeriesStreams,
+    vodCategories,
+    seriesCategories,
+    mode,
+    tvScale,
+    onReady,
+  ]);
+
+  return null;
 }
 
 function HomeContent({ credentials }: { credentials: any }) {
@@ -367,13 +468,42 @@ function HomeContent({ credentials }: { credentials: any }) {
 
   const [isOpeningDismissed, setIsOpeningDismissed] = useState(false);
   const [showContinueButton, setShowContinueButton] = useState(false);
+  const [isPriorityImagesReady, setIsPriorityImagesReady] = useState(
+    () => !isAndroidPersistentImageCacheAvailable()
+  );
 
-  // Automatically close without minimum artificial delay when all six are ready/error or if auth is rejected
+  const handlePriorityImagesReady = useCallback(() => {
+    setIsPriorityImagesReady(true);
+  }, []);
+
+  // Automatically close without minimum artificial delay when all six + priority covers are ready or if auth is rejected
   useEffect(() => {
-    if (allSixFinished || isAuthRejected) {
+    if ((allSixFinished && isPriorityImagesReady) || isAuthRejected) {
       setIsOpeningDismissed(true);
     }
-  }, [allSixFinished, isAuthRejected]);
+  }, [allSixFinished, isPriorityImagesReady, isAuthRejected]);
+
+  // Throttle low-priority background image preloading during rapid D-Pad navigation or active video playback
+  useEffect(() => {
+    setVideoPlaybackActiveForImagePreload(Boolean(activeVideo));
+  }, [activeVideo]);
+
+  useEffect(() => {
+    const onDpadKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === 'ArrowUp' ||
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowLeft' ||
+        e.key === 'ArrowRight'
+      ) {
+        notifyDpadNavigationActivityForImagePreload();
+      }
+    };
+    window.addEventListener('keydown', onDpadKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onDpadKeyDown, true);
+    };
+  }, []);
 
   // Show "Continuar enquanto carrega" button if pending after 10s
   useEffect(() => {
@@ -384,7 +514,8 @@ function HomeContent({ credentials }: { credentials: any }) {
     return () => clearTimeout(timer);
   }, [isOpeningDismissed]);
 
-  const isOverlayActive = !isOpeningDismissed && !allSixFinished && !isAuthRejected;
+  const isOverlayActive =
+    !isOpeningDismissed && !(allSixFinished && isPriorityImagesReady) && !isAuthRejected;
 
   useEffect(() => {
     recordHomeOpeningMilestone({
@@ -467,6 +598,8 @@ function HomeContent({ credentials }: { credentials: any }) {
       setLogoutError('Não foi possível sair deste dispositivo. Tente novamente.');
       return;
     }
+    clearLoadedImageUrlCache();
+    void clearImageCacheOnLogout();
     setLogoutError(null);
     navigate('/');
   }, [navigate]);
@@ -908,6 +1041,13 @@ function HomeContent({ credentials }: { credentials: any }) {
         isOpen={isDisplaySetupOpen}
         canCancel={false}
         onComplete={handleFirstSetupComplete}
+      />
+
+      <StartupImageCacheCoordinator
+        serverUrl={credentials?.serverUrl}
+        allSixFinished={allSixFinished}
+        isAuthRejected={isAuthRejected}
+        onReady={handlePriorityImagesReady}
       />
     </>
   );

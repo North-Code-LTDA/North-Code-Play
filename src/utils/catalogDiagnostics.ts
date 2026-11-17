@@ -158,6 +158,23 @@ export interface CatalogSortingDiagnostics {
   totalCacheHitsCount: number;
 }
 
+export interface CatalogImageCacheDiagnostics {
+  uniqueCatalogImageUrls: number;
+  uniqueHomeImageUrls: number;
+  persistentCacheHits: number;
+  cacheLayerDownloads: number;
+  deduplicatedDownloads: number;
+  downloadFailures: number;
+  bytesTransferredByCache: number;
+  bytesStoredCurrently: number;
+  storedEntriesCount: number;
+  evictedEntriesCount: number;
+  corruptedLocalRecoveriesCount: number;
+  imgElementLoadEventsCount: number;
+  localRecoveryTimeMs: number | null;
+  priorityCoversPreparationMs: number | null;
+}
+
 export interface CatalogSessionDiagnosticsReport {
   sessionId: number;
   transportMode: CatalogTransportKind;
@@ -177,6 +194,7 @@ export interface CatalogSessionDiagnosticsReport {
   operationHistory: CatalogOperationDiagnostics[];
   subsequentOperationsCount: number;
   sorting: CatalogSortingDiagnostics;
+  imageCache: CatalogImageCacheDiagnostics;
 }
 
 export interface CatalogDiagnosticAttemptHandle {
@@ -390,6 +408,25 @@ function createEmptySortingDiagnostics(): CatalogSortingDiagnostics {
   };
 }
 
+function createEmptyImageCacheDiagnostics(): CatalogImageCacheDiagnostics {
+  return {
+    uniqueCatalogImageUrls: 0,
+    uniqueHomeImageUrls: 0,
+    persistentCacheHits: 0,
+    cacheLayerDownloads: 0,
+    deduplicatedDownloads: 0,
+    downloadFailures: 0,
+    bytesTransferredByCache: 0,
+    bytesStoredCurrently: 0,
+    storedEntriesCount: 0,
+    evictedEntriesCount: 0,
+    corruptedLocalRecoveriesCount: 0,
+    imgElementLoadEventsCount: 0,
+    localRecoveryTimeMs: null,
+    priorityCoversPreparationMs: null,
+  };
+}
+
 function cloneOperationDiagnostics(op: CatalogOperationDiagnostics): CatalogOperationDiagnostics {
   return {
     ...op,
@@ -441,6 +478,7 @@ function cloneSessionReport(
       totalLiveGroupingMs: report.sorting.totalLiveGroupingMs,
       totalCacheHitsCount: report.sorting.totalCacheHitsCount,
     },
+    imageCache: { ...report.imageCache },
   };
 }
 
@@ -594,6 +632,7 @@ export function startCatalogDiagnosticsSession(
     operationHistory: [],
     subsequentOperationsCount: 0,
     sorting: createEmptySortingDiagnostics(),
+    imageCache: createEmptyImageCacheDiagnostics(),
   };
 
   if (preMount) {
@@ -1203,6 +1242,83 @@ export function recordCatalogSortDiagnostic(
 }
 
 /**
+ * Atualiza de forma sanitizada as métricas de cache persistente e pré-carregamento de imagens
+ * sem armazenar URLs, credenciais ou identificadores do servidor.
+ */
+export function recordCatalogImageCacheDiagnosticsUpdate(
+  update: Partial<CatalogImageCacheDiagnostics>
+): void {
+  if (!isCatalogDiagnosticsEnabled || !activeSessionReport) {
+    return;
+  }
+  recordedEventsCountForTest++;
+  const ic = activeSessionReport.imageCache;
+
+  if (typeof update.uniqueCatalogImageUrls === 'number' && update.uniqueCatalogImageUrls >= 0) {
+    ic.uniqueCatalogImageUrls = Math.floor(update.uniqueCatalogImageUrls);
+  }
+  if (typeof update.uniqueHomeImageUrls === 'number' && update.uniqueHomeImageUrls >= 0) {
+    ic.uniqueHomeImageUrls = Math.floor(update.uniqueHomeImageUrls);
+  }
+  if (typeof update.persistentCacheHits === 'number' && update.persistentCacheHits >= 0) {
+    ic.persistentCacheHits = Math.floor(update.persistentCacheHits);
+  }
+  if (typeof update.cacheLayerDownloads === 'number' && update.cacheLayerDownloads >= 0) {
+    ic.cacheLayerDownloads = Math.floor(update.cacheLayerDownloads);
+  }
+  if (typeof update.deduplicatedDownloads === 'number' && update.deduplicatedDownloads >= 0) {
+    ic.deduplicatedDownloads = Math.floor(update.deduplicatedDownloads);
+  }
+  if (typeof update.downloadFailures === 'number' && update.downloadFailures >= 0) {
+    ic.downloadFailures = Math.floor(update.downloadFailures);
+  }
+  if (typeof update.bytesTransferredByCache === 'number' && update.bytesTransferredByCache >= 0) {
+    ic.bytesTransferredByCache = Math.floor(update.bytesTransferredByCache);
+  }
+  if (typeof update.bytesStoredCurrently === 'number' && update.bytesStoredCurrently >= 0) {
+    ic.bytesStoredCurrently = Math.floor(update.bytesStoredCurrently);
+  }
+  if (typeof update.storedEntriesCount === 'number' && update.storedEntriesCount >= 0) {
+    ic.storedEntriesCount = Math.floor(update.storedEntriesCount);
+  }
+  if (typeof update.evictedEntriesCount === 'number' && update.evictedEntriesCount >= 0) {
+    ic.evictedEntriesCount = Math.floor(update.evictedEntriesCount);
+  }
+  if (
+    typeof update.corruptedLocalRecoveriesCount === 'number' &&
+    update.corruptedLocalRecoveriesCount >= 0
+  ) {
+    ic.corruptedLocalRecoveriesCount = Math.floor(update.corruptedLocalRecoveriesCount);
+  }
+  if (typeof update.imgElementLoadEventsCount === 'number' && update.imgElementLoadEventsCount >= 0) {
+    ic.imgElementLoadEventsCount = Math.floor(update.imgElementLoadEventsCount);
+  }
+  if (update.localRecoveryTimeMs !== undefined) {
+    ic.localRecoveryTimeMs = normalizeOptionalNonNegativeMs(update.localRecoveryTimeMs);
+  }
+  if (update.priorityCoversPreparationMs !== undefined) {
+    ic.priorityCoversPreparationMs = normalizeOptionalNonNegativeMs(
+      update.priorityCoversPreparationMs
+    );
+  }
+
+  notifyDiagnosticsListeners();
+}
+
+/**
+ * Incrementa o contador de eventos <img onLoad> na camada de renderização para distinguir
+ * eventos DOM de remontagem de downloads reais na camada de cache.
+ */
+export function recordCatalogImgElementLoadEvent(): void {
+  if (!isCatalogDiagnosticsEnabled || !activeSessionReport) {
+    return;
+  }
+  recordedEventsCountForTest++;
+  activeSessionReport.imageCache.imgElementLoadEventsCount++;
+  notifyDiagnosticsListeners();
+}
+
+/**
  * Records the user's click intention on "Continuar enquanto carrega" before the interface
  * updates and becomes interactive.
  */
@@ -1714,6 +1830,26 @@ export function formatCatalogDiagnosticsReport(
     `  - Séries: ordenações=${s.series.newSortsCount} (${formatMs(
       s.series.totalSortMs
     )}, itens=${s.series.lastSortedItemsCount}) | cache=${s.series.cacheHitsCount}`
+  );
+
+  const ic = report.imageCache;
+  lines.push(`[Cache Persistente e Pré-Carregamento de Imagens]`);
+  lines.push(
+    `• URLs de imagem únicas: catálogo=${ic.uniqueCatalogImageUrls} | fileiras da Home=${ic.uniqueHomeImageUrls}`
+  );
+  lines.push(
+    `• Camada de cache persistente: hits locais=${ic.persistentCacheHits} | downloads reais=${ic.cacheLayerDownloads} | deduplicados=${ic.deduplicatedDownloads} | falhas=${ic.downloadFailures}`
+  );
+  lines.push(
+    `• Armazenamento de imagens: transferidos=${ic.bytesTransferredByCache} bytes | em disco=${ic.bytesStoredCurrently} bytes (${ic.storedEntriesCount} arquivos) | removidos por limite (LRU)=${ic.evictedEntriesCount} | recuperações de arquivo corrompido=${ic.corruptedLocalRecoveriesCount}`
+  );
+  lines.push(
+    `• Distinção explícita (renderização vs. rede): eventos <img onLoad>=${ic.imgElementLoadEventsCount} | downloads na camada de cache=${ic.cacheLayerDownloads}`
+  );
+  lines.push(
+    `• Tempos de imagem na abertura: recuperação do índice local=${formatMs(
+      ic.localRecoveryTimeMs
+    )} | preparação das capas prioritárias=${formatMs(ic.priorityCoversPreparationMs)}`
   );
 
   return lines.join('\n');

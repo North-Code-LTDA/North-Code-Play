@@ -410,6 +410,17 @@ export function verifyAndroidCustomizations(rootDir, expectedVersionName, expect
       'play',
       'CatalogFileTransferPlugin.java'
     ),
+    path.join(
+      androidDir,
+      'app',
+      'src',
+      'main',
+      'java',
+      'com',
+      'northcode',
+      'play',
+      'ImageDiskCachePlugin.java'
+    ),
     path.join(androidDir, 'app', 'src', 'main', 'res', 'xml', 'network_security_config.xml'),
     path.join(androidDir, 'app', 'src', 'main', 'res', 'drawable', 'tv_banner.xml'),
     path.join(androidDir, 'app', 'src', 'main', 'res', 'drawable', 'ic_launcher_foreground_inset.xml'),
@@ -452,17 +463,22 @@ export function verifyAndroidCustomizations(rootDir, expectedVersionName, expect
   const registerPluginIdx = mainActivityContent.indexOf(
     'registerPlugin(CatalogFileTransferPlugin.class);'
   );
+  const registerImageCachePluginIdx = mainActivityContent.indexOf(
+    'registerPlugin(ImageDiskCachePlugin.class);'
+  );
   const superOnCreateIdx = mainActivityContent.indexOf('super.onCreate(savedInstanceState);');
   if (
     !mainActivityContent.includes('UI_MODE_TYPE_TELEVISION') ||
     !mainActivityContent.includes('setMinimumFontSize(1)') ||
     !mainActivityContent.includes('setTextZoom(100)') ||
     registerPluginIdx === -1 ||
+    registerImageCachePluginIdx === -1 ||
     superOnCreateIdx === -1 ||
-    registerPluginIdx > superOnCreateIdx
+    registerPluginIdx > superOnCreateIdx ||
+    registerImageCachePluginIdx > superOnCreateIdx
   ) {
     throw new Error(
-      'Validação pós-preparação falhou: MainActivity.java não contém a configuração de WebView para Android TV ou o registro de CatalogFileTransferPlugin antes de super.onCreate.'
+      'Validação pós-preparação falhou: MainActivity.java não contém a configuração de WebView para Android TV ou o registro de CatalogFileTransferPlugin e ImageDiskCachePlugin antes de super.onCreate.'
     );
   }
 
@@ -489,6 +505,32 @@ export function verifyAndroidCustomizations(rootDir, expectedVersionName, expect
   ) {
     throw new Error(
       'Validação pós-preparação falhou: CatalogFileTransferPlugin.java não contém todos os métodos nativos P3.3.'
+    );
+  }
+
+  const imageCachePluginContent = fs.readFileSync(
+    path.join(
+      androidDir,
+      'app',
+      'src',
+      'main',
+      'java',
+      'com',
+      'northcode',
+      'play',
+      'ImageDiskCachePlugin.java'
+    ),
+    'utf8'
+  );
+  if (
+    !imageCachePluginContent.includes('@CapacitorPlugin(name = "ImageDiskCache")') ||
+    !imageCachePluginContent.includes('acquireImage') ||
+    !imageCachePluginContent.includes('getHydratedIndex') ||
+    !imageCachePluginContent.includes('clearAll') ||
+    !imageCachePluginContent.includes('nc_image_cache')
+  ) {
+    throw new Error(
+      'Validação pós-preparação falhou: ImageDiskCachePlugin.java não contém todos os métodos nativos da Etapa 1.'
     );
   }
 
