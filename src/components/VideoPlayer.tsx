@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState, useCallback, useId } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useId, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
 import { AlertCircle, RefreshCw, Wrench, ArrowLeft } from 'lucide-react';
-import { VideoPlayerProps } from './player/types';
+import { VideoPlayerProps, VideoPlayerHandle } from './player/types';
 import { usePlaybackSession } from './player/usePlaybackSession';
 import { PlayerControls } from './player/PlayerControls';
 import { PlayerSettingsMenu, SubMenuType } from './player/PlayerSettingsMenu';
@@ -17,30 +17,35 @@ import {
   isCentralBackPolicyAttached,
 } from '../navigation';
 
-export type { VideoPlayerProps };
+export type { VideoPlayerProps, VideoPlayerHandle };
 
-export const VideoPlayer = React.memo(function VideoPlayer({
-  streamUrl = '',
-  title,
-  contentType,
-  channelName,
-  programTitle,
-  onBack,
-  embedded = false,
-  disableEmbeddedControlsFocus = false,
-  startAt,
-  streamId,
-  attemptTrigger: externalAttemptTrigger = 0,
-  fullscreenRequestTrigger = 0,
-  onNext,
-  onPrevious,
-  isLoading: externalLoading = false,
-  errorMessage: externalError = null,
-  onRetry,
-  onPlaybackSuccess,
-  onPlaybackFinalError,
-  externalSubtitles,
-}: VideoPlayerProps) {
+export const VideoPlayer = React.memo(
+  React.forwardRef<VideoPlayerHandle, VideoPlayerProps>(function VideoPlayer(
+    {
+      playerRef,
+      streamUrl = '',
+      title,
+      contentType,
+      channelName,
+      programTitle,
+      onBack,
+      embedded = false,
+      disableEmbeddedControlsFocus = false,
+      startAt,
+      streamId,
+      attemptTrigger: externalAttemptTrigger = 0,
+      fullscreenRequestTrigger = 0,
+      onNext,
+      onPrevious,
+      isLoading: externalLoading = false,
+      errorMessage: externalError = null,
+      onRetry,
+      onPlaybackSuccess,
+      onPlaybackFinalError,
+      externalSubtitles,
+    }: VideoPlayerProps,
+    forwardedRef
+  ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -55,10 +60,14 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   // Fullscreen & PiP states
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isVisuallyExpanded, setIsVisuallyExpanded] = useState(false);
+  const [isEnteringFullscreen, setIsEnteringFullscreen] = useState(false);
   const [isExitingFullscreen, setIsExitingFullscreen] = useState(false);
   const [hasPiP, setHasPiP] = useState(false);
   const isMountedRef = useRef(true);
+  const isEnteringFullscreenRef = useRef(false);
   const isExitingFullscreenRef = useRef(false);
+  const fullscreenEntryRequestIdRef = useRef(0);
+  const pendingFullscreenPromiseRef = useRef<Promise<boolean> | null>(null);
 
   const activeSelectionKey = `${String(streamId ?? '')}|${String(streamUrl ?? '')}|${String(channelName ?? '')}`;
   const activeSelectionKeyRef = useRef(activeSelectionKey);
@@ -141,7 +150,11 @@ export const VideoPlayer = React.memo(function VideoPlayer({
       );
 
       setIsFullscreen(isFs);
-      if (!isFs) {
+      if (isFs) {
+        isEnteringFullscreenRef.current = false;
+        pendingFullscreenPromiseRef.current = null;
+        setIsEnteringFullscreen(false);
+      } else if (!isEnteringFullscreenRef.current) {
         setIsVisuallyExpanded(false);
       }
     };
@@ -287,13 +300,22 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     }
 
     const isCurrentContainerFs = isContainerCurrentlyFullscreen();
-    const isFs = isCurrentContainerFs || isFullscreen || isVisuallyExpanded;
+    const isFs =
+      isCurrentContainerFs ||
+      isFullscreen ||
+      isVisuallyExpanded ||
+      isEnteringFullscreenRef.current ||
+      isEnteringFullscreen;
     if (!isFs) {
       return false;
     }
 
+    fullscreenEntryRequestIdRef.current += 1;
+    isEnteringFullscreenRef.current = false;
+    pendingFullscreenPromiseRef.current = null;
     isExitingFullscreenRef.current = true;
     if (isMountedRef.current) {
+      setIsEnteringFullscreen(false);
       setIsExitingFullscreen(true);
     }
 
@@ -329,10 +351,160 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     if (isMountedRef.current) {
       setIsFullscreen(false);
       setIsVisuallyExpanded(false);
+      setIsEnteringFullscreen(false);
     }
 
     return true;
-  }, [isContainerCurrentlyFullscreen, isFullscreen, isVisuallyExpanded]);
+  }, [isContainerCurrentlyFullscreen, isFullscreen, isVisuallyExpanded, isEnteringFullscreen]);
+
+  // Direct fullscreen entry invoked synchronously within user interaction context
+  const requestFullscreenImmediate = useCallback((): Promise<boolean> => {
+    const container = containerRef.current;
+    if (!container) return Promise.resolve(false);
+    setActivePlayer(playerId);
+
+    if (isExitingFullscreenRef.current) {
+      return Promise.resolve(false);
+    }
+
+    if (isEnteringFullscreenRef.current) {
+      resetInactivityTimer();
+      return pendingFullscreenPromiseRef.current ?? Promise.resolve(true);
+    }
+
+    const isCurrentContainerFs = isContainerCurrentlyFullscreen();
+    if (isCurrentContainerFs || isFullscreen || isVisuallyExpanded) {
+      resetInactivityTimer();
+      return Promise.resolve(true);
+    }
+
+    const requestId = ++fullscreenEntryRequestIdRef.current;
+    isEnteringFullscreenRef.current = true;
+
+    let nativePromise: Promise<void> | null = null;
+    let usedNativeCall = false;
+    let syncThrew = false;
+
+    try {
+      if (typeof container.requestFullscreen === 'function') {
+        usedNativeCall = true;
+        const res = container.requestFullscreen();
+        if (res && typeof (res as Promise<void>).then === 'function') {
+          nativePromise = res as Promise<void>;
+        }
+      } else if (typeof (container as any).webkitRequestFullscreen === 'function') {
+        usedNativeCall = true;
+        const res = (container as any).webkitRequestFullscreen();
+        if (res && typeof (res as Promise<void>).then === 'function') {
+          nativePromise = res as Promise<void>;
+        }
+      } else if (
+        videoRef.current &&
+        typeof (videoRef.current as any).webkitEnterFullscreen === 'function'
+      ) {
+        usedNativeCall = true;
+        (videoRef.current as any).webkitEnterFullscreen();
+      }
+    } catch (err) {
+      console.warn('Fullscreen request failed, applying visual expansion:', err);
+      syncThrew = true;
+    }
+
+    if (!usedNativeCall || syncThrew) {
+      isEnteringFullscreenRef.current = false;
+      pendingFullscreenPromiseRef.current = null;
+      if (isMountedRef.current) {
+        setIsEnteringFullscreen(false);
+        setIsVisuallyExpanded(true);
+        setIsControlsVisible(true);
+      }
+      return Promise.resolve(true);
+    }
+
+    if (!nativePromise) {
+      isEnteringFullscreenRef.current = false;
+      pendingFullscreenPromiseRef.current = null;
+      if (isMountedRef.current) {
+        setIsEnteringFullscreen(false);
+        if (isContainerCurrentlyFullscreen()) {
+          setIsFullscreen(true);
+        } else {
+          setIsVisuallyExpanded(true);
+        }
+        setIsControlsVisible(true);
+      }
+      return Promise.resolve(true);
+    }
+
+    if (isMountedRef.current) {
+      setIsEnteringFullscreen(true);
+      setIsControlsVisible(true);
+    }
+
+    const completionPromise = nativePromise
+      .then(() => {
+        if (fullscreenEntryRequestIdRef.current !== requestId) {
+          if (
+            isContainerCurrentlyFullscreen() &&
+            typeof document !== 'undefined' &&
+            typeof document.exitFullscreen === 'function'
+          ) {
+            document.exitFullscreen().catch(() => {});
+          }
+          return false;
+        }
+        isEnteringFullscreenRef.current = false;
+        pendingFullscreenPromiseRef.current = null;
+        if (isMountedRef.current) {
+          setIsEnteringFullscreen(false);
+          setIsFullscreen(true);
+          if (
+            getNavMode() === 'remote' &&
+            containerRef.current &&
+            typeof document !== 'undefined' &&
+            (!document.activeElement || !containerRef.current.contains(document.activeElement)) &&
+            !openOverlayRef.current.showSettings &&
+            !openOverlayRef.current.showDiagnostics
+          ) {
+            focusPlayerControl('play-pause');
+          }
+        }
+        return true;
+      })
+      .catch((err) => {
+        console.warn('Fullscreen request failed, applying visual expansion:', err);
+        if (fullscreenEntryRequestIdRef.current !== requestId) {
+          return false;
+        }
+        isEnteringFullscreenRef.current = false;
+        pendingFullscreenPromiseRef.current = null;
+        if (isMountedRef.current) {
+          setIsEnteringFullscreen(false);
+          setIsVisuallyExpanded(true);
+          if (
+            getNavMode() === 'remote' &&
+            containerRef.current &&
+            typeof document !== 'undefined' &&
+            (!document.activeElement || !containerRef.current.contains(document.activeElement)) &&
+            !openOverlayRef.current.showSettings &&
+            !openOverlayRef.current.showDiagnostics
+          ) {
+            focusPlayerControl('play-pause');
+          }
+        }
+        return true;
+      });
+
+    pendingFullscreenPromiseRef.current = completionPromise;
+    return completionPromise;
+  }, [
+    playerId,
+    isContainerCurrentlyFullscreen,
+    isFullscreen,
+    isVisuallyExpanded,
+    resetInactivityTimer,
+    focusPlayerControl,
+  ]);
 
   // Fullscreen toggle: container requestFullscreen or visual expansion fallback
   const toggleFullscreen = useCallback(async () => {
@@ -340,7 +512,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     if (!container) return;
     setActivePlayer(playerId);
 
-    if (isExitingFullscreenRef.current) {
+    if (isExitingFullscreenRef.current || isEnteringFullscreenRef.current) {
       return;
     }
 
@@ -350,33 +522,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     if (isFs || isVisuallyExpanded) {
       await performFullscreenExit();
     } else {
-      try {
-        if (container.requestFullscreen) {
-          await container.requestFullscreen();
-          if (isMountedRef.current) {
-            setIsFullscreen(true);
-          }
-        } else if ((container as any).webkitRequestFullscreen) {
-          await (container as any).webkitRequestFullscreen();
-          if (isMountedRef.current) {
-            setIsFullscreen(true);
-          }
-        } else if (
-          videoRef.current &&
-          (videoRef.current as any).webkitEnterFullscreen
-        ) {
-          // iOS Safari native video fullscreen
-          (videoRef.current as any).webkitEnterFullscreen();
-        } else if (isMountedRef.current) {
-          // Fallback visual expansion
-          setIsVisuallyExpanded(true);
-        }
-      } catch (err) {
-        console.warn('Fullscreen request failed, applying visual expansion:', err);
-        if (isMountedRef.current) {
-          setIsVisuallyExpanded(true);
-        }
-      }
+      await requestFullscreenImmediate();
     }
   }, [
     playerId,
@@ -384,16 +530,48 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     isVisuallyExpanded,
     isFullscreen,
     performFullscreenExit,
+    requestFullscreenImmediate,
   ]);
 
-  // Enter fullscreen explicitly when requested by parent (e.g. 2nd OK on already-selected Live TV channel)
+  const playerHandle = useCallback(
+    (): VideoPlayerHandle => ({
+      requestFullscreenImmediate,
+      exitFullscreenImmediate: performFullscreenExit,
+      isFullscreenOrPending: () =>
+        Boolean(
+          isEnteringFullscreenRef.current ||
+            isEnteringFullscreen ||
+            isContainerCurrentlyFullscreen() ||
+            isFullscreen ||
+            isVisuallyExpanded
+        ),
+    }),
+    [
+      requestFullscreenImmediate,
+      performFullscreenExit,
+      isEnteringFullscreen,
+      isContainerCurrentlyFullscreen,
+      isFullscreen,
+      isVisuallyExpanded,
+    ]
+  );
+
+  useImperativeHandle(forwardedRef, playerHandle, [playerHandle]);
+  useImperativeHandle(playerRef, playerHandle, [playerHandle]);
+
+  // Enter fullscreen explicitly when requested by parent via prop trigger
   const prevFsRequestRef = useRef(fullscreenRequestTrigger);
   useEffect(() => {
     if (fullscreenRequestTrigger > 0 && fullscreenRequestTrigger !== prevFsRequestRef.current) {
       prevFsRequestRef.current = fullscreenRequestTrigger;
       const isCurrentContainerFs = isContainerCurrentlyFullscreen();
-      if (!isCurrentContainerFs && !isFullscreen && !isVisuallyExpanded) {
-        toggleFullscreen();
+      if (
+        !isCurrentContainerFs &&
+        !isFullscreen &&
+        !isVisuallyExpanded &&
+        !isEnteringFullscreenRef.current
+      ) {
+        void requestFullscreenImmediate();
       }
     }
   }, [
@@ -401,7 +579,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     isContainerCurrentlyFullscreen,
     isFullscreen,
     isVisuallyExpanded,
-    toggleFullscreen,
+    requestFullscreenImmediate,
   ]);
 
   // Clean exit fullscreen on unmount ONLY if fullscreen belongs to this player instance
@@ -459,7 +637,12 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     }
 
     const isCurrentContainerFs = isContainerCurrentlyFullscreen();
-    const isFs = isCurrentContainerFs || isFullscreen || isVisuallyExpanded;
+    const isFs =
+      isCurrentContainerFs ||
+      isFullscreen ||
+      isVisuallyExpanded ||
+      isEnteringFullscreenRef.current ||
+      isEnteringFullscreen;
 
     if (embedded && isFs) {
       const exitSelectionGeneration = selectionGenerationRef.current;
@@ -537,6 +720,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     isContainerCurrentlyFullscreen,
     isFullscreen,
     isVisuallyExpanded,
+    isEnteringFullscreen,
     showSettings,
     showDiagnostics,
     closeSettingsMenu,
@@ -565,7 +749,11 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   );
 
   const isPlayerInFullLayer = Boolean(
-    !embedded || isFullscreen || isVisuallyExpanded || isExitingFullscreen
+    !embedded ||
+      isFullscreen ||
+      isVisuallyExpanded ||
+      isEnteringFullscreen ||
+      isExitingFullscreen
   );
   useBackHandler(
     `player-fullscreen-${playerId}`,
@@ -789,6 +977,9 @@ export const VideoPlayer = React.memo(function VideoPlayer({
         case 'k':
         case 'K':
           e.preventDefault();
+          if (isEnteringFullscreenRef.current || isExitingFullscreenRef.current) {
+            break;
+          }
           ctx.session.togglePlay();
           break;
         case 'f':
@@ -826,12 +1017,16 @@ export const VideoPlayer = React.memo(function VideoPlayer({
               ctx.closeDiagnosticsModal();
             } else if (
               ctx.embedded &&
-              (ctx.isFullscreen || ctx.isVisuallyExpanded || ctx.isExitingFullscreen)
+              (ctx.isFullscreen ||
+                ctx.isVisuallyExpanded ||
+                isEnteringFullscreenRef.current ||
+                ctx.isExitingFullscreen)
             ) {
               ctx.handleBack();
             } else if (
               ctx.isFullscreen ||
               ctx.isVisuallyExpanded ||
+              isEnteringFullscreenRef.current ||
               ctx.isExitingFullscreen
             ) {
               ctx.toggleFullscreen();
@@ -860,6 +1055,14 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     };
   }, [playerId]);
 
+  const handleTogglePlayGuarded = useCallback(() => {
+    if (isEnteringFullscreenRef.current || isExitingFullscreenRef.current) {
+      resetInactivityTimer();
+      return;
+    }
+    session.togglePlay();
+  }, [session, resetInactivityTimer]);
+
   const handleContainerClick = () => {
     setActivePlayer(playerId);
     // If settings or diagnostics open, close them
@@ -869,6 +1072,11 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     }
     if (showDiagnostics) {
       closeDiagnosticsModal();
+      return;
+    }
+
+    if (isEnteringFullscreenRef.current || isExitingFullscreenRef.current) {
+      resetInactivityTimer();
       return;
     }
 
@@ -950,12 +1158,12 @@ export const VideoPlayer = React.memo(function VideoPlayer({
         bufferedRanges={session.bufferedRanges}
         volume={session.volume}
         isMuted={session.isMuted}
-        isFullscreen={isFullscreen || isVisuallyExpanded}
+        isFullscreen={isFullscreen || isVisuallyExpanded || isEnteringFullscreen}
         isAtLiveEdge={session.isAtLiveEdge}
         liveEdgeDistance={session.liveEdgeDistance}
         hasActiveSubtitles={session.currentSubtitleTrack !== -1}
         playbackRate={session.playbackRate}
-        onTogglePlay={session.togglePlay}
+        onTogglePlay={handleTogglePlayGuarded}
         onSeek={session.seek}
         onSeekBy={session.seekBy}
         onSeekToLive={session.seekToLive}
@@ -1132,4 +1340,5 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   }
 
   return playerContent;
-});
+  })
+);

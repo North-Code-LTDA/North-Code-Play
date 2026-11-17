@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { XtreamCredentials, Category, LiveStream } from '../types';
 import { useXtreamCredentials, useXtreamLive } from '../context/XtreamContext';
-import { VideoPlayer } from '../components/VideoPlayer';
+import { VideoPlayer, VideoPlayerHandle } from '../components/VideoPlayer';
 import { MediaImage, observeContainerVisibility, notifyContainerScrollForFallback } from '../components/MediaImage';
 import { useFavorites } from '../hooks/useFavorites';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
@@ -57,6 +57,41 @@ export function setLiveFallbackTimeoutMsForTest(ms: number): void {
 
 export function getLiveFallbackTimeoutMsForTest(): number {
   return liveFallbackTimeoutMs;
+}
+
+export interface LiveFocusOriginSnapshot {
+  groupId: string | null;
+  categoryId: string | null;
+  rowIndex: number;
+  cardIndex: number;
+}
+
+export interface LiveTvRenderStats {
+  viewRenders: number;
+  rowRenders: number;
+  cardRenders: number;
+  rightPaneRenders: number;
+  epgSectionRenders: number;
+}
+
+const liveTvRenderStats: LiveTvRenderStats = {
+  viewRenders: 0,
+  rowRenders: 0,
+  cardRenders: 0,
+  rightPaneRenders: 0,
+  epgSectionRenders: 0,
+};
+
+export function getLiveTvRenderStatsForTest(): LiveTvRenderStats {
+  return { ...liveTvRenderStats };
+}
+
+export function resetLiveTvRenderStatsForTest(): void {
+  liveTvRenderStats.viewRenders = 0;
+  liveTvRenderStats.rowRenders = 0;
+  liveTvRenderStats.cardRenders = 0;
+  liveTvRenderStats.rightPaneRenders = 0;
+  liveTvRenderStats.epgSectionRenders = 0;
 }
 
 export interface LiveChannelLaunchIntent {
@@ -360,7 +395,7 @@ interface LiveChannelCardProps {
   cardIndex: number;
   credentials: XtreamCredentials | null;
   isSelected: boolean;
-  isOrigin: boolean;
+  getOriginSnapshot: () => LiveFocusOriginSnapshot;
   isFavorite: boolean;
   isRowVisible: boolean;
   rowScrollEl: HTMLElement | null;
@@ -376,7 +411,7 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
   cardIndex,
   credentials,
   isSelected,
-  isOrigin,
+  getOriginSnapshot,
   isFavorite,
   isRowVisible,
   rowScrollEl,
@@ -384,9 +419,30 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
   onToggleFavorite,
   onFocusCard,
 }: LiveChannelCardProps) {
+  liveTvRenderStats.cardRenders += 1;
   const cardWrapRef = useRef<HTMLDivElement | null>(null);
+  const channelBtnRef = useRef<HTMLButtonElement | null>(null);
   const [isHorizVisible, setIsHorizVisible] = useState<boolean>(cardIndex < 10);
   const [isFocused, setIsFocused] = useState<boolean>(false);
+
+  const originSnap = getOriginSnapshot();
+  const isOrigin =
+    originSnap.groupId === group.groupId && originSnap.categoryId === categoryId;
+
+  useLayoutEffect(() => {
+    const btn = channelBtnRef.current;
+    if (!btn) return;
+    const snap = getOriginSnapshot();
+    const matchesOrigin =
+      snap.groupId === group.groupId && snap.categoryId === categoryId;
+    if (matchesOrigin) {
+      if (btn.getAttribute('data-live-channel-origin') !== 'true') {
+        btn.setAttribute('data-live-channel-origin', 'true');
+      }
+    } else if (btn.hasAttribute('data-live-channel-origin')) {
+      btn.removeAttribute('data-live-channel-origin');
+    }
+  });
 
   const primaryStream = getGroupPrimaryStream(group);
   const primaryStreamId = getStreamIdString(primaryStream) || group.groupId;
@@ -536,6 +592,7 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
         }`}
       >
         <button
+          ref={channelBtnRef}
           type="button"
           data-nav-item="true"
           data-live-channel-btn="true"
@@ -559,8 +616,8 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
           onKeyDown={handleCardShortcutKeyDown}
           onKeyUp={handleCardKeyUp}
           onFocus={() => {
-            setIsFocused(true);
             onFocusCard(group.groupId, categoryId, rowIndex, cardIndex);
+            setIsFocused(true);
           }}
           onBlur={() => {
             enterHoldStartRef.current = null;
@@ -617,8 +674,8 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
           }}
           onKeyDown={handleCardShortcutKeyDown}
           onFocus={() => {
-            setIsFocused(true);
             onFocusCard(group.groupId, categoryId, rowIndex, cardIndex);
+            setIsFocused(true);
           }}
           onBlur={() => setIsFocused(false)}
           className="nc-tv-channel-fav shrink-0 p-2 mr-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors focus:outline-none"
@@ -780,12 +837,43 @@ interface LiveCategoryRowProps {
   credentials: XtreamCredentials | null;
   leftScrollEl: HTMLElement | null;
   selectedGroupId: string | null;
-  originGroupId: string | null;
-  originCategoryId: string | null;
+  getOriginSnapshot: () => LiveFocusOriginSnapshot;
   isGroupFavorite: (group: LiveChannelGroup) => boolean;
   onSelectGroup: (group: LiveChannelGroup, categoryId: string, rowIndex: number, cardIndex: number) => void;
   onToggleFavorite: (group: LiveChannelGroup) => void;
   onFocusCard: (groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => void;
+}
+
+function areLiveCategoryRowPropsEqual(
+  prev: LiveCategoryRowProps,
+  next: LiveCategoryRowProps
+): boolean {
+  if (
+    prev.row !== next.row ||
+    prev.rowIndex !== next.rowIndex ||
+    prev.credentials !== next.credentials ||
+    prev.leftScrollEl !== next.leftScrollEl ||
+    prev.getOriginSnapshot !== next.getOriginSnapshot ||
+    prev.isGroupFavorite !== next.isGroupFavorite ||
+    prev.onSelectGroup !== next.onSelectGroup ||
+    prev.onToggleFavorite !== next.onToggleFavorite ||
+    prev.onFocusCard !== next.onFocusCard
+  ) {
+    return false;
+  }
+
+  if (prev.selectedGroupId === next.selectedGroupId) {
+    return true;
+  }
+
+  const channels = next.row.channels;
+  for (let i = 0; i < channels.length; i++) {
+    const gId = channels[i].groupId;
+    if (gId === prev.selectedGroupId || gId === next.selectedGroupId) {
+      return false;
+    }
+  }
+  return true;
 }
 
 const LiveCategoryRow = React.memo(function LiveCategoryRow({
@@ -794,13 +882,13 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
   credentials,
   leftScrollEl,
   selectedGroupId,
-  originGroupId,
-  originCategoryId,
+  getOriginSnapshot,
   isGroupFavorite,
   onSelectGroup,
   onToggleFavorite,
   onFocusCard,
 }: LiveCategoryRowProps) {
+  liveTvRenderStats.rowRenders += 1;
   const sectionRef = useRef<HTMLElement | null>(null);
   const rowElRef = useRef<HTMLDivElement | null>(null);
   const [rowElState, setRowElState] = useState<HTMLDivElement | null>(null);
@@ -1152,7 +1240,7 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
                 cardIndex={cardIdx}
                 credentials={credentials}
                 isSelected={selectedGroupId === group.groupId}
-                isOrigin={originGroupId === group.groupId && originCategoryId === row.categoryId}
+                getOriginSnapshot={getOriginSnapshot}
                 isFavorite={isGroupFavorite(group)}
                 isRowVisible={isRowVisible}
                 rowScrollEl={rowElState}
@@ -1191,6 +1279,396 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       </div>
     </section>
   );
+}, areLiveCategoryRowPropsEqual);
+
+// ============================================================================
+// LiveTvEpgSection & LiveTvRightPane
+// Isolated memoized components so catalog navigation never reconciles preview/EPG.
+// ============================================================================
+
+interface LiveTvEpgSectionProps {
+  rightPaneEpg: LiveEpgSnapshot | null;
+  rightPaneEpgLoading: boolean;
+}
+
+const LiveTvEpgSection = React.memo(function LiveTvEpgSection({
+  rightPaneEpg,
+  rightPaneEpgLoading,
+}: LiveTvEpgSectionProps) {
+  liveTvRenderStats.epgSectionRenders += 1;
+  const epgTimeline = rightPaneEpg?.timeline ?? [];
+
+  return (
+    <div
+      data-live-epg-section="true"
+      className="flex-1 flex flex-col min-h-0 min-w-0 md:overflow-hidden"
+    >
+      <div
+        data-live-epg-header="true"
+        className="nc-live-epg-header shrink-0 px-4 sm:px-5 py-3 border-b border-white/10 flex items-center justify-between gap-2"
+      >
+        <div className="flex items-center gap-2">
+          <Clock className="w-4 h-4 text-white/70" />
+          <h3 className="nc-heading-section text-white">Grade de Programação</h3>
+        </div>
+        {epgTimeline.length > 0 && (
+          <span className="nc-text-meta text-white/50">
+            {epgTimeline.length} {epgTimeline.length === 1 ? 'programa' : 'programas'}
+          </span>
+        )}
+      </div>
+
+      <div
+        data-epg-scroll="true"
+        data-scroll-container="true"
+        className="nc-live-epg-scroll flex-1 min-h-0 md:overflow-y-auto custom-scrollbar touch-pan-y px-4 sm:px-5 py-4"
+      >
+        {epgTimeline.length === 0 ? (
+          (() => {
+            const epgStateKind: 'loading' | 'error' | 'empty' = rightPaneEpgLoading
+              ? 'loading'
+              : rightPaneEpg?.status === 'error'
+                ? 'error'
+                : 'empty';
+            return (
+              <div
+                key="epg-state-box"
+                tabIndex={0}
+                data-nav-item="true"
+                data-epg-primary="true"
+                data-epg-state={epgStateKind}
+                className="nc-tv-epg-state rounded-xl border border-white/10 bg-white/[0.03] p-5 text-center text-white/55 nc-text-subtitle flex items-center justify-center gap-2 focus:outline-none"
+              >
+                {epgStateKind === 'loading' ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Carregando programação...</span>
+                  </>
+                ) : epgStateKind === 'error' ? (
+                  <span>Programação indisponível no momento.</span>
+                ) : (
+                  <span>Nenhuma programação disponível para este canal.</span>
+                )}
+              </div>
+            );
+          })()
+        ) : (
+          <div className="nc-tv-epg-timeline space-y-2.5">
+            {epgTimeline.map((prog, idx) => (
+              <article
+                key={`${prog.id}_${prog.startMs}_${idx}`}
+                role="article"
+                tabIndex={0}
+                data-epg-item="true"
+                data-nav-item="true"
+                data-epg-primary={idx === 0 ? 'true' : undefined}
+                className={`nc-tv-epg-card rounded-xl border p-3.5 transition-colors ${
+                  prog.isCurrent
+                    ? 'border-white/35 bg-white/[0.08]'
+                    : 'border-white/10 bg-white/[0.03]'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="nc-text-meta font-semibold text-white/80 tabular-nums">
+                    {prog.startLabel} - {prog.endLabel}
+                  </span>
+                  {prog.isCurrent && (
+                    <span
+                      data-epg-live-badge="true"
+                      className="nc-badge-info px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20"
+                    >
+                      AO VIVO
+                    </span>
+                  )}
+                </div>
+                <h4 className="text-sm font-semibold text-white/95 leading-snug">
+                  {prog.title}
+                </h4>
+                {prog.description && (
+                  <p className="nc-text-meta text-white/60 mt-1 line-clamp-2">
+                    {prog.description}
+                  </p>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+interface LiveTvRightPaneProps {
+  credentials: XtreamCredentials | null;
+  selectedGroup: LiveChannelGroup | null;
+  selectedChannel: any | null;
+  selectedVariantIdOrAuto: string;
+  attemptTrigger: number;
+  fullscreenRequestTrigger: number;
+  playbackError: string | null;
+  isMobilePlayerOpen: boolean;
+  rightPaneEpg: LiveEpgSnapshot | null;
+  rightPaneEpgLoading: boolean;
+  videoPlayerRef: React.RefObject<VideoPlayerHandle | null>;
+  onMobileBackToChannels: () => void;
+  onSelectVariant: (variantIdOrAuto: string) => void;
+  onClosePreviewAndRestoreFocus: () => void;
+  onManualRetry: () => void;
+  onPlaybackSuccess: (attemptId?: number) => void;
+  onPlaybackFinalError: (errMsg: string) => void;
+}
+
+const LiveTvRightPane = React.memo(function LiveTvRightPane({
+  credentials,
+  selectedGroup,
+  selectedChannel,
+  selectedVariantIdOrAuto,
+  attemptTrigger,
+  fullscreenRequestTrigger,
+  playbackError,
+  isMobilePlayerOpen,
+  rightPaneEpg,
+  rightPaneEpgLoading,
+  videoPlayerRef,
+  onMobileBackToChannels,
+  onSelectVariant,
+  onClosePreviewAndRestoreFocus,
+  onManualRetry,
+  onPlaybackSuccess,
+  onPlaybackFinalError,
+}: LiveTvRightPaneProps) {
+  liveTvRenderStats.rightPaneRenders += 1;
+
+  const activeStreamUrl = useMemo(() => {
+    if (!credentials || !selectedChannel) return '';
+    const sId = selectedChannel.stream_id ?? selectedChannel.id;
+    if (!sId) return '';
+    return buildDirectMediaUrl(credentials, {
+      type: 'live',
+      streamId: sId,
+      allowedOutputFormats: credentials.allowed_output_formats,
+      directSource: selectedChannel.direct_source,
+    });
+  }, [credentials, selectedChannel]);
+
+  const activeResolutionBadge = useMemo(
+    () => getStreamResolutionLabel(selectedChannel, selectedGroup),
+    [selectedChannel, selectedGroup]
+  );
+
+  const rightPanePrimaryLogo = selectedGroup
+    ? selectedGroup.stream_icon || getGroupPrimaryStream(selectedGroup)?.stream_icon
+    : null;
+
+  const currentEpgProgram = rightPaneEpg?.currentProgram ?? null;
+
+  return (
+    <main
+      data-nav-zone="content"
+      className={`nc-live-right-pane w-full md:w-1/2 md:max-w-[50%] flex-1 md:flex-none flex-col min-w-0 min-h-0 bg-nc-bg overflow-y-auto md:overflow-hidden touch-pan-y ${
+        isMobilePlayerOpen ? 'flex' : 'hidden md:flex'
+      }`}
+    >
+      {!selectedGroup || !selectedChannel ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-center p-8 gap-3 text-white/60">
+          <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-center">
+            <Tv className="w-8 h-8 text-white/40" />
+          </div>
+          <h2 className="nc-heading-section text-white">Selecione um Canal</h2>
+          <p className="nc-text-subtitle text-white/55 max-w-sm">
+            Escolha um canal à esquerda para iniciar o preview ao vivo, alternar resoluções e consultar a programação completa.
+          </p>
+        </div>
+      ) : (
+        <div
+          data-live-content-stack="true"
+          className="flex-1 flex flex-col min-w-0 min-h-0 md:overflow-hidden"
+        >
+          {/* Mobile Back Bar (always rendered for mobile & responsive tests) */}
+          <div className="md:hidden shrink-0 px-4 pt-3 pb-2 border-b border-white/10 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              data-nav-item="true"
+              data-mobile-back="true"
+              onClick={onMobileBackToChannels}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>Voltar aos Canais</span>
+            </button>
+          </div>
+
+          {/* Top Section: Channel Info + Variants + Now Playing (Left) | Video Preview (Right) */}
+          <div
+            data-live-top-section="true"
+            className="nc-live-top-section shrink-0 p-4 sm:p-5 border-b border-white/10 flex flex-col-reverse md:flex-row gap-4 items-start min-w-0"
+          >
+            {/* Channel Metadata + Variant Selector + Now Playing Summary */}
+            <div
+              data-live-info-column="true"
+              className="flex-1 min-w-0 flex flex-col gap-3 w-full"
+            >
+              <div className="flex items-start gap-3.5 min-w-0">
+                <div className="nc-live-channel-logo relative w-14 h-14 shrink-0 rounded-xl bg-black/60 border border-white/10 flex items-center justify-center overflow-hidden p-1.5">
+                  <Tv className="w-6 h-6 text-white/25" aria-hidden="true" />
+                  {rightPanePrimaryLogo && (
+                    <MediaImage
+                      src={rightPanePrimaryLogo}
+                      serverUrl={credentials?.serverUrl}
+                      alt={selectedGroup.displayName}
+                      itemId={getStreamIdString(selectedChannel)}
+                      itemName={selectedGroup.displayName}
+                      className="relative z-10 w-full h-full object-contain"
+                    />
+                  )}
+                </div>
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <h1 className="nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words w-full">
+                      {selectedGroup.displayName}
+                    </h1>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    {activeResolutionBadge && (
+                      <span className="nc-badge-info text-xs font-semibold px-2.5 py-0.5 rounded bg-white/15 text-white/90">
+                        {activeResolutionBadge}
+                      </span>
+                    )}
+                    <span
+                      data-live-badge="true"
+                      className="nc-badge-info text-xs font-semibold inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" aria-hidden="true" />
+                      <span>AO VIVO</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Variant Selector Row (only rendered when multiple resolutions exist) */}
+              {selectedGroup.isGrouped && Array.isArray(selectedGroup.variants) && selectedGroup.variants.length > 1 && (
+                <div className="space-y-1.5 min-w-0">
+                  <span
+                    data-live-variant-label="true"
+                    className="nc-live-variant-label text-sm font-medium text-white/65 block"
+                  >
+                    Versão do canal
+                  </span>
+                  <div
+                    data-nav-row="true"
+                    data-live-variants-row="true"
+                    className="flex items-center gap-2 overflow-x-auto scrollbar-hide touch-pan-x py-1 max-w-full"
+                  >
+                    <button
+                      type="button"
+                      data-nav-item="true"
+                      data-variant-active={selectedVariantIdOrAuto === 'auto' ? 'true' : 'false'}
+                      onClick={() => onSelectVariant('auto')}
+                      className={`shrink-0 px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                        selectedVariantIdOrAuto === 'auto'
+                          ? 'bg-white text-black'
+                          : 'bg-white/10 text-white/80 hover:bg-white/20 hover:text-white'
+                      }`}
+                    >
+                      Automático
+                    </button>
+                    {selectedGroup.variants.map((variant) => {
+                      const vIdStr = String(variant.streamId);
+                      const isActive = selectedVariantIdOrAuto === vIdStr;
+                      return (
+                        <button
+                          key={vIdStr}
+                          type="button"
+                          data-nav-item="true"
+                          data-variant-active={isActive ? 'true' : 'false'}
+                          onClick={() => onSelectVariant(vIdStr)}
+                          className={`shrink-0 px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                            isActive
+                              ? 'bg-white text-black'
+                              : 'bg-white/10 text-white/80 hover:bg-white/20 hover:text-white'
+                          }`}
+                        >
+                          {variant.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Now Playing Summary Card */}
+              {currentEpgProgram && (
+                <div className="nc-live-now-playing rounded-lg bg-white/[0.04] border border-white/10 p-3 min-w-0">
+                  <div className="flex items-baseline justify-between gap-2.5 text-[0.8125rem] sm:text-sm text-white/70">
+                    <span
+                      data-live-now-playing-title="true"
+                      className="nc-live-now-playing-title text-[0.9375rem] sm:text-base font-semibold text-white/95 truncate"
+                    >
+                      {currentEpgProgram.title}
+                    </span>
+                    {(currentEpgProgram.startLabel || currentEpgProgram.endLabel) && (
+                      <span
+                        data-live-now-playing-time="true"
+                        className="nc-live-now-playing-time text-[0.8125rem] sm:text-sm text-white/70 shrink-0 tabular-nums"
+                      >
+                        {currentEpgProgram.startLabel} - {currentEpgProgram.endLabel}
+                      </span>
+                    )}
+                  </div>
+                  {currentEpgProgram.description && (
+                    <p
+                      data-live-now-playing-desc="true"
+                      className="nc-live-now-playing-desc text-[0.8125rem] sm:text-sm text-white/65 mt-1.5 line-clamp-2 leading-relaxed"
+                    >
+                      {currentEpgProgram.description}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {playbackError && (
+                <p className="nc-notice-banner rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-200">
+                  {playbackError}
+                </p>
+              )}
+            </div>
+
+            {/* Video Preview */}
+            <div
+              data-live-preview-column="true"
+              className="nc-live-preview-box w-full md:w-[clamp(15rem,23.5vw,23.5rem)] shrink-0 aspect-video rounded-xl overflow-hidden bg-black border border-white/10 relative"
+            >
+              <VideoPlayer
+                ref={videoPlayerRef}
+                playerRef={videoPlayerRef}
+                streamUrl={activeStreamUrl}
+                title={selectedGroup.displayName}
+                contentType="live"
+                channelName={selectedGroup.displayName}
+                programTitle={currentEpgProgram?.title}
+                streamId={selectedChannel.stream_id ?? selectedChannel.id}
+                attemptTrigger={attemptTrigger}
+                fullscreenRequestTrigger={fullscreenRequestTrigger}
+                embedded={true}
+                disableEmbeddedControlsFocus={true}
+                onBack={onClosePreviewAndRestoreFocus}
+                onRetry={onManualRetry}
+                onPlaybackSuccess={onPlaybackSuccess}
+                onPlaybackFinalError={onPlaybackFinalError}
+              />
+            </div>
+          </div>
+
+          {/* Bottom Section: EPG Timeline */}
+          <LiveTvEpgSection
+            rightPaneEpg={rightPaneEpg}
+            rightPaneEpgLoading={rightPaneEpgLoading}
+          />
+        </div>
+      )}
+    </main>
+  );
 });
 
 // ============================================================================
@@ -1206,6 +1684,7 @@ export const LiveTvView = React.memo(function LiveTvView({
   initialChannelIntent = null,
   onConsumeChannelIntent,
 }: LiveTvViewProps) {
+  liveTvRenderStats.viewRenders += 1;
   const { credentials } = useXtreamCredentials();
   const {
     liveCategories,
@@ -1269,22 +1748,28 @@ export const LiveTvView = React.memo(function LiveTvView({
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [isMobilePlayerOpen, setIsMobilePlayerOpen] = useState<boolean>(false);
 
+  const videoPlayerRef = useRef<VideoPlayerHandle | null>(null);
+  const selectedGroupRef = useRef<LiveChannelGroup | null>(selectedGroup);
+  selectedGroupRef.current = selectedGroup;
+  const selectedChannelRef = useRef<any | null>(selectedChannel);
+  selectedChannelRef.current = selectedChannel;
+  const isMobilePlayerOpenRef = useRef<boolean>(isMobilePlayerOpen);
+  isMobilePlayerOpenRef.current = isMobilePlayerOpen;
+
   // EPG state for right pane
   const [rightPaneEpg, setRightPaneEpg] = useState<LiveEpgSnapshot | null>(null);
   const [rightPaneEpgLoading, setRightPaneEpgLoading] = useState<boolean>(false);
 
-  // Focus origin tracking for spatial navigation between left catalog and right pane
-  const [originState, setOriginState] = useState<{
-    groupId: string | null;
-    categoryId: string | null;
-    rowIndex: number;
-    cardIndex: number;
-  }>({
+  // Localized focus origin tracking (avoids re-rendering LiveTvView and rows on every arrow key)
+  const originRef = useRef<LiveFocusOriginSnapshot>({
     groupId: null,
     categoryId: null,
     rowIndex: -1,
     cardIndex: -1,
   });
+  const activeOriginBtnRef = useRef<HTMLButtonElement | null>(null);
+
+  const getOriginSnapshot = useCallback((): LiveFocusOriginSnapshot => originRef.current, []);
 
   // Playback fallback state & cleanup refs
   const isMountedRef = useRef<boolean>(true);
@@ -1489,11 +1974,135 @@ export const LiveTvView = React.memo(function LiveTvView({
     resolveGroupByStreamId,
   ]);
 
+  const categoryRowsRef = useRef<LiveCategoryRowDescriptor[]>(categoryRows);
+  categoryRowsRef.current = categoryRows;
+
+  // Left-pane vertical virtualization + showcase row controller
+  const leftScrollRef = useRef<HTMLDivElement | null>(null);
+  const leftVirtualRef = useRef<HTMLDivElement | null>(null);
+
+  const resolveEffectiveOriginRowIndex = useCallback(
+    (
+      snap: LiveFocusOriginSnapshot = originRef.current,
+      rows: LiveCategoryRowDescriptor[] = categoryRowsRef.current
+    ): number => {
+      if (!snap.categoryId) return snap.rowIndex;
+      const dynamicIdx = rows.findIndex((r) => r.categoryId === snap.categoryId);
+      return dynamicIdx >= 0 ? dynamicIdx : snap.rowIndex;
+    },
+    []
+  );
+
+  const syncOriginDomAttributes = useCallback(
+    (snap: LiveFocusOriginSnapshot = originRef.current) => {
+      const containerEl = leftScrollRef.current;
+      if (!containerEl) return;
+
+      const effectiveRowIdx = resolveEffectiveOriginRowIndex(snap);
+      if (effectiveRowIdx >= 0) {
+        containerEl.setAttribute('data-live-origin-row-index', String(effectiveRowIdx));
+      } else {
+        containerEl.removeAttribute('data-live-origin-row-index');
+      }
+
+      if (snap.cardIndex >= 0) {
+        containerEl.setAttribute('data-live-origin-card-index', String(snap.cardIndex));
+      } else {
+        containerEl.removeAttribute('data-live-origin-card-index');
+      }
+
+      const prevBtn = activeOriginBtnRef.current;
+      if (prevBtn) {
+        const stillMatches =
+          snap.groupId !== null &&
+          snap.categoryId !== null &&
+          prevBtn.getAttribute('data-live-channel-group-id') === snap.groupId &&
+          prevBtn.getAttribute('data-live-channel-category-id') === snap.categoryId;
+        if (!stillMatches) {
+          prevBtn.removeAttribute('data-live-channel-origin');
+          activeOriginBtnRef.current = null;
+        }
+      }
+
+      const markedBtns = containerEl.querySelectorAll<HTMLButtonElement>(
+        'button[data-live-channel-origin="true"]'
+      );
+      for (let i = 0; i < markedBtns.length; i++) {
+        const btn = markedBtns[i];
+        const matches =
+          snap.groupId !== null &&
+          snap.categoryId !== null &&
+          btn.getAttribute('data-live-channel-group-id') === snap.groupId &&
+          btn.getAttribute('data-live-channel-category-id') === snap.categoryId;
+        if (!matches) {
+          btn.removeAttribute('data-live-channel-origin');
+        } else {
+          activeOriginBtnRef.current = btn;
+        }
+      }
+
+      if (snap.groupId !== null && snap.categoryId !== null) {
+        let targetBtn: HTMLButtonElement | null = null;
+        if (effectiveRowIdx >= 0 && snap.cardIndex >= 0) {
+          const candidate = containerEl.querySelector<HTMLButtonElement>(
+            `[data-home-row-index="${effectiveRowIdx}"] button[data-live-channel-btn="true"][data-row-card-index="${snap.cardIndex}"]`
+          );
+          if (
+            candidate &&
+            candidate.getAttribute('data-live-channel-group-id') === snap.groupId &&
+            candidate.getAttribute('data-live-channel-category-id') === snap.categoryId
+          ) {
+            targetBtn = candidate;
+          }
+        }
+
+        if (!targetBtn) {
+          const allBtns = containerEl.querySelectorAll<HTMLButtonElement>(
+            'button[data-live-channel-btn="true"]'
+          );
+          for (let i = 0; i < allBtns.length; i++) {
+            const btn = allBtns[i];
+            if (
+              btn.getAttribute('data-live-channel-group-id') === snap.groupId &&
+              btn.getAttribute('data-live-channel-category-id') === snap.categoryId
+            ) {
+              targetBtn = btn;
+              break;
+            }
+          }
+        }
+
+        if (targetBtn) {
+          if (targetBtn.getAttribute('data-live-channel-origin') !== 'true') {
+            targetBtn.setAttribute('data-live-channel-origin', 'true');
+          }
+          activeOriginBtnRef.current = targetBtn;
+        }
+      }
+    },
+    [resolveEffectiveOriginRowIndex]
+  );
+
+  const updateOriginSnapshot = useCallback(
+    (groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => {
+      const nextSnap: LiveFocusOriginSnapshot = {
+        groupId,
+        categoryId,
+        rowIndex,
+        cardIndex,
+      };
+      originRef.current = nextSnap;
+      syncOriginDomAttributes(nextSnap);
+    },
+    [syncOriginDomAttributes]
+  );
+
   // Schedule 28s fallback timer if a playback attempt stalls before reporting success
   const startPlaybackAttempt = useCallback(
     (group: LiveChannelGroup, variant: ChannelVariant, variantSelection: string) => {
       clearFallbackTimer();
       const attemptId = ++activeAttemptIdRef.current;
+      selectedChannelRef.current = variant.stream;
       setSelectedChannel(variant.stream);
       setPlaybackError(null);
       setAttemptTrigger((n) => n + 1);
@@ -1526,25 +2135,26 @@ export const LiveTvView = React.memo(function LiveTvView({
     [clearFallbackTimer]
   );
 
-  // Select a channel group from left pane (or enter fullscreen on 2nd click on desktop)
+  // Select a channel group from left pane (or enter fullscreen immediately on 2nd OK)
   const handleSelectGroup = useCallback(
     (group: LiveChannelGroup, categoryId?: string, rowIndex?: number, cardIndex?: number) => {
       if (typeof categoryId === 'string' && typeof rowIndex === 'number' && typeof cardIndex === 'number') {
-        setOriginState({
-          groupId: group.groupId,
-          categoryId,
-          rowIndex,
-          cardIndex,
-        });
+        updateOriginSnapshot(group.groupId, categoryId, rowIndex, cardIndex);
       }
 
-      const isAlreadySelected = selectedGroup?.groupId === group.groupId && selectedChannel !== null;
+      const currentSelectedGroup = selectedGroupRef.current;
+      const currentSelectedChannel = selectedChannelRef.current;
+      const isAlreadySelected =
+        currentSelectedGroup?.groupId === group.groupId && currentSelectedChannel !== null;
       const isNarrowViewport =
         typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 768;
 
       if (isAlreadySelected) {
-        if (isNarrowViewport && !isMobilePlayerOpen) {
+        if (isNarrowViewport && !isMobilePlayerOpenRef.current) {
+          isMobilePlayerOpenRef.current = true;
           setIsMobilePlayerOpen(true);
+        } else if (videoPlayerRef.current) {
+          void videoPlayerRef.current.requestFullscreenImmediate();
         } else {
           setFullscreenRequestTrigger((n) => n + 1);
         }
@@ -1552,10 +2162,12 @@ export const LiveTvView = React.memo(function LiveTvView({
       }
 
       triedStreamIdsRef.current = new Set();
+      selectedGroupRef.current = group;
       setSelectedGroup(group);
       setSelectedVariantIdOrAuto('auto');
 
       if (isNarrowViewport) {
+        isMobilePlayerOpenRef.current = true;
         setIsMobilePlayerOpen(true);
       }
 
@@ -1570,11 +2182,12 @@ export const LiveTvView = React.memo(function LiveTvView({
       } else {
         const fallbackStream = getGroupPrimaryStream(group);
         clearFallbackTimer();
+        selectedChannelRef.current = fallbackStream;
         setSelectedChannel(fallbackStream);
         setPlaybackError(fallbackStream ? null : 'Canal indisponível.');
       }
     },
-    [selectedGroup, selectedChannel, isMobilePlayerOpen, startPlaybackAttempt, clearFallbackTimer]
+    [updateOriginSnapshot, startPlaybackAttempt, clearFallbackTimer]
   );
 
   // Handle direct channel launch intent from Home
@@ -1599,10 +2212,12 @@ export const LiveTvView = React.memo(function LiveTvView({
 
     consumedIntentIdRef.current = initialChannelIntent.requestId;
     triedStreamIdsRef.current = new Set();
+    selectedGroupRef.current = matchedGroup;
     setSelectedGroup(matchedGroup);
     setSelectedVariantIdOrAuto('auto');
 
     if (typeof window !== 'undefined' && window.innerWidth > 0 && window.innerWidth < 768) {
+      isMobilePlayerOpenRef.current = true;
       setIsMobilePlayerOpen(true);
     }
 
@@ -1615,6 +2230,7 @@ export const LiveTvView = React.memo(function LiveTvView({
       startPlaybackAttempt(matchedGroup, initialVariant, 'auto');
     } else {
       const primary = getGroupPrimaryStream(matchedGroup);
+      selectedChannelRef.current = primary;
       setSelectedChannel(primary);
     }
 
@@ -1631,34 +2247,40 @@ export const LiveTvView = React.memo(function LiveTvView({
   // Select manual variant or Automático in right pane
   const handleSelectVariant = useCallback(
     (variantIdOrAuto: string) => {
-      if (!selectedGroup) return;
+      const group = selectedGroupRef.current;
+      if (!group) return;
       setSelectedVariantIdOrAuto(variantIdOrAuto);
       triedStreamIdsRef.current = new Set();
       const targetVariant = selectChannelVariantForAttempt(
-        selectedGroup,
+        group,
         variantIdOrAuto,
         triedStreamIdsRef.current
       );
       if (targetVariant) {
-        startPlaybackAttempt(selectedGroup, targetVariant, variantIdOrAuto);
+        startPlaybackAttempt(group, targetVariant, variantIdOrAuto);
       }
     },
-    [selectedGroup, startPlaybackAttempt]
+    [startPlaybackAttempt]
   );
+
+  const selectedVariantRef = useRef<string>(selectedVariantIdOrAuto);
+  selectedVariantRef.current = selectedVariantIdOrAuto;
 
   // Manual retry button on playback error
   const handleManualRetry = useCallback(() => {
-    if (!selectedGroup) return;
+    const group = selectedGroupRef.current;
+    if (!group) return;
+    const variantSel = selectedVariantRef.current;
     triedStreamIdsRef.current = new Set();
     const targetVariant = selectChannelVariantForAttempt(
-      selectedGroup,
-      selectedVariantIdOrAuto,
+      group,
+      variantSel,
       triedStreamIdsRef.current
     );
     if (targetVariant) {
-      startPlaybackAttempt(selectedGroup, targetVariant, selectedVariantIdOrAuto);
+      startPlaybackAttempt(group, targetVariant, variantSel);
     }
-  }, [selectedGroup, selectedVariantIdOrAuto, startPlaybackAttempt]);
+  }, [startPlaybackAttempt]);
 
   // VideoPlayer callbacks
   const handlePlaybackSuccess = useCallback(
@@ -1666,8 +2288,9 @@ export const LiveTvView = React.memo(function LiveTvView({
       clearFallbackTimer();
       playbackSucceededAttemptRef.current = attemptId ?? activeAttemptIdRef.current;
       setPlaybackError(null);
-      if (credentials && selectedChannel) {
-        const sId = getStreamIdString(selectedChannel);
+      const currentChannel = selectedChannelRef.current;
+      if (credentials && currentChannel) {
+        const sId = getStreamIdString(currentChannel);
         if (sId) {
           recordPlaybackPosition(credentials, {
             id: sId,
@@ -1677,35 +2300,38 @@ export const LiveTvView = React.memo(function LiveTvView({
         }
       }
     },
-    [clearFallbackTimer, credentials, selectedChannel]
+    [clearFallbackTimer, credentials]
   );
 
   const handlePlaybackFinalError = useCallback(
     (errMsg: string) => {
       clearFallbackTimer();
-      if (!selectedGroup || !selectedChannel) {
+      const group = selectedGroupRef.current;
+      const currentChannel = selectedChannelRef.current;
+      const variantSel = selectedVariantRef.current;
+      if (!group || !currentChannel) {
         setPlaybackError(errMsg || 'Erro ao reproduzir canal.');
         return;
       }
 
-      const failedId = getStreamIdString(selectedChannel);
+      const failedId = getStreamIdString(currentChannel);
       if (failedId) {
         triedStreamIdsRef.current.add(failedId);
       }
 
       const nextVariant = selectChannelVariantForAttempt(
-        selectedGroup,
-        selectedVariantIdOrAuto,
+        group,
+        variantSel,
         triedStreamIdsRef.current
       );
 
       if (nextVariant) {
-        startPlaybackAttempt(selectedGroup, nextVariant, selectedVariantIdOrAuto);
+        startPlaybackAttempt(group, nextVariant, variantSel);
       } else {
         setPlaybackError(errMsg || 'Não foi possível reproduzir este canal.');
       }
     },
-    [clearFallbackTimer, selectedGroup, selectedChannel, selectedVariantIdOrAuto, startPlaybackAttempt]
+    [clearFallbackTimer, startPlaybackAttempt]
   );
 
   // Right-pane EPG subscription keyed on canonical group stream ID (SD -> HD -> FHD -> 4K)
@@ -1748,78 +2374,6 @@ export const LiveTvView = React.memo(function LiveTvView({
     };
   }, [credentials, rightPaneEpgStreamId]);
 
-  // Close preview and restore focus to the previously selected channel button in left pane
-  const closePreviewAndRestoreFocus = useCallback(() => {
-    const prevPrimaryId = getStreamIdString(selectedChannel) || getStreamIdString(getGroupPrimaryStream(selectedGroup));
-    const prevGroupId = selectedGroup?.groupId;
-
-    clearFallbackTimer();
-    activeAttemptIdRef.current += 1;
-    setSelectedGroup(null);
-    setSelectedChannel(null);
-    setPlaybackError(null);
-    setIsMobilePlayerOpen(false);
-
-    if (getNavMode() === 'remote' && typeof document !== 'undefined') {
-      const allChannelBtns = Array.from(
-        document.querySelectorAll<HTMLButtonElement>('button[data-live-channel-btn="true"]')
-      );
-      const targetBtn =
-        (prevGroupId && originState.categoryId
-          ? allChannelBtns.find(
-              (btn) =>
-                btn.getAttribute('data-live-channel-group-id') === prevGroupId &&
-                btn.getAttribute('data-live-channel-category-id') === originState.categoryId
-            ) || null
-          : null) ||
-        (prevGroupId
-          ? allChannelBtns.find(
-              (btn) => btn.getAttribute('data-live-channel-group-id') === prevGroupId
-            ) || null
-          : null) ||
-        (prevPrimaryId
-          ? allChannelBtns.find(
-              (btn) => btn.getAttribute('data-live-channel-id') === prevPrimaryId
-            ) || null
-          : null) ||
-        document.querySelector<HTMLButtonElement>('button[data-live-channel-selected="true"]');
-
-      if (targetBtn && targetBtn.isConnected) {
-        focusElementSafely(targetBtn);
-      }
-    }
-  }, [selectedChannel, selectedGroup, originState.categoryId, clearFallbackTimer]);
-
-  const handleMobileBackToChannels = useCallback(() => {
-    if (isMobilePlayerOpen) {
-      setIsMobilePlayerOpen(false);
-      return;
-    }
-    closePreviewAndRestoreFocus();
-  }, [isMobilePlayerOpen, closePreviewAndRestoreFocus]);
-
-  // Register Back handler for closing mobile player or active preview
-  useBackHandler(
-    'live-tv-view',
-    BACK_PRIORITY.VIEW_INTERNAL,
-    () => {
-      if (isMobilePlayerOpen) {
-        setIsMobilePlayerOpen(false);
-        return true;
-      }
-      if (selectedGroup) {
-        closePreviewAndRestoreFocus();
-        return true;
-      }
-      return false;
-    },
-    Boolean(isMobilePlayerOpen || selectedGroup)
-  );
-
-  // Left-pane vertical virtualization + showcase row controller
-  const leftScrollRef = useRef<HTMLDivElement | null>(null);
-  const leftVirtualRef = useRef<HTMLDivElement | null>(null);
-
   const {
     startIndex: rowStartIndex,
     endIndex: rowEndIndex,
@@ -1838,6 +2392,89 @@ export const LiveTvView = React.memo(function LiveTvView({
     fallbackItemHeightPx: 148,
     resetKey: `live_rows_${normalizedSearch}`,
   });
+
+  // Close preview and restore focus to the previously selected channel button in left pane
+  const closePreviewAndRestoreFocus = useCallback(() => {
+    const currentChannel = selectedChannelRef.current;
+    const currentGroup = selectedGroupRef.current;
+    const prevPrimaryId =
+      getStreamIdString(currentChannel) || getStreamIdString(getGroupPrimaryStream(currentGroup));
+    const prevGroupId = currentGroup?.groupId ?? originRef.current.groupId;
+    const originCategoryId = originRef.current.categoryId;
+
+    clearFallbackTimer();
+    activeAttemptIdRef.current += 1;
+    selectedGroupRef.current = null;
+    selectedChannelRef.current = null;
+    isMobilePlayerOpenRef.current = false;
+    setSelectedGroup(null);
+    setSelectedChannel(null);
+    setPlaybackError(null);
+    setIsMobilePlayerOpen(false);
+
+    if (getNavMode() === 'remote' && typeof document !== 'undefined') {
+      const effectiveRowIdx = resolveEffectiveOriginRowIndex(originRef.current);
+      if (effectiveRowIdx >= 0) {
+        ensureRowMounted(effectiveRowIdx);
+      }
+
+      const allChannelBtns = Array.from(
+        document.querySelectorAll<HTMLButtonElement>('button[data-live-channel-btn="true"]')
+      );
+      const targetBtn =
+        document.querySelector<HTMLButtonElement>('button[data-live-channel-origin="true"]') ||
+        (prevGroupId && originCategoryId
+          ? allChannelBtns.find(
+              (btn) =>
+                btn.getAttribute('data-live-channel-group-id') === prevGroupId &&
+                btn.getAttribute('data-live-channel-category-id') === originCategoryId
+            ) || null
+          : null) ||
+        (prevGroupId
+          ? allChannelBtns.find(
+              (btn) => btn.getAttribute('data-live-channel-group-id') === prevGroupId
+            ) || null
+          : null) ||
+        (prevPrimaryId
+          ? allChannelBtns.find(
+              (btn) => btn.getAttribute('data-live-channel-id') === prevPrimaryId
+            ) || null
+          : null) ||
+        document.querySelector<HTMLButtonElement>('button[data-live-channel-selected="true"]');
+
+      if (targetBtn && targetBtn.isConnected) {
+        focusElementSafely(targetBtn);
+      }
+    }
+  }, [clearFallbackTimer, resolveEffectiveOriginRowIndex, ensureRowMounted]);
+
+  const handleMobileBackToChannels = useCallback(() => {
+    if (isMobilePlayerOpenRef.current) {
+      isMobilePlayerOpenRef.current = false;
+      setIsMobilePlayerOpen(false);
+      return;
+    }
+    closePreviewAndRestoreFocus();
+  }, [closePreviewAndRestoreFocus]);
+
+  // Register Back handler for closing mobile player or active preview
+  useBackHandler(
+    'live-tv-view',
+    BACK_PRIORITY.VIEW_INTERNAL,
+    () => {
+      if (isMobilePlayerOpenRef.current) {
+        isMobilePlayerOpenRef.current = false;
+        setIsMobilePlayerOpen(false);
+        return true;
+      }
+      if (selectedGroupRef.current) {
+        closePreviewAndRestoreFocus();
+        return true;
+      }
+      return false;
+    },
+    Boolean(isMobilePlayerOpen || selectedGroup)
+  );
 
   const [leftScrollNode, setLeftScrollNode] = useState<HTMLDivElement | null>(null);
   const setLeftScrollRef = useCallback(
@@ -1869,41 +2506,29 @@ export const LiveTvView = React.memo(function LiveTvView({
     };
   }, [leftScrollNode, categoryRows.length, ensureRowMounted]);
 
-  const handleFocusCard = useCallback((groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => {
-    setOriginState({ groupId, categoryId, rowIndex, cardIndex });
-  }, []);
+  // Keep origin DOM attributes synchronized when category rows or vertical virtualization window changes
+  useLayoutEffect(() => {
+    const currentSnap = originRef.current;
+    if (currentSnap.categoryId) {
+      const effectiveRowIdx = resolveEffectiveOriginRowIndex(currentSnap, categoryRows);
+      if (effectiveRowIdx >= 0 && effectiveRowIdx !== currentSnap.rowIndex) {
+        originRef.current = {
+          ...currentSnap,
+          rowIndex: effectiveRowIdx,
+        };
+      }
+    }
+    syncOriginDomAttributes(originRef.current);
+  }, [categoryRows, rowStartIndex, rowEndIndex, resolveEffectiveOriginRowIndex, syncOriginDomAttributes]);
 
-  const effectiveOriginRowIndex = useMemo(() => {
-    if (!originState.categoryId) return originState.rowIndex;
-    const dynamicIdx = categoryRows.findIndex((r) => r.categoryId === originState.categoryId);
-    return dynamicIdx >= 0 ? dynamicIdx : originState.rowIndex;
-  }, [categoryRows, originState.categoryId, originState.rowIndex]);
-
-  // Derived playback URL for VideoPlayer
-  const activeStreamUrl = useMemo(() => {
-    if (!credentials || !selectedChannel) return '';
-    const sId = selectedChannel.stream_id ?? selectedChannel.id;
-    if (!sId) return '';
-    return buildDirectMediaUrl(credentials, {
-      type: 'live',
-      streamId: sId,
-      allowedOutputFormats: credentials.allowed_output_formats,
-      directSource: selectedChannel.direct_source,
-    });
-  }, [credentials, selectedChannel]);
-
-  const activeResolutionBadge = useMemo(
-    () => getStreamResolutionLabel(selectedChannel, selectedGroup),
-    [selectedChannel, selectedGroup]
+  const handleFocusCard = useCallback(
+    (groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => {
+      updateOriginSnapshot(groupId, categoryId, rowIndex, cardIndex);
+    },
+    [updateOriginSnapshot]
   );
 
-  const rightPanePrimaryLogo = selectedGroup
-    ? selectedGroup.stream_icon || getGroupPrimaryStream(selectedGroup)?.stream_icon
-    : null;
-
-  const currentEpgProgram = rightPaneEpg?.currentProgram ?? null;
-  const epgTimeline = rightPaneEpg?.timeline ?? [];
-
+  const effectiveOriginRowIndex = resolveEffectiveOriginRowIndex(originRef.current, categoryRows);
   const visibleCategoryRows = categoryRows.slice(rowStartIndex, rowEndIndex);
 
   return (
@@ -1935,7 +2560,7 @@ export const LiveTvView = React.memo(function LiveTvView({
           data-showcase-virtualized="true"
           data-showcase-total-rows={categoryRows.length}
           data-live-origin-row-index={effectiveOriginRowIndex >= 0 ? effectiveOriginRowIndex : undefined}
-          data-live-origin-card-index={originState.cardIndex >= 0 ? originState.cardIndex : undefined}
+          data-live-origin-card-index={originRef.current.cardIndex >= 0 ? originRef.current.cardIndex : undefined}
           onScroll={() => notifyContainerScrollForFallback(leftScrollRef.current)}
           style={{ overflowAnchor: 'none' }}
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar touch-pan-y px-4 sm:px-6 py-4"
@@ -1989,8 +2614,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                       credentials={credentials}
                       leftScrollEl={leftScrollNode}
                       selectedGroupId={selectedGroup?.groupId ?? null}
-                      originGroupId={originState.groupId}
-                      originCategoryId={originState.categoryId}
+                      getOriginSnapshot={getOriginSnapshot}
                       isGroupFavorite={isGroupFavorite}
                       onSelectGroup={handleSelectGroup}
                       onToggleFavorite={handleToggleFavorite}
@@ -2015,301 +2639,25 @@ export const LiveTvView = React.memo(function LiveTvView({
       {/* ===================================================================
           RIGHT PANE (~50%): Channel preview, variants, details, and EPG schedule
          =================================================================== */}
-      <main
-        data-nav-zone="content"
-        className={`nc-live-right-pane w-full md:w-1/2 md:max-w-[50%] flex-1 md:flex-none flex-col min-w-0 min-h-0 bg-nc-bg overflow-y-auto md:overflow-hidden touch-pan-y ${
-          isMobilePlayerOpen ? 'flex' : 'hidden md:flex'
-        }`}
-      >
-        {!selectedGroup || !selectedChannel ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center p-8 gap-3 text-white/60">
-            <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-center">
-              <Tv className="w-8 h-8 text-white/40" />
-            </div>
-            <h2 className="nc-heading-section text-white">Selecione um Canal</h2>
-            <p className="nc-text-subtitle text-white/55 max-w-sm">
-              Escolha um canal à esquerda para iniciar o preview ao vivo, alternar resoluções e consultar a programação completa.
-            </p>
-          </div>
-        ) : (
-          <div
-            data-live-content-stack="true"
-            className="flex-1 flex flex-col min-w-0 min-h-0 md:overflow-hidden"
-          >
-            {/* Mobile Back Bar (always rendered for mobile & responsive tests) */}
-            <div className="md:hidden shrink-0 px-4 pt-3 pb-2 border-b border-white/10 flex items-center justify-between gap-2">
-              <button
-                type="button"
-                data-nav-item="true"
-                data-mobile-back="true"
-                onClick={handleMobileBackToChannels}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                <span>Voltar aos Canais</span>
-              </button>
-            </div>
-
-            {/* Top Section: Channel Info + Variants + Now Playing (Left) | Video Preview (Right) */}
-            <div
-              data-live-top-section="true"
-              className="nc-live-top-section shrink-0 p-4 sm:p-5 border-b border-white/10 flex flex-col-reverse md:flex-row gap-4 items-start min-w-0"
-            >
-              {/* Channel Metadata + Variant Selector + Now Playing Summary */}
-              <div
-                data-live-info-column="true"
-                className="flex-1 min-w-0 flex flex-col gap-3 w-full"
-              >
-                <div className="flex items-start gap-3.5 min-w-0">
-                  <div className="nc-live-channel-logo relative w-14 h-14 shrink-0 rounded-xl bg-black/60 border border-white/10 flex items-center justify-center overflow-hidden p-1.5">
-                    <Tv className="w-6 h-6 text-white/25" aria-hidden="true" />
-                    {rightPanePrimaryLogo && (
-                      <MediaImage
-                        src={rightPanePrimaryLogo}
-                        serverUrl={credentials?.serverUrl}
-                        alt={selectedGroup.displayName}
-                        itemId={getStreamIdString(selectedChannel)}
-                        itemName={selectedGroup.displayName}
-                        className="relative z-10 w-full h-full object-contain"
-                      />
-                    )}
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <h1 className="nc-live-channel-title nc-heading-section font-bold text-white line-clamp-2 whitespace-normal break-words w-full">
-                        {selectedGroup.displayName}
-                      </h1>
-                    </div>
-                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      {activeResolutionBadge && (
-                        <span className="nc-badge-info text-xs font-semibold px-2.5 py-0.5 rounded bg-white/15 text-white/90">
-                          {activeResolutionBadge}
-                        </span>
-                      )}
-                      <span
-                        data-live-badge="true"
-                        className="nc-badge-info text-xs font-semibold inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20"
-                      >
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" aria-hidden="true" />
-                        <span>AO VIVO</span>
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Variant Selector Row (only rendered when multiple resolutions exist) */}
-                {selectedGroup.isGrouped && Array.isArray(selectedGroup.variants) && selectedGroup.variants.length > 1 && (
-                  <div className="space-y-1.5 min-w-0">
-                    <span
-                      data-live-variant-label="true"
-                      className="nc-live-variant-label text-sm font-medium text-white/65 block"
-                    >
-                      Versão do canal
-                    </span>
-                    <div
-                      data-nav-row="true"
-                      data-live-variants-row="true"
-                      className="flex items-center gap-2 overflow-x-auto scrollbar-hide touch-pan-x py-1 max-w-full"
-                    >
-                      <button
-                        type="button"
-                        data-nav-item="true"
-                        data-variant-active={selectedVariantIdOrAuto === 'auto' ? 'true' : 'false'}
-                        onClick={() => handleSelectVariant('auto')}
-                        className={`shrink-0 px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
-                          selectedVariantIdOrAuto === 'auto'
-                            ? 'bg-white text-black'
-                            : 'bg-white/10 text-white/80 hover:bg-white/20 hover:text-white'
-                        }`}
-                      >
-                        Automático
-                      </button>
-                      {selectedGroup.variants.map((variant) => {
-                        const vIdStr = String(variant.streamId);
-                        const isActive = selectedVariantIdOrAuto === vIdStr;
-                        return (
-                          <button
-                            key={vIdStr}
-                            type="button"
-                            data-nav-item="true"
-                            data-variant-active={isActive ? 'true' : 'false'}
-                            onClick={() => handleSelectVariant(vIdStr)}
-                            className={`shrink-0 px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
-                              isActive
-                                ? 'bg-white text-black'
-                                : 'bg-white/10 text-white/80 hover:bg-white/20 hover:text-white'
-                            }`}
-                          >
-                            {variant.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Now Playing Summary Card */}
-                {currentEpgProgram && (
-                  <div className="nc-live-now-playing rounded-lg bg-white/[0.04] border border-white/10 p-3 min-w-0">
-                    <div className="flex items-baseline justify-between gap-2.5 text-[0.8125rem] sm:text-sm text-white/70">
-                      <span
-                        data-live-now-playing-title="true"
-                        className="nc-live-now-playing-title text-[0.9375rem] sm:text-base font-semibold text-white/95 truncate"
-                      >
-                        {currentEpgProgram.title}
-                      </span>
-                      {(currentEpgProgram.startLabel || currentEpgProgram.endLabel) && (
-                        <span
-                          data-live-now-playing-time="true"
-                          className="nc-live-now-playing-time text-[0.8125rem] sm:text-sm text-white/70 shrink-0 tabular-nums"
-                        >
-                          {currentEpgProgram.startLabel} - {currentEpgProgram.endLabel}
-                        </span>
-                      )}
-                    </div>
-                    {currentEpgProgram.description && (
-                      <p
-                        data-live-now-playing-desc="true"
-                        className="nc-live-now-playing-desc text-[0.8125rem] sm:text-sm text-white/65 mt-1.5 line-clamp-2 leading-relaxed"
-                      >
-                        {currentEpgProgram.description}
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {playbackError && (
-                  <p className="nc-notice-banner rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-200">
-                    {playbackError}
-                  </p>
-                )}
-              </div>
-
-              {/* Video Preview */}
-              <div
-                data-live-preview-column="true"
-                className="nc-live-preview-box w-full md:w-[clamp(15rem,23.5vw,23.5rem)] shrink-0 aspect-video rounded-xl overflow-hidden bg-black border border-white/10 relative"
-              >
-                <VideoPlayer
-                  streamUrl={activeStreamUrl}
-                  title={selectedGroup.displayName}
-                  contentType="live"
-                  channelName={selectedGroup.displayName}
-                  programTitle={currentEpgProgram?.title}
-                  streamId={selectedChannel.stream_id ?? selectedChannel.id}
-                  attemptTrigger={attemptTrigger}
-                  fullscreenRequestTrigger={fullscreenRequestTrigger}
-                  embedded={true}
-                  disableEmbeddedControlsFocus={true}
-                  onBack={closePreviewAndRestoreFocus}
-                  onRetry={handleManualRetry}
-                  onPlaybackSuccess={handlePlaybackSuccess}
-                  onPlaybackFinalError={handlePlaybackFinalError}
-                />
-              </div>
-            </div>
-
-            {/* Bottom Section: EPG Timeline */}
-            <div
-              data-live-epg-section="true"
-              className="flex-1 flex flex-col min-h-0 min-w-0 md:overflow-hidden"
-            >
-              <div
-                data-live-epg-header="true"
-                className="nc-live-epg-header shrink-0 px-4 sm:px-5 py-3 border-b border-white/10 flex items-center justify-between gap-2"
-              >
-                <div className="flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-white/70" />
-                  <h3 className="nc-heading-section text-white">Grade de Programação</h3>
-                </div>
-                {epgTimeline.length > 0 && (
-                  <span className="nc-text-meta text-white/50">
-                    {epgTimeline.length} {epgTimeline.length === 1 ? 'programa' : 'programas'}
-                  </span>
-                )}
-              </div>
-
-              <div
-                data-epg-scroll="true"
-                data-scroll-container="true"
-                className="nc-live-epg-scroll flex-1 min-h-0 md:overflow-y-auto custom-scrollbar touch-pan-y px-4 sm:px-5 py-4"
-              >
-                {epgTimeline.length === 0 ? (
-                  (() => {
-                    const epgStateKind: 'loading' | 'error' | 'empty' = rightPaneEpgLoading
-                      ? 'loading'
-                      : rightPaneEpg?.status === 'error'
-                        ? 'error'
-                        : 'empty';
-                    return (
-                      <div
-                        key="epg-state-box"
-                        tabIndex={0}
-                        data-nav-item="true"
-                        data-epg-primary="true"
-                        data-epg-state={epgStateKind}
-                        className="nc-tv-epg-state rounded-xl border border-white/10 bg-white/[0.03] p-5 text-center text-white/55 nc-text-subtitle flex items-center justify-center gap-2 focus:outline-none"
-                      >
-                        {epgStateKind === 'loading' ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span>Carregando programação...</span>
-                          </>
-                        ) : epgStateKind === 'error' ? (
-                          <span>Programação indisponível no momento.</span>
-                        ) : (
-                          <span>Nenhuma programação disponível para este canal.</span>
-                        )}
-                      </div>
-                    );
-                  })()
-                ) : (
-                  <div className="nc-tv-epg-timeline space-y-2.5">
-                    {epgTimeline.map((prog, idx) => (
-                      <article
-                        key={`${prog.id}_${prog.startMs}_${idx}`}
-                        role="article"
-                        tabIndex={0}
-                        data-epg-item="true"
-                        data-nav-item="true"
-                        data-epg-primary={idx === 0 ? 'true' : undefined}
-                        className={`nc-tv-epg-card rounded-xl border p-3.5 transition-colors ${
-                          prog.isCurrent
-                            ? 'border-white/35 bg-white/[0.08]'
-                            : 'border-white/10 bg-white/[0.03]'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          <span className="nc-text-meta font-semibold text-white/80 tabular-nums">
-                            {prog.startLabel} - {prog.endLabel}
-                          </span>
-                          {prog.isCurrent && (
-                            <span
-                              data-epg-live-badge="true"
-                              className="nc-badge-info px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20"
-                            >
-                              AO VIVO
-                            </span>
-                          )}
-                        </div>
-                        <h4 className="text-sm font-semibold text-white/95 leading-snug">
-                          {prog.title}
-                        </h4>
-                        {prog.description && (
-                          <p className="nc-text-meta text-white/60 mt-1 line-clamp-2">
-                            {prog.description}
-                          </p>
-                        )}
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </main>
+      <LiveTvRightPane
+        credentials={credentials}
+        selectedGroup={selectedGroup}
+        selectedChannel={selectedChannel}
+        selectedVariantIdOrAuto={selectedVariantIdOrAuto}
+        attemptTrigger={attemptTrigger}
+        fullscreenRequestTrigger={fullscreenRequestTrigger}
+        playbackError={playbackError}
+        isMobilePlayerOpen={isMobilePlayerOpen}
+        rightPaneEpg={rightPaneEpg}
+        rightPaneEpgLoading={rightPaneEpgLoading}
+        videoPlayerRef={videoPlayerRef}
+        onMobileBackToChannels={handleMobileBackToChannels}
+        onSelectVariant={handleSelectVariant}
+        onClosePreviewAndRestoreFocus={closePreviewAndRestoreFocus}
+        onManualRetry={handleManualRetry}
+        onPlaybackSuccess={handlePlaybackSuccess}
+        onPlaybackFinalError={handlePlaybackFinalError}
+      />
     </div>
   );
 });

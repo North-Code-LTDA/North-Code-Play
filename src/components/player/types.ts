@@ -60,8 +60,16 @@ export interface PlaybackStats {
   engineLabel?: string;
 }
 
+export interface VideoPlayerHandle {
+  requestFullscreenImmediate: () => Promise<boolean>;
+  exitFullscreenImmediate: () => Promise<boolean>;
+  isFullscreenOrPending: () => boolean;
+}
+
 export interface VideoPlayerProps {
   key?: React.Key;
+  ref?: React.Ref<VideoPlayerHandle>;
+  playerRef?: React.Ref<VideoPlayerHandle>;
   streamUrl?: string;
   title: string;
   contentType?: PlayerContentType;
@@ -83,5 +91,6 @@ export interface VideoPlayerProps {
   onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
   externalSubtitles?: ExternalSubtitleTrackInput[];
 }
+
 
 
