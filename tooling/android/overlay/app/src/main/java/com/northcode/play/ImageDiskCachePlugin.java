@@ -1,5 +1,6 @@
 package com.northcode.play;
 
+import android.util.Base64;
 import com.getcapacitor.Bridge;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -10,6 +11,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.plugin.util.CapacitorHttpUrlConnection;
 import com.getcapacitor.plugin.util.HttpRequestHandler;
 import com.getcapacitor.plugin.util.ICapacitorHttpUrlConnection;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -22,7 +24,6 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -32,6 +33,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -44,14 +46,16 @@ import org.json.JSONObject;
  *   completamente separado do diretório temporário de catálogos (<cacheDir>/nc_catalog_transfers/).
  * - Persiste um índice local (index_v1.json) com chave determinística SHA-256, nome do arquivo,
  *   tamanho em bytes, Content-Type, ETag, Last-Modified, Cache-Control, createdAt e lastAccessedAt.
+ * - Usa relógio lógico monotônico (logicalAccessClock) e sincronização em lote de chaves acessadas
+ *   (recentAccessedKeys / touchEntries) para garantir ordem determinística de descarte LRU mesmo
+ *   quando múltiplos acessos ocorrem no mesmo milissegundo e sem exigir chamadas nativas por cartão.
  * - Valida estritamente código HTTP (200 ou 304 com entrada prévia válida), Content-Type de imagem,
  *   assinatura binária (magic bytes JPEG/PNG/WebP/GIF/BMP/ICO/AVIF/SVG), tamanho > 0, integridade
- *   com Content-Length quando informado e ausência de Cache-Control: no-store.
- * - Deduplica downloads concorrentes para a mesma chave/URL.
- * - Aplica orçamento configurável em bytes (padrão 120 MB) com remoção LRU das entradas menos
- *   recentemente acessadas.
- * - Suporta limpeza completa no logout com incremento de época (sessionEpoch) para impedir que
- *   downloads em andamento iniciados antes do logout gravem arquivos tardiamente.
+ *   com Content-Length quando informado e diretivas HTTP (Cache-Control: no-store, no-cache, max-age).
+ * - Para respostas com Cache-Control: no-store, retorna os bytes validados como Data URI em memória
+ *   sem gravar arquivo em disco e evitando um segundo GET pelo elemento <img>.
+ * - Suporta limpeza completa e imediata no logout com incremento de época (sessionEpoch) e bloqueio
+ *   sincronizado para impedir reutilização por nova sessão ou gravação tardia de downloads antigos.
  */
 @CapacitorPlugin(name = "ImageDiskCache")
 public class ImageDiskCachePlugin extends Plugin {
@@ -59,10 +63,15 @@ public class ImageDiskCachePlugin extends Plugin {
     public static final String IMAGE_CACHE_SUBDIR_NAME = "nc_image_cache";
     private static final String INDEX_FILE_NAME = "index_v1.json";
     private static final int STREAM_BUFFER_SIZE = 16384;
+    private static final int MAX_NO_STORE_INLINE_BYTES = 5 * 1024 * 1024;
     private static final long DEFAULT_MAX_BYTES = 120L * 1024L * 1024L;
     private static final long MIN_MAX_BYTES = 1024L;
     private static final Pattern SAFE_IMAGE_FILE_NAME_PATTERN = Pattern.compile(
         "^img_[a-f0-9]{64}\\.(?:jpg|png|webp|gif|bmp|ico|avif|svg|bin)$"
+    );
+    private static final Pattern MAX_AGE_PATTERN = Pattern.compile(
+        "max-age\\s*=\\s*(\\d+)",
+        Pattern.CASE_INSENSITIVE
     );
 
     private final ExecutorService downloadExecutor = Executors.newFixedThreadPool(4);
@@ -73,18 +82,30 @@ public class ImageDiskCachePlugin extends Plugin {
     private final AtomicLong totalStoredBytes = new AtomicLong(0L);
     private final AtomicLong evictedEntriesCount = new AtomicLong(0L);
     private final AtomicLong corruptedRecoveriesCount = new AtomicLong(0L);
+    private final AtomicLong logicalAccessClock = new AtomicLong(System.currentTimeMillis());
     private final AtomicInteger sessionEpoch = new AtomicInteger(1);
     private volatile boolean initialized = false;
+
+    private long nextLogicalAccessStamp() {
+        long now = System.currentTimeMillis();
+        while (true) {
+            long prev = logicalAccessClock.get();
+            long next = Math.max(now, prev + 1L);
+            if (logicalAccessClock.compareAndSet(prev, next)) {
+                return next;
+            }
+        }
+    }
 
     private static final class CacheEntry {
         final String key;
         final String fileName;
         final long byteSize;
         final String contentType;
-        final String etag;
-        final String lastModified;
-        final String cacheControl;
-        final long createdAtMs;
+        volatile String etag;
+        volatile String lastModified;
+        volatile String cacheControl;
+        volatile long createdAtMs;
         volatile long lastAccessedAtMs;
 
         CacheEntry(
@@ -280,7 +301,6 @@ public class ImageDiskCachePlugin extends Plugin {
         if (header == null || len < 4) {
             return false;
         }
-        // Rejeitar explicitamente textos de erro JSON ou HTML
         int offset = 0;
         while (
             offset < len &&
@@ -378,8 +398,6 @@ public class ImageDiskCachePlugin extends Plugin {
 
     private static boolean isAllowedImageContentType(String contentType) {
         if (contentType == null || contentType.trim().isEmpty()) {
-            // Alguns provedores IPTV retornam application/octet-stream ou omitem Content-Type;
-            // nesses casos a validação binária por magic bytes decide se é imagem real.
             return true;
         }
         String lower = contentType.toLowerCase(Locale.ROOT).trim();
@@ -406,6 +424,53 @@ public class ImageDiskCachePlugin extends Plugin {
         return cacheControl.toLowerCase(Locale.ROOT).contains("no-store");
     }
 
+    /**
+     * Avalia se os metadados HTTP (Cache-Control: no-cache, max-age=N) exigem revalidação
+     * condicional junto ao servidor antes de reutilizar o arquivo local.
+     */
+    private static boolean needsHttpRevalidation(CacheEntry entry, long nowMs) {
+        if (entry == null) return false;
+        String cc = entry.cacheControl;
+        if (cc == null || cc.isEmpty()) {
+            return false;
+        }
+        String lower = cc.toLowerCase(Locale.ROOT);
+        if (lower.contains("no-cache")) {
+            return true;
+        }
+        Matcher m = MAX_AGE_PATTERN.matcher(lower);
+        if (m.find()) {
+            try {
+                long maxAgeSec = Long.parseLong(m.group(1));
+                if (maxAgeSec <= 0L) {
+                    return true;
+                }
+                long ageMs = Math.max(0L, nowMs - entry.createdAtMs);
+                if (ageMs >= maxAgeSec * 1000L) {
+                    return true;
+                }
+            } catch (NumberFormatException ignored) {
+                // Ignora max-age malformado
+            }
+        }
+        return false;
+    }
+
+    private void applyRecentAccessedKeysLocked(JSArray recentKeys) {
+        if (recentKeys == null || recentKeys.length() == 0) {
+            return;
+        }
+        for (int i = 0; i < recentKeys.length(); i++) {
+            String k = recentKeys.optString(i, "");
+            if (k != null && k.length() == 64) {
+                CacheEntry entry = entriesByKey.get(k);
+                if (entry != null) {
+                    entry.lastAccessedAtMs = nextLogicalAccessStamp();
+                }
+            }
+        }
+    }
+
     private void ensureInitialized() {
         if (initialized) return;
         synchronized (indexLock) {
@@ -415,6 +480,7 @@ public class ImageDiskCachePlugin extends Plugin {
                 File indexFile = new File(cacheDir, INDEX_FILE_NAME);
                 entriesByKey.clear();
                 long sumBytes = 0L;
+                long maxSeenAccessMs = System.currentTimeMillis();
 
                 if (indexFile.exists() && indexFile.isFile()) {
                     try {
@@ -447,6 +513,10 @@ public class ImageDiskCachePlugin extends Plugin {
                                         continue;
                                     }
                                     long actualLength = imgFile.length();
+                                    long lastAcc = item.optLong("lastAccessedAtMs", System.currentTimeMillis());
+                                    if (lastAcc > maxSeenAccessMs) {
+                                        maxSeenAccessMs = lastAcc;
+                                    }
                                     CacheEntry entry = new CacheEntry(
                                         key,
                                         fileName,
@@ -460,7 +530,7 @@ public class ImageDiskCachePlugin extends Plugin {
                                             ? null
                                             : item.optString("cacheControl", null),
                                         item.optLong("createdAtMs", System.currentTimeMillis()),
-                                        item.optLong("lastAccessedAtMs", System.currentTimeMillis())
+                                        lastAcc
                                     );
                                     entriesByKey.put(key, entry);
                                     sumBytes += actualLength;
@@ -468,13 +538,13 @@ public class ImageDiskCachePlugin extends Plugin {
                             }
                         }
                     } catch (Exception ignored) {
-                        // Se o índice estiver corrompido, reconstrói limpando órfãos
                         entriesByKey.clear();
                         sumBytes = 0L;
                     }
                 }
 
-                // Remover arquivos órfãos ou temporários (.tmp) não referenciados pelo índice
+                logicalAccessClock.set(Math.max(logicalAccessClock.get(), maxSeenAccessMs));
+
                 File[] allFiles = cacheDir.listFiles();
                 if (allFiles != null) {
                     Set<String> validNames = ConcurrentHashMap.newKeySet();
@@ -551,13 +621,11 @@ public class ImageDiskCachePlugin extends Plugin {
         }
     }
 
-    private void enforceBudgetLocked() {
+    private List<String> enforceBudgetLocked() {
+        List<String> evictedKeys = new ArrayList<>();
         long maxBytes = Math.max(MIN_MAX_BYTES, configuredMaxBytes.get());
-        if (totalStoredBytes.get() <= maxBytes && entriesByKey.size() <= 1) {
-            return;
-        }
         if (totalStoredBytes.get() <= maxBytes) {
-            return;
+            return evictedKeys;
         }
 
         List<CacheEntry> sorted = new ArrayList<>(entriesByKey.values());
@@ -566,7 +634,11 @@ public class ImageDiskCachePlugin extends Plugin {
             new Comparator<CacheEntry>() {
                 @Override
                 public int compare(CacheEntry a, CacheEntry b) {
-                    return Long.compare(a.lastAccessedAtMs, b.lastAccessedAtMs);
+                    int cmp = Long.compare(a.lastAccessedAtMs, b.lastAccessedAtMs);
+                    if (cmp != 0) return cmp;
+                    int createdCmp = Long.compare(a.createdAtMs, b.createdAtMs);
+                    if (createdCmp != 0) return createdCmp;
+                    return a.key.compareTo(b.key);
                 }
             }
         );
@@ -577,6 +649,7 @@ public class ImageDiskCachePlugin extends Plugin {
             }
             CacheEntry removed = entriesByKey.remove(candidate.key);
             if (removed != null) {
+                evictedKeys.add(removed.key);
                 totalStoredBytes.addAndGet(-removed.byteSize);
                 if (totalStoredBytes.get() < 0L) {
                     totalStoredBytes.set(0L);
@@ -590,6 +663,7 @@ public class ImageDiskCachePlugin extends Plugin {
                 }
             }
         }
+        return evictedKeys;
     }
 
     private static String getHeaderIgnoreCase(ICapacitorHttpUrlConnection connection, String targetName) {
@@ -638,6 +712,7 @@ public class ImageDiskCachePlugin extends Plugin {
                 ret.put("corruptedRecoveriesCount", corruptedRecoveriesCount.get());
 
                 JSArray entriesArray = new JSArray();
+                long nowMs = System.currentTimeMillis();
                 synchronized (indexLock) {
                     for (CacheEntry entry : entriesByKey.values()) {
                         File imgFile = resolveValidatedImageFile(entry.fileName);
@@ -648,7 +723,12 @@ public class ImageDiskCachePlugin extends Plugin {
                             item.put("filePath", imgFile.getPath());
                             item.put("byteSize", entry.byteSize);
                             item.put("contentType", entry.contentType);
+                            item.put("etag", entry.etag != null ? entry.etag : JSONObject.NULL);
+                            item.put("lastModified", entry.lastModified != null ? entry.lastModified : JSONObject.NULL);
+                            item.put("cacheControl", entry.cacheControl != null ? entry.cacheControl : JSONObject.NULL);
+                            item.put("createdAtMs", entry.createdAtMs);
                             item.put("lastAccessedAtMs", entry.lastAccessedAtMs);
+                            item.put("needsRevalidation", needsHttpRevalidation(entry, nowMs));
                             entriesArray.put(item);
                         }
                     }
@@ -662,15 +742,33 @@ public class ImageDiskCachePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void touchEntries(final PluginCall call) {
+        final JSArray keys = call.getArray("keys", new JSArray());
+        downloadExecutor.execute(() -> {
+            ensureInitialized();
+            synchronized (indexLock) {
+                applyRecentAccessedKeysLocked(keys);
+                persistIndexLocked();
+            }
+            JSObject ret = new JSObject();
+            ret.put("touched", keys != null ? keys.length() : 0);
+            call.resolve(ret);
+        });
+    }
+
+    @PluginMethod
     public void configureCache(final PluginCall call) {
-        Long maxBytesOpt = call.getLong("maxBytes");
+        final Long maxBytesOpt = call.getLong("maxBytes");
+        final JSArray recentKeys = call.getArray("recentAccessedKeys", new JSArray());
         if (maxBytesOpt != null && maxBytesOpt >= MIN_MAX_BYTES) {
             configuredMaxBytes.set(maxBytesOpt);
         }
         downloadExecutor.execute(() -> {
             ensureInitialized();
+            List<String> evictedKeys;
             synchronized (indexLock) {
-                enforceBudgetLocked();
+                applyRecentAccessedKeysLocked(recentKeys);
+                evictedKeys = enforceBudgetLocked();
                 persistIndexLocked();
             }
             JSObject ret = new JSObject();
@@ -678,6 +776,11 @@ public class ImageDiskCachePlugin extends Plugin {
             ret.put("totalBytes", totalStoredBytes.get());
             ret.put("storedEntriesCount", entriesByKey.size());
             ret.put("evictedEntriesCount", evictedEntriesCount.get());
+            JSArray evictedArr = new JSArray();
+            for (String k : evictedKeys) {
+                evictedArr.put(k);
+            }
+            ret.put("evictedKeys", evictedArr);
             call.resolve(ret);
         });
     }
@@ -726,11 +829,23 @@ public class ImageDiskCachePlugin extends Plugin {
 
     @PluginMethod
     public void clearAll(final PluginCall call) {
-        // Incrementa a época imediatamente para impedir que downloads em andamento gravem após logout
+        // Incrementa a época e limpa imediatamente a tabela em memória sob lock para impedir
+        // que qualquer nova sessão reutilize entradas antigas enquanto a limpeza do disco ocorre
         final int newEpoch = sessionEpoch.incrementAndGet();
 
-        for (InFlightDownload inflight : inFlightByKey.values()) {
+        synchronized (indexLock) {
+            entriesByKey.clear();
+            totalStoredBytes.set(0L);
+        }
+
+        List<InFlightDownload> toCancel = new ArrayList<>();
+        synchronized (inFlightByKey) {
+            toCancel.addAll(inFlightByKey.values());
+            inFlightByKey.clear();
+        }
+        for (InFlightDownload inflight : toCancel) {
             inflight.abortConnection();
+            rejectAllWaiting(inflight, "Cache limpo no logout.", "SESSION_CLEARED");
         }
 
         downloadExecutor.execute(() -> {
@@ -766,6 +881,7 @@ public class ImageDiskCachePlugin extends Plugin {
         final boolean revalidate = Boolean.TRUE.equals(call.getBoolean("revalidate", false));
         final Integer connectTimeout = call.getInt("connectTimeout", 10000);
         final Integer readTimeout = call.getInt("readTimeout", 15000);
+        final JSArray recentKeys = call.getArray("recentAccessedKeys", new JSArray());
 
         if (urlString == null || urlString.trim().isEmpty()) {
             call.reject("URL de imagem inválida.", "INVALID_URL");
@@ -784,12 +900,19 @@ public class ImageDiskCachePlugin extends Plugin {
                 return;
             }
 
+            synchronized (indexLock) {
+                applyRecentAccessedKeysLocked(recentKeys);
+            }
+
             CacheEntry cachedEntry = entriesByKey.get(key);
-            if (cachedEntry != null && !forceRefresh && !revalidate) {
+            boolean expiredOrMustRevalidate =
+                cachedEntry != null && needsHttpRevalidation(cachedEntry, System.currentTimeMillis());
+
+            if (cachedEntry != null && !forceRefresh && !revalidate && !expiredOrMustRevalidate) {
                 try {
                     File imgFile = resolveValidatedImageFile(cachedEntry.fileName);
                     if (imgFile != null && imgFile.exists() && imgFile.isFile() && imgFile.length() > 0L) {
-                        cachedEntry.lastAccessedAtMs = System.currentTimeMillis();
+                        cachedEntry.lastAccessedAtMs = nextLogicalAccessStamp();
                         File cacheDir = getPersistentImageCacheDir();
                         JSObject hitResult = new JSObject();
                         hitResult.put("hit", true);
@@ -801,6 +924,11 @@ public class ImageDiskCachePlugin extends Plugin {
                         hitResult.put("cacheDir", cacheDir.getPath());
                         hitResult.put("byteSize", cachedEntry.byteSize);
                         hitResult.put("contentType", cachedEntry.contentType);
+                        hitResult.put("etag", cachedEntry.etag != null ? cachedEntry.etag : JSONObject.NULL);
+                        hitResult.put("lastModified", cachedEntry.lastModified != null ? cachedEntry.lastModified : JSONObject.NULL);
+                        hitResult.put("cacheControl", cachedEntry.cacheControl != null ? cachedEntry.cacheControl : JSONObject.NULL);
+                        hitResult.put("createdAtMs", cachedEntry.createdAtMs);
+                        hitResult.put("lastAccessedAtMs", cachedEntry.lastAccessedAtMs);
                         hitResult.put("totalBytes", totalStoredBytes.get());
                         hitResult.put("storedEntriesCount", entriesByKey.size());
                         hitResult.put("evictedEntriesCount", evictedEntriesCount.get());
@@ -816,13 +944,13 @@ public class ImageDiskCachePlugin extends Plugin {
                                 persistIndexLocked();
                             }
                         }
+                        cachedEntry = null;
                     }
                 } catch (Exception ignored) {
                     // Prossegue para download sob demanda
                 }
             }
 
-            // Coalescência / deduplicação nativa de requisições simultâneas para a mesma chave
             InFlightDownload inflightToRun = null;
             synchronized (inFlightByKey) {
                 InFlightDownload existingInflight = inFlightByKey.get(key);
@@ -925,8 +1053,23 @@ public class ImageDiskCachePlugin extends Plugin {
             if (statusCode == 304 && previousEntry != null) {
                 File prevFile = resolveValidatedImageFile(previousEntry.fileName);
                 if (prevFile != null && prevFile.exists() && prevFile.length() > 0L) {
-                    previousEntry.lastAccessedAtMs = System.currentTimeMillis();
+                    String newCacheControl = getHeaderIgnoreCase(connection, "Cache-Control");
+                    String newEtag = getHeaderIgnoreCase(connection, "ETag");
+                    String newLastMod = getHeaderIgnoreCase(connection, "Last-Modified");
+                    long nowMs = System.currentTimeMillis();
+                    long nextAcc = nextLogicalAccessStamp();
                     synchronized (indexLock) {
+                        if (newCacheControl != null && !newCacheControl.isEmpty()) {
+                            previousEntry.cacheControl = newCacheControl;
+                        }
+                        if (newEtag != null && !newEtag.isEmpty()) {
+                            previousEntry.etag = newEtag;
+                        }
+                        if (newLastMod != null && !newLastMod.isEmpty()) {
+                            previousEntry.lastModified = newLastMod;
+                        }
+                        previousEntry.createdAtMs = nowMs;
+                        previousEntry.lastAccessedAtMs = nextAcc;
                         persistIndexLocked();
                     }
                     File cacheDir = getPersistentImageCacheDir();
@@ -940,6 +1083,11 @@ public class ImageDiskCachePlugin extends Plugin {
                     res304.put("cacheDir", cacheDir.getPath());
                     res304.put("byteSize", previousEntry.byteSize);
                     res304.put("contentType", previousEntry.contentType);
+                    res304.put("etag", previousEntry.etag != null ? previousEntry.etag : JSONObject.NULL);
+                    res304.put("lastModified", previousEntry.lastModified != null ? previousEntry.lastModified : JSONObject.NULL);
+                    res304.put("cacheControl", previousEntry.cacheControl != null ? previousEntry.cacheControl : JSONObject.NULL);
+                    res304.put("createdAtMs", previousEntry.createdAtMs);
+                    res304.put("lastAccessedAtMs", previousEntry.lastAccessedAtMs);
                     res304.put("totalBytes", totalStoredBytes.get());
                     res304.put("storedEntriesCount", entriesByKey.size());
                     res304.put("evictedEntriesCount", evictedEntriesCount.get());
@@ -948,7 +1096,6 @@ public class ImageDiskCachePlugin extends Plugin {
                 }
             }
 
-            // Rejeitar qualquer status diferente de HTTP 200 OK (inclusive 206, 4xx, 5xx)
             if (statusCode != 200) {
                 rejectAllWaiting(
                     inflight,
@@ -973,8 +1120,65 @@ public class ImageDiskCachePlugin extends Plugin {
                 return;
             }
 
-            // Se o servidor exigir Cache-Control: no-store, não persistir em disco
+            // Se o servidor exigir Cache-Control: no-store, ler em memória e retornar Data URI
+            // sem persistir arquivo em disco e sem causar segundo GET pela tag <img>
             if (hasNoStoreDirective(cacheControl)) {
+                ByteArrayOutputStream memOut = new ByteArrayOutputStream();
+                byte[] headerBytes = new byte[64];
+                int headerLen = 0;
+                long bytesReadTotal = 0L;
+                boolean exceededInlineCap = false;
+
+                try (InputStream is = connection.getInputStream()) {
+                    byte[] buffer = new byte[STREAM_BUFFER_SIZE];
+                    int readCount;
+                    while ((readCount = is.read(buffer)) != -1) {
+                        if (sessionEpoch.get() != inflight.epochAtStart || Thread.currentThread().isInterrupted()) {
+                            throw new IOException("SESSION_ABORTED");
+                        }
+                        if (headerLen < headerBytes.length) {
+                            int toCopy = Math.min(readCount, headerBytes.length - headerLen);
+                            System.arraycopy(buffer, 0, headerBytes, headerLen, toCopy);
+                            headerLen += toCopy;
+                        }
+                        bytesReadTotal += readCount;
+                        if (bytesReadTotal <= MAX_NO_STORE_INLINE_BYTES) {
+                            memOut.write(buffer, 0, readCount);
+                        } else {
+                            exceededInlineCap = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (bytesReadTotal <= 0L) {
+                    rejectAllWaiting(inflight, "Corpo da imagem no-store vazio.", "EMPTY_BODY");
+                    return;
+                }
+                if (
+                    !exceededInlineCap &&
+                    declaredLength != null &&
+                    declaredLength > 0L &&
+                    bytesReadTotal != declaredLength
+                ) {
+                    rejectAllWaiting(inflight, "Download no-store truncado.", "TRUNCATED_BODY");
+                    return;
+                }
+                if (!hasValidImageSignature(headerBytes, headerLen, contentType)) {
+                    rejectAllWaiting(inflight, "Assinatura binária inválida em resposta no-store.", "INVALID_IMAGE_SIGNATURE");
+                    return;
+                }
+
+                String effectiveMime = (contentType != null && !contentType.trim().isEmpty())
+                    ? contentType.split(";")[0].trim()
+                    : ("image/" + extensionForContentType(contentType, headerBytes, headerLen));
+
+                String inlineDataUrl = null;
+                if (!exceededInlineCap) {
+                    String b64 = Base64.encodeToString(memOut.toByteArray(), Base64.NO_WRAP);
+                    inlineDataUrl = "data:" + effectiveMime + ";base64," + b64;
+                }
+
                 JSObject bypassRes = new JSObject();
                 bypassRes.put("hit", false);
                 bypassRes.put("revalidated304", false);
@@ -982,8 +1186,12 @@ public class ImageDiskCachePlugin extends Plugin {
                 bypassRes.put("key", key);
                 bypassRes.put("fileName", JSONObject.NULL);
                 bypassRes.put("filePath", JSONObject.NULL);
-                bypassRes.put("byteSize", 0L);
-                bypassRes.put("contentType", contentType != null ? contentType : "image/jpeg");
+                bypassRes.put(
+                    "inlineDataUrl",
+                    inlineDataUrl != null ? inlineDataUrl : JSONObject.NULL
+                );
+                bypassRes.put("byteSize", bytesReadTotal);
+                bypassRes.put("contentType", effectiveMime);
                 bypassRes.put("totalBytes", totalStoredBytes.get());
                 bypassRes.put("storedEntriesCount", entriesByKey.size());
                 bypassRes.put("evictedEntriesCount", evictedEntriesCount.get());
@@ -1063,6 +1271,10 @@ public class ImageDiskCachePlugin extends Plugin {
                 return;
             }
 
+            List<String> evictedKeys;
+            long createdAtMs = System.currentTimeMillis();
+            long accessStamp = nextLogicalAccessStamp();
+
             synchronized (indexLock) {
                 if (sessionEpoch.get() != inflight.epochAtStart) {
                     safeDeleteFile(tempFile);
@@ -1087,7 +1299,6 @@ public class ImageDiskCachePlugin extends Plugin {
                     return;
                 }
 
-                long nowMs = System.currentTimeMillis();
                 CacheEntry newEntry = new CacheEntry(
                     key,
                     finalFileName,
@@ -1096,12 +1307,12 @@ public class ImageDiskCachePlugin extends Plugin {
                     etag,
                     lastModified,
                     cacheControl,
-                    nowMs,
-                    nowMs
+                    createdAtMs,
+                    accessStamp
                 );
                 entriesByKey.put(key, newEntry);
                 totalStoredBytes.addAndGet(bytesWritten);
-                enforceBudgetLocked();
+                evictedKeys = enforceBudgetLocked();
                 persistIndexLocked();
             }
 
@@ -1125,9 +1336,19 @@ public class ImageDiskCachePlugin extends Plugin {
             successRes.put("cacheDir", cacheDir.getPath());
             successRes.put("byteSize", bytesWritten);
             successRes.put("contentType", contentType != null ? contentType : ("image/" + ext));
+            successRes.put("etag", etag != null ? etag : JSONObject.NULL);
+            successRes.put("lastModified", lastModified != null ? lastModified : JSONObject.NULL);
+            successRes.put("cacheControl", cacheControl != null ? cacheControl : JSONObject.NULL);
+            successRes.put("createdAtMs", createdAtMs);
+            successRes.put("lastAccessedAtMs", accessStamp);
             successRes.put("totalBytes", totalStoredBytes.get());
             successRes.put("storedEntriesCount", entriesByKey.size());
             successRes.put("evictedEntriesCount", evictedEntriesCount.get());
+            JSArray evictedArr = new JSArray();
+            for (String k : evictedKeys) {
+                evictedArr.put(k);
+            }
+            successRes.put("evictedKeys", evictedArr);
             resolveAllWaiting(inflight, successRes);
         } catch (SocketTimeoutException timeoutEx) {
             safeDeleteFile(tempFile);

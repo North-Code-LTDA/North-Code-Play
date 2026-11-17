@@ -18,6 +18,7 @@ import { MediaImage, observeContainerVisibility, notifyContainerScrollForFallbac
 import { useFavorites } from '../hooks/useFavorites';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 import { buildDirectMediaUrl } from '../utils/mediaUtils';
+import { setLiveTvPreviewPlaybackActiveForImagePreload } from '../services/androidImageCache';
 import {
   LiveChannelGroup,
   ChannelVariant,
@@ -1450,6 +1451,14 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
       directSource: selectedChannel.direct_source,
     });
   }, [credentials, selectedChannel]);
+
+  const hasActiveLivePreview = Boolean(selectedGroup && selectedChannel && activeStreamUrl);
+  useEffect(() => {
+    setLiveTvPreviewPlaybackActiveForImagePreload(hasActiveLivePreview);
+    return () => {
+      setLiveTvPreviewPlaybackActiveForImagePreload(false);
+    };
+  }, [hasActiveLivePreview]);
 
   const activeResolutionBadge = useMemo(
     () => getStreamResolutionLabel(selectedChannel, selectedGroup),

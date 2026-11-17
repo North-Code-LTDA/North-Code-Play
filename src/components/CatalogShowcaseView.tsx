@@ -40,6 +40,7 @@ import {
   scheduleBackgroundLowPriorityPreload,
   computeAdaptiveInitialCardsPerRow,
   isAndroidPersistentImageCacheAvailable,
+  extractCatalogItemRawImage,
 } from '../services/androidImageCache';
 import { extractXtreamSubtitles } from './player/trackUtils';
 import { getValidYear } from '../utils/catalogRanking';
@@ -1483,15 +1484,15 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       if (!desc) continue;
       let items: any[] = EMPTY_ARRAY;
       if (desc.kind === 'fixed') {
-        items = desc.fixedItems;
-      } else if (desc.kind === 'vod_category') {
-        items = vodIndex.getByCategory(desc.categoryId);
-      } else if (desc.kind === 'series_category') {
-        items = seriesIndex.getByCategory(desc.categoryId);
+        items = desc.fixedItems || EMPTY_ARRAY;
+      } else if (desc.kind === 'vod_category' && desc.categoryId) {
+        items = vodIndex.getSortedByCategory(desc.categoryId);
+      } else if (desc.kind === 'series_category' && desc.categoryId) {
+        items = seriesIndex.getSortedByCategory(desc.categoryId);
       }
       const limit = Math.min(budget.posterCardsPerRow, items.length);
       for (let c = 0; c < limit; c++) {
-        const raw = normalizeImageSource(items[c]);
+        const raw = extractCatalogItemRawImage(items[c]);
         const resolved = buildDirectImageUrl(raw, credentials?.serverUrl);
         if (resolved) {
           preloadUrls.push(resolved);

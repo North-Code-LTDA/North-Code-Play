@@ -41,6 +41,7 @@ Object.defineProperty(globalThis, 'navigator', {
 (globalThis as any).sessionStorage = windowInstance.sessionStorage;
 (globalThis as any).URL = windowInstance.URL;
 (globalThis as any).Blob = windowInstance.Blob;
+(globalThis as any).getComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
 
 let rafIdCounter = 1;
 const rafTimers = new Map<number, NodeJS.Timeout>();
@@ -286,6 +287,8 @@ import {
   getVisitedShowcaseCategories,
   getImageCacheRuntimeStatsSnapshot,
   isAndroidPersistentImageCacheAvailable,
+  extractCatalogItemRawImage,
+  isVideoPlaybackThrottlingActiveForTest,
 } from '../src/services/androidImageCache';
 import {
   resetCatalogDiagnosticsForTest,
@@ -2530,6 +2533,13 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
   doc.body.appendChild(container);
   let root = createRoot(container);
 
+  const origHeroMethods = {
+    getVodInfo: XtreamService.getVodInfo,
+    getSeriesInfo: XtreamService.getSeriesInfo,
+  };
+  XtreamService.getVodInfo = async () => ({ info: {}, movie_data: {} } as any);
+  XtreamService.getSeriesInfo = async () => ({ info: {}, episodes: {} } as any);
+
   try {
     harness.install();
     setMediaImageRetryDelayMsForTest(25);
@@ -2679,7 +2689,7 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
       );
     }
 
-    // Cache-Control: no-store deve fazer bypass sem gravar em disco
+    // Cache-Control: no-store deve fazer bypass do disco E retornar inlineDataUrl para evitar 2º GET no <img>
     const noStoreUrl = 'http://img.provider.tv/no_store_img.jpg';
     const noStoreRes = await acquireCachedImage(noStoreUrl);
     assert.strictEqual(
@@ -2692,10 +2702,95 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
       false,
       'Respostas com Cache-Control: no-store não devem gerar arquivo local persistido'
     );
+    assert(
+      noStoreRes.src.startsWith('data:image/jpeg;base64,'),
+      'Respostas com Cache-Control: no-store devem retornar inlineDataUrl em memória para evitar segundo GET na tag <img>'
+    );
     assert.strictEqual(
       harness.hasPhysicalFileForUrl(noStoreUrl),
       false,
       'Respostas com Cache-Control: no-store não devem deixar arquivo em nc_image_cache'
+    );
+
+    // Renderizar MediaImage com URL no-store e comprovar que ocorre apenas 1 GET na rede
+    const noStoreRenderUrl = 'http://img.provider.tv/no_store_img_render.jpg';
+    await act(async () => {
+      root.render(
+        React.createElement(MediaImage, {
+          src: noStoreRenderUrl,
+          alt: 'No Store Render',
+          itemId: '998',
+          active: true,
+        })
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    assert.strictEqual(
+      harness.getNetworkFetchCount(noStoreRenderUrl),
+      1,
+      'Renderizar MediaImage com Cache-Control: no-store deve realizar exatamente 1 único GET na rede'
+    );
+    const noStoreImgEl = container.querySelector('img');
+    assert(
+      noStoreImgEl && noStoreImgEl.getAttribute('src')?.startsWith('data:image/jpeg;base64,'),
+      'MediaImage deve exibir o data URL em memória sem disparar segundo GET remoto no navegador/WebView'
+    );
+
+    // Revalidação condicional HTTP (Cache-Control: no-cache / max-age expirado + ETag 304 Not Modified)
+    let observedIfNoneMatch: string | undefined;
+    const revalUrl = 'http://img.provider.tv/reval_etag_cover.jpg';
+    let revalCallCount = 0;
+    customResponderFn = (url, reqHeaders) => {
+      if (url === revalUrl) {
+        revalCallCount++;
+        if (revalCallCount === 1) {
+          return {
+            status: 200,
+            contentType: 'image/jpeg',
+            cacheControl: 'public, no-cache',
+            etag: '"etag-cover-v1"',
+            bodyBytes: createValidTestJpegBytes(2048),
+          };
+        }
+        observedIfNoneMatch = reqHeaders.ifNoneMatch;
+        return {
+          status: 304,
+          contentType: 'image/jpeg',
+          cacheControl: 'public, max-age=86400',
+          etag: '"etag-cover-v1"',
+        };
+      }
+      return {
+        status: 200,
+        contentType: 'image/jpeg',
+        bodyBytes: createValidTestJpegBytes(2048),
+      };
+    };
+
+    const revalRes1 = await acquireCachedImage(revalUrl);
+    assert.strictEqual(revalRes1.isLocalFile, true, 'Primeira carga de revalUrl persiste localmente');
+    assert.strictEqual(
+      getInstantCachedImageSrc(revalUrl),
+      null,
+      'Entrada com Cache-Control: no-cache não deve saltar a revalidação HTTP síncrona'
+    );
+    const revalRes2 = await acquireCachedImage(revalUrl);
+    assert.strictEqual(
+      observedIfNoneMatch,
+      '"etag-cover-v1"',
+      'A revalidação HTTP deve enviar o cabeçalho condicional If-None-Match com o ETag armazenado'
+    );
+    assert.strictEqual(
+      revalRes2.fromCache,
+      true,
+      'Resposta HTTP 304 Not Modified deve reaproveitar o arquivo local persistido como cache hit'
+    );
+    assert.strictEqual(
+      getInstantCachedImageSrc(revalUrl),
+      revalRes2.src,
+      'Após 304 atualizando Cache-Control para max-age=86400, a entrada passa a responder sincronicamente'
     );
     customResponderFn = null;
 
@@ -2708,6 +2803,7 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
     const lruUrl1 = 'http://img.provider.tv/lru_1.jpg';
     const lruUrl2 = 'http://img.provider.tv/lru_2.jpg';
     const lruUrl3 = 'http://img.provider.tv/lru_3.jpg';
+    const lruUrl4 = 'http://img.provider.tv/lru_4.jpg';
 
     await acquireCachedImage(lruUrl1);
     await acquireCachedImage(lruUrl2);
@@ -2736,12 +2832,43 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
       true,
       'A nova entrada (lru_3) deve estar armazenada no cache'
     );
+
+    // Validar desempate determinístico e sincronização de recência dentro do MESMO milissegundo
+    const origDateNow = Date.now;
+    const frozenMs = origDateNow();
+    Date.now = () => frozenMs;
+    try {
+      // No momento: lru_1 e lru_3 estão no disco (lru_1 é mais antigo que lru_3).
+      // Acessamos lru_1 via getInstantCachedImageSrc no mesmo milissegundo para torná-lo mais recente que lru_3:
+      const hitSameMs = getInstantCachedImageSrc(lruUrl1, { countHit: true });
+      assert(hitSameMs, 'lru_1 deve responder sincronicamente em memória');
+      // Agora adicionamos lru_4 no mesmo milissegundo: lru_3 deve ser descartado e lru_1 preservado!
+      await acquireCachedImage(lruUrl4);
+    } finally {
+      Date.now = origDateNow;
+    }
+
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(lruUrl3),
+      false,
+      'Mesmo quando acessos ocorrem no mesmo milissegundo, lru_3 (menos recente após toque em lru_1) deve ser removido do disco'
+    );
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(lruUrl1),
+      true,
+      'lru_1 tocado via getInstantCachedImageSrc no mesmo milissegundo deve ter sua recência sincronizada e permanecer no disco'
+    );
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(lruUrl4),
+      true,
+      'A nova entrada lru_4 deve estar armazenada no disco'
+    );
     assert(
       getImageCacheRuntimeStatsSnapshot().bytesStoredCurrently <= 6000,
       'O total de bytes armazenados deve respeitar estritamente o orçamento configurado'
     );
     assert(
-      getImageCacheRuntimeStatsSnapshot().evictedEntriesCount >= 1,
+      getImageCacheRuntimeStatsSnapshot().evictedEntriesCount >= 2,
       'A métrica de entradas removidas por limite de espaço (LRU) deve ser incrementada'
     );
 
@@ -2771,7 +2898,9 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
           active: true,
         })
       );
-      await new Promise((r) => setTimeout(r, 25));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
     });
 
     assert.strictEqual(
@@ -2951,16 +3080,21 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
       'Quando as imagens prioritárias já estão no cache local, não deve haver atraso artificial (0ms)'
     );
 
-    // Pré-aquecer todas as capas de testVodStreams para testar navegação vertical entre as 12 fileiras
-    for (const m of testVodStreams) {
-      await acquireCachedImage(m.stream_icon);
-    }
-    for (const s of testSeriesStreams) {
-      await acquireCachedImage(s.cover);
-    }
-    const totalFetchesAfterWarmup = harness.getNetworkFetchCount();
+    // Validar extração de imagem de itens do catálogo e pré-carregamento real das fileiras adjacentes
+    assert.strictEqual(
+      extractCatalogItemRawImage(testVodStreams[0]),
+      testVodStreams[0].stream_icon,
+      'extractCatalogItemRawImage deve extrair stream_icon de registros de filmes/canais'
+    );
+    assert.strictEqual(
+      extractCatalogItemRawImage(testSeriesStreams[0]),
+      testSeriesStreams[0].cover,
+      'extractCatalogItemRawImage deve extrair cover de registros de séries'
+    );
 
-    // Montar CatalogShowcaseView na seção 'inicio' (que virtualiza verticalmente em janela de 8 fileiras)
+    // Antes de pré-aquecer manualmente todas as 12 categorias, montar o CatalogShowcaseView
+    // e verificar que o efeito de antecipação de categorias adjacentes agenda e baixa URLs válidas
+    // das fileiras além da janela inicial!
     await act(async () => {
       root.render(
         React.createElement(
@@ -2980,8 +3114,31 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
           })
         )
       );
-      await new Promise((r) => setTimeout(r, 30));
     });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 120));
+    });
+
+    // Na seção 'inicio':
+    // Row 0 = Filmes em Destaque, Row 1 = Séries em Destaque, Row 2 = vod_cat_10 (catIdx 0),
+    // Row 3 = series_cat_201, Row 4..7 = vod_cat_11..14 (catIdx 1..4).
+    // As fileiras adjacentes de lookahead (rows 8 e 9) correspondem a vod_cat_15 (catIdx 5) e vod_cat_16 (catIdx 6)!
+    const adjacentLookaheadUrl = testVodStreams.find((m) => m.category_id === '15')?.stream_icon;
+    assert(adjacentLookaheadUrl, 'Deve existir URL de capa na categoria adjacente vod_cat_15');
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(adjacentLookaheadUrl!),
+      true,
+      'O pré-carregamento de categorias adjacentes em CatalogShowcaseView deve extrair URLs válidas dos objetos e armazená-las no cache persistente'
+    );
+
+    // Pré-aquecer todas as capas restantes de testVodStreams para testar navegação vertical entre as 12 fileiras com 0 downloads adicionais
+    for (const m of testVodStreams) {
+      await acquireCachedImage(m.stream_icon);
+    }
+    for (const s of testSeriesStreams) {
+      await acquireCachedImage(s.cover);
+    }
+    const totalFetchesAfterWarmup = harness.getNetworkFetchCount();
 
     const showcaseContainer = container.querySelector(
       '[data-showcase-rows-container="true"]'
@@ -3129,20 +3286,133 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
     );
 
     // -------------------------------------------------------------------------
-    // 7.10. Limpeza completa no logout e proteção contra gravação tardia de downloads em andamento
+    // 7.13. Reconhecimento do preview ativo da TV ao Vivo na redução de concorrência
     // -------------------------------------------------------------------------
+    assert.strictEqual(
+      isVideoPlaybackThrottlingActiveForTest(),
+      false,
+      'Sem vídeo ou preview ativo, o throttling de reprodução deve estar desativado'
+    );
+
+    enableDeterministicHlsMock();
+    const origXtreamLiveMethods = {
+      getLiveCategories: XtreamService.getLiveCategories,
+      getLiveStreams: XtreamService.getLiveStreams,
+      getShortEpg: XtreamService.getShortEpg,
+    };
+    XtreamService.getLiveCategories = async () => [
+      { category_id: '70', category_name: 'Canais Teste Preview', parent_id: 0 },
+    ];
+    XtreamService.getLiveStreams = async () =>
+      [
+        {
+          num: 1,
+          name: 'Canal Preview 1 FHD',
+          stream_type: 'live',
+          stream_id: 7001,
+          stream_icon: '',
+          epg_channel_id: 'epg1',
+          added: '1700000000',
+          category_id: '70',
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        },
+      ] as any;
+    XtreamService.getShortEpg = async () => ({ epg_listings: [] });
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            XtreamProvider,
+            { credentials: mockCreds },
+            React.createElement(LiveTvView, {
+              onPlayFullscreen: () => {},
+            })
+          )
+        );
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 40));
+      });
+
+      const liveCardBtn = container.querySelector(
+        'button[data-live-channel-id="7001"]'
+      ) as any;
+      assert(liveCardBtn, 'Cartão de canal da TV ao Vivo deve estar montado');
+
+      await act(async () => {
+        liveCardBtn.click();
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+      });
+
+      assert(
+        container.querySelector('[data-player-container="true"]') !== null,
+        'O preview de vídeo da TV ao Vivo deve estar montado após selecionar o canal'
+      );
+      assert.strictEqual(
+        isVideoPlaybackThrottlingActiveForTest(),
+        true,
+        'Enquanto um canal estiver reproduzindo no preview da TV ao Vivo, o controle de concorrência de imagens deve reconhecer a reprodução ativa'
+      );
+
+      // Desmontar a TV ao Vivo e verificar que o estado de throttling de vídeo é limpo
+      await act(async () => {
+        root.render(React.createElement('div'));
+      });
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        isVideoPlaybackThrottlingActiveForTest(),
+        false,
+        'Ao encerrar o preview da TV ao Vivo, o controle de concorrência de imagens deve restaurar a capacidade normal'
+      );
+    } finally {
+      Object.assign(XtreamService, origXtreamLiveMethods);
+      restoreHlsMock();
+    }
+
+    // -------------------------------------------------------------------------
+    // 7.10. Limpeza completa no logout, proteção contra gravação tardia e serialização de nova sessão
+    // -------------------------------------------------------------------------
+    const prevSessionUrl = 'http://img.provider.tv/prev_session_persisted.jpg';
+    await acquireCachedImage(prevSessionUrl);
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(prevSessionUrl),
+      true,
+      'Imagem da sessão anterior deve estar no disco antes do logout'
+    );
+
     const slowInFlightUrl = 'http://img.provider.tv/slow_before_logout.jpg';
-    customResponderFn = () => ({
+    customResponderFn = (url) => ({
       status: 200,
       contentType: 'image/jpeg',
       bodyBytes: createValidTestJpegBytes(2048),
-      delayMs: 40,
+      delayMs: url === slowInFlightUrl ? 40 : 10,
     });
 
     const inFlightBeforeLogoutPromise = acquireCachedImage(slowInFlightUrl).catch((err) => err);
-    // Acionar logout enquanto o download ainda está em andamento
-    await clearImageCacheOnLogout();
-    const inFlightOutcome = await inFlightBeforeLogoutPromise;
+    // Acionar logout e, imediatamente (sem aguardar o término da Promise de logout),
+    // iniciar uma requisição de uma nova sessão para verificar a barreira de serialização
+    const logoutPromise = clearImageCacheOnLogout();
+    assert.strictEqual(
+      getInstantCachedImageSrc(prevSessionUrl),
+      null,
+      'Durante o logout em andamento, nenhuma imagem da sessão anterior pode ser reutilizada sincronicamente'
+    );
+    const nextSessionUrl = 'http://img.provider.tv/next_session_after_logout.jpg';
+    const nextSessionAcquirePromise = acquireCachedImage(nextSessionUrl);
+
+    const [inFlightOutcome, , nextSessionOutcome] = await Promise.all([
+      inFlightBeforeLogoutPromise,
+      logoutPromise,
+      nextSessionAcquirePromise,
+    ]);
     await new Promise((r) => setTimeout(r, 50));
 
     assert(
@@ -3150,9 +3420,32 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
       'Download em andamento iniciado antes do logout deve ser cancelado/rejeitado'
     );
     assert.strictEqual(
+      harness.hasPhysicalFileForUrl(prevSessionUrl),
+      false,
+      'Arquivo da sessão anterior deve ter sido removido pelo logout'
+    );
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(slowInFlightUrl),
+      false,
+      'Download iniciado antes do logout nunca deve ser gravado tardiamente no disco'
+    );
+    assert.strictEqual(
+      nextSessionOutcome.isLocalFile,
+      true,
+      'A requisição iniciada pela nova sessão deve aguardar a barreira do logout e persistir com segurança na nova época'
+    );
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(nextSessionUrl),
+      true,
+      'O arquivo da nova sessão pós-logout deve estar íntegro no disco'
+    );
+
+    // Executar logout final para verificar estado zerado
+    await clearImageCacheOnLogout();
+    assert.strictEqual(
       harness.getPhysicalFileCount(),
       0,
-      'Após logout (mesmo com download em andamento antes do logout), nenhum arquivo deve permanecer ou ser gravado tardiamente no disco'
+      'Após logout final, nenhum arquivo deve permanecer no disco'
     );
     assert.strictEqual(
       getImageCacheRuntimeStatsSnapshot().storedEntriesCount,
@@ -3170,6 +3463,7 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
       'Após logout, o histórico local de categorias visitadas para pré-carregamento deve ser limpo'
     );
   } finally {
+    Object.assign(XtreamService, origHeroMethods);
     customResponderFn = null;
     harness.uninstall();
     setMediaImageRetryDelayMsForTest(2000);
