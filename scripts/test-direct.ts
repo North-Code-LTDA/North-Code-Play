@@ -2089,7 +2089,6 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
     // -------------------------------------------------------------------------
     // 6.3. Foco e restauração após virtualização horizontal de cartões
     // -------------------------------------------------------------------------
-    // Ir até o cartão de índice 28 na fileira Esportes (além do limite de virtualização de 24 itens)
     const currentCardIdx = parseInt(
       (doc.activeElement as HTMLElement)?.getAttribute('data-row-card-index') || '0',
       10
@@ -2136,7 +2135,7 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
       sportsRowScrollEl.scrollLeft = 0;
       sportsRowScrollEl.dispatchEvent(new Event('scroll'));
     });
-    assert.strictEqual(doc.activeElement, epgPrimaryEl);
+    assert.strictEqual(doc.activeElement === epgPrimaryEl, true);
     assert.strictEqual(
       doc.querySelector('button[data-live-channel-id="1028"][data-live-channel-category-id="10"]'),
       null,
@@ -2156,10 +2155,11 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
         moveSpatialFocus('left');
       });
     }
+    const activeAfterLeft = doc.activeElement as HTMLElement | null;
     assert.strictEqual(
-      doc.activeElement,
-      remounted1028Btn,
-      'Foco deve ser restaurado exatamente no canal de origem 1028 após virtualização'
+      activeAfterLeft === remounted1028Btn,
+      true,
+      `Foco deve ser restaurado exatamente no canal de origem 1028 após virtualização (active: ${activeAfterLeft?.tagName} id=${activeAfterLeft?.getAttribute?.('data-live-channel-id')})`
     );
     assert.strictEqual(
       remounted1028Btn.getAttribute('data-live-channel-origin'),
@@ -2292,10 +2292,11 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
       'full-layer',
       'Após resolução da Fullscreen API, o player deve permanecer em full-layer'
     );
+    const expectedPlayPauseBtn = doc.querySelector('button[data-player-control="play-pause"]');
     assert.strictEqual(
-      doc.activeElement,
-      doc.querySelector('button[data-player-control="play-pause"]'),
-      'Ao entrar em tela cheia no modo controle remoto, o foco deve estar no controle play-pause do player'
+      doc.activeElement === expectedPlayPauseBtn,
+      true,
+      `Ao entrar em tela cheia no modo controle remoto, o foco deve estar no controle play-pause do player (active: ${(doc.activeElement as HTMLElement | null)?.tagName} control=${(doc.activeElement as HTMLElement | null)?.getAttribute?.('data-player-control')})`
     );
 
     // -------------------------------------------------------------------------
@@ -2322,9 +2323,9 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
       'Sair da tela cheia deve preservar a mesma instância do elemento <video>'
     );
     assert.strictEqual(
-      doc.activeElement,
-      ch1000Again,
-      'Sair da tela cheia na TV ao Vivo deve restaurar o foco ao cartão do canal de origem'
+      doc.activeElement === ch1000Again,
+      true,
+      `Sair da tela cheia na TV ao Vivo deve restaurar o foco ao cartão do canal de origem (active: ${(doc.activeElement as HTMLElement | null)?.tagName} ch=${(doc.activeElement as HTMLElement | null)?.getAttribute?.('data-live-channel-id')})`
     );
 
     // -------------------------------------------------------------------------
@@ -2398,9 +2399,9 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
       'Fechar o preview deve desmontar o player e retornar ao estado inicial de seleção'
     );
     assert.strictEqual(
-      doc.activeElement,
-      ch2000Btn,
-      'Fechar o preview deve restaurar o foco exatamente ao canal 2000'
+      doc.activeElement === ch2000Btn,
+      true,
+      `Fechar o preview deve restaurar o foco exatamente ao canal 2000 (active: ${(doc.activeElement as HTMLElement | null)?.tagName} ch=${(doc.activeElement as HTMLElement | null)?.getAttribute?.('data-live-channel-id')})`
     );
   } finally {
     (windowInstance as any).innerWidth = origInnerWidth;
@@ -2434,7 +2435,7 @@ async function main(): Promise<void> {
   }
   rafTimers.clear();
   console.log('\n🎉 TODOS OS TESTES DO CICLO 12.30-d FORAM EXECUTADOS COM SUCESSO!');
-  process.exit(0);
+  await windowInstance.close();
 }
 
 main().catch((err) => {

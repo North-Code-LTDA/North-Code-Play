@@ -1531,9 +1531,9 @@ function pickPreferredZoneEntry(
             }
           }
           invalidateCandidateCache();
-          const mountedOrigin = liveRowsContainer.querySelector<HTMLElement>(
-            '[data-live-channel-origin="true"], [data-live-channel-selected="true"]'
-          );
+          const mountedOrigin =
+            liveRowsContainer.querySelector<HTMLElement>('[data-live-channel-origin="true"]') ||
+            liveRowsContainer.querySelector<HTMLElement>('[data-live-channel-selected="true"]');
           if (mountedOrigin && isElementFocusable(mountedOrigin)) {
             originChannel = mountedOrigin;
           }
