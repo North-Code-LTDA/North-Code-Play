@@ -55,6 +55,10 @@ import {
   restoreVirtualItemByKey,
   registerShowcaseRowController,
   unregisterShowcaseRowController,
+  isDpadOptimizedPathActive,
+  recordDpadFlushSyncExecution,
+  recordDpadGeometryMeasurement,
+  recordDpadVirtualMountDelta,
 } from '../navigation';
 
 function isSeriesItem(item: any): boolean {
@@ -1181,80 +1185,162 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     [showcaseRowDescriptors, liveViewportWidth]
   );
 
-  const measureMountedShowcaseGeometry = useCallback((): void => {
-    const mainEl = mainContainerRef.current;
-    const rowsContainerEl = showcaseRowsContainerRef.current;
-    if (!mainEl || !rowsContainerEl) return;
+  const measureMountedShowcaseGeometry = useCallback(
+    (phase: 'before-virtual' | 'after-virtual' = 'after-virtual'): void => {
+      const mainEl = mainContainerRef.current;
+      const rowsContainerEl = showcaseRowsContainerRef.current;
+      if (!mainEl || !rowsContainerEl) return;
 
-    const mainRect = mainEl.getBoundingClientRect();
-    const scrollTop = mainEl.scrollTop || 0;
-    const topSpacerEl = rowsContainerEl.querySelector<HTMLElement>(
-      '[data-showcase-row-spacer="top"]'
-    );
-    const currentTopSpacerPx = topSpacerEl
-      ? parseFloat(topSpacerEl.style.height || '0') || 0
-      : 0;
+      const t0 =
+        typeof performance !== 'undefined' && typeof performance.now === 'function'
+          ? performance.now()
+          : Date.now();
 
-    const allBlocks = rowsContainerEl.querySelectorAll<HTMLElement>(
-      '[data-scroll-block="true"]'
-    );
+      const mainRect = mainEl.getBoundingClientRect();
+      const scrollTop = mainEl.scrollTop || 0;
+      const topSpacerEl = rowsContainerEl.querySelector<HTMLElement>(
+        '[data-showcase-row-spacer="top"]'
+      );
+      const currentTopSpacerPx = topSpacerEl
+        ? parseFloat(topSpacerEl.style.height || '0') || 0
+        : 0;
 
-    if (allBlocks.length > 0) {
-      const firstBlock = allBlocks[0];
-      const firstRect = firstBlock.getBoundingClientRect();
-      if (firstRect.height > 0 && typeof firstRect.top === 'number') {
-        const inferredStart = Math.round(
-          firstRect.top - mainRect.top + scrollTop - currentTopSpacerPx
-        );
-        if (inferredStart >= 0) {
-          measuredRowsStartOffsetRef.current = inferredStart;
+      if (isDpadOptimizedPathActive()) {
+        if (measuredRowsStartOffsetRef.current === null) {
+          const firstBlock = rowsContainerEl.querySelector<HTMLElement>(
+            '[data-scroll-block="true"]'
+          );
+          if (firstBlock) {
+            const firstRect = firstBlock.getBoundingClientRect();
+            if (firstRect.height > 0 && typeof firstRect.top === 'number') {
+              const inferredStart = Math.round(
+                firstRect.top - mainRect.top + scrollTop - currentTopSpacerPx
+              );
+              if (inferredStart >= 0) {
+                measuredRowsStartOffsetRef.current = inferredStart;
+              }
+            }
+          }
+          if (measuredRowsStartOffsetRef.current === null) {
+            const containerRect = rowsContainerEl.getBoundingClientRect();
+            if (containerRect.height > 0 && typeof containerRect.top === 'number') {
+              const offsetFromContainer = Math.round(
+                containerRect.top - mainRect.top + scrollTop
+              );
+              if (offsetFromContainer >= 0) {
+                measuredRowsStartOffsetRef.current = offsetFromContainer;
+              }
+            } else {
+              const heroEl = mainEl.querySelector<HTMLElement>('[data-hero-stage="true"]');
+              if (heroEl) {
+                const heroRect = heroEl.getBoundingClientRect();
+                if (heroRect.height > 0) {
+                  const marginPlusGap = liveViewportWidth >= 640 ? 32 : 24;
+                  measuredRowsStartOffsetRef.current = Math.round(
+                    Math.max(0, heroRect.top - mainRect.top + scrollTop) +
+                      heroRect.height +
+                      marginPlusGap
+                  );
+                }
+              }
+            }
+          }
         }
+
+        // Measure only the currently mounted window blocks instead of all 100+ placeholder blocks
+        const winStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
+        const winEnd = shouldVirtualizeShowcaseRows
+          ? Math.min(totalShowcaseRows, winStart + SHOWCASE_ROW_WINDOW_SIZE)
+          : totalShowcaseRows;
+
+        for (let rIdx = winStart; rIdx < winEnd; rIdx++) {
+          const scrollBlock = rowsContainerEl.querySelector<HTMLElement>(
+            `[data-scroll-block="true"][data-showcase-row-index="${rIdx}"]`
+          );
+          if (!scrollBlock) continue;
+          const rect = scrollBlock.getBoundingClientRect();
+          const rawHeight = rect.height > 0 ? rect.height : scrollBlock.offsetHeight;
+          if (typeof rawHeight === 'number' && rawHeight > 0) {
+            measuredRowHeightsRef.current.set(rIdx, Math.round(rawHeight));
+          }
+        }
+
+        const t1 =
+          typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : Date.now();
+        recordDpadGeometryMeasurement(phase, Math.max(0, t1 - t0));
+        return;
       }
-    }
 
-    if (measuredRowsStartOffsetRef.current === null) {
-      const containerRect = rowsContainerEl.getBoundingClientRect();
-      if (containerRect.height > 0 && typeof containerRect.top === 'number') {
-        const offsetFromContainer = Math.round(
-          containerRect.top - mainRect.top + scrollTop
-        );
-        if (offsetFromContainer >= 0) {
-          measuredRowsStartOffsetRef.current = offsetFromContainer;
-        }
-      } else {
-        const heroEl = mainEl.querySelector<HTMLElement>(
-          '[data-hero-stage="true"]'
-        );
-        if (heroEl) {
-          const heroRect = heroEl.getBoundingClientRect();
-          if (heroRect.height > 0) {
-            const marginPlusGap = liveViewportWidth >= 640 ? 32 : 24;
-            measuredRowsStartOffsetRef.current = Math.round(
-              Math.max(0, heroRect.top - mainRect.top + scrollTop) +
-                heroRect.height +
-                marginPlusGap
-            );
+      const allBlocks = rowsContainerEl.querySelectorAll<HTMLElement>(
+        '[data-scroll-block="true"]'
+      );
+
+      if (allBlocks.length > 0) {
+        const firstBlock = allBlocks[0];
+        const firstRect = firstBlock.getBoundingClientRect();
+        if (firstRect.height > 0 && typeof firstRect.top === 'number') {
+          const inferredStart = Math.round(
+            firstRect.top - mainRect.top + scrollTop - currentTopSpacerPx
+          );
+          if (inferredStart >= 0) {
+            measuredRowsStartOffsetRef.current = inferredStart;
           }
         }
       }
-    }
 
-    for (let i = 0; i < allBlocks.length; i++) {
-      const scrollBlock = allBlocks[i];
-      const rIdx = parseInt(
-        scrollBlock.getAttribute('data-showcase-row-index') ||
-          scrollBlock.querySelector('[data-home-row-index]')?.getAttribute('data-home-row-index') ||
-          String(i),
-        10
-      );
-      if (isNaN(rIdx) || rIdx < 0) continue;
-      const rect = scrollBlock.getBoundingClientRect();
-      const rawHeight = rect.height > 0 ? rect.height : scrollBlock.offsetHeight;
-      if (typeof rawHeight === 'number' && rawHeight > 0) {
-        measuredRowHeightsRef.current.set(rIdx, Math.round(rawHeight));
+      if (measuredRowsStartOffsetRef.current === null) {
+        const containerRect = rowsContainerEl.getBoundingClientRect();
+        if (containerRect.height > 0 && typeof containerRect.top === 'number') {
+          const offsetFromContainer = Math.round(
+            containerRect.top - mainRect.top + scrollTop
+          );
+          if (offsetFromContainer >= 0) {
+            measuredRowsStartOffsetRef.current = offsetFromContainer;
+          }
+        } else {
+          const heroEl = mainEl.querySelector<HTMLElement>(
+            '[data-hero-stage="true"]'
+          );
+          if (heroEl) {
+            const heroRect = heroEl.getBoundingClientRect();
+            if (heroRect.height > 0) {
+              const marginPlusGap = liveViewportWidth >= 640 ? 32 : 24;
+              measuredRowsStartOffsetRef.current = Math.round(
+                Math.max(0, heroRect.top - mainRect.top + scrollTop) +
+                  heroRect.height +
+                  marginPlusGap
+              );
+            }
+          }
+        }
       }
-    }
-  }, [liveViewportWidth]);
+
+      for (let i = 0; i < allBlocks.length; i++) {
+        const scrollBlock = allBlocks[i];
+        const rIdx = parseInt(
+          scrollBlock.getAttribute('data-showcase-row-index') ||
+            scrollBlock.querySelector('[data-home-row-index]')?.getAttribute('data-home-row-index') ||
+            String(i),
+          10
+        );
+        if (isNaN(rIdx) || rIdx < 0) continue;
+        const rect = scrollBlock.getBoundingClientRect();
+        const rawHeight = rect.height > 0 ? rect.height : scrollBlock.offsetHeight;
+        if (typeof rawHeight === 'number' && rawHeight > 0) {
+          measuredRowHeightsRef.current.set(rIdx, Math.round(rawHeight));
+        }
+      }
+
+      const t1 =
+        typeof performance !== 'undefined' && typeof performance.now === 'function'
+          ? performance.now()
+          : Date.now();
+      recordDpadGeometryMeasurement(phase, Math.max(0, t1 - t0));
+    },
+    [liveViewportWidth, maxRowWindowStart, shouldVirtualizeShowcaseRows, totalShowcaseRows]
+  );
 
   const computeShowcaseRowStartFromScroll = useCallback(
     (scrollTop: number, currentWindowStart?: number): number => {
@@ -1404,20 +1490,59 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       )
     : 0;
 
+  // Cache stable 24-item slices per category descriptor so shifting effectiveRowStart does not create
+  // fresh array references that defeat React.memo(HorizontalRow) on the remaining 6-7 mounted rows.
+  const rowItemsSliceCacheRef = useRef<{
+    vodIndex: any;
+    seriesIndex: any;
+    slices: Map<string, any[]>;
+  }>({
+    vodIndex: null,
+    seriesIndex: null,
+    slices: new Map<string, any[]>(),
+  });
+  if (
+    rowItemsSliceCacheRef.current.vodIndex !== vodIndex ||
+    rowItemsSliceCacheRef.current.seriesIndex !== seriesIndex
+  ) {
+    rowItemsSliceCacheRef.current = {
+      vodIndex,
+      seriesIndex,
+      slices: new Map<string, any[]>(),
+    };
+  }
+
+  const getCategoryRowSlice24 = useCallback(
+    (desc: ShowcaseRowDescriptor): any[] => {
+      if (desc.fixedItems) {
+        return desc.fixedItems;
+      }
+      const useStableSliceCache = isDpadOptimizedPathActive();
+      if (useStableSliceCache) {
+        const cached = rowItemsSliceCacheRef.current.slices.get(desc.key);
+        if (cached) {
+          return cached;
+        }
+      }
+      let slice: any[] = EMPTY_ARRAY;
+      if (desc.kind === 'vod_category' && desc.categoryId) {
+        slice = vodIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
+      } else if (desc.kind === 'series_category' && desc.categoryId) {
+        slice = seriesIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
+      }
+      if (useStableSliceCache && slice.length > 0) {
+        rowItemsSliceCacheRef.current.slices.set(desc.key, slice);
+      }
+      return slice;
+    },
+    [vodIndex, seriesIndex]
+  );
+
   // Prepare descriptors for all rows in the showcase. Items and cards are loaded ONLY for rows inside the active window.
   const showcaseRowsData = useMemo(() => {
     return showcaseRowDescriptors.map((desc, rowIndex) => {
       const isMounted = rowIndex >= effectiveRowStart && rowIndex < effectiveRowEnd;
-      let items: any[] = EMPTY_ARRAY;
-      if (isMounted) {
-        if (desc.fixedItems) {
-          items = desc.fixedItems;
-        } else if (desc.kind === 'vod_category' && desc.categoryId) {
-          items = vodIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
-        } else if (desc.kind === 'series_category' && desc.categoryId) {
-          items = seriesIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
-        }
-      }
+      const items = isMounted ? getCategoryRowSlice24(desc) : EMPTY_ARRAY;
       return {
         ...desc,
         rowIndex,
@@ -1430,8 +1555,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     showcaseRowDescriptors,
     effectiveRowStart,
     effectiveRowEnd,
-    vodIndex,
-    seriesIndex,
+    getCategoryRowSlice24,
     getRowSlotHeight,
   ]);
 
@@ -1440,7 +1564,11 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     if (isGridMode || (section === 'inicio' && hasSearch) || totalShowcaseRows === 0) {
       return;
     }
-    measureMountedShowcaseGeometry();
+    if (isDpadOptimizedPathActive() && isProgrammaticRowShiftRef.current) {
+      // Skip duplicate measurement inside flushSync; shiftShowcaseWindowWithAnchor measures once right after flushSync
+      return;
+    }
+    measureMountedShowcaseGeometry('after-virtual');
   }, [
     isGridMode,
     section,
@@ -1468,11 +1596,31 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       }
     }
 
-    if (isPaused || !isAndroidPersistentImageCacheAvailable()) {
-      return;
-    }
-
     const timerId = setTimeout(() => {
+      // In optimized mode, pre-warm category sorting and 24-item slices for the next 3 rows around the window
+      // so the first vertical D-Pad pass into an unvisited category never sorts synchronously inside flushSync.
+      if (isDpadOptimizedPathActive()) {
+        const prewarmIndices = [
+          effectiveRowStart - 2,
+          effectiveRowStart - 1,
+          effectiveRowEnd,
+          effectiveRowEnd + 1,
+          effectiveRowEnd + 2,
+        ];
+        for (const r of prewarmIndices) {
+          if (r >= 0 && r < totalShowcaseRows) {
+            const desc = showcaseRowDescriptors[r];
+            if (desc && (desc.kind === 'vod_category' || desc.kind === 'series_category')) {
+              getCategoryRowSlice24(desc);
+            }
+          }
+        }
+      }
+
+      if (isPaused || !isAndroidPersistentImageCacheAvailable()) {
+        return;
+      }
+
       const budget = computeAdaptiveInitialCardsPerRow({
         viewportWidth: liveViewportWidth,
         viewportHeight: liveViewportHeight,
@@ -1492,14 +1640,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       for (const r of candidateAdjacentRowIndices) {
         const desc = showcaseRowDescriptors[r];
         if (!desc) continue;
-        let items: any[] = EMPTY_ARRAY;
-        if (desc.kind === 'fixed') {
-          items = desc.fixedItems || EMPTY_ARRAY;
-        } else if (desc.kind === 'vod_category' && desc.categoryId) {
-          items = vodIndex.getSortedByCategory(desc.categoryId);
-        } else if (desc.kind === 'series_category' && desc.categoryId) {
-          items = seriesIndex.getSortedByCategory(desc.categoryId);
-        }
+        const items = getCategoryRowSlice24(desc);
         const rowBudget =
           desc.type === 'live' ? budget.landscapeCardsPerRow : budget.posterCardsPerRow;
         const limit = Math.min(rowBudget, items.length);
@@ -1529,8 +1670,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     effectiveRowStart,
     effectiveRowEnd,
     showcaseRowDescriptors,
-    vodIndex,
-    seriesIndex,
+    getCategoryRowSlice24,
     liveViewportWidth,
     liveViewportHeight,
     credentials?.serverUrl,
@@ -1545,12 +1685,26 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       if (clampedDesired === curStart) {
         return false;
       }
-      measureMountedShowcaseGeometry();
+
+      const optimizedPath = isDpadOptimizedPathActive();
+      if (!optimizedPath || measuredRowHeightsRef.current.size === 0) {
+        measureMountedShowcaseGeometry('before-virtual');
+      }
 
       const curEnd = Math.min(totalShowcaseRows, curStart + SHOWCASE_ROW_WINDOW_SIZE);
       const nextEnd = Math.min(totalShowcaseRows, clampedDesired + SHOWCASE_ROW_WINDOW_SIZE);
       const overlapStart = Math.max(curStart, clampedDesired);
       const overlapEnd = Math.min(curEnd, nextEnd);
+
+      const rowsDelta = Math.abs(clampedDesired - curStart);
+      if (rowsDelta > 0) {
+        recordDpadVirtualMountDelta({
+          rowsMounted: rowsDelta,
+          rowsUnmounted: rowsDelta,
+          cardsMounted: rowsDelta * 24,
+          cardsUnmounted: rowsDelta * 24,
+        });
+      }
 
       let anchorRowIdx = -1;
       if (overlapStart < overlapEnd) {
@@ -1591,6 +1745,10 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       isProgrammaticRowShiftRef.current = true;
       rowWindowStartRef.current = clampedDesired;
       try {
+        const flushT0 =
+          typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : Date.now();
         try {
           flushSync(() => {
             setRowWindowStart(clampedDesired);
@@ -1598,8 +1756,13 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         } catch {
           setRowWindowStart(clampedDesired);
         }
+        const flushT1 =
+          typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : Date.now();
+        recordDpadFlushSyncExecution(Math.max(0, flushT1 - flushT0));
 
-        measureMountedShowcaseGeometry();
+        measureMountedShowcaseGeometry('after-virtual');
 
         if (anchorRowIdx >= 0 && visualTopBefore !== null && mainContainerRef.current) {
           const visualTopAfter = measureShowcaseRowVisualTop(
@@ -1652,6 +1815,9 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         return false;
       }
 
+      const useTwoRowStride =
+        isDpadOptimizedPathActive() && SHOWCASE_ROW_WINDOW_SIZE >= 8;
+
       let desiredStart: number;
       if (
         typeof preserveRowIndex === 'number' &&
@@ -1660,10 +1826,28 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       ) {
         if (clampedTarget < preserveRowIndex) {
           // Navigating UP: keep preserveRowIndex in window and give top margin (snap to 0 when near top)
-          desiredStart = clampedTarget <= 3 ? 0 : clampedTarget - 1;
+          const candidateUp = useTwoRowStride
+            ? clampedTarget <= 3
+              ? 0
+              : clampedTarget - 2
+            : clampedTarget <= 3
+              ? 0
+              : clampedTarget - 1;
+          desiredStart =
+            preserveRowIndex < candidateUp + SHOWCASE_ROW_WINDOW_SIZE
+              ? candidateUp
+              : clampedTarget <= 3
+                ? 0
+                : clampedTarget - 1;
         } else {
           // Navigating DOWN: keep preserveRowIndex in window and give bottom margin
-          desiredStart = clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 2;
+          const candidateDown = useTwoRowStride
+            ? clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 3
+            : clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 2;
+          desiredStart =
+            preserveRowIndex >= candidateDown
+              ? candidateDown
+              : clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 2;
         }
       } else {
         desiredStart = clampedTarget - Math.floor(SHOWCASE_ROW_WINDOW_SIZE / 2);

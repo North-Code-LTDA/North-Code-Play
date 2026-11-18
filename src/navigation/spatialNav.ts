@@ -1,3 +1,10 @@
+import {
+  isDpadOptimizedPathActive,
+  recordDpadKeydownReceived,
+  recordDpadMoveResolution,
+} from './dpadFluidityDiagnostics';
+import { notifyDpadNavigationActivityForImagePreload } from '../services/androidImageCache';
+
 export type NavMode = 'pointer' | 'remote';
 export type SpatialDirection = 'up' | 'down' | 'left' | 'right';
 
@@ -963,6 +970,63 @@ export function getFocusableElements(
   return rawList.filter((el) => isElementFocusable(el, cache));
 }
 
+function hasFastHiddenAttributeOrClass(node: HTMLElement): boolean {
+  if (node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true' || node.hidden) {
+    return true;
+  }
+  const inlineDisplay = node.style?.display;
+  const inlineVisibility = node.style?.visibility;
+  if (inlineDisplay === 'none' || inlineVisibility === 'hidden') {
+    return true;
+  }
+  const cls = typeof node.className === 'string' ? node.className : '';
+  if (cls) {
+    if (
+      cls.includes('invisible') ||
+      OPACITY_ZERO_CLASS_REGEX.test(cls) ||
+      (HIDDEN_CLASS_REGEX.test(cls) &&
+        !cls.includes('md:flex') &&
+        !cls.includes('md:block') &&
+        !cls.includes('sm:inline'))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Fast visibility/focusability check for known cards inside an already verified-visible row container.
+ * Avoids calling window.getComputedStyle(node) 24 times per row during D-Pad navigation in optimized mode.
+ */
+function isKnownRowCardFocusableFast(
+  el: HTMLElement,
+  verifiedVisibleContainer: HTMLElement,
+  ancestorCache: Map<HTMLElement, boolean>
+): boolean {
+  if (!el || !el.isConnected) return false;
+  if ((el as any).disabled || el.getAttribute('aria-disabled') === 'true') return false;
+  const tabIndexAttr = el.getAttribute('tabindex');
+  if (tabIndexAttr !== null && parseInt(tabIndexAttr, 10) < 0) {
+    return false;
+  }
+
+  let cur: HTMLElement | null = el;
+  while (cur && cur !== verifiedVisibleContainer && cur !== document.body) {
+    const cached = ancestorCache.get(cur);
+    if (cached !== undefined) {
+      if (!cached) return false;
+      break;
+    }
+    if (hasFastHiddenAttributeOrClass(cur)) {
+      ancestorCache.set(cur, false);
+      return false;
+    }
+    cur = cur.parentElement;
+  }
+  return true;
+}
+
 /**
  * Lists focusable elements inside a localized subtree (such as a single row or grid)
  * without polluting the global scopeRoot candidate cache.
@@ -974,6 +1038,17 @@ function getFocusableElementsInSubtree(
 ): HTMLElement[] {
   if (!subtreeRoot) return [];
   const rawList = Array.from(subtreeRoot.querySelectorAll<HTMLElement>(selector));
+  if (
+    isDpadOptimizedPathActive() &&
+    rawList.length > 0 &&
+    isSubtreeVisible(subtreeRoot, ancestorCache)
+  ) {
+    return rawList.filter((el) =>
+      el.hasAttribute('data-row-card-index') || el.getAttribute('data-live-channel-btn') === 'true'
+        ? isKnownRowCardFocusableFast(el, subtreeRoot, ancestorCache)
+        : isElementFocusable(el, ancestorCache)
+    );
+  }
   return rawList.filter((el) => isElementFocusable(el, ancestorCache));
 }
 
@@ -995,6 +1070,19 @@ function getTargetRowFocusableItems(
     );
     if (mainChannelBtns.length > 0) {
       return mainChannelBtns;
+    }
+  }
+
+  if (
+    isDpadOptimizedPathActive() &&
+    targetRowContainer.getAttribute('data-nav-row') === 'true' &&
+    isSubtreeVisible(targetRowContainer, ancestorCache)
+  ) {
+    const directCards = Array.from(
+      targetRowContainer.querySelectorAll<HTMLElement>('[data-row-card-index]')
+    ).filter((el) => isKnownRowCardFocusableFast(el, targetRowContainer, ancestorCache));
+    if (directCards.length > 0) {
+      return directCards;
     }
   }
 
@@ -1215,6 +1303,19 @@ function pickBestItemInBlock(
         pool = liveChannelMainBtns;
       }
       const rowRect = getCachedRect(block.container, ctx);
+
+      // In optimized mode, use monotonic horizontal probing around the logical column hint
+      // so we only measure 2-4 cards with getBoundingClientRect() instead of all 24 cards in the row.
+      if (isDpadOptimizedPathActive() && pool.length > 4) {
+        const rawCurrCardIdx = current.getAttribute('data-row-card-index');
+        const parsedHint = rawCurrCardIdx !== null ? parseInt(rawCurrCardIdx, 10) : 0;
+        const hintIdx = !isNaN(parsedHint) && parsedHint >= 0 ? parsedHint : 0;
+        const fastMatch = pickBestInMonotonicRowFast(pool, cx, rowRect, hintIdx, ctx);
+        if (fastMatch) {
+          return fastMatch;
+        }
+      }
+
       if (rowRect.width > 0) {
         const visibleInRow = pool.filter((item) => {
           const r = getCachedRect(item, ctx);
@@ -1276,6 +1377,81 @@ function pickBestItemInBlock(
   }
 
   return block.items[0];
+}
+
+function pickBestInMonotonicRowFast(
+  pool: HTMLElement[],
+  cx: number,
+  rowRect: DOMRect,
+  hintIdx: number,
+  ctx: NavPassContext
+): HTMLElement | null {
+  const n = pool.length;
+  if (n === 0) return null;
+  const hasRowBounds = rowRect.width > 0;
+  const isVis = (r: DOMRect) =>
+    !hasRowBounds || (r.right > rowRect.left + 4 && r.left < rowRect.right - 4);
+  const center = (r: DOMRect) => r.left + r.width / 2;
+
+  const idx = Math.min(n - 1, Math.max(0, hintIdx));
+  const r0 = getCachedRect(pool[idx], ctx);
+  if (r0.width <= 0 || r0.height <= 0) return null;
+
+  let bestEl: HTMLElement | null = isVis(r0) ? pool[idx] : null;
+  let bestDist = bestEl ? Math.abs(center(r0) - cx) : Infinity;
+
+  // Probe right while moving closer to cx or entering visible row viewport from left
+  let curRight = idx;
+  let prevCenter = center(r0);
+  while (curRight + 1 < n) {
+    const nextEl = pool[curRight + 1];
+    const nextR = getCachedRect(nextEl, ctx);
+    if (nextR.width <= 0 || nextR.height <= 0) return null;
+    const nextC = center(nextR);
+    if (nextC < prevCenter - 1) {
+      // Wrapped or non-monotonic layout: fall back to full scan
+      return null;
+    }
+    const nextVis = isVis(nextR);
+    const nextDist = Math.abs(nextC - cx);
+    if (nextVis && nextDist < bestDist) {
+      bestDist = nextDist;
+      bestEl = nextEl;
+    }
+    const stillLeftOfVisible = hasRowBounds && nextR.right <= rowRect.left + 4;
+    if (!stillLeftOfVisible && nextC >= cx && nextDist >= bestDist) {
+      break;
+    }
+    prevCenter = nextC;
+    curRight++;
+  }
+
+  // Probe left while moving closer to cx or entering visible row viewport from right
+  let curLeft = idx;
+  prevCenter = center(r0);
+  while (curLeft - 1 >= 0) {
+    const prevEl = pool[curLeft - 1];
+    const prevR = getCachedRect(prevEl, ctx);
+    if (prevR.width <= 0 || prevR.height <= 0) return null;
+    const prevC = center(prevR);
+    if (prevC > prevCenter + 1) {
+      return null;
+    }
+    const prevVis = isVis(prevR);
+    const prevDist = Math.abs(prevC - cx);
+    if (prevVis && prevDist <= bestDist) {
+      bestDist = prevDist;
+      bestEl = prevEl;
+    }
+    const stillRightOfVisible = hasRowBounds && prevR.left >= rowRect.right - 4;
+    if (!stillRightOfVisible && prevC <= cx && prevDist >= bestDist) {
+      break;
+    }
+    prevCenter = prevC;
+    curLeft--;
+  }
+
+  return bestEl;
 }
 
 function findNextInGridBlock(
@@ -2371,9 +2547,19 @@ function tryFastHorizontalRowCardMove(
  * Follows visual/DOM zone structure so vertical navigation inside content scrolls through rows
  * and never jumps accidentally to the sidebar or search bar.
  */
-export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | null {
+export function moveSpatialFocus(
+  direction: SpatialDirection,
+  _unused?: unknown,
+  options?: { isRepeat?: boolean }
+): HTMLElement | null {
   if (typeof document === 'undefined') return null;
   spatialPerfStats.moveCalls++;
+  notifyDpadNavigationActivityForImagePreload();
+
+  const commandStartMs = recordDpadKeydownReceived({
+    direction,
+    isRepeat: Boolean(options?.isRepeat),
+  });
 
   // Any new spatial navigation immediately discards pending focus restorations
   cancelPendingFocusRestore();
@@ -2384,20 +2570,46 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
   const ctx = createNavPassContext();
 
   // Fast, conservative path for horizontal ('left' | 'right') or vertical ('up' | 'down') moves
-  const fastResult =
-    direction === 'left' || direction === 'right'
-      ? tryFastHorizontalRowCardMove(initialActive, direction, ctx)
-      : tryFastVerticalMove(initialActive, direction, ctx);
+  const isHorizontal = direction === 'left' || direction === 'right';
+  const fastResult = isHorizontal
+    ? tryFastHorizontalRowCardMove(initialActive, direction, ctx)
+    : tryFastVerticalMove(initialActive, direction, ctx);
   if (fastResult.handled) {
+    recordDpadMoveResolution({
+      commandStartMs,
+      moved: Boolean(fastResult.target && fastResult.target !== initialActive),
+      resolutionPath: isHorizontal ? 'fast-horizontal' : 'fast-vertical',
+    });
     return fastResult.target;
   }
 
+  const fallbackTarget = moveSpatialFocusFallback(
+    direction,
+    initialActive,
+    ctx,
+    fastResult.virtualExpansionHandled
+  );
+  recordDpadMoveResolution({
+    commandStartMs,
+    moved: Boolean(fallbackTarget && fallbackTarget !== initialActive),
+    resolutionPath:
+      fallbackTarget && fallbackTarget !== initialActive ? 'global-fallback' : 'none',
+  });
+  return fallbackTarget;
+}
+
+function moveSpatialFocusFallback(
+  direction: SpatialDirection,
+  initialActive: HTMLElement | null,
+  ctx: NavPassContext,
+  virtualExpansionAlreadyHandled: boolean
+): HTMLElement | null {
   const prevVirtualIdx = initialActive?.getAttribute('data-virtual-index') ?? null;
   const prevVirtualContainer =
     initialActive?.closest<HTMLElement>('[data-virtual-container="true"]') ?? null;
 
   // Expand virtual window synchronously if navigating near/across a virtualized list boundary
-  if (!fastResult.virtualExpansionHandled) {
+  if (!virtualExpansionAlreadyHandled) {
     ensureVirtualTargetMountedIfNeeded(initialActive, direction);
   }
 
@@ -2807,7 +3019,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
               ? `[data-row-card-index="${nextLogicalIdx}"][data-live-channel-btn="true"]`
               : `[data-virtual-index="${nextLogicalIdx}"], [data-row-card-index="${nextLogicalIdx}"]`;
             let nextEl = currentRow.querySelector<HTMLElement>(targetSelector);
-            if (!nextEl && !fastResult.virtualExpansionHandled) {
+            if (!nextEl && !virtualExpansionAlreadyHandled) {
               const expanded = rowController.ensureIndexMounted(nextLogicalIdx, currentVirtualIdx);
               if (expanded) {
                 spatialPerfStats.virtualWindowExpansions++;
@@ -2853,7 +3065,7 @@ export function moveSpatialFocus(direction: SpatialDirection): HTMLElement | nul
               ? `[data-row-card-index="${prevLogicalIdx}"][data-live-channel-btn="true"]`
               : `[data-virtual-index="${prevLogicalIdx}"], [data-row-card-index="${prevLogicalIdx}"]`;
             let prevEl = currentRow.querySelector<HTMLElement>(prevSelector);
-            if (!prevEl && !fastResult.virtualExpansionHandled) {
+            if (!prevEl && !virtualExpansionAlreadyHandled) {
               const expanded = rowController.ensureIndexMounted(prevLogicalIdx, currentVirtualIdx);
               if (expanded) {
                 spatialPerfStats.virtualWindowExpansions++;

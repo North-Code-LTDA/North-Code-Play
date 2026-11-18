@@ -64,3 +64,33 @@ export type {
   NativeBackBridgeStatus,
   CapacitorAppBridgeLike,
 } from './capacitorBackAdapter';
+
+export {
+  DPAD_FLUIDITY_DIAGNOSTICS_ENABLED_KEY,
+  DPAD_NAVIGATION_BEHAVIOR_MODE_KEY,
+  isDpadFluidityDiagnosticsEnabled,
+  setDpadFluidityDiagnosticsEnabled,
+  getDpadNavigationBehaviorMode,
+  setDpadNavigationBehaviorMode,
+  isDpadOptimizedPathActive,
+  isDpadNavigationCurrentlyActiveWindow,
+  setDpadFluidityClockForTest,
+  resetDpadFluidityDiagnostics,
+  recordDpadKeydownReceived,
+  recordDpadMoveResolution,
+  recordDpadFlushSyncExecution,
+  recordDpadGeometryMeasurement,
+  recordDpadVirtualMountDelta,
+  recordDpadNavImageActivity,
+  recordDpadNavCategorySortActivity,
+  getDpadFluidityDiagnosticsSnapshot,
+  subscribeDpadFluidityDiagnostics,
+  formatDpadFluidityDiagnosticsReport,
+} from './dpadFluidityDiagnostics';
+export type {
+  DpadNavigationBehaviorMode,
+  DpadLatencySummary,
+  DpadDirectionBreakdown,
+  DpadFluidityDiagnosticsSnapshot,
+} from './dpadFluidityDiagnostics';
+
