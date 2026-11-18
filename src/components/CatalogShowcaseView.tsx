@@ -1453,7 +1453,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   ]);
 
   // Record visited categories when the user scrolls beyond the initial window and opportunistically
-  // preload the next adjacent rows' visible covers in low priority on Android
+  // preload only the unmounted adjacent rows' visible covers in low priority when idle on Android
   useEffect(() => {
     if (isGridMode || (section === 'inicio' && hasSearch) || totalShowcaseRows === 0) {
       return;
@@ -1468,42 +1468,60 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       }
     }
 
-    if (!isAndroidPersistentImageCacheAvailable()) {
+    if (isPaused || !isAndroidPersistentImageCacheAvailable()) {
       return;
     }
 
-    const budget = computeAdaptiveInitialCardsPerRow({
-      viewportWidth: liveViewportWidth,
-      viewportHeight: liveViewportHeight,
-    });
-    const preloadUrls: string[] = [];
-    const lookaheadEnd = Math.min(totalShowcaseRows, effectiveRowEnd + 2);
-
-    for (let r = Math.max(0, effectiveRowStart - 1); r < lookaheadEnd; r++) {
-      const desc = showcaseRowDescriptors[r];
-      if (!desc) continue;
-      let items: any[] = EMPTY_ARRAY;
-      if (desc.kind === 'fixed') {
-        items = desc.fixedItems || EMPTY_ARRAY;
-      } else if (desc.kind === 'vod_category' && desc.categoryId) {
-        items = vodIndex.getSortedByCategory(desc.categoryId);
-      } else if (desc.kind === 'series_category' && desc.categoryId) {
-        items = seriesIndex.getSortedByCategory(desc.categoryId);
+    const timerId = setTimeout(() => {
+      const budget = computeAdaptiveInitialCardsPerRow({
+        viewportWidth: liveViewportWidth,
+        viewportHeight: liveViewportHeight,
+      });
+      const preloadUrls: string[] = [];
+      const candidateAdjacentRowIndices: number[] = [];
+      if (effectiveRowStart - 1 >= 0) {
+        candidateAdjacentRowIndices.push(effectiveRowStart - 1);
       }
-      const limit = Math.min(budget.posterCardsPerRow, items.length);
-      for (let c = 0; c < limit; c++) {
-        const raw = extractCatalogItemRawImage(items[c]);
-        const resolved = buildDirectImageUrl(raw, credentials?.serverUrl);
-        if (resolved) {
-          preloadUrls.push(resolved);
+      if (effectiveRowEnd < totalShowcaseRows) {
+        candidateAdjacentRowIndices.push(effectiveRowEnd);
+      }
+      if (effectiveRowEnd + 1 < totalShowcaseRows) {
+        candidateAdjacentRowIndices.push(effectiveRowEnd + 1);
+      }
+
+      for (const r of candidateAdjacentRowIndices) {
+        const desc = showcaseRowDescriptors[r];
+        if (!desc) continue;
+        let items: any[] = EMPTY_ARRAY;
+        if (desc.kind === 'fixed') {
+          items = desc.fixedItems || EMPTY_ARRAY;
+        } else if (desc.kind === 'vod_category' && desc.categoryId) {
+          items = vodIndex.getSortedByCategory(desc.categoryId);
+        } else if (desc.kind === 'series_category' && desc.categoryId) {
+          items = seriesIndex.getSortedByCategory(desc.categoryId);
+        }
+        const rowBudget =
+          desc.type === 'live' ? budget.landscapeCardsPerRow : budget.posterCardsPerRow;
+        const limit = Math.min(rowBudget, items.length);
+        for (let c = 0; c < limit; c++) {
+          const raw = extractCatalogItemRawImage(items[c]);
+          const resolved = buildDirectImageUrl(raw, credentials?.serverUrl);
+          if (resolved) {
+            preloadUrls.push(resolved);
+          }
         }
       }
-    }
 
-    if (preloadUrls.length > 0) {
-      scheduleBackgroundLowPriorityPreload(preloadUrls);
-    }
+      if (preloadUrls.length > 0) {
+        scheduleBackgroundLowPriorityPreload(preloadUrls);
+      }
+    }, 35);
+
+    return () => {
+      clearTimeout(timerId);
+    };
   }, [
+    isPaused,
     isGridMode,
     section,
     hasSearch,

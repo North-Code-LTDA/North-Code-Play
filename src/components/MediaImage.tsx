@@ -1048,13 +1048,17 @@ function MediaImageInner({
     }
 
     let cancelled = false;
+    const abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const priorityTier = priority
       ? 'critical'
       : fetchPriority === 'high'
         ? 'high'
         : 'normal';
 
-    acquireCachedImage(resolvedUrl, { priority: priorityTier })
+    acquireCachedImage(resolvedUrl, {
+      priority: priorityTier,
+      signal: abortCtrl?.signal,
+    })
       .then((outcome) => {
         if (cancelled) return;
         rememberLoadedImageUrl(resolvedUrl);
@@ -1064,13 +1068,14 @@ function MediaImageInner({
         }
       })
       .catch(() => {
-        if (cancelled) return;
+        if (cancelled || abortCtrl?.signal.aborted) return;
         // Fallback to direct provider URL so standard single-retry error flow in MediaImage handles it
         setEffectiveImgSrc(resolvedUrl);
       });
 
     return () => {
       cancelled = true;
+      abortCtrl?.abort();
     };
   }, [isAuthorized, resolvedUrl, useAndroidDiskCache, priority, fetchPriority, attempt]);
 

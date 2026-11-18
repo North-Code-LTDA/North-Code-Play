@@ -289,12 +289,20 @@ import {
   isAndroidPersistentImageCacheAvailable,
   extractCatalogItemRawImage,
   isVideoPlaybackThrottlingActiveForTest,
+  setCatalogTransferPhaseActiveForImageCache,
+  isCatalogTransferPhaseActiveForImageCache,
+  getStartupImageCoordinationMode,
+  setStartupImageCoordinationMode,
+  scheduleCooperativeCatalogUrlCount,
+  scheduleBackgroundLowPriorityPreload,
 } from '../src/services/androidImageCache';
 import {
   resetCatalogDiagnosticsForTest,
   startCatalogDiagnosticsSession,
   getCatalogDiagnosticsSnapshot,
   formatCatalogDiagnosticsReport,
+  recordStartupCoordinatorReadyTimestamp,
+  recordHomeOpeningMilestone,
 } from '../src/utils/catalogDiagnostics';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -3481,6 +3489,511 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
   );
 }
 
+// ============================================================================
+// 8. ESTABILIZAÇÃO DO CARREGAMENTO E FLUIDEZ NO APK ANDROID (ETAPA 2)
+// ============================================================================
+async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
+  console.log(
+    '\n--- 8. Etapa 2: Coordenação Catálogos/Imagens, Eliminação do Gap de 8,1s, Contabilização Prioritária, Cancelamento Vertical e Modo A/B ---'
+  );
+
+  let customResponderFn:
+    | ((
+        url: string,
+        reqHeaders: { ifNoneMatch?: string; ifModifiedSince?: string }
+      ) => any)
+    | null = null;
+
+  const harness = createSimulatedPersistentImageDiskHarness({
+    initialMaxBytes: 120 * 1024 * 1024,
+    defaultByteSize: 2048,
+    customResponder: (url, reqHeaders) => {
+      if (customResponderFn) {
+        return customResponderFn(url, reqHeaders);
+      }
+      return {
+        status: 200,
+        contentType: 'image/jpeg',
+        bodyBytes: createValidTestJpegBytes(2048),
+      };
+    },
+  });
+
+  const doc = windowInstance.document;
+  const container = doc.createElement('div');
+  doc.body.appendChild(container);
+  const root = createRoot(container);
+
+  try {
+    harness.install();
+    setMediaImageRetryDelayMsForTest(25);
+    resetCatalogDiagnosticsForTest(true);
+    startCatalogDiagnosticsSession(8001, 2);
+
+    // -------------------------------------------------------------------------
+    // 8.1. Coordenação entre carregamento dos 6 catálogos e cache de imagens
+    // -------------------------------------------------------------------------
+    // Pré-popular uma imagem no disco persistente antes do início dos catálogos
+    const preCachedLogoUrl = 'http://img.provider.tv/logos/ch_persisted_before_catalogs.jpg';
+    const preRes = await acquireCachedImage(preCachedLogoUrl);
+    assert.strictEqual(preRes.isLocalFile, true, 'Imagem prévia deve estar persistida no disco');
+
+    const downloadsBeforeCatalogPhase = harness.getNetworkFetchCount();
+
+    // Ativar fase de transferência dos 6 catálogos iniciais (!allSixFinished)
+    setCatalogTransferPhaseActiveForImageCache(true);
+    assert.strictEqual(
+      isCatalogTransferPhaseActiveForImageCache(),
+      true,
+      'Fase de transferência de catálogos deve estar ativa'
+    );
+
+    // 1) Imagens já persistidas localmente continuam sendo reutilizadas imediatamente sem rede
+    const instantDuringCatalogs = getInstantCachedImageSrc(preCachedLogoUrl, { countHit: true });
+    assert(
+      instantDuringCatalogs === preRes.src &&
+        instantDuringCatalogs.includes(
+          '/_capacitor_file_/data/user/0/com.northcode.play/files/nc_image_cache/'
+        ),
+      'getInstantCachedImageSrc deve servir imediatamente imagens já persistidas durante os catálogos'
+    );
+    const acquireHitDuringCatalogs = await acquireCachedImage(preCachedLogoUrl);
+    assert.strictEqual(
+      acquireHitDuringCatalogs.fromCache,
+      true,
+      'acquireCachedImage também deve retornar hit local imediato durante os catálogos para imagens já persistidas'
+    );
+    const snapDuringCatalogs1 = getCatalogDiagnosticsSnapshot();
+    assert(
+      snapDuringCatalogs1.imageCache.hitsDuringCatalogsCount >= 2,
+      'Reutilização de imagem local durante os catálogos deve incrementar hitsDuringCatalogsCount'
+    );
+
+    // 2) Pré-carregamento oportunista de baixa prioridade deve ser bloqueado durante os catálogos
+    scheduleBackgroundLowPriorityPreload([
+      'http://img.provider.tv/covers/blocked_low_during_catalogs_1.jpg',
+      'http://img.provider.tv/covers/blocked_low_during_catalogs_2.jpg',
+    ]);
+    await new Promise((r) => setTimeout(r, 25));
+    assert.strictEqual(
+      harness.getNetworkFetchCount(),
+      downloadsBeforeCatalogPhase,
+      'Pré-carregamento oportunista não deve iniciar downloads remotos enquanto os 6 catálogos estiverem carregando'
+    );
+
+    // 3) Requisições de cartões montados em segundo plano ficam retidas na fila sem competir com os catálogos
+    const queuedDuringCatalogsUrl = 'http://img.provider.tv/covers/queued_while_catalogs_loading.jpg';
+    let queuedResolved = false;
+    const queuedPromise = acquireCachedImage(queuedDuringCatalogsUrl, {
+      priority: 'normal',
+    }).then((res) => {
+      queuedResolved = true;
+      return res;
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+    assert.strictEqual(
+      queuedResolved,
+      false,
+      'Download remoto não essencial deve aguardar o término dos 6 catálogos'
+    );
+    assert.strictEqual(
+      harness.getNetworkFetchCount(),
+      downloadsBeforeCatalogPhase,
+      'Nenhum download remoto de imagem deve ocorrer durante a transferência dos catálogos'
+    );
+    assert.strictEqual(
+      getCatalogDiagnosticsSnapshot().imageCache.downloadsDuringCatalogsCount,
+      0,
+      'downloadsDuringCatalogsCount deve permanecer 0 quando a coordenação está ativa'
+    );
+
+    // Concluir os 6 catálogos -> libera a fila imediatamente
+    setCatalogTransferPhaseActiveForImageCache(false);
+    const queuedRes = await queuedPromise;
+    assert.strictEqual(
+      queuedRes.isLocalFile,
+      true,
+      'Assim que os 6 catálogos terminam, o download aguardando na fila deve ser concluído com sucesso'
+    );
+
+    // -------------------------------------------------------------------------
+    // 8.2. Eliminação do intervalo oculto de ~8,1s pós-catálogos (deferFullUrlCount + lazy rows)
+    // -------------------------------------------------------------------------
+    // Criar catálogo sintético volumoso com 120 categorias e 3.000 itens para validar o caminho crítico
+    const manyVodCategories = Array.from({ length: 120 }, (_, i) => ({
+      category_id: `cat_${i + 1}`,
+      category_name: `Categoria Filmes ${i + 1}`,
+      parent_id: 0,
+    }));
+    const manyVodStreams = Array.from({ length: 3000 }, (_, i) => ({
+      num: i + 1,
+      name: `Filme Sintético ${i + 1}`,
+      stream_type: 'movie',
+      stream_id: 100000 + i,
+      stream_icon: `http://img.provider.tv/vod/poster_${i + 1}.jpg`,
+      rating: '8.0',
+      rating_5based: 4,
+      added: String(1700000000 + (i % 500)),
+      category_id: `cat_${(i % 120) + 1}`,
+      container_extension: 'mp4',
+      custom_sid: '',
+      direct_source: '',
+    }));
+
+    const deferredPlanStartMs = Date.now();
+    const deferredPlan = buildHomeStartupImagePlan({
+      allLiveStreams: [
+        {
+          num: 1,
+          name: 'Canal 1',
+          stream_type: 'live',
+          stream_id: 901,
+          stream_icon: 'http://img.provider.tv/live/ch_901.jpg',
+          epg_channel_id: '',
+          added: '1700000000',
+          category_id: 'live_1',
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        },
+      ] as any,
+      vodCategories: manyVodCategories as any,
+      allVodStreams: manyVodStreams as any,
+      seriesCategories: [],
+      allSeriesStreams: [],
+      continueWatchingItems: [],
+      deferFullUrlCount: true,
+    });
+    const deferredPlanElapsedMs = Date.now() - deferredPlanStartMs;
+
+    assert(
+      deferredPlan.priorityUrls.length > 0,
+      'Plano com deferFullUrlCount deve produzir as URLs prioritárias da primeira dobra imediatamente'
+    );
+    assert(
+      deferredPlanElapsedMs < 200,
+      `buildHomeStartupImagePlan com deferFullUrlCount deve executar rapidamente sem bloquear a thread principal (levou ${deferredPlanElapsedMs} ms)`
+    );
+
+    const diagAfterDeferredPlan = getCatalogDiagnosticsSnapshot();
+    assert(
+      diagAfterDeferredPlan.imageCache.planBuildTotalMs !== null &&
+        diagAfterDeferredPlan.imageCache.planCategorySelectionAndSortMs !== null,
+      'Diagnóstico deve registrar planBuildTotalMs e planCategorySelectionAndSortMs separadamente'
+    );
+
+    // Executar contagem cooperativa em segundo plano e validar que converge para o total exato
+    scheduleCooperativeCatalogUrlCount({
+      allLiveStreams: [
+        {
+          stream_icon: 'http://img.provider.tv/live/ch_901.jpg',
+        },
+      ] as any,
+      allVodStreams: manyVodStreams as any,
+      allSeriesStreams: [],
+      vodCategories: manyVodCategories as any,
+      seriesCategories: [],
+      continueWatchingItems: [],
+      batchSize: 800,
+    });
+    await new Promise((r) => setTimeout(r, 80));
+
+    const diagAfterCoopCount = getCatalogDiagnosticsSnapshot();
+    assert.strictEqual(
+      diagAfterCoopCount.imageCache.uniqueCatalogImageUrls,
+      3001,
+      'Contagem cooperativa em segundo plano deve apurar exatamente as 3.001 URLs únicas do catálogo sem travar a abertura da Home'
+    );
+    assert(
+      diagAfterCoopCount.imageCache.planUniqueUrlCountMs !== null &&
+        diagAfterCoopCount.imageCache.planUniqueUrlCountMs >= 0,
+      'Diagnóstico deve registrar planUniqueUrlCountMs após a contagem cooperativa'
+    );
+
+    // Validar medição de onReadyToHomeAvailableMs
+    recordStartupCoordinatorReadyTimestamp();
+    await new Promise((r) => setTimeout(r, 12));
+    recordHomeOpeningMilestone({
+      isDisplaySetupOpen: false,
+      isOverlayActive: false,
+      isAuthRejected: false,
+      allSixFinished: true,
+    });
+    const diagAfterHomeRelease = getCatalogDiagnosticsSnapshot();
+    assert(
+      diagAfterHomeRelease.imageCache.onReadyToHomeAvailableMs !== null &&
+        diagAfterHomeRelease.imageCache.onReadyToHomeAvailableMs >= 0,
+      'Diagnóstico deve registrar onReadyToHomeAvailableMs entre onReady() e a liberação efetiva da Home'
+    );
+
+    // -------------------------------------------------------------------------
+    // 8.3. Contabilização exata das imagens prioritárias (sucesso vs falha vs pendente)
+    // -------------------------------------------------------------------------
+    const diskHitPriorityUrl = 'http://img.provider.tv/priority/already_on_disk.jpg';
+    await acquireCachedImage(diskHitPriorityUrl);
+
+    const downloadOkPriorityUrl = 'http://img.provider.tv/priority/download_ok.jpg';
+    const failPriorityUrl = 'http://img.provider.tv/priority/download_fail_500.jpg';
+    const slowPendingPriorityUrl = 'http://img.provider.tv/priority/download_slow_timeout.jpg';
+
+    customResponderFn = (url) => {
+      if (url === failPriorityUrl) {
+        return {
+          status: 500,
+          contentType: 'text/plain',
+          bodyBytes: new Uint8Array([69, 82, 82]),
+        };
+      }
+      if (url === slowPendingPriorityUrl) {
+        return {
+          status: 200,
+          contentType: 'image/jpeg',
+          bodyBytes: createValidTestJpegBytes(2048),
+          delayMs: 250,
+        };
+      }
+      return {
+        status: 200,
+        contentType: 'image/jpeg',
+        bodyBytes: createValidTestJpegBytes(2048),
+        delayMs: 10,
+      };
+    };
+
+    const prepAccountingResult = await executeHomeStartupImagePreparation(
+      {
+        tier1HeroUrls: [],
+        tier2FirstRowsVisibleUrls: [
+          diskHitPriorityUrl,
+          downloadOkPriorityUrl,
+          failPriorityUrl,
+          slowPendingPriorityUrl,
+        ],
+        tier3NextRowsUrls: [],
+        tier4VisitedCategoryUrls: [],
+        priorityUrls: [
+          diskHitPriorityUrl,
+          downloadOkPriorityUrl,
+          failPriorityUrl,
+          slowPendingPriorityUrl,
+        ],
+        uniqueCatalogImageUrlsCount: 4,
+        uniqueHomeImageUrlsCount: 4,
+        posterCardsPerRow: 6,
+        landscapeCardsPerRow: 4,
+        planBuildTotalMs: 1,
+        planCategorySelectionAndSortMs: 0.5,
+        planUniqueUrlCountMs: 0,
+      },
+      { maxWaitMs: 60 }
+    );
+
+    assert.strictEqual(
+      prepAccountingResult.foundOnDiskCount,
+      1,
+      'Deve contabilizar exatamente 1 imagem prioritária já encontrada no disco'
+    );
+    assert.strictEqual(
+      prepAccountingResult.downloadedSuccessCount,
+      1,
+      'Deve contabilizar exatamente 1 imagem prioritária baixada com sucesso antes do timeout'
+    );
+    assert.strictEqual(
+      prepAccountingResult.failedCount,
+      1,
+      'Deve contabilizar exatamente 1 imagem prioritária que falhou durante a preparação'
+    );
+    assert.strictEqual(
+      prepAccountingResult.pendingAtReleaseCount,
+      1,
+      'Deve contabilizar exatamente 1 imagem prioritária ainda pendente quando a Home foi liberada por timeout'
+    );
+    assert.strictEqual(
+      prepAccountingResult.preparedCount,
+      2,
+      'Falhas e pendências NUNCA devem ser somadas em preparedCount (preparedCount deve ser foundOnDiskCount + downloadedSuccessCount = 2)'
+    );
+
+    // Aguardar término da imagem lenta em background
+    await new Promise((r) => setTimeout(r, 260));
+    customResponderFn = null;
+
+    // -------------------------------------------------------------------------
+    // 8.4. Cancelamento de tarefas obsoletas na fila ao desmontar cartões na navegação vertical
+    // -------------------------------------------------------------------------
+    customResponderFn = () => ({
+      status: 200,
+      contentType: 'image/jpeg',
+      bodyBytes: createValidTestJpegBytes(2048),
+      delayMs: 45,
+    });
+
+    const staleBeforeCount =
+      getCatalogDiagnosticsSnapshot().imageCache.cancelledStaleQueueTasksCount;
+    const downloadsBeforeVerticalBurst = harness.getNetworkFetchCount();
+
+    // Disparar 4 downloads que ocupam os 4 workers ativos (capacidade ociosa padrão) +
+    // 4 downloads na fila pendente que serão abortados (simulando uma fileira desmontada durante navegação vertical rápida)
+    const activeWorkerPromises = [
+      acquireCachedImage('http://img.provider.tv/vnav/active_worker_1.jpg'),
+      acquireCachedImage('http://img.provider.tv/vnav/active_worker_2.jpg'),
+      acquireCachedImage('http://img.provider.tv/vnav/active_worker_3.jpg'),
+      acquireCachedImage('http://img.provider.tv/vnav/active_worker_4.jpg'),
+    ];
+
+    const staleControllers = [
+      new AbortController(),
+      new AbortController(),
+      new AbortController(),
+      new AbortController(),
+    ];
+    const stalePromises = staleControllers.map((ctrl, idx) =>
+      acquireCachedImage(`http://img.provider.tv/vnav/stale_unmounted_${idx + 1}.jpg`, {
+        signal: ctrl.signal,
+      }).catch((err) => ({ isLocalFile: false, aborted: true, error: err }))
+    );
+
+    // Enfileirar a imagem da fileira de destino final onde o usuário parou o D-Pad
+    const destinationRowUrl = 'http://img.provider.tv/vnav/destination_visible_card.jpg';
+    const destinationPromise = acquireCachedImage(destinationRowUrl);
+
+    // Abortar imediatamente os 4 cartões obsoletos ainda na fila (fileiras intermediárias desmontadas)
+    for (const ctrl of staleControllers) {
+      ctrl.abort();
+    }
+
+    const [staleResults, activeResults, destinationResult] = await Promise.all([
+      Promise.all(stalePromises),
+      Promise.all(activeWorkerPromises),
+      destinationPromise,
+    ]);
+
+    assert.strictEqual(
+      activeResults.every((r) => r.isLocalFile),
+      true,
+      'Os 4 downloads já em execução nos workers devem concluir normalmente'
+    );
+    assert.strictEqual(
+      staleResults.every((r: any) => r.isLocalFile === false && r.aborted === true),
+      true,
+      'As 4 tarefas abortadas na fila antes de iniciar devem ser canceladas sem baixar arquivos remotos'
+    );
+    assert.strictEqual(
+      destinationResult.isLocalFile,
+      true,
+      'O cartão visível na fileira de destino deve ser baixado e persistido imediatamente após a remoção das tarefas obsoletas'
+    );
+    assert.strictEqual(
+      harness.getNetworkFetchCount() - downloadsBeforeVerticalBurst,
+      5,
+      'Somente os 4 workers ativos + 1 cartão de destino devem ter sido baixados pela rede (as 4 obsoletas foram removidas da fila)'
+    );
+    const staleAfterCount =
+      getCatalogDiagnosticsSnapshot().imageCache.cancelledStaleQueueTasksCount;
+    assert.strictEqual(
+      staleAfterCount - staleBeforeCount,
+      4,
+      'cancelledStaleQueueTasksCount deve registrar exatamente as 4 tarefas obsoletas removidas da fila'
+    );
+
+    // Verificar também que desmontar um componente <MediaImage /> antes do início do download cancela sua tarefa na fila
+    const busy1 = acquireCachedImage('http://img.provider.tv/vnav/busy_media_1.jpg');
+    const busy2 = acquireCachedImage('http://img.provider.tv/vnav/busy_media_2.jpg');
+    const busy3 = acquireCachedImage('http://img.provider.tv/vnav/busy_media_3.jpg');
+    const busy4 = acquireCachedImage('http://img.provider.tv/vnav/busy_media_4.jpg');
+    const unmountedCardUrl = 'http://img.provider.tv/vnav/unmounted_media_card.jpg';
+
+    await act(async () => {
+      root.render(
+        React.createElement(MediaImage, {
+          src: unmountedCardUrl,
+          alt: 'Cartão desmontado na rolagem vertical',
+        })
+      );
+    });
+    // Desmontar imediatamente o MediaImage enquanto os 4 workers ainda estão ocupados
+    await act(async () => {
+      root.render(React.createElement('div'));
+    });
+
+    await Promise.all([busy1, busy2, busy3, busy4]);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(unmountedCardUrl),
+      false,
+      'MediaImage desmontado enquanto aguardava na fila deve cancelar sua requisição sem baixar o arquivo'
+    );
+
+    customResponderFn = null;
+
+    // -------------------------------------------------------------------------
+    // 8.5. Comparação controlada entre Modo A (Catálogos prioritários) e Modo B (Cache otimizado)
+    // -------------------------------------------------------------------------
+    assert.strictEqual(
+      getStartupImageCoordinationMode(),
+      'mode_b',
+      'O modo padrão de coordenação de abertura deve ser mode_b (Cache persistente otimizado)'
+    );
+
+    setStartupImageCoordinationMode('mode_a');
+    assert.strictEqual(
+      getStartupImageCoordinationMode(),
+      'mode_a',
+      'setStartupImageCoordinationMode deve alternar para mode_a (Catálogos prioritários)'
+    );
+    assert.strictEqual(
+      getCatalogDiagnosticsSnapshot().imageCache.coordinationMode,
+      'mode_a',
+      'O snapshot de diagnóstico deve refletir imediatamente o Modo A'
+    );
+    assert.strictEqual(
+      harness.hasPhysicalFileForUrl(preCachedLogoUrl),
+      true,
+      'Alternar entre Modo A e Modo B deve preservar integralmente os arquivos já persistidos no disco'
+    );
+
+    const reportTextModeA = formatCatalogDiagnosticsReport(getCatalogDiagnosticsSnapshot());
+    assert(
+      reportTextModeA.includes('Modo A (Catálogos prioritários — sem espera pós-catálogos)') &&
+        reportTextModeA.includes('Atividade durante os 6 catálogos: downloads remotos iniciados=') &&
+        reportTextModeA.includes('Desfecho das imagens prioritárias da abertura') &&
+        reportTextModeA.includes('construção do plano=') &&
+        reportTextModeA.includes('onReady → Home liberada=') &&
+        reportTextModeA.includes('Saúde da fila de imagens: tarefas nativas simultâneas máx.='),
+      'Relatório de diagnóstico deve exibir todas as novas métricas de coordenação, plano, preparação prioritária e fila vertical'
+    );
+
+    // Restaurar modo padrão mode_b
+    setStartupImageCoordinationMode('mode_b');
+    assert.strictEqual(
+      getStartupImageCoordinationMode(),
+      'mode_b',
+      'Deve restaurar o modo padrão mode_b após o teste comparativo'
+    );
+
+    await clearImageCacheOnLogout();
+  } finally {
+    customResponderFn = null;
+    setCatalogTransferPhaseActiveForImageCache(false);
+    setStartupImageCoordinationMode('mode_b');
+    harness.uninstall();
+    setMediaImageRetryDelayMsForTest(2000);
+    resetCatalogDiagnosticsForTest(false);
+    clearAllBackHandlersForTest();
+    clearFocusMemory();
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  }
+
+  console.log(
+    '✅ Etapa 2 (coordenação catálogos/imagens, eliminação do gap pós-catálogos, contabilização prioritária exata, cancelamento de fila na rolagem vertical e comparação Modo A/B) validada!'
+  );
+}
+
 async function main(): Promise<void> {
   console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — NORTH CODE PLAY\n');
   runEssentialTrackAndSecurityTests();
@@ -3490,6 +4003,7 @@ async function main(): Promise<void> {
   await runCycle1230cVerticalNavOptimizationTests();
   await runCycle1230dLiveTvLatencyAndFullscreenTests();
   await runStep1PersistentImageCacheAndPreloadTests();
+  await runStep2StartupAndFluidityStabilizationTests();
   for (const timer of rafTimers.values()) {
     clearTimeout(timer);
   }

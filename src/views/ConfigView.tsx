@@ -39,6 +39,11 @@ import {
   getCatalogDiagnosticsSnapshot,
   formatCatalogDiagnosticsReport,
 } from '../utils/catalogDiagnostics';
+import {
+  getStartupImageCoordinationMode,
+  setStartupImageCoordinationMode,
+  StartupImageCoordinationMode,
+} from '../services/androidImageCache';
 
 export interface ConfigViewProps {
   focusTarget?: 'presentation' | 'account';
@@ -56,6 +61,9 @@ export const ConfigView = React.memo(function ConfigView({
   const [showScreenDiagnostics, setShowScreenDiagnostics] = useState(false);
   const [catalogDiagEnabled, setCatalogDiagEnabled] = useState(() =>
     isCatalogLoadDiagnosticsEnabled()
+  );
+  const [startupImageMode, setStartupImageMode] = useState<StartupImageCoordinationMode>(() =>
+    getStartupImageCoordinationMode()
   );
   const catalogDiagSnapshot = useCatalogLoadDiagnostics(
     showScreenDiagnostics && catalogDiagEnabled
@@ -257,6 +265,13 @@ export const ConfigView = React.memo(function ConfigView({
     const next = !catalogDiagEnabled;
     setCatalogLoadDiagnosticsEnabled(next);
     setCatalogDiagEnabled(isCatalogLoadDiagnosticsEnabled());
+  };
+
+  const handleToggleStartupImageMode = () => {
+    const next: StartupImageCoordinationMode =
+      startupImageMode === 'mode_a' ? 'mode_b' : 'mode_a';
+    setStartupImageCoordinationMode(next);
+    setStartupImageMode(getStartupImageCoordinationMode());
   };
 
   const buildSanitizedDiagnosticsText = useCallback(
@@ -608,6 +623,21 @@ export const ConfigView = React.memo(function ConfigView({
                     {catalogDiagEnabled
                       ? 'Coleta de abertura: Ativa'
                       : 'Ativar coleta de abertura'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  data-startup-image-mode-toggle="true"
+                  data-startup-image-mode={startupImageMode}
+                  data-nav-item="true"
+                  onClick={handleToggleStartupImageMode}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nc-bg-input border border-nc-border/60 text-xs font-medium text-gray-200 hover:text-white hover:border-white/40 transition-colors"
+                >
+                  <span>
+                    {startupImageMode === 'mode_a'
+                      ? 'Modo abertura: A (Catálogos prioritários)'
+                      : 'Modo abertura: B (Cache otimizado)'}
                   </span>
                 </button>
 

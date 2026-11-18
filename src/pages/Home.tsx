@@ -36,6 +36,7 @@ import {
 import {
   recordHomeOpeningMilestone,
   recordHomeManualContinueIntent,
+  recordStartupCoordinatorReadyTimestamp,
 } from '../utils/catalogDiagnostics';
 import {
   isAndroidPersistentImageCacheAvailable,
@@ -45,6 +46,8 @@ import {
   clearImageCacheOnLogout,
   notifyDpadNavigationActivityForImagePreload,
   setVideoPlaybackActiveForImagePreload,
+  setCatalogTransferPhaseActiveForImageCache,
+  getStartupImageCoordinationMode,
 } from '../services/androidImageCache';
 import { clearLoadedImageUrlCache } from '../components/MediaImage';
 
@@ -160,6 +163,8 @@ function StartupImageCacheCoordinator({
 
   useEffect(() => {
     if (isAuthRejected) {
+      setCatalogTransferPhaseActiveForImageCache(false);
+      recordStartupCoordinatorReadyTimestamp();
       onReady();
       return;
     }
@@ -171,7 +176,9 @@ function StartupImageCacheCoordinator({
       return;
     }
     startedForSessionRef.current = true;
+    setCatalogTransferPhaseActiveForImageCache(false);
 
+    const coordinationMode = getStartupImageCoordinationMode();
     const abortController = new AbortController();
     const plan = buildHomeStartupImagePlan({
       serverUrl,
@@ -182,9 +189,15 @@ function StartupImageCacheCoordinator({
       seriesCategories,
       displayMode: mode,
       tvScale,
+      deferFullUrlCount: true,
     });
 
-    if (!isAndroidPersistentImageCacheAvailable() || plan.priorityUrls.length === 0) {
+    if (
+      !isAndroidPersistentImageCacheAvailable() ||
+      coordinationMode === 'mode_a' ||
+      plan.priorityUrls.length === 0
+    ) {
+      recordStartupCoordinatorReadyTimestamp();
       onReady();
       return;
     }
@@ -194,6 +207,7 @@ function StartupImageCacheCoordinator({
       maxWaitMs: 3500,
     }).finally(() => {
       if (!abortController.signal.aborted) {
+        recordStartupCoordinatorReadyTimestamp();
         onReady();
       }
     });
@@ -469,8 +483,24 @@ function HomeContent({ credentials }: { credentials: any }) {
   const [isOpeningDismissed, setIsOpeningDismissed] = useState(false);
   const [showContinueButton, setShowContinueButton] = useState(false);
   const [isPriorityImagesReady, setIsPriorityImagesReady] = useState(
-    () => !isAndroidPersistentImageCacheAvailable()
+    () =>
+      !isAndroidPersistentImageCacheAvailable() ||
+      getStartupImageCoordinationMode() === 'mode_a'
   );
+
+  const isCatalogTransferGateActive =
+    !allSixFinished && !isAuthRejected && !isOpeningDismissed;
+  setCatalogTransferPhaseActiveForImageCache(isCatalogTransferGateActive);
+
+  useEffect(() => {
+    setCatalogTransferPhaseActiveForImageCache(isCatalogTransferGateActive);
+  }, [isCatalogTransferGateActive]);
+
+  useEffect(() => {
+    return () => {
+      setCatalogTransferPhaseActiveForImageCache(false);
+    };
+  }, []);
 
   const handlePriorityImagesReady = useCallback(() => {
     setIsPriorityImagesReady(true);

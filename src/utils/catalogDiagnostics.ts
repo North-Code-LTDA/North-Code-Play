@@ -158,7 +158,13 @@ export interface CatalogSortingDiagnostics {
   totalCacheHitsCount: number;
 }
 
+export type StartupImageCoordinationDiagnosticMode = 'mode_a' | 'mode_b';
+
 export interface CatalogImageCacheDiagnostics {
+  coordinationMode: StartupImageCoordinationDiagnosticMode;
+  initialHydratedEntriesCount: number;
+  downloadsDuringCatalogsCount: number;
+  hitsDuringCatalogsCount: number;
   uniqueCatalogImageUrls: number;
   uniqueHomeImageUrls: number;
   persistentCacheHits: number;
@@ -171,8 +177,19 @@ export interface CatalogImageCacheDiagnostics {
   evictedEntriesCount: number;
   corruptedLocalRecoveriesCount: number;
   imgElementLoadEventsCount: number;
+  priorityTargetCount: number;
+  priorityFoundOnDiskCount: number;
+  priorityDownloadedSuccessCount: number;
+  priorityFailedCount: number;
+  priorityPendingAtReleaseCount: number;
   localRecoveryTimeMs: number | null;
+  planBuildTotalMs: number | null;
+  planCategorySelectionAndSortMs: number | null;
+  planUniqueUrlCountMs: number | null;
   priorityCoversPreparationMs: number | null;
+  onReadyToHomeAvailableMs: number | null;
+  maxSimultaneousNativeTasks: number;
+  cancelledStaleQueueTasksCount: number;
 }
 
 export interface CatalogSessionDiagnosticsReport {
@@ -294,6 +311,7 @@ let publishedSnapshot: CatalogSessionDiagnosticsReport | null = null;
 let pendingPreSessionHomeState: PendingPreSessionHomeState | null = null;
 let latestHomeDisplaySetupOpen = false;
 let latestHomeDisplaySetupOpenedAtMono: number | null = null;
+let latestCoordinatorReadyAtMono: number | null = null;
 const diagnosticsListeners = new Set<() => void>();
 
 export function nowMonotonicMs(): number {
@@ -326,6 +344,7 @@ export function resetCatalogDiagnosticsForTest(enabled: boolean = false): void {
   pendingPreSessionHomeState = null;
   latestHomeDisplaySetupOpen = false;
   latestHomeDisplaySetupOpenedAtMono = null;
+  latestCoordinatorReadyAtMono = null;
   notifyDiagnosticsListeners();
 }
 
@@ -409,7 +428,14 @@ function createEmptySortingDiagnostics(): CatalogSortingDiagnostics {
 }
 
 function createEmptyImageCacheDiagnostics(): CatalogImageCacheDiagnostics {
+  const modeRes = safeReadStorage('nc_startup_image_mode_v1');
+  const coordinationMode: StartupImageCoordinationDiagnosticMode =
+    modeRes.success && modeRes.value === 'mode_a' ? 'mode_a' : 'mode_b';
   return {
+    coordinationMode,
+    initialHydratedEntriesCount: 0,
+    downloadsDuringCatalogsCount: 0,
+    hitsDuringCatalogsCount: 0,
     uniqueCatalogImageUrls: 0,
     uniqueHomeImageUrls: 0,
     persistentCacheHits: 0,
@@ -422,8 +448,19 @@ function createEmptyImageCacheDiagnostics(): CatalogImageCacheDiagnostics {
     evictedEntriesCount: 0,
     corruptedLocalRecoveriesCount: 0,
     imgElementLoadEventsCount: 0,
+    priorityTargetCount: 0,
+    priorityFoundOnDiskCount: 0,
+    priorityDownloadedSuccessCount: 0,
+    priorityFailedCount: 0,
+    priorityPendingAtReleaseCount: 0,
     localRecoveryTimeMs: null,
+    planBuildTotalMs: null,
+    planCategorySelectionAndSortMs: null,
+    planUniqueUrlCountMs: null,
     priorityCoversPreparationMs: null,
+    onReadyToHomeAvailableMs: null,
+    maxSimultaneousNativeTasks: 0,
+    cancelledStaleQueueTasksCount: 0,
   };
 }
 
@@ -596,6 +633,7 @@ export function startCatalogDiagnosticsSession(
   pendingPreSessionHomeState = null;
   activeSessionEnded = false;
   activeSessionSortingClosed = false;
+  latestCoordinatorReadyAtMono = null;
 
   const startMonotonic =
     preMount && preMount.recordedAtMonotonicMs <= nowMono
@@ -1254,6 +1292,24 @@ export function recordCatalogImageCacheDiagnosticsUpdate(
   recordedEventsCountForTest++;
   const ic = activeSessionReport.imageCache;
 
+  if (update.coordinationMode === 'mode_a' || update.coordinationMode === 'mode_b') {
+    ic.coordinationMode = update.coordinationMode;
+  }
+  if (
+    typeof update.initialHydratedEntriesCount === 'number' &&
+    update.initialHydratedEntriesCount >= 0
+  ) {
+    ic.initialHydratedEntriesCount = Math.floor(update.initialHydratedEntriesCount);
+  }
+  if (
+    typeof update.downloadsDuringCatalogsCount === 'number' &&
+    update.downloadsDuringCatalogsCount >= 0
+  ) {
+    ic.downloadsDuringCatalogsCount = Math.floor(update.downloadsDuringCatalogsCount);
+  }
+  if (typeof update.hitsDuringCatalogsCount === 'number' && update.hitsDuringCatalogsCount >= 0) {
+    ic.hitsDuringCatalogsCount = Math.floor(update.hitsDuringCatalogsCount);
+  }
   if (typeof update.uniqueCatalogImageUrls === 'number' && update.uniqueCatalogImageUrls >= 0) {
     ic.uniqueCatalogImageUrls = Math.floor(update.uniqueCatalogImageUrls);
   }
@@ -1293,16 +1349,71 @@ export function recordCatalogImageCacheDiagnosticsUpdate(
   if (typeof update.imgElementLoadEventsCount === 'number' && update.imgElementLoadEventsCount >= 0) {
     ic.imgElementLoadEventsCount = Math.floor(update.imgElementLoadEventsCount);
   }
+  if (typeof update.priorityTargetCount === 'number' && update.priorityTargetCount >= 0) {
+    ic.priorityTargetCount = Math.floor(update.priorityTargetCount);
+  }
+  if (typeof update.priorityFoundOnDiskCount === 'number' && update.priorityFoundOnDiskCount >= 0) {
+    ic.priorityFoundOnDiskCount = Math.floor(update.priorityFoundOnDiskCount);
+  }
+  if (
+    typeof update.priorityDownloadedSuccessCount === 'number' &&
+    update.priorityDownloadedSuccessCount >= 0
+  ) {
+    ic.priorityDownloadedSuccessCount = Math.floor(update.priorityDownloadedSuccessCount);
+  }
+  if (typeof update.priorityFailedCount === 'number' && update.priorityFailedCount >= 0) {
+    ic.priorityFailedCount = Math.floor(update.priorityFailedCount);
+  }
+  if (
+    typeof update.priorityPendingAtReleaseCount === 'number' &&
+    update.priorityPendingAtReleaseCount >= 0
+  ) {
+    ic.priorityPendingAtReleaseCount = Math.floor(update.priorityPendingAtReleaseCount);
+  }
   if (update.localRecoveryTimeMs !== undefined) {
     ic.localRecoveryTimeMs = normalizeOptionalNonNegativeMs(update.localRecoveryTimeMs);
+  }
+  if (update.planBuildTotalMs !== undefined) {
+    ic.planBuildTotalMs = normalizeOptionalNonNegativeMs(update.planBuildTotalMs);
+  }
+  if (update.planCategorySelectionAndSortMs !== undefined) {
+    ic.planCategorySelectionAndSortMs = normalizeOptionalNonNegativeMs(
+      update.planCategorySelectionAndSortMs
+    );
+  }
+  if (update.planUniqueUrlCountMs !== undefined) {
+    ic.planUniqueUrlCountMs = normalizeOptionalNonNegativeMs(update.planUniqueUrlCountMs);
   }
   if (update.priorityCoversPreparationMs !== undefined) {
     ic.priorityCoversPreparationMs = normalizeOptionalNonNegativeMs(
       update.priorityCoversPreparationMs
     );
   }
+  if (update.onReadyToHomeAvailableMs !== undefined) {
+    ic.onReadyToHomeAvailableMs = normalizeOptionalNonNegativeMs(update.onReadyToHomeAvailableMs);
+  }
+  if (
+    typeof update.maxSimultaneousNativeTasks === 'number' &&
+    update.maxSimultaneousNativeTasks >= 0
+  ) {
+    ic.maxSimultaneousNativeTasks = Math.floor(update.maxSimultaneousNativeTasks);
+  }
+  if (
+    typeof update.cancelledStaleQueueTasksCount === 'number' &&
+    update.cancelledStaleQueueTasksCount >= 0
+  ) {
+    ic.cancelledStaleQueueTasksCount = Math.floor(update.cancelledStaleQueueTasksCount);
+  }
 
   notifyDiagnosticsListeners();
+}
+
+/**
+ * Registra o instante exato em que o StartupImageCacheCoordinator invocou onReady()
+ * para medir o intervalo até a liberação efetiva da Home (onReadyToHomeAvailableMs).
+ */
+export function recordStartupCoordinatorReadyTimestamp(): void {
+  latestCoordinatorReadyAtMono = nowMonotonicMs();
 }
 
 /**
@@ -1477,6 +1588,14 @@ export function recordHomeOpeningMilestone(params: {
       }
     } else if (report.homeAvailableAtMs === null) {
       report.homeAvailableAtMs = nowRel;
+      if (
+        latestCoordinatorReadyAtMono !== null &&
+        report.imageCache.onReadyToHomeAvailableMs === null
+      ) {
+        report.imageCache.onReadyToHomeAvailableMs = roundMs(
+          Math.max(0, nowMono - latestCoordinatorReadyAtMono)
+        );
+      }
       if (report.overlayDismissedAtMs === null) {
         report.overlayDismissedAtMs = nowRel;
       }
@@ -1833,12 +1952,27 @@ export function formatCatalogDiagnosticsReport(
   );
 
   const ic = report.imageCache;
+  const modeLabel =
+    ic.coordinationMode === 'mode_a'
+      ? 'Modo A (Catálogos prioritários — sem espera pós-catálogos)'
+      : 'Modo B (Cache persistente otimizado — padrão)';
+  const cacheWarmthLabel =
+    ic.initialHydratedEntriesCount > 0
+      ? `aquecido (${ic.initialHydratedEntriesCount} entradas locais na abertura)`
+      : 'frio (0 entradas locais na abertura)';
   lines.push(`[Cache Persistente e Pré-Carregamento de Imagens]`);
+  lines.push(`• Modo de coordenação: ${modeLabel} | Estado inicial do cache: ${cacheWarmthLabel}`);
+  lines.push(
+    `• Atividade durante os 6 catálogos: downloads remotos iniciados=${ic.downloadsDuringCatalogsCount} | hits locais reaproveitados=${ic.hitsDuringCatalogsCount}`
+  );
   lines.push(
     `• URLs de imagem únicas: catálogo=${ic.uniqueCatalogImageUrls} | fileiras da Home=${ic.uniqueHomeImageUrls}`
   );
   lines.push(
     `• Camada de cache persistente: hits locais=${ic.persistentCacheHits} | downloads reais=${ic.cacheLayerDownloads} | deduplicados=${ic.deduplicatedDownloads} | falhas=${ic.downloadFailures}`
+  );
+  lines.push(
+    `• Desfecho das imagens prioritárias da abertura (alvo=${ic.priorityTargetCount}): no disco=${ic.priorityFoundOnDiskCount} | baixadas c/ sucesso=${ic.priorityDownloadedSuccessCount} | falhas=${ic.priorityFailedCount} | pendentes na liberação=${ic.priorityPendingAtReleaseCount}`
   );
   lines.push(
     `• Armazenamento de imagens: transferidos=${ic.bytesTransferredByCache} bytes | em disco=${ic.bytesStoredCurrently} bytes (${ic.storedEntriesCount} arquivos) | removidos por limite (LRU)=${ic.evictedEntriesCount} | recuperações de arquivo corrompido=${ic.corruptedLocalRecoveriesCount}`
@@ -1849,7 +1983,18 @@ export function formatCatalogDiagnosticsReport(
   lines.push(
     `• Tempos de imagem na abertura: recuperação do índice local=${formatMs(
       ic.localRecoveryTimeMs
-    )} | preparação das capas prioritárias=${formatMs(ic.priorityCoversPreparationMs)}`
+    )} | construção do plano=${formatMs(
+      ic.planBuildTotalMs
+    )} (seleção/ordenação=${formatMs(
+      ic.planCategorySelectionAndSortMs
+    )}, contagem de URLs=${formatMs(
+      ic.planUniqueUrlCountMs
+    )}) | preparação das capas prioritárias=${formatMs(
+      ic.priorityCoversPreparationMs
+    )} | onReady → Home liberada=${formatMs(ic.onReadyToHomeAvailableMs)}`
+  );
+  lines.push(
+    `• Saúde da fila de imagens: tarefas nativas simultâneas máx.=${ic.maxSimultaneousNativeTasks} | tarefas obsoletas canceladas=${ic.cancelledStaleQueueTasksCount}`
   );
 
   return lines.join('\n');
