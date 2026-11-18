@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { safeReadStorage, safeSetStorage } from './accountUtils';
 import { isUsingCapacitorNativeTransport } from '../services/httpTransport';
+import { formatDpadFluidityDiagnosticsReport } from '../navigation/dpadFluidityDiagnostics';
 
 export const CATALOG_DIAGNOSTICS_ENABLED_KEY = 'northcode_catalog_diag_enabled';
 
@@ -308,6 +309,7 @@ let activeSessionReport: CatalogSessionDiagnosticsReport | null = null;
 let activeSessionEnded = false;
 let activeSessionSortingClosed = false;
 let publishedSnapshot: CatalogSessionDiagnosticsReport | null = null;
+let isPublishedSnapshotDirty = false;
 let pendingPreSessionHomeState: PendingPreSessionHomeState | null = null;
 let latestHomeDisplaySetupOpen = false;
 let latestHomeDisplaySetupOpenedAtMono: number | null = null;
@@ -341,6 +343,7 @@ export function resetCatalogDiagnosticsForTest(enabled: boolean = false): void {
   activeSessionEnded = false;
   activeSessionSortingClosed = false;
   publishedSnapshot = null;
+  isPublishedSnapshotDirty = false;
   pendingPreSessionHomeState = null;
   latestHomeDisplaySetupOpen = false;
   latestHomeDisplaySetupOpenedAtMono = null;
@@ -349,10 +352,14 @@ export function resetCatalogDiagnosticsForTest(enabled: boolean = false): void {
 }
 
 function notifyDiagnosticsListeners(): void {
-  if (activeSessionReport) {
-    publishedSnapshot = cloneSessionReport(activeSessionReport);
-  } else {
+  if (!activeSessionReport) {
     publishedSnapshot = null;
+    isPublishedSnapshotDirty = false;
+  } else if (diagnosticsListeners.size > 0) {
+    publishedSnapshot = cloneSessionReport(activeSessionReport);
+    isPublishedSnapshotDirty = false;
+  } else {
+    isPublishedSnapshotDirty = true;
   }
   diagnosticsListeners.forEach((listener) => {
     try {
@@ -1619,6 +1626,10 @@ export function recordHomeOpeningMilestone(params: {
 }
 
 export function getCatalogDiagnosticsSnapshot(): CatalogSessionDiagnosticsReport | null {
+  if (isPublishedSnapshotDirty) {
+    publishedSnapshot = activeSessionReport ? cloneSessionReport(activeSessionReport) : null;
+    isPublishedSnapshotDirty = false;
+  }
   return publishedSnapshot;
 }
 
@@ -1733,7 +1744,7 @@ function formatBytesWritten(bytes: number | null | undefined): string {
  * Strictly excludes credentials, server URLs, account names, response content, and raw provider messages.
  */
 export function formatCatalogDiagnosticsReport(
-  report: CatalogSessionDiagnosticsReport | null = publishedSnapshot
+  report: CatalogSessionDiagnosticsReport | null = getCatalogDiagnosticsSnapshot()
 ): string {
   const enabled = isCatalogDiagnosticsEnabled;
   const lines: string[] = [
@@ -1745,11 +1756,15 @@ export function formatCatalogDiagnosticsReport(
     lines.push(
       `Status: Coleta desativada. Ative o diagnóstico nas Configurações e reabra o aplicativo para registrar as métricas da abertura.`
     );
+    lines.push('');
+    lines.push(formatDpadFluidityDiagnosticsReport());
     return lines.join('\n');
   }
 
   if (!report) {
     lines.push(`Status: Aguardando início da sessão de carregamento em memória.`);
+    lines.push('');
+    lines.push(formatDpadFluidityDiagnosticsReport());
     return lines.join('\n');
   }
 
@@ -1996,6 +2011,8 @@ export function formatCatalogDiagnosticsReport(
   lines.push(
     `• Saúde da fila de imagens: tarefas nativas simultâneas máx.=${ic.maxSimultaneousNativeTasks} | tarefas obsoletas canceladas=${ic.cancelledStaleQueueTasksCount}`
   );
+  lines.push('');
+  lines.push(formatDpadFluidityDiagnosticsReport());
 
   return lines.join('\n');
 }

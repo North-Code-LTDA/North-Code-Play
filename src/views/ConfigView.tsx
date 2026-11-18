@@ -31,6 +31,12 @@ import {
   getNativeBackBridgeStatus,
   getNavMode,
   focusElementSafely,
+  isDpadFluidityDiagnosticsEnabled,
+  setDpadFluidityDiagnosticsEnabled,
+  getDpadNavigationBehaviorMode,
+  setDpadNavigationBehaviorMode,
+  getDpadFluidityDiagnosticsSnapshot,
+  DpadNavigationBehaviorMode,
 } from '../navigation';
 import {
   isCatalogLoadDiagnosticsEnabled,
@@ -64,6 +70,12 @@ export const ConfigView = React.memo(function ConfigView({
   );
   const [startupImageMode, setStartupImageMode] = useState<StartupImageCoordinationMode>(() =>
     getStartupImageCoordinationMode()
+  );
+  const [dpadFluidityDiagEnabled, setDpadFluidityDiagEnabled] = useState(() =>
+    isDpadFluidityDiagnosticsEnabled()
+  );
+  const [dpadBehaviorMode, setDpadBehaviorMode] = useState<DpadNavigationBehaviorMode>(() =>
+    getDpadNavigationBehaviorMode()
   );
   const catalogDiagSnapshot = useCatalogLoadDiagnostics(
     showScreenDiagnostics && catalogDiagEnabled
@@ -272,6 +284,19 @@ export const ConfigView = React.memo(function ConfigView({
       startupImageMode === 'mode_a' ? 'mode_b' : 'mode_a';
     setStartupImageCoordinationMode(next);
     setStartupImageMode(getStartupImageCoordinationMode());
+  };
+
+  const handleToggleDpadFluidityDiagnostics = () => {
+    const next = !dpadFluidityDiagEnabled;
+    setDpadFluidityDiagnosticsEnabled(next);
+    setDpadFluidityDiagEnabled(isDpadFluidityDiagnosticsEnabled());
+  };
+
+  const handleToggleDpadBehaviorMode = () => {
+    const next: DpadNavigationBehaviorMode =
+      dpadBehaviorMode === 'optimized' ? 'current' : 'optimized';
+    setDpadNavigationBehaviorMode(next);
+    setDpadBehaviorMode(getDpadNavigationBehaviorMode());
   };
 
   const buildSanitizedDiagnosticsText = useCallback(
@@ -643,6 +668,40 @@ export const ConfigView = React.memo(function ConfigView({
 
                 <button
                   type="button"
+                  data-dpad-fluidity-diagnostics-toggle="true"
+                  data-dpad-fluidity-diagnostics-enabled={dpadFluidityDiagEnabled ? 'true' : 'false'}
+                  data-nav-item="true"
+                  onClick={handleToggleDpadFluidityDiagnostics}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                    dpadFluidityDiagEnabled
+                      ? 'bg-nc-primary/15 border-nc-primary/60 text-nc-primary hover:bg-nc-primary/25'
+                      : 'bg-nc-bg-input border-nc-border/60 text-gray-300 hover:text-white hover:border-white/40'
+                  }`}
+                >
+                  <span>
+                    {dpadFluidityDiagEnabled
+                      ? 'Diagnóstico D-Pad: Ativo'
+                      : 'Ativar diagnóstico D-Pad'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  data-dpad-behavior-mode-toggle="true"
+                  data-dpad-behavior-mode={dpadBehaviorMode}
+                  data-nav-item="true"
+                  onClick={handleToggleDpadBehaviorMode}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nc-bg-input border border-nc-border/60 text-xs font-medium text-gray-200 hover:text-white hover:border-white/40 transition-colors"
+                >
+                  <span>
+                    {dpadBehaviorMode === 'optimized'
+                      ? 'Navegação D-Pad: Comportamento otimizado'
+                      : 'Navegação D-Pad: Comportamento atual'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
                   data-nav-row="config-diagnostics-toggle"
                   data-nav-item="true"
                   data-scroll-block="true"
@@ -930,6 +989,70 @@ export const ConfigView = React.memo(function ConfigView({
                     )}
                   </div>
                 </div>
+
+                {/* Group 5: D-Pad Fluidity Diagnostics & Controlled Comparison (Etapa 3) */}
+                {(() => {
+                  const dpadSnap = getDpadFluidityDiagnosticsSnapshot();
+                  return (
+                    <div className="space-y-2" data-dpad-fluidity-diagnostics-section="true">
+                      <div className="nc-text-meta font-semibold uppercase tracking-wider text-nc-primary">
+                        5. Diagnóstico de Fluidez do D-Pad (Etapa 3)
+                      </div>
+                      <div className="bg-black/30 p-3 rounded-lg border border-nc-border/30 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-gray-400">
+                            Modo de Navegação Selecionado:
+                          </span>
+                          <span
+                            className="font-mono text-white"
+                            data-diag-dpad-mode="true"
+                          >
+                            {dpadSnap.behaviorMode === 'optimized'
+                              ? 'Comportamento otimizado'
+                              : 'Comportamento atual'}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-gray-400">
+                            Coleta de Fluidez do D-Pad:
+                          </span>
+                          <span
+                            className="font-mono text-white"
+                            data-diag-dpad-status="true"
+                          >
+                            {dpadSnap.enabled
+                              ? `Ativa (${dpadSnap.totalEventsReceived} eventos registrados)`
+                              : 'Desativada por padrão'}
+                          </span>
+                        </div>
+                        {dpadSnap.enabled && (
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 border-t border-nc-border/20">
+                            <div>
+                              <span className="text-gray-400 block">Eventos (Únicos / Repetição)</span>
+                              <span className="text-white font-mono">
+                                {dpadSnap.singlePressEventsCount} / {dpadSnap.repeatPressEventsCount} (coalescidos: {dpadSnap.coalescedRepeatEventsCount})
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-gray-400 block">Latência Comando (Mediana / P95 / Máx)</span>
+                              <span className="text-white font-mono">
+                                {dpadSnap.commandProcessLatency.medianMs !== null
+                                  ? `${dpadSnap.commandProcessLatency.medianMs}ms / ${dpadSnap.commandProcessLatency.p95Ms}ms / ${dpadSnap.commandProcessLatency.maxMs}ms`
+                                  : 'sem amostras'}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-gray-400 block">Virtualização (flushSync / Fileiras)</span>
+                              <span className="text-white font-mono">
+                                {dpadSnap.flushSyncCount} ({dpadSnap.flushSyncTotalMs}ms) | +{dpadSnap.rowsMountedDuringNav}/-{dpadSnap.rowsUnmountedDuringNav}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {(showSelectableDiagnostics || copyStatus === 'fallback') && (
                   <div className="space-y-1.5 pt-1">

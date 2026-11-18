@@ -270,10 +270,24 @@ import {
   registerVirtualContainer,
   unregisterVirtualContainer,
   invalidateCandidateCache,
+  NavigationProvider,
+  isAndroidCapacitorPlatform,
+  setAndroidPlatformOverrideForDpadTest,
+  isDpadFluidityDiagnosticsEnabled,
+  setDpadFluidityDiagnosticsEnabled,
+  getDpadNavigationBehaviorMode,
+  setDpadNavigationBehaviorMode,
+  isDpadOptimizedPathActive,
+  resetDpadFluidityDiagnostics,
+  getDpadFluidityDiagnosticsSnapshot,
+  formatDpadFluidityDiagnosticsReport,
+  DPAD_NAVIGATION_BEHAVIOR_MODE_KEY,
 } from '../src/navigation';
 import { HorizontalRow } from '../src/components/HorizontalRow';
 import { MediaImage, setMediaImageRetryDelayMsForTest } from '../src/components/MediaImage';
 import { CatalogShowcaseView } from '../src/components/CatalogShowcaseView';
+import { ConfigView } from '../src/views/ConfigView';
+import { getOrCreateVodIndex } from '../src/utils/catalogIndex';
 import {
   createSimulatedPersistentImageDiskHarness,
   createValidTestJpegBytes,
@@ -3994,6 +4008,692 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
   );
 }
 
+// ============================================================================
+// 9. ETAPA 3 — FLUIDEZ DO D-PAD, REPETIÇÃO DE TECLAS, LIMITES DE VIRTUALIZAÇÃO E DIAGNÓSTICO
+// ============================================================================
+async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
+  console.log(
+    '--- 9. Etapa 3: Fluidez do D-Pad, Repetição de Teclas, Limites de Virtualização e Diagnóstico ---'
+  );
+
+  const harness = createSimulatedPersistentImageDiskHarness({ initialMaxBytes: 30 * 1024 * 1024 });
+  harness.install();
+  setMediaImageRetryDelayMsForTest(30);
+
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  const mockCreds: XtreamCredentials = {
+    serverUrl: 'http://provider.dpad-fluidity.tv:8080',
+    username: 'user_dpad',
+    password: 'pass_dpad',
+  };
+
+  const originalAuthenticate = XtreamService.authenticate;
+  (XtreamService as any).authenticate = async () => ({
+    user_info: {
+      username: 'user_dpad',
+      status: 'Active',
+      exp_date: '1893456000',
+      max_connections: '2',
+      active_cons: '1',
+    },
+    server_info: {
+      url: 'provider.dpad-fluidity.tv',
+      port: '8080',
+      server_protocol: 'http',
+    },
+  });
+
+  try {
+    // -------------------------------------------------------------------------
+    // 9.1. Inicialização correta em navegador Web e em Capacitor Android +
+    //      Seleção e persistência do modo de navegação ('current' vs 'optimized')
+    // -------------------------------------------------------------------------
+    setAndroidPlatformOverrideForDpadTest(false);
+    resetDpadFluidityDiagnostics({
+      enabled: false,
+      clearExplicitMode: true,
+    });
+
+    assert.strictEqual(
+      isAndroidCapacitorPlatform(),
+      false,
+      'No ambiente Web padrão (sem override Android), isAndroidCapacitorPlatform deve retornar false'
+    );
+    assert.strictEqual(
+      getDpadNavigationBehaviorMode(),
+      'current',
+      'No ambiente Web sem preferência salva, o modo padrão deve ser current (Comportamento atual)'
+    );
+    assert.strictEqual(
+      isDpadOptimizedPathActive(),
+      false,
+      'Com modo current ativo, isDpadOptimizedPathActive deve ser false'
+    );
+
+    // Simular Capacitor Android nativo sem preferência explícita salva
+    setAndroidPlatformOverrideForDpadTest(true);
+    resetDpadFluidityDiagnostics({
+      enabled: false,
+      clearExplicitMode: true,
+    });
+    assert.strictEqual(
+      isAndroidCapacitorPlatform(),
+      true,
+      'Em Capacitor Android nativo, isAndroidCapacitorPlatform deve retornar true'
+    );
+    assert.strictEqual(
+      getDpadNavigationBehaviorMode(),
+      'optimized',
+      'Em Capacitor Android nativo sem preferência explícita, o modo padrão deve ser optimized (Comportamento otimizado)'
+    );
+
+    // Selecionar e persistir 'current' mesmo no Android
+    setDpadNavigationBehaviorMode('current');
+    assert.strictEqual(
+      getDpadNavigationBehaviorMode(),
+      'current',
+      'setDpadNavigationBehaviorMode("current") deve alternar para Comportamento atual'
+    );
+    assert.strictEqual(
+      window.localStorage.getItem(DPAD_NAVIGATION_BEHAVIOR_MODE_KEY),
+      'current',
+      'A escolha de modo current deve ser persistida em localStorage'
+    );
+    assert.strictEqual(
+      isDpadOptimizedPathActive(),
+      false,
+      'Mesmo em Android, se o modo selecionado for current, isDpadOptimizedPathActive deve ser false'
+    );
+
+    // Selecionar e persistir 'optimized'
+    setDpadNavigationBehaviorMode('optimized');
+    assert.strictEqual(
+      getDpadNavigationBehaviorMode(),
+      'optimized',
+      'setDpadNavigationBehaviorMode("optimized") deve alternar para Comportamento otimizado'
+    );
+    assert.strictEqual(
+      window.localStorage.getItem(DPAD_NAVIGATION_BEHAVIOR_MODE_KEY),
+      'optimized',
+      'A escolha de modo optimized deve ser persistida em localStorage'
+    );
+    assert.strictEqual(
+      isDpadOptimizedPathActive(),
+      true,
+      'Com modo optimized selecionado, isDpadOptimizedPathActive deve ser true'
+    );
+
+    // -------------------------------------------------------------------------
+    // 9.2. Diagnóstico desativado por padrão vs ativado +
+    //      Teclas repetidas (e.repeat) e mudança rápida de direção
+    // -------------------------------------------------------------------------
+    resetDpadFluidityDiagnostics({
+      enabled: false,
+      behaviorMode: 'optimized',
+    });
+    assert.strictEqual(
+      isDpadFluidityDiagnosticsEnabled(),
+      false,
+      'O diagnóstico de fluidez do D-Pad deve permanecer desativado por padrão'
+    );
+
+    // Montar uma grade controlada dentro do NavigationProvider para testar eventos reais de teclado (incluindo e.repeat)
+    const assignRect = (el: HTMLElement, left: number, top: number, width: number, height: number) => {
+      el.getBoundingClientRect = () =>
+        ({
+          left,
+          top,
+          right: left + width,
+          bottom: top + height,
+          width,
+          height,
+          x: left,
+          y: top,
+          toJSON: () => {},
+        }) as DOMRect;
+    };
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(
+            'div',
+            { 'data-nav-grid': 'true' },
+            Array.from({ length: 6 }, (_, rowIdx) =>
+              React.createElement(
+                'div',
+                {
+                  key: `r_${rowIdx}`,
+                  'data-home-row-index': String(rowIdx),
+                  'data-scroll-block': 'true',
+                },
+                React.createElement(
+                  'div',
+                  { 'data-nav-row': 'true' },
+                  Array.from({ length: 4 }, (__, colIdx) =>
+                    React.createElement(
+                      'button',
+                      {
+                        key: `btn_${rowIdx}_${colIdx}`,
+                        id: `dpad-grid-btn-${rowIdx}-${colIdx}`,
+                        tabIndex: 0,
+                        'data-nav-item': 'true',
+                        'data-row-card-index': String(colIdx),
+                      },
+                      `Item ${rowIdx}-${colIdx}`
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 4; c++) {
+        const btn = container.querySelector(`#dpad-grid-btn-${r}-${c}`) as HTMLElement | null;
+        assert(btn, `Botão #dpad-grid-btn-${r}-${c} deve estar montado`);
+        assignRect(btn, 80 + c * 220, 80 + r * 110, 200, 90);
+      }
+    }
+    invalidateCandidateCache();
+
+    const firstBtn = container.querySelector('#dpad-grid-btn-0-0') as HTMLElement;
+    focusElementSafely(firstBtn);
+    assert.strictEqual(document.activeElement, firstBtn, 'Foco inicial deve estar em 0-0');
+
+    // Com diagnóstico desativado, disparar ArrowDown e verificar que nenhuma métrica é acumulada
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    );
+    assert.strictEqual(
+      (document.activeElement as HTMLElement)?.id,
+      'dpad-grid-btn-1-0',
+      'ArrowDown deve mover o foco para 1-0'
+    );
+    assert.strictEqual(
+      getDpadFluidityDiagnosticsSnapshot().totalEventsReceived,
+      0,
+      'Com diagnóstico desativado, totalEventsReceived deve permanecer 0'
+    );
+
+    // Agora ativar o diagnóstico de fluidez e testar rajada de teclas repetidas (e.repeat = true) e mudança rápida de direção
+    setDpadFluidityDiagnosticsEnabled(true);
+    assert.strictEqual(
+      isDpadFluidityDiagnosticsEnabled(),
+      true,
+      'setDpadFluidityDiagnosticsEnabled(true) deve ativar a coleta de métricas do D-Pad'
+    );
+
+    // Disparar 1º repeat ArrowDown (deve executar imediatamente: 1-0 -> 2-0)
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        repeat: true,
+        bubbles: true,
+        cancelable: true,
+      } as any)
+    );
+    assert.strictEqual(
+      (document.activeElement as HTMLElement)?.id,
+      'dpad-grid-btn-2-0',
+      'O primeiro evento repeat ArrowDown deve avançar imediatamente de 1-0 para 2-0'
+    );
+
+    // Disparar 2º repeat ArrowDown imediatamente (< 48ms na mesma direção): deve ser coalescido pelo throttle de 48ms
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        repeat: true,
+        bubbles: true,
+        cancelable: true,
+      } as any)
+    );
+    assert.strictEqual(
+      (document.activeElement as HTMLElement)?.id,
+      'dpad-grid-btn-2-0',
+      'Um evento repeat na mesma direção dentro da janela de 48ms deve ser coalescido de forma previsível'
+    );
+
+    // Mudança imediata de direção em repeat (ArrowRight) mesmo dentro dos 48ms: NÃO deve ser bloqueada!
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        repeat: true,
+        bubbles: true,
+        cancelable: true,
+      } as any)
+    );
+    assert.strictEqual(
+      (document.activeElement as HTMLElement)?.id,
+      'dpad-grid-btn-2-1',
+      'Mudança rápida de direção (ArrowDown -> ArrowRight) deve responder imediatamente sem descarte pelo throttle da direção anterior'
+    );
+
+    // Outra mudança imediata de direção (ArrowUp): 2-1 -> 1-1
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        repeat: false,
+        bubbles: true,
+        cancelable: true,
+      } as any)
+    );
+    assert.strictEqual(
+      (document.activeElement as HTMLElement)?.id,
+      'dpad-grid-btn-1-1',
+      'Mudança rápida para ArrowUp deve mover imediatamente de 2-1 para 1-1'
+    );
+
+    // Aguardar > 55ms e enviar novo repeat na mesma direção: deve avançar normalmente
+    await new Promise((r) => setTimeout(r, 55));
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowUp',
+        repeat: true,
+        bubbles: true,
+        cancelable: true,
+      } as any)
+    );
+    assert.strictEqual(
+      (document.activeElement as HTMLElement)?.id,
+      'dpad-grid-btn-0-1',
+      'Após 48ms, novo repeat na mesma direção deve avançar normalmente de 1-1 para 0-1'
+    );
+
+    const snapAfterRepeatBurst = getDpadFluidityDiagnosticsSnapshot();
+    assert(
+      snapAfterRepeatBurst.totalEventsReceived >= 5 &&
+        snapAfterRepeatBurst.repeatPressEventsCount >= 4 &&
+        snapAfterRepeatBurst.coalescedRepeatEventsCount >= 1 &&
+        snapAfterRepeatBurst.completedMovesCount >= 4,
+      'O diagnóstico deve contabilizar com precisão eventos totais, eventos repeat, repeats coalescidos e movimentos concluídos'
+    );
+
+    // -------------------------------------------------------------------------
+    // 9.3. Preservação do foco ao cruzar limites de virtualização em CatalogShowcaseView
+    //      (Comparação entre Comportamento atual e Comportamento otimizado +
+    //       Integridade da apresentação e dos carrosséis)
+    // -------------------------------------------------------------------------
+    const showcaseCategories = Array.from({ length: 14 }, (_, idx) => ({
+      category_id: String(500 + idx),
+      category_name: `Categoria Fluidez ${idx + 1}`,
+    }));
+    const showcaseStreams = showcaseCategories.flatMap((cat, catIdx) =>
+      Array.from({ length: 10 }, (_, itemIdx) => ({
+        stream_id: 50000 + catIdx * 100 + itemIdx,
+        name: `Filme Fluidez Cat ${catIdx + 1} #${itemIdx + 1}`,
+        category_id: cat.category_id,
+        stream_icon: `http://img.provider.tv/dpad_fluidity/cat_${catIdx}_item_${itemIdx}.jpg`,
+        rating: String((7.0 + (itemIdx % 3) * 0.5).toFixed(1)),
+        added: String(1700000000 + itemIdx * 3600),
+        year: '2025',
+      }))
+    );
+
+    const assignShowcaseDomGeometry = (rootEl: HTMLElement) => {
+      const scrollHost = rootEl.querySelector('main[data-scroll-container="true"]') as HTMLElement | null;
+      if (scrollHost) {
+        assignRect(scrollHost, 0, 0, 1280, 720);
+      }
+      const rowBlocks = Array.from(
+        rootEl.querySelectorAll('[data-home-row-index]')
+      ) as HTMLElement[];
+      for (const block of rowBlocks) {
+        const rIdx = Number(block.getAttribute('data-home-row-index') ?? '0');
+        const rowTop = 120 + rIdx * 320;
+        assignRect(block, 40, rowTop, 1200, 300);
+
+        const navRow = block.querySelector('[data-nav-row="true"]') as HTMLElement | null;
+        if (navRow) {
+          assignRect(navRow, 40, rowTop + 40, 1200, 240);
+          const cards = Array.from(
+            navRow.querySelectorAll('[data-row-card-index]')
+          ) as HTMLElement[];
+          for (const card of cards) {
+            const cIdx = Number(card.getAttribute('data-row-card-index') ?? '0');
+            assignRect(card, 60 + cIdx * 200, rowTop + 50, 180, 220);
+          }
+        }
+      }
+      invalidateCandidateCache();
+    };
+
+    for (const modeUnderTest of ['current', 'optimized'] as const) {
+      resetDpadFluidityDiagnostics({
+        enabled: true,
+        behaviorMode: modeUnderTest,
+      });
+
+      await act(async () => {
+        root.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(
+              XtreamProvider,
+              { credentials: mockCreds },
+              React.createElement(CatalogShowcaseView, {
+                key: `showcase_${modeUnderTest}`,
+                section: 'movies',
+                credentials: mockCreds,
+                onPlay: () => {},
+                vodCategories: showcaseCategories,
+                vodStreams: showcaseStreams,
+                allVodStreams: showcaseStreams,
+                seriesCategories: [],
+                seriesStreams: [],
+                allSeriesStreams: [],
+                sessionReady: true,
+              })
+            )
+          )
+        );
+        await new Promise((r) => setTimeout(r, 40));
+      });
+
+      assignShowcaseDomGeometry(container);
+
+      const rowsContainer = container.querySelector(
+        '[data-showcase-rows-container="true"]'
+      ) as HTMLElement | null;
+      assert(rowsContainer, `Container de fileiras deve existir no modo ${modeUnderTest}`);
+      assert.strictEqual(
+        rowsContainer.getAttribute('data-showcase-virtualized'),
+        'true',
+        `A vitrine com 14 categorias deve ativar a virtualização vertical de 8 fileiras no modo ${modeUnderTest}`
+      );
+      assert(
+        rowsContainer.querySelector('[data-home-row-index="0"]') !== null &&
+          rowsContainer.querySelector('[data-home-row-index="7"]') !== null &&
+          rowsContainer.querySelector('[data-showcase-unmounted-row="8"]') !== null,
+        `Janela virtual deve montar as 8 fileiras iniciais (0..7) no modo ${modeUnderTest}`
+      );
+
+      // Focar o cartão da coluna 1 na fileira 0 e testar navegação horizontal + vertical cruzando limites de virtualização
+      const row0Col1 = container.querySelector(
+        '[data-home-row-index="0"] [data-row-card-index="1"]'
+      ) as HTMLElement | null;
+      assert(row0Col1, `Cartão 1 da fileira 0 deve estar montado no modo ${modeUnderTest}`);
+      focusElementSafely(row0Col1);
+
+      // Navegar horizontalmente para a direita (coluna 1 -> coluna 2) para confirmar integridade do carrossel e alinhamento de coluna
+      await act(async () => {
+        moveSpatialFocus('right');
+      });
+      assignShowcaseDomGeometry(container);
+      assert.strictEqual(
+        (document.activeElement as HTMLElement)?.getAttribute('data-row-card-index'),
+        '2',
+        `Navegação horizontal no carrossel deve mover para a coluna 2 no modo ${modeUnderTest}`
+      );
+
+      // Percorrer verticalmente da fileira 0 até a fileira 11 (cruzando a fronteira da janela 0..7)
+      for (let targetRow = 1; targetRow <= 11; targetRow++) {
+        await act(async () => {
+          moveSpatialFocus('down');
+        });
+        assignShowcaseDomGeometry(container);
+
+        const activeEl = document.activeElement as HTMLElement | null;
+        const activeRowBlock = activeEl?.closest('[data-home-row-index]') as HTMLElement | null;
+        assert(
+          activeRowBlock,
+          `O foco nunca deve se perder ao avançar para a fileira ${targetRow} no modo ${modeUnderTest}`
+        );
+        assert.strictEqual(
+          Number(activeRowBlock.getAttribute('data-home-row-index')),
+          targetRow,
+          `O foco deve pousar exatamente na fileira ${targetRow} ao descer com o D-Pad no modo ${modeUnderTest}`
+        );
+        assert.strictEqual(
+          activeEl?.getAttribute('data-row-card-index'),
+          '2',
+          `A coluna 2 deve ser preservada ao cruzar fileiras e limites de virtualização (fileira ${targetRow}, modo ${modeUnderTest})`
+        );
+      }
+
+      // Percorrer de volta da fileira 11 até a fileira 0 (cruzando novamente a fronteira superior da janela virtualizada)
+      for (let targetRow = 10; targetRow >= 0; targetRow--) {
+        await act(async () => {
+          moveSpatialFocus('up');
+        });
+        assignShowcaseDomGeometry(container);
+
+        const activeEl = document.activeElement as HTMLElement | null;
+        const activeRowBlock = activeEl?.closest('[data-home-row-index]') as HTMLElement | null;
+        assert(
+          activeRowBlock,
+          `O foco nunca deve se perder ao subir para a fileira ${targetRow} no modo ${modeUnderTest}`
+        );
+        assert.strictEqual(
+          Number(activeRowBlock.getAttribute('data-home-row-index')),
+          targetRow,
+          `O foco deve pousar exatamente na fileira ${targetRow} ao subir com o D-Pad no modo ${modeUnderTest}`
+        );
+        assert.strictEqual(
+          activeEl?.getAttribute('data-row-card-index'),
+          '2',
+          `A coluna 2 deve ser preservada ao subir pelas fileiras virtualizadas (fileira ${targetRow}, modo ${modeUnderTest})`
+        );
+      }
+
+      const modeDiagSnap = getDpadFluidityDiagnosticsSnapshot();
+      assert(
+        modeDiagSnap.flushSyncCount >= 1 &&
+          modeDiagSnap.geometryMeasureCount >= 1 &&
+          modeDiagSnap.rowsMountedDuringNav >= 1,
+        `O diagnóstico no modo ${modeUnderTest} deve registrar flushSync (${modeDiagSnap.flushSyncCount}), medições de geometria (${modeDiagSnap.geometryMeasureCount}) e fileiras montadas (${modeDiagSnap.rowsMountedDuringNav})`
+      );
+    }
+
+    // -------------------------------------------------------------------------
+    // 9.4. Ausência de regressão na navegação Web (memória de foco no retorno de detalhes)
+    // -------------------------------------------------------------------------
+    const targetReturnCard = container.querySelector(
+      '[data-home-row-index="1"] [data-row-card-index="2"]'
+    ) as HTMLElement | null;
+    assert(targetReturnCard, 'Cartão da fileira 1 coluna 2 deve estar montado');
+    targetReturnCard.id = 'web-regression-return-card-1-2';
+    focusElementSafely(targetReturnCard);
+    pushFocusMemory(targetReturnCard);
+
+    const otherCard = container.querySelector(
+      '[data-home-row-index="0"] [data-row-card-index="0"]'
+    ) as HTMLElement | null;
+    assert(otherCard, 'Cartão 0-0 deve estar montado');
+    focusElementSafely(otherCard);
+    assert.strictEqual(document.activeElement, otherCard);
+
+    const restoredFromDetails = popFocusMemory();
+    assert.strictEqual(
+      restoredFromDetails,
+      true,
+      'popFocusMemory deve restaurar o foco ao retornar da tela de detalhes'
+    );
+    assert.strictEqual(
+      document.activeElement,
+      targetReturnCard,
+      'O foco deve voltar exatamente ao cartão de origem após fechar detalhes'
+    );
+
+    // -------------------------------------------------------------------------
+    // 9.5. Conexão real das métricas de imagens e ordenação de categorias durante
+    //      navegação ativa + Integração visual em ConfigView (Arquitetura & Diagnóstico)
+    // -------------------------------------------------------------------------
+    resetDpadFluidityDiagnostics({
+      enabled: true,
+      behaviorMode: 'optimized',
+    });
+
+    // 1) Registrar um movimento real de D-Pad para abrir a janela de "navegação ativa"
+    await act(async () => {
+      moveSpatialFocus('down');
+    });
+
+    // 2) Executar ordenação de categoria em um novo índice de catálogo durante a janela ativa do D-Pad
+    const freshCatalogIndex = getOrCreateVodIndex([...showcaseStreams]);
+    const sortedCatItems = freshCatalogIndex.getSortedByCategory('512');
+    assert(sortedCatItems.length > 0, 'getOrCreateVodIndex().getSortedByCategory deve retornar os itens ordenados');
+
+    // 3) Executar aquisição real de imagem no cache persistente durante a janela ativa do D-Pad
+    const activeNavImageUrl = 'http://img.provider.tv/dpad_fluidity/active_nav_cover_test.jpg';
+    const acquiredDuringNav = await acquireCachedImage(activeNavImageUrl);
+    assert.strictEqual(
+      acquiredDuringNav.isLocalFile,
+      true,
+      'A imagem solicitada durante a navegação ativa deve ser adquirida com sucesso'
+    );
+
+    const connectedDiagSnap = getDpadFluidityDiagnosticsSnapshot();
+    assert(
+      connectedDiagSnap.categorySortsExecutedDuringNav >= 1,
+      `Ordenações de categoria durante navegação ativa devem ser contabilizadas (atual=${connectedDiagSnap.categorySortsExecutedDuringNav})`
+    );
+    assert(
+      connectedDiagSnap.imageRequestsStartedDuringNav >= 1 &&
+        connectedDiagSnap.imageRequestsCompletedDuringNav >= 1,
+      `Requisições de imagem iniciadas (${connectedDiagSnap.imageRequestsStartedDuringNav}) e concluídas (${connectedDiagSnap.imageRequestsCompletedDuringNav}) durante navegação ativa devem ser contabilizadas`
+    );
+
+    // 4) Renderizar ConfigView e validar os botões de diagnóstico e modo de comportamento na UI
+    await act(async () => {
+      root.render(
+        React.createElement(
+          NavigationProvider,
+          null,
+          React.createElement(
+            XtreamProvider,
+            { credentials: mockCreds },
+            React.createElement(ConfigView, { focusTarget: 'presentation' })
+          )
+        )
+      );
+      await new Promise((r) => setTimeout(r, 40));
+    });
+
+    const diagExpandBtn = container.querySelector(
+      'button[data-nav-row="config-diagnostics-toggle"]'
+    ) as HTMLButtonElement | null;
+    assert(
+      diagExpandBtn,
+      'Botão de expansão de Diagnóstico de Tela em "Arquitetura & Diagnóstico" deve existir na tela de Configurações'
+    );
+
+    // Expandir o painel de diagnóstico
+    await act(async () => {
+      diagExpandBtn.click();
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    const dpadDiagToggleBtn = container.querySelector(
+      '[data-dpad-fluidity-diagnostics-toggle="true"]'
+    ) as HTMLButtonElement | null;
+    const dpadModeToggleBtn = container.querySelector(
+      '[data-dpad-behavior-mode-toggle="true"]'
+    ) as HTMLButtonElement | null;
+    const dpadSectionEl = container.querySelector(
+      '[data-dpad-fluidity-diagnostics-section="true"]'
+    ) as HTMLElement | null;
+
+    assert(
+      dpadDiagToggleBtn,
+      'Botão de ativação/desativação do Diagnóstico D-Pad deve estar presente em Arquitetura & Diagnóstico'
+    );
+    assert(
+      dpadModeToggleBtn,
+      'Botão de alternância entre Comportamento atual e Comportamento otimizado deve estar presente em Arquitetura & Diagnóstico'
+    );
+    assert(
+      dpadSectionEl,
+      'Seção Grupo 5 (Fluidez de Navegação D-Pad) deve estar presente no painel de diagnóstico'
+    );
+    assert(
+      (dpadModeToggleBtn.textContent || '').includes('Comportamento otimizado'),
+      'O botão de modo deve exibir inicialmente "Comportamento otimizado"'
+    );
+
+    // Alternar o modo pelo botão da interface para "Comportamento atual"
+    await act(async () => {
+      dpadModeToggleBtn.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      getDpadNavigationBehaviorMode(),
+      'current',
+      'Clicar no botão de modo em ConfigView deve alternar para current (Comportamento atual)'
+    );
+    assert(
+      (dpadModeToggleBtn.textContent || '').includes('Comportamento atual'),
+      'O texto do botão em ConfigView deve atualizar para "Comportamento atual"'
+    );
+
+    // Alternar de volta para "Comportamento otimizado"
+    await act(async () => {
+      dpadModeToggleBtn.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      getDpadNavigationBehaviorMode(),
+      'optimized',
+      'Clicar novamente no botão de modo deve retornar para optimized (Comportamento otimizado)'
+    );
+
+    // Validar que o relatório completo gerado para "Copiar diagnóstico" inclui a seção de Fluidez do D-Pad
+    const fullDiagnosticReport = formatCatalogDiagnosticsReport(getCatalogDiagnosticsSnapshot());
+    const standaloneDpadReport = formatDpadFluidityDiagnosticsReport(
+      getDpadFluidityDiagnosticsSnapshot()
+    );
+    assert(
+      fullDiagnosticReport.includes('[Diagnóstico de Fluidez do D-Pad (Etapa 3)]') &&
+        fullDiagnosticReport.includes('Comportamento otimizado') &&
+        standaloneDpadReport.includes('Eventos D-Pad recebidos: total='),
+      'O relatório de diagnóstico exportado deve incluir o bloco completo de Fluidez do D-Pad'
+    );
+
+    // Desativar o diagnóstico pelo botão da interface e confirmar estado
+    await act(async () => {
+      dpadDiagToggleBtn.click();
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    assert.strictEqual(
+      isDpadFluidityDiagnosticsEnabled(),
+      false,
+      'Clicar no botão de Diagnóstico D-Pad quando ativo deve desativá-lo'
+    );
+
+    await clearImageCacheOnLogout();
+  } finally {
+    (XtreamService as any).authenticate = originalAuthenticate;
+    setAndroidPlatformOverrideForDpadTest(null);
+    resetDpadFluidityDiagnostics({
+      enabled: false,
+      clearExplicitMode: true,
+    });
+    harness.uninstall();
+    setMediaImageRetryDelayMsForTest(2000);
+    resetCatalogDiagnosticsForTest(false);
+    clearAllBackHandlersForTest();
+    clearFocusMemory();
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  }
+
+  console.log(
+    '✅ Etapa 3 (inicialização Web/Android, persistência de modo, repetição de teclas 48ms, limites de virtualização e diagnóstico D-Pad) validada!'
+  );
+}
+
 async function main(): Promise<void> {
   console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — NORTH CODE PLAY\n');
   runEssentialTrackAndSecurityTests();
@@ -4004,6 +4704,7 @@ async function main(): Promise<void> {
   await runCycle1230dLiveTvLatencyAndFullscreenTests();
   await runStep1PersistentImageCacheAndPreloadTests();
   await runStep2StartupAndFluidityStabilizationTests();
+  await runStep3DpadFluidityAndDiagnosticsTests();
   for (const timer of rafTimers.values()) {
     clearTimeout(timer);
   }

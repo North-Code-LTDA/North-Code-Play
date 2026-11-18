@@ -11,6 +11,7 @@ import {
   recoverFromCorruptedLocalImage,
 } from '../services/androidImageCache';
 import { recordCatalogImgElementLoadEvent } from '../utils/catalogDiagnostics';
+import { recordDpadNavImageActivity } from '../navigation/dpadFluidityDiagnostics';
 
 export interface MediaImageProps extends Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'src'> {
   src?: unknown;
@@ -1035,7 +1036,13 @@ function MediaImageInner({
 
   // Coordinate persistent disk cache acquisition on Android when authorized
   useEffect(() => {
-    if (!isAuthorized || !resolvedUrl || !useAndroidDiskCache) {
+    if (!isAuthorized || !resolvedUrl) {
+      return;
+    }
+    if (!useAndroidDiskCache) {
+      if (!loadedImageUrlsCache.has(resolvedUrl)) {
+        recordDpadNavImageActivity('request-start');
+      }
       return;
     }
 
@@ -1184,8 +1191,13 @@ function MediaImageInner({
   };
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+    const wasAlreadyLoaded = Boolean(resolvedUrl && loadedImageUrlsCache.has(resolvedUrl));
     rememberLoadedImageUrl(resolvedUrl);
     recordCatalogImgElementLoadEvent();
+    recordDpadNavImageActivity('img-onload');
+    if (!useAndroidDiskCache && !wasAlreadyLoaded) {
+      recordDpadNavImageActivity('request-complete');
+    }
     setStatus('loaded');
     onLoad?.(e);
   };

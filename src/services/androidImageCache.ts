@@ -3,6 +3,7 @@ import {
   nowMonotonicMs,
   recordCatalogImageCacheDiagnosticsUpdate,
 } from '../utils/catalogDiagnostics';
+import { recordDpadNavImageActivity } from '../navigation/dpadFluidityDiagnostics';
 import { buildDirectImageUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { safeReadStorage, safeSetStorage } from '../utils/accountUtils';
 import { getOrCreateVodIndex, getOrCreateSeriesIndex, getHeroBannerItems } from '../utils/catalogIndex';
@@ -457,12 +458,19 @@ export function isValidPersistentImageFileReference(
   return DEDICATED_ANDROID_IMAGE_CACHE_DIR_REGEX.test(parentDir);
 }
 
+const MAX_URL_SHA256_CACHE_ENTRIES = 6000;
+const urlToShaKeyCache = new Map<string, string>();
+
 /**
  * Calcula o hash SHA-256 hex determinístico de 64 caracteres de uma URL em UTF-8
  * (idêntico ao algoritmo MessageDigest("SHA-256") do plugin Java).
  */
 export function computeDeterministicUrlSha256Hex(url: string): string {
   const normalized = String(url || '').trim();
+  const cachedHash = urlToShaKeyCache.get(normalized);
+  if (cachedHash) {
+    return cachedHash;
+  }
   const K = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -583,7 +591,7 @@ export function computeDeterministicUrlSha256Hex(url: string): string {
   }
 
   const toHex = (n: number) => (n >>> 0).toString(16).padStart(8, '0');
-  return (
+  const computed =
     toHex(h0) +
     toHex(h1) +
     toHex(h2) +
@@ -591,8 +599,16 @@ export function computeDeterministicUrlSha256Hex(url: string): string {
     toHex(h4) +
     toHex(h5) +
     toHex(h6) +
-    toHex(h7)
-  );
+    toHex(h7);
+
+  if (urlToShaKeyCache.size >= MAX_URL_SHA256_CACHE_ENTRIES) {
+    const firstKey = urlToShaKeyCache.keys().next().value;
+    if (firstKey !== undefined) {
+      urlToShaKeyCache.delete(firstKey);
+    }
+  }
+  urlToShaKeyCache.set(normalized, computed);
+  return computed;
 }
 
 /**
@@ -915,14 +931,20 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
     const startedDuringCatalogs = isCatalogTransferPhaseActive;
     const recentAccessedKeys = drainPendingTouchedKeys();
     const plugin = getNativeImageCachePlugin();
-    const nativeRes = await plugin.acquireImage({
-      url,
-      forceRefresh,
-      revalidate,
-      connectTimeout: 10000,
-      readTimeout: 15000,
-      recentAccessedKeys: recentAccessedKeys.length > 0 ? recentAccessedKeys : undefined,
-    });
+    recordDpadNavImageActivity('request-start');
+    let nativeRes: AcquireImageNativeResult;
+    try {
+      nativeRes = await plugin.acquireImage({
+        url,
+        forceRefresh,
+        revalidate,
+        connectTimeout: 10000,
+        readTimeout: 15000,
+        recentAccessedKeys: recentAccessedKeys.length > 0 ? recentAccessedKeys : undefined,
+      });
+    } finally {
+      recordDpadNavImageActivity('request-complete');
+    }
 
     if (currentSessionEpoch !== epochAtEnqueue) {
       throw new Error('Sessão de imagens encerrada após transferência.');

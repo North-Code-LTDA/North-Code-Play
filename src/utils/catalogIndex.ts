@@ -6,6 +6,10 @@ import {
   nowMonotonicMs,
   recordCatalogSortDiagnostic,
 } from './catalogDiagnostics';
+import {
+  isDpadFluidityDiagnosticsEnabled,
+  recordDpadNavCategorySortActivity,
+} from '../navigation/dpadFluidityDiagnostics';
 
 export interface CatalogIndexPerfStats {
   vodIndexBuilds: number;
@@ -136,6 +140,7 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
       const key = String(categoryId);
       const maxYear = new Date().getFullYear() + 1;
       const trackDiag = isCatalogLoadDiagnosticsEnabled();
+      const trackFluidity = isDpadFluidityDiagnosticsEnabled();
       const existing = sortedByCategoryCache.get(key);
       if (existing && existing.year === maxYear) {
         if (trackDiag && existing.sorted.length >= 2) {
@@ -156,16 +161,17 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
         sortedByCategoryCache.set(key, { year: maxYear, sorted: sortedAllCache });
         return sortedAllCache;
       }
-      const shouldRecordSort = trackDiag && rawCat.length >= 2;
+      const shouldRecordSort = (trackDiag || trackFluidity) && rawCat.length >= 2;
       const sortStart = shouldRecordSort ? nowMonotonicMs() : 0;
       const sorted = rawCat.length > 0 ? sortByYearAndRating(rawCat) : [];
       if (shouldRecordSort) {
-        recordCatalogSortDiagnostic(
-          domain,
-          false,
-          nowMonotonicMs() - sortStart,
-          rawCat.length
-        );
+        const sortDurationMs = Math.max(0, nowMonotonicMs() - sortStart);
+        if (trackDiag) {
+          recordCatalogSortDiagnostic(domain, false, sortDurationMs, rawCat.length);
+        }
+        if (trackFluidity) {
+          recordDpadNavCategorySortActivity(sortDurationMs);
+        }
       }
       sortedByCategoryCache.set(key, { year: maxYear, sorted });
       return sorted;

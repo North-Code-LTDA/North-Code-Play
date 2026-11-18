@@ -1,5 +1,5 @@
-import { safeReadStorage, safeSetStorage } from '../utils/safeStorage';
-import { isAndroidCapacitorRuntime } from '../utils/xtreamreckoner';
+import { Capacitor } from '@capacitor/core';
+import { safeReadStorage, safeSetStorage } from '../utils/accountUtils';
 
 export type DpadNavigationBehaviorMode = 'current' | 'optimized';
 
@@ -9,6 +9,43 @@ export const DPAD_NAVIGATION_BEHAVIOR_MODE_KEY = 'nc_dpad_nav_behavior_mode_v1';
 const LATENCY_RING_BUFFER_SIZE = 256;
 const ACTIVE_NAV_WINDOW_MS = 320;
 const FRAME_MONITOR_IDLE_STOP_MS = 450;
+
+let androidPlatformOverrideForTest: boolean | null = null;
+
+export function setAndroidPlatformOverrideForDpadTest(isAndroid: boolean | null): void {
+  androidPlatformOverrideForTest = isAndroid;
+}
+
+export function isAndroidCapacitorPlatform(): boolean {
+  if (androidPlatformOverrideForTest !== null) {
+    return androidPlatformOverrideForTest;
+  }
+  try {
+    if (
+      typeof Capacitor !== 'undefined' &&
+      typeof Capacitor.isNativePlatform === 'function' &&
+      Capacitor.isNativePlatform() &&
+      typeof Capacitor.getPlatform === 'function' &&
+      Capacitor.getPlatform() === 'android'
+    ) {
+      return true;
+    }
+    if (typeof window !== 'undefined' && (window as any).Capacitor) {
+      const winCap = (window as any).Capacitor;
+      if (
+        typeof winCap.isNativePlatform === 'function' &&
+        winCap.isNativePlatform() &&
+        typeof winCap.getPlatform === 'function' &&
+        winCap.getPlatform() === 'android'
+      ) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 export interface DpadLatencySummary {
   sampleCount: number;
@@ -152,7 +189,7 @@ function readInitialBehaviorMode(): DpadNavigationBehaviorMode {
   if (res.success && (res.value === 'current' || res.value === 'optimized')) {
     return res.value;
   }
-  return isAndroidCapacitorRuntime() ? 'optimized' : 'current';
+  return isAndroidCapacitorPlatform() ? 'optimized' : 'current';
 }
 
 let isFluidityDiagnosticsEnabled: boolean = readInitialEnabledFlag();
@@ -408,7 +445,7 @@ export function setDpadFluidityDiagnosticsEnabled(enabled: boolean): boolean {
 
 export function getDpadNavigationBehaviorMode(): DpadNavigationBehaviorMode {
   if (!behaviorModeExplicitlySet) {
-    return isAndroidCapacitorRuntime() ? 'optimized' : 'current';
+    return isAndroidCapacitorPlatform() ? 'optimized' : 'current';
   }
   return currentBehaviorMode;
 }
@@ -504,8 +541,15 @@ export function resetDpadFluidityDiagnostics(options?: {
     );
   }
   if (options?.clearExplicitMode) {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(DPAD_NAVIGATION_BEHAVIOR_MODE_KEY);
+      }
+    } catch {
+      // ignore
+    }
     behaviorModeExplicitlySet = false;
-    currentBehaviorMode = isAndroidCapacitorRuntime() ? 'optimized' : 'current';
+    currentBehaviorMode = isAndroidCapacitorPlatform() ? 'optimized' : 'current';
   } else if (options?.behaviorMode !== undefined) {
     currentBehaviorMode = options.behaviorMode;
     behaviorModeExplicitlySet = true;

@@ -7,10 +7,7 @@ import {
   moveSpatialFocus,
   SpatialDirection,
 } from './spatialNav';
-import {
-  isDpadOptimizedPathActive,
-  recordDpadKeydownReceived,
-} from './dpadFluidityDiagnostics';
+import { recordDpadKeydownReceived } from './dpadFluidityDiagnostics';
 import { executeBackAction, setCentralBackPolicyAttached } from './backPolicy';
 import { attachCapacitorBackAdapter } from './capacitorBackAdapter';
 import { syncDocumentDisplayAttributes } from '../platform/tvEnvironment';
@@ -76,7 +73,6 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
 
     let lastRepeatTimestamp = 0;
     let lastRepeatDirection: SpatialDirection | null = null;
-    let lastRepeatDurationMs = 0;
     const KEY_REPEAT_THROTTLE_MS = 48;
 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -141,14 +137,11 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
 
         e.preventDefault();
 
-        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
         if (e.repeat) {
-          const effectiveThrottleMs = isDpadOptimizedPathActive()
-            ? Math.max(KEY_REPEAT_THROTTLE_MS, Math.min(92, lastRepeatDurationMs * 1.4))
-            : KEY_REPEAT_THROTTLE_MS;
+          const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
           if (
             lastRepeatDirection === direction &&
-            now - lastRepeatTimestamp < effectiveThrottleMs
+            now - lastRepeatTimestamp < KEY_REPEAT_THROTTLE_MS
           ) {
             recordDpadKeydownReceived({
               direction,
@@ -157,14 +150,13 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
             });
             return;
           }
+          lastRepeatTimestamp = now;
+          lastRepeatDirection = direction;
+        } else {
+          lastRepeatDirection = null;
         }
 
-        const startMoveTs = now;
         moveSpatialFocus(direction, undefined, { isRepeat: Boolean(e.repeat) });
-        const endMoveTs = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        lastRepeatDurationMs = Math.max(0, endMoveTs - startMoveTs);
-        lastRepeatTimestamp = endMoveTs;
-        lastRepeatDirection = direction;
         return;
       }
 
