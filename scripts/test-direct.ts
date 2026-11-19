@@ -4487,12 +4487,27 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       }
 
       const modeDiagSnap = getDpadFluidityDiagnosticsSnapshot();
-      assert(
-        modeDiagSnap.flushSyncCount >= 1 &&
+      if (modeUnderTest === 'current') {
+        assert(
+          modeDiagSnap.flushSyncCount >= 1 &&
+            modeDiagSnap.geometryMeasureCount >= 1 &&
+            modeDiagSnap.rowsMountedDuringNav >= 1,
+          `O diagnóstico no modo current deve registrar flushSync síncronos (${modeDiagSnap.flushSyncCount}), medições de geometria (${modeDiagSnap.geometryMeasureCount}) e fileiras montadas (${modeDiagSnap.rowsMountedDuringNav})`
+        );
+        (container as any).__currentModeFlushSyncCount = modeDiagSnap.flushSyncCount;
+      } else {
+        const baselineFlushCount = (container as any).__currentModeFlushSyncCount ?? 8;
+        assert.strictEqual(
+          modeDiagSnap.flushSyncCount,
+          0,
+          `A travessia vertical passo a passo da fileira 0 à 11 e retorno à 0 no modo optimized deve ocorrer com ZERO flushSync síncronos (atual=${modeDiagSnap.flushSyncCount}, current=${baselineFlushCount})`
+        );
+        assert(
           modeDiagSnap.geometryMeasureCount >= 1 &&
-          modeDiagSnap.rowsMountedDuringNav >= 1,
-        `O diagnóstico no modo ${modeUnderTest} deve registrar flushSync (${modeDiagSnap.flushSyncCount}), medições de geometria (${modeDiagSnap.geometryMeasureCount}) e fileiras montadas (${modeDiagSnap.rowsMountedDuringNav})`
-      );
+            modeDiagSnap.rowsMountedDuringNav >= 8,
+          `A preparação assíncrona no modo optimized deve montar as novas fileiras normalmente sem flushSync (rowsMounted=${modeDiagSnap.rowsMountedDuringNav}, geometryMeasures=${modeDiagSnap.geometryMeasureCount})`
+        );
+      }
     }
 
     // -------------------------------------------------------------------------

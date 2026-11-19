@@ -55,6 +55,7 @@ import {
   restoreVirtualItemByKey,
   registerShowcaseRowController,
   unregisterShowcaseRowController,
+  invalidateCandidateCache,
   isDpadOptimizedPathActive,
   recordDpadFlushSyncExecution,
   recordDpadGeometryMeasurement,
@@ -70,6 +71,72 @@ function extractReleaseYear(item: any): number | null {
   const year = getValidYear(item);
   return year > 0 ? year : null;
 }
+
+interface ShowcaseRowSlotProps {
+  rowKey: string;
+  rowIndex: number;
+  title: string;
+  type: 'movie' | 'series' | 'live';
+  virtualize: boolean;
+  isMounted: boolean;
+  items: any[];
+  onItemClick: (item: any, element?: HTMLElement | null) => void;
+}
+
+const ShowcaseRowSlot = React.memo(function ShowcaseRowSlot({
+  rowKey,
+  rowIndex,
+  title,
+  type,
+  virtualize,
+  isMounted,
+  items,
+  onItemClick,
+}: ShowcaseRowSlotProps) {
+  return (
+    <div
+      data-scroll-block="true"
+      data-showcase-row-key={rowKey}
+      data-showcase-row-index={rowIndex}
+      className="pb-6"
+      style={{
+        overflowAnchor: 'none',
+      }}
+    >
+      {isMounted ? (
+        <HorizontalRow
+          title={title}
+          items={items}
+          type={type}
+          rowIndex={rowIndex}
+          virtualize={virtualize}
+          onItemClick={onItemClick}
+        />
+      ) : (
+        <div
+          className="w-full group"
+          data-showcase-unmounted-row={rowIndex}
+        >
+          <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">
+            {title}
+          </h2>
+          <div
+            className="flex flex-row overflow-hidden w-full gap-4 px-2 pb-8 pt-4 pointer-events-none select-none"
+            aria-hidden="true"
+          >
+            <div
+              className={`shrink-0 rounded-xl invisible ${
+                type === 'live'
+                  ? 'nc-tv-row-card-live w-64 md:w-72 aspect-video'
+                  : 'nc-tv-row-card-poster w-36 md:w-44 aspect-[2/3]'
+              }`}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
 
 function setElementScrollTopImmediate(el: HTMLElement, targetScrollTop: number): void {
   const next = Math.max(0, targetScrollTop);
@@ -1559,9 +1626,75 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     getRowSlotHeight,
   ]);
 
-  // Keep DOM measurements of mounted showcase rows and HeroBanner offset up to date
+  const pendingAsyncWindowShiftRef = useRef<{
+    queued: boolean;
+    cancelled: boolean;
+    desiredStart: number;
+    preferredAnchorRowIndex?: number;
+  }>({
+    queued: false,
+    cancelled: false,
+    desiredStart: 0,
+    preferredAnchorRowIndex: undefined,
+  });
+
+  const pendingAsyncAnchorCompensationRef = useRef<{
+    anchorRowIdx: number;
+    visualTopBefore: number | null;
+  } | null>(null);
+
+  const cancelPendingAsyncShowcaseWindowShift = useCallback(() => {
+    const pending = pendingAsyncWindowShiftRef.current;
+    if (pending.queued) {
+      pending.cancelled = true;
+      pending.queued = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      cancelPendingAsyncShowcaseWindowShift();
+      pendingAsyncAnchorCompensationRef.current = null;
+    };
+  }, [cancelPendingAsyncShowcaseWindowShift]);
+
+  // Keep DOM measurements of mounted showcase rows and HeroBanner offset up to date,
+  // and apply post-commit scroll delta compensation when an async window pre-shift commits.
   useLayoutEffect(() => {
     if (isGridMode || (section === 'inicio' && hasSearch) || totalShowcaseRows === 0) {
+      pendingAsyncAnchorCompensationRef.current = null;
+      return;
+    }
+    const pendingAsyncComp = pendingAsyncAnchorCompensationRef.current;
+    if (pendingAsyncComp) {
+      pendingAsyncAnchorCompensationRef.current = null;
+      isProgrammaticRowShiftRef.current = true;
+      try {
+        measureMountedShowcaseGeometry('after-virtual');
+        if (
+          pendingAsyncComp.anchorRowIdx >= 0 &&
+          pendingAsyncComp.visualTopBefore !== null &&
+          mainContainerRef.current
+        ) {
+          const visualTopAfter = measureShowcaseRowVisualTop(
+            showcaseRowsContainerRef.current,
+            mainContainerRef.current,
+            pendingAsyncComp.anchorRowIdx
+          );
+          if (visualTopAfter !== null) {
+            const delta = visualTopAfter - pendingAsyncComp.visualTopBefore;
+            if (Math.abs(delta) > 0.5) {
+              setElementScrollTopImmediate(
+                mainContainerRef.current,
+                Math.max(0, (mainContainerRef.current.scrollTop || 0) + delta)
+              );
+            }
+          }
+        }
+        invalidateCandidateCache();
+      } finally {
+        isProgrammaticRowShiftRef.current = false;
+      }
       return;
     }
     if (isDpadOptimizedPathActive() && isProgrammaticRowShiftRef.current) {
@@ -1676,13 +1809,147 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     credentials?.serverUrl,
   ]);
 
+  // Schedule an asynchronous post-focus showcase row window shift so that moving into an
+  // already-mounted row near the window boundary never blocks the D-Pad event with flushSync.
+  const scheduleAsyncShowcaseWindowShift = useCallback(
+    (desiredStart: number, preferredAnchorRowIndex?: number): void => {
+      const pending = pendingAsyncWindowShiftRef.current;
+      pending.desiredStart = desiredStart;
+      pending.preferredAnchorRowIndex = preferredAnchorRowIndex;
+      pending.cancelled = false;
+
+      if (pending.queued) {
+        return;
+      }
+      pending.queued = true;
+
+      const executeAsyncShift = () => {
+        if (pending.cancelled || !pending.queued) {
+          return;
+        }
+        pending.queued = false;
+
+        if (
+          !isDpadOptimizedPathActive() ||
+          !shouldVirtualizeShowcaseRows ||
+          totalShowcaseRows <= SHOWCASE_ROW_WINDOW_SIZE
+        ) {
+          return;
+        }
+
+        const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
+        let clampedDesired = Math.max(0, Math.min(maxRowWindowStart, pending.desiredStart));
+
+        const activeEl =
+          typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+        const focusedRowWrapper =
+          activeEl && showcaseRowsContainerRef.current?.contains(activeEl)
+            ? activeEl.closest<HTMLElement>('[data-home-row-index]')
+            : null;
+        const parsedFocusedRow = focusedRowWrapper?.hasAttribute('data-home-row-index')
+          ? parseInt(focusedRowWrapper.getAttribute('data-home-row-index') || '-1', 10)
+          : -1;
+
+        if (!isNaN(parsedFocusedRow) && parsedFocusedRow >= 0 && parsedFocusedRow < totalShowcaseRows) {
+          if (parsedFocusedRow < clampedDesired) {
+            clampedDesired = Math.max(0, Math.min(maxRowWindowStart, parsedFocusedRow));
+          } else if (parsedFocusedRow >= clampedDesired + SHOWCASE_ROW_WINDOW_SIZE) {
+            clampedDesired = Math.max(
+              0,
+              Math.min(maxRowWindowStart, parsedFocusedRow - SHOWCASE_ROW_WINDOW_SIZE + 1)
+            );
+          }
+        }
+
+        if (clampedDesired === curStart) {
+          return;
+        }
+
+        if (measuredRowHeightsRef.current.size === 0) {
+          measureMountedShowcaseGeometry('before-virtual');
+        }
+
+        const curEnd = Math.min(totalShowcaseRows, curStart + SHOWCASE_ROW_WINDOW_SIZE);
+        const nextEnd = Math.min(totalShowcaseRows, clampedDesired + SHOWCASE_ROW_WINDOW_SIZE);
+        const overlapStart = Math.max(curStart, clampedDesired);
+        const overlapEnd = Math.min(curEnd, nextEnd);
+
+        const rowsDelta = Math.abs(clampedDesired - curStart);
+        if (rowsDelta > 0) {
+          recordDpadVirtualMountDelta({
+            rowsMounted: rowsDelta,
+            rowsUnmounted: rowsDelta,
+            cardsMounted: rowsDelta * 24,
+            cardsUnmounted: rowsDelta * 24,
+          });
+        }
+
+        let anchorRowIdx = -1;
+        if (overlapStart < overlapEnd) {
+          if (
+            !isNaN(parsedFocusedRow) &&
+            parsedFocusedRow >= overlapStart &&
+            parsedFocusedRow < overlapEnd
+          ) {
+            anchorRowIdx = parsedFocusedRow;
+          } else if (
+            typeof pending.preferredAnchorRowIndex === 'number' &&
+            pending.preferredAnchorRowIndex >= overlapStart &&
+            pending.preferredAnchorRowIndex < overlapEnd
+          ) {
+            anchorRowIdx = pending.preferredAnchorRowIndex;
+          } else {
+            anchorRowIdx = overlapStart;
+          }
+        }
+
+        const visualTopBefore =
+          anchorRowIdx >= 0
+            ? measureShowcaseRowVisualTop(
+                showcaseRowsContainerRef.current,
+                mainContainerRef.current,
+                anchorRowIdx
+              )
+            : null;
+
+        pendingAsyncAnchorCompensationRef.current = {
+          anchorRowIdx,
+          visualTopBefore,
+        };
+        rowWindowStartRef.current = clampedDesired;
+        setRowWindowStart(clampedDesired);
+      };
+
+      if (typeof queueMicrotask === 'function') {
+        queueMicrotask(executeAsyncShift);
+      } else {
+        Promise.resolve().then(executeAsyncShift);
+      }
+    },
+    [
+      maxRowWindowStart,
+      measureMountedShowcaseGeometry,
+      shouldVirtualizeShowcaseRows,
+      totalShowcaseRows,
+    ]
+  );
+
   // Shift showcase row window for D-Pad / programmatic restore while preserving the anchor row's
   // visual position in the viewport via a single measured delta compensation pass.
   const shiftShowcaseWindowWithAnchor = useCallback(
     (desiredStart: number, preferredAnchorRowIndex?: number): boolean => {
+      cancelPendingAsyncShowcaseWindowShift();
+      pendingAsyncAnchorCompensationRef.current = null;
+
       const clampedDesired = Math.max(0, Math.min(maxRowWindowStart, desiredStart));
       const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
-      if (clampedDesired === curStart) {
+      const domHasDesiredStart =
+        showcaseRowsContainerRef.current?.querySelector(
+          `[data-home-row-index="${clampedDesired}"]`
+        ) !== null;
+      if (clampedDesired === curStart && domHasDesiredStart) {
         return false;
       }
 
@@ -1785,10 +2052,17 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       }
       return true;
     },
-    [maxRowWindowStart, totalShowcaseRows, measureMountedShowcaseGeometry]
+    [
+      cancelPendingAsyncShowcaseWindowShift,
+      maxRowWindowStart,
+      totalShowcaseRows,
+      measureMountedShowcaseGeometry,
+    ]
   );
 
-  // Synchronously shift vertical showcase row window when navigating by D-Pad or restoring details origin
+  // Shift vertical showcase row window when navigating by D-Pad or restoring details origin.
+  // In 'optimized' mode, when the target row is ALREADY mounted in the active window, focus transfers
+  // immediately without synchronous flushSync, and the upcoming window shift is prepared asynchronously.
   const ensureShowcaseRowMounted = useCallback(
     (targetRowIndex: number, preserveRowIndex?: number): boolean => {
       isDpadShowcaseNavActiveRef.current = true;
@@ -1802,21 +2076,29 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       const curStart = Math.max(0, Math.min(rowWindowStartRef.current, maxRowWindowStart));
       const curEnd = Math.min(totalShowcaseRows, curStart + SHOWCASE_ROW_WINDOW_SIZE);
 
-      const hasTopMargin = curStart === 0 || clampedTarget >= curStart + 1;
-      const hasBottomMargin =
-        curEnd >= totalShowcaseRows || clampedTarget < curEnd - 1;
+      const optimizedPath =
+        isDpadOptimizedPathActive() && SHOWCASE_ROW_WINDOW_SIZE >= 8;
 
-      if (
+      const targetAlreadyMountedInDom =
         clampedTarget >= curStart &&
         clampedTarget < curEnd &&
-        hasTopMargin &&
-        hasBottomMargin
-      ) {
+        Boolean(
+          showcaseRowsContainerRef.current?.querySelector(
+            `[data-home-row-index="${clampedTarget}"]`
+          )
+        );
+
+      const topLookaheadMargin = optimizedPath ? 2 : 1;
+      const bottomLookaheadMargin = optimizedPath ? 2 : 1;
+
+      const hasTopMargin =
+        curStart === 0 || clampedTarget >= curStart + topLookaheadMargin;
+      const hasBottomMargin =
+        curEnd >= totalShowcaseRows || clampedTarget < curEnd - bottomLookaheadMargin;
+
+      if (targetAlreadyMountedInDom && hasTopMargin && hasBottomMargin) {
         return false;
       }
-
-      const useTwoRowStride =
-        isDpadOptimizedPathActive() && SHOWCASE_ROW_WINDOW_SIZE >= 8;
 
       let desiredStart: number;
       if (
@@ -1826,10 +2108,10 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       ) {
         if (clampedTarget < preserveRowIndex) {
           // Navigating UP: keep preserveRowIndex in window and give top margin (snap to 0 when near top)
-          const candidateUp = useTwoRowStride
+          const candidateUp = optimizedPath
             ? clampedTarget <= 3
               ? 0
-              : clampedTarget - 2
+              : clampedTarget - 3
             : clampedTarget <= 3
               ? 0
               : clampedTarget - 1;
@@ -1841,8 +2123,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                 : clampedTarget - 1;
         } else {
           // Navigating DOWN: keep preserveRowIndex in window and give bottom margin
-          const candidateDown = useTwoRowStride
-            ? clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 3
+          const candidateDown = optimizedPath
+            ? clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 4
             : clampedTarget - SHOWCASE_ROW_WINDOW_SIZE + 2;
           desiredStart =
             preserveRowIndex >= candidateDown
@@ -1862,12 +2144,27 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           ? preserveRowIndex
           : clampedTarget;
 
+      // In optimized mode, if the target row is already mounted in the DOM during a D-Pad step move,
+      // do not block the key event with synchronous flushSync. Let focus move immediately to the
+      // mounted target row and prepare the upcoming rows asynchronously on the next animation frame.
+      if (
+        optimizedPath &&
+        targetAlreadyMountedInDom &&
+        typeof preserveRowIndex === 'number'
+      ) {
+        if (desiredStart !== curStart) {
+          scheduleAsyncShowcaseWindowShift(desiredStart, clampedTarget);
+        }
+        return false;
+      }
+
       return shiftShowcaseWindowWithAnchor(desiredStart, preferredAnchor);
     },
     [
       shouldVirtualizeShowcaseRows,
       totalShowcaseRows,
       maxRowWindowStart,
+      scheduleAsyncShowcaseWindowShift,
       shiftShowcaseWindowWithAnchor,
     ]
   );
@@ -3384,48 +3681,17 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                   style={{ height: '0px', overflowAnchor: 'none' }}
                 />
                 {showcaseRowsData.map((row) => (
-                  <div
+                  <ShowcaseRowSlot
                     key={row.key}
-                    data-scroll-block="true"
-                    data-showcase-row-key={row.key}
-                    data-showcase-row-index={row.rowIndex}
-                    className="pb-6"
-                    style={{
-                      overflowAnchor: 'none',
-                    }}
-                  >
-                    {row.isMounted ? (
-                      <HorizontalRow
-                        title={row.title}
-                        items={row.items}
-                        type={row.type}
-                        rowIndex={row.rowIndex}
-                        virtualize={row.virtualize}
-                        onItemClick={row.type === 'live' ? handleLiveChannelClick : handleSelectItem}
-                      />
-                    ) : (
-                      <div
-                        className="w-full group"
-                        data-showcase-unmounted-row={row.rowIndex}
-                      >
-                        <h2 className="nc-heading-view font-semibold text-white mb-4 break-words whitespace-normal">
-                          {row.title}
-                        </h2>
-                        <div
-                          className="flex flex-row overflow-hidden w-full gap-4 px-2 pb-8 pt-4 pointer-events-none select-none"
-                          aria-hidden="true"
-                        >
-                          <div
-                            className={`shrink-0 rounded-xl invisible ${
-                              row.type === 'live'
-                                ? 'nc-tv-row-card-live w-64 md:w-72 aspect-video'
-                                : 'nc-tv-row-card-poster w-36 md:w-44 aspect-[2/3]'
-                            }`}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                    rowKey={row.key}
+                    rowIndex={row.rowIndex}
+                    title={row.title}
+                    type={row.type}
+                    virtualize={row.virtualize}
+                    isMounted={row.isMounted}
+                    items={row.items}
+                    onItemClick={row.type === 'live' ? handleLiveChannelClick : handleSelectItem}
+                  />
                 ))}
                 <div
                   data-showcase-row-spacer="bottom"

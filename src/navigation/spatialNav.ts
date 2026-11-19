@@ -2246,9 +2246,19 @@ function tryFastVerticalMove(
             }
           }
 
-          const targetRowWrapper = showcaseRowsContainer.querySelector<HTMLElement>(
+          let targetRowWrapper = showcaseRowsContainer.querySelector<HTMLElement>(
             `[data-home-row-index="${targetRowIndex}"]`
           );
+          if ((!targetRowWrapper || !scopeRoot.contains(targetRowWrapper)) && rowController) {
+            const fallbackExpanded = rowController.ensureRowMounted(targetRowIndex);
+            if (fallbackExpanded) {
+              spatialPerfStats.virtualWindowExpansions++;
+              invalidateCandidateCache();
+            }
+            targetRowWrapper = showcaseRowsContainer.querySelector<HTMLElement>(
+              `[data-home-row-index="${targetRowIndex}"]`
+            );
+          }
           if (targetRowWrapper && scopeRoot.contains(targetRowWrapper)) {
             const targetRowContainer =
               targetRowWrapper.querySelector<HTMLElement>('[data-nav-row="true"]') ||
