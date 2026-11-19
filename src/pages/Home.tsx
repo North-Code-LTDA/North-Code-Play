@@ -47,7 +47,6 @@ import {
   notifyDpadNavigationActivityForImagePreload,
   setVideoPlaybackActiveForImagePreload,
   setCatalogTransferPhaseActiveForImageCache,
-  getStartupImageCoordinationMode,
 } from '../services/androidImageCache';
 import { clearLoadedImageUrlCache } from '../components/MediaImage';
 import { clearHeroSessionCache } from '../services/heroSessionCache';
@@ -179,7 +178,6 @@ function StartupImageCacheCoordinator({
     startedForSessionRef.current = true;
     setCatalogTransferPhaseActiveForImageCache(false);
 
-    const coordinationMode = getStartupImageCoordinationMode();
     const abortController = new AbortController();
     const plan = buildHomeStartupImagePlan({
       serverUrl,
@@ -195,7 +193,6 @@ function StartupImageCacheCoordinator({
 
     if (
       !isAndroidPersistentImageCacheAvailable() ||
-      coordinationMode === 'mode_a' ||
       plan.priorityUrls.length === 0
     ) {
       recordStartupCoordinatorReadyTimestamp();
@@ -484,9 +481,7 @@ function HomeContent({ credentials }: { credentials: any }) {
   const [isOpeningDismissed, setIsOpeningDismissed] = useState(false);
   const [showContinueButton, setShowContinueButton] = useState(false);
   const [isPriorityImagesReady, setIsPriorityImagesReady] = useState(
-    () =>
-      !isAndroidPersistentImageCacheAvailable() ||
-      getStartupImageCoordinationMode() === 'mode_a'
+    () => !isAndroidPersistentImageCacheAvailable()
   );
 
   const isCatalogTransferGateActive =

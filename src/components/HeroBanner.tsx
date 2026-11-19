@@ -168,6 +168,7 @@ export const HeroBanner = React.memo(function HeroBanner({
     syncGeometryVisibility();
 
     let observer: IntersectionObserver | null = null;
+    let observerRegistered = false;
     const IO =
       typeof window !== 'undefined' && typeof (window as any).IntersectionObserver === 'function'
         ? ((window as any).IntersectionObserver as typeof IntersectionObserver)
@@ -194,18 +195,25 @@ export const HeroBanner = React.memo(function HeroBanner({
           }
         );
         observer.observe(heroEl);
+        observerRegistered = true;
       } catch {
         observer = null;
+        observerRegistered = false;
       }
     }
 
-    const scrollTarget: EventTarget | null =
-      container ?? (typeof window !== 'undefined' ? window : null);
+    const scrollTarget: EventTarget | null = !observerRegistered
+      ? (container ?? (typeof window !== 'undefined' ? window : null))
+      : null;
 
     if (scrollTarget && typeof scrollTarget.addEventListener === 'function') {
       scrollTarget.addEventListener('scroll', syncGeometryVisibility, { passive: true });
     }
-    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    if (
+      !observerRegistered &&
+      typeof window !== 'undefined' &&
+      typeof window.addEventListener === 'function'
+    ) {
       window.addEventListener('resize', syncGeometryVisibility);
     }
 
@@ -219,7 +227,11 @@ export const HeroBanner = React.memo(function HeroBanner({
       if (scrollTarget && typeof scrollTarget.removeEventListener === 'function') {
         scrollTarget.removeEventListener('scroll', syncGeometryVisibility);
       }
-      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      if (
+        !observerRegistered &&
+        typeof window !== 'undefined' &&
+        typeof window.removeEventListener === 'function'
+      ) {
         window.removeEventListener('resize', syncGeometryVisibility);
       }
     };

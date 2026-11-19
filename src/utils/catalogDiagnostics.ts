@@ -435,9 +435,7 @@ function createEmptySortingDiagnostics(): CatalogSortingDiagnostics {
 }
 
 function createEmptyImageCacheDiagnostics(): CatalogImageCacheDiagnostics {
-  const modeRes = safeReadStorage('nc_startup_image_mode_v1');
-  const coordinationMode: StartupImageCoordinationDiagnosticMode =
-    modeRes.success && modeRes.value === 'mode_a' ? 'mode_a' : 'mode_b';
+  const coordinationMode: StartupImageCoordinationDiagnosticMode = 'mode_b';
   return {
     coordinationMode,
     initialHydratedEntriesCount: 0,

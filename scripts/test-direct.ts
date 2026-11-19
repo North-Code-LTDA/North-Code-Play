@@ -276,12 +276,10 @@ import {
   isDpadFluidityDiagnosticsEnabled,
   setDpadFluidityDiagnosticsEnabled,
   getDpadNavigationBehaviorMode,
-  setDpadNavigationBehaviorMode,
   isDpadOptimizedPathActive,
   resetDpadFluidityDiagnostics,
   getDpadFluidityDiagnosticsSnapshot,
   formatDpadFluidityDiagnosticsReport,
-  DPAD_NAVIGATION_BEHAVIOR_MODE_KEY,
 } from '../src/navigation';
 import { HorizontalRow } from '../src/components/HorizontalRow';
 import { MediaImage, setMediaImageRetryDelayMsForTest } from '../src/components/MediaImage';
@@ -319,7 +317,6 @@ import {
   setCatalogTransferPhaseActiveForImageCache,
   isCatalogTransferPhaseActiveForImageCache,
   getStartupImageCoordinationMode,
-  setStartupImageCoordinationMode,
   scheduleCooperativeCatalogUrlCount,
   scheduleBackgroundLowPriorityPreload,
 } from '../src/services/androidImageCache';
@@ -3956,55 +3953,55 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
     customResponderFn = null;
 
     // -------------------------------------------------------------------------
-    // 8.5. Comparação controlada entre Modo A (Catálogos prioritários) e Modo B (Cache otimizado)
+    // 8.5. Consolidação definitiva do Modo B (Cache otimizado) ignorando legado Modo A
     // -------------------------------------------------------------------------
+    window.localStorage.setItem('nc_startup_image_mode_v1', 'mode_a');
     assert.strictEqual(
       getStartupImageCoordinationMode(),
       'mode_b',
-      'O modo padrão de coordenação de abertura deve ser mode_b (Cache persistente otimizado)'
-    );
-
-    setStartupImageCoordinationMode('mode_a');
-    assert.strictEqual(
-      getStartupImageCoordinationMode(),
-      'mode_a',
-      'setStartupImageCoordinationMode deve alternar para mode_a (Catálogos prioritários)'
+      'O modo de coordenação de abertura no Android deve ser definitivamente mode_b, ignorando chave legada mode_a'
     );
     assert.strictEqual(
       getCatalogDiagnosticsSnapshot().imageCache.coordinationMode,
-      'mode_a',
-      'O snapshot de diagnóstico deve refletir imediatamente o Modo A'
+      'mode_b',
+      'O snapshot de diagnóstico deve permanecer definitivamente em mode_b mesmo com preferência legada mode_a no storage'
     );
     assert.strictEqual(
       harness.hasPhysicalFileForUrl(preCachedLogoUrl),
       true,
-      'Alternar entre Modo A e Modo B deve preservar integralmente os arquivos já persistidos no disco'
+      'Os arquivos já persistidos no disco devem ser preservados integralmente no Modo B consolidado'
     );
 
-    const reportTextModeA = formatCatalogDiagnosticsReport(getCatalogDiagnosticsSnapshot());
+    const reportTextModeB = formatCatalogDiagnosticsReport(getCatalogDiagnosticsSnapshot());
     assert(
-      reportTextModeA.includes('Modo A (Catálogos prioritários — sem espera pós-catálogos)') &&
-        reportTextModeA.includes('Atividade durante os 6 catálogos: downloads remotos iniciados=') &&
-        reportTextModeA.includes('Desfecho das imagens prioritárias da abertura') &&
-        reportTextModeA.includes('construção do plano=') &&
-        reportTextModeA.includes('onReady → Home liberada=') &&
-        reportTextModeA.includes('Saúde da fila de imagens: tarefas nativas simultâneas máx.='),
-      'Relatório de diagnóstico deve exibir todas as novas métricas de coordenação, plano, preparação prioritária e fila vertical'
+      reportTextModeB.includes('Modo B (Cache persistente otimizado — padrão)') &&
+        !reportTextModeB.includes('Modo A (Catálogos prioritários') &&
+        reportTextModeB.includes('Atividade durante os 6 catálogos: downloads remotos iniciados=') &&
+        reportTextModeB.includes('Desfecho das imagens prioritárias da abertura') &&
+        reportTextModeB.includes('construção do plano=') &&
+        reportTextModeB.includes('onReady → Home liberada=') &&
+        reportTextModeB.includes('Saúde da fila de imagens: tarefas nativas simultâneas máx.='),
+      'Relatório de diagnóstico deve exibir Modo B consolidado e todas as métricas de coordenação e fila'
     );
 
-    // Restaurar modo padrão mode_b
-    setStartupImageCoordinationMode('mode_b');
+    // Verificar também que um reset de diagnóstico com chave legada mode_a no localStorage continua em mode_b
+    resetCatalogDiagnosticsForTest(true);
+    startCatalogDiagnosticsSession(8501, 2);
     assert.strictEqual(
-      getStartupImageCoordinationMode(),
+      getCatalogDiagnosticsSnapshot().imageCache.coordinationMode,
       'mode_b',
-      'Deve restaurar o modo padrão mode_b após o teste comparativo'
+      'Nova sessão de diagnóstico deve iniciar em mode_b mesmo se nc_startup_image_mode_v1=mode_a estiver no localStorage'
     );
 
     await clearImageCacheOnLogout();
   } finally {
     customResponderFn = null;
+    try {
+      window.localStorage.removeItem('nc_startup_image_mode_v1');
+    } catch {
+      // ignore
+    }
     setCatalogTransferPhaseActiveForImageCache(false);
-    setStartupImageCoordinationMode('mode_b');
     harness.uninstall();
     setMediaImageRetryDelayMsForTest(2000);
     resetCatalogDiagnosticsForTest(false);
@@ -4017,7 +4014,7 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
   }
 
   console.log(
-    '✅ Etapa 2 (coordenação catálogos/imagens, eliminação do gap pós-catálogos, contabilização prioritária exata, cancelamento de fila na rolagem vertical e comparação Modo A/B) validada!'
+    '✅ Etapa 2 (coordenação catálogos/imagens, eliminação do gap pós-catálogos, contabilização prioritária exata, cancelamento de fila na rolagem vertical e Modo B consolidado) validada!'
   );
 }
 
@@ -4061,14 +4058,21 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
 
   try {
     // -------------------------------------------------------------------------
-    // 9.1. Inicialização correta em navegador Web e em Capacitor Android +
-    //      Seleção e persistência do modo de navegação ('current' vs 'optimized')
+    // 9.1. Política definitiva por plataforma (Web = padrão, Android = otimizado)
+    //      desacoplada do diagnóstico e imune a chaves legadas de localStorage
     // -------------------------------------------------------------------------
+    const policySource = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/navigation/navigationPlatformPolicy.ts'),
+      'utf8'
+    );
+    assert(
+      !policySource.includes('dpadFluidityDiagnostics'),
+      'navigationPlatformPolicy.ts não deve depender de dpadFluidityDiagnostics.ts'
+    );
+
     setAndroidPlatformOverrideForDpadTest(false);
-    resetDpadFluidityDiagnostics({
-      enabled: false,
-      clearExplicitMode: true,
-    });
+    window.localStorage.setItem('nc_dpad_nav_behavior_mode_v1', 'optimized');
+    resetDpadFluidityDiagnostics({ enabled: false });
 
     assert.strictEqual(
       isAndroidCapacitorPlatform(),
@@ -4078,20 +4082,19 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     assert.strictEqual(
       getDpadNavigationBehaviorMode(),
       'current',
-      'No ambiente Web sem preferência salva, o modo padrão deve ser current (Comportamento atual)'
+      'No ambiente Web, a política deve permanecer definitivamente current mesmo se localStorage contiver optimized legado'
     );
     assert.strictEqual(
       isDpadOptimizedPathActive(),
       false,
-      'Com modo current ativo, isDpadOptimizedPathActive deve ser false'
+      'No ambiente Web, isDpadOptimizedPathActive deve retornar false'
     );
 
-    // Simular Capacitor Android nativo sem preferência explícita salva
+    // Simular Capacitor Android nativo com chave legada 'current' no localStorage
     setAndroidPlatformOverrideForDpadTest(true);
-    resetDpadFluidityDiagnostics({
-      enabled: false,
-      clearExplicitMode: true,
-    });
+    window.localStorage.setItem('nc_dpad_nav_behavior_mode_v1', 'current');
+    resetDpadFluidityDiagnostics({ enabled: false });
+
     assert.strictEqual(
       isAndroidCapacitorPlatform(),
       true,
@@ -4100,53 +4103,25 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     assert.strictEqual(
       getDpadNavigationBehaviorMode(),
       'optimized',
-      'Em Capacitor Android nativo sem preferência explícita, o modo padrão deve ser optimized (Comportamento otimizado)'
-    );
-
-    // Selecionar e persistir 'current' mesmo no Android
-    setDpadNavigationBehaviorMode('current');
-    assert.strictEqual(
-      getDpadNavigationBehaviorMode(),
-      'current',
-      'setDpadNavigationBehaviorMode("current") deve alternar para Comportamento atual'
-    );
-    assert.strictEqual(
-      window.localStorage.getItem(DPAD_NAVIGATION_BEHAVIOR_MODE_KEY),
-      'current',
-      'A escolha de modo current deve ser persistida em localStorage'
-    );
-    assert.strictEqual(
-      isDpadOptimizedPathActive(),
-      false,
-      'Mesmo em Android, se o modo selecionado for current, isDpadOptimizedPathActive deve ser false'
-    );
-
-    // Selecionar e persistir 'optimized'
-    setDpadNavigationBehaviorMode('optimized');
-    assert.strictEqual(
-      getDpadNavigationBehaviorMode(),
-      'optimized',
-      'setDpadNavigationBehaviorMode("optimized") deve alternar para Comportamento otimizado'
-    );
-    assert.strictEqual(
-      window.localStorage.getItem(DPAD_NAVIGATION_BEHAVIOR_MODE_KEY),
-      'optimized',
-      'A escolha de modo optimized deve ser persistida em localStorage'
+      'Em Capacitor Android nativo, a política deve ser definitivamente optimized ignorando localStorage legado current'
     );
     assert.strictEqual(
       isDpadOptimizedPathActive(),
       true,
-      'Com modo optimized selecionado, isDpadOptimizedPathActive deve ser true'
+      'Em Capacitor Android nativo, isDpadOptimizedPathActive deve sempre retornar true'
     );
+
+    // Alternar diagnóstico D-Pad ligado/desligado não deve alterar a política operacional
+    setDpadFluidityDiagnosticsEnabled(true);
+    assert.strictEqual(isDpadOptimizedPathActive(), true);
+    setDpadFluidityDiagnosticsEnabled(false);
+    assert.strictEqual(isDpadOptimizedPathActive(), true);
 
     // -------------------------------------------------------------------------
     // 9.2. Diagnóstico desativado por padrão vs ativado +
     //      Teclas repetidas (e.repeat) e mudança rápida de direção
     // -------------------------------------------------------------------------
-    resetDpadFluidityDiagnostics({
-      enabled: false,
-      behaviorMode: 'optimized',
-    });
+    resetDpadFluidityDiagnostics({ enabled: false });
     assert.strictEqual(
       isDpadFluidityDiagnosticsEnabled(),
       false,
@@ -4380,10 +4355,14 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       invalidateCandidateCache();
     };
 
-    for (const modeUnderTest of ['current', 'optimized'] as const) {
+    for (const platformUnderTest of [
+      { label: 'web', isAndroid: false, expectedMode: 'current' as const },
+      { label: 'android', isAndroid: true, expectedMode: 'optimized' as const },
+    ]) {
+      const modeUnderTest = platformUnderTest.expectedMode;
+      setAndroidPlatformOverrideForDpadTest(platformUnderTest.isAndroid);
       resetDpadFluidityDiagnostics({
         enabled: true,
-        behaviorMode: modeUnderTest,
       });
 
       await act(async () => {
@@ -4395,7 +4374,7 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
               XtreamProvider,
               { credentials: mockCreds },
               React.createElement(CatalogShowcaseView, {
-                key: `showcase_${modeUnderTest}`,
+                key: `showcase_${platformUnderTest.label}`,
                 section: 'movies',
                 credentials: mockCreds,
                 onPlay: () => {},
@@ -4418,24 +4397,24 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       const rowsContainer = container.querySelector(
         '[data-showcase-rows-container="true"]'
       ) as HTMLElement | null;
-      assert(rowsContainer, `Container de fileiras deve existir no modo ${modeUnderTest}`);
+      assert(rowsContainer, `Container de fileiras deve existir na plataforma ${platformUnderTest.label}`);
       assert.strictEqual(
         rowsContainer.getAttribute('data-showcase-virtualized'),
         'true',
-        `A vitrine com 14 categorias deve ativar a virtualização vertical de 8 fileiras no modo ${modeUnderTest}`
+        `A vitrine com 14 categorias deve ativar a virtualização vertical de 8 fileiras (${platformUnderTest.label})`
       );
       assert(
         rowsContainer.querySelector('[data-home-row-index="0"]') !== null &&
           rowsContainer.querySelector('[data-home-row-index="7"]') !== null &&
           rowsContainer.querySelector('[data-showcase-unmounted-row="8"]') !== null,
-        `Janela virtual deve montar as 8 fileiras iniciais (0..7) no modo ${modeUnderTest}`
+        `Janela virtual deve montar as 8 fileiras iniciais (0..7) (${platformUnderTest.label})`
       );
 
       // Focar o cartão da coluna 1 na fileira 0 e testar navegação horizontal + vertical cruzando limites de virtualização
       const row0Col1 = container.querySelector(
         '[data-home-row-index="0"] [data-row-card-index="1"]'
       ) as HTMLElement | null;
-      assert(row0Col1, `Cartão 1 da fileira 0 deve estar montado no modo ${modeUnderTest}`);
+      assert(row0Col1, `Cartão 1 da fileira 0 deve estar montado (${platformUnderTest.label})`);
       focusElementSafely(row0Col1);
 
       // Navegar horizontalmente para a direita (coluna 1 -> coluna 2) para confirmar integridade do carrossel e alinhamento de coluna
@@ -4446,7 +4425,7 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       assert.strictEqual(
         (document.activeElement as HTMLElement)?.getAttribute('data-row-card-index'),
         '2',
-        `Navegação horizontal no carrossel deve mover para a coluna 2 no modo ${modeUnderTest}`
+        `Navegação horizontal no carrossel deve mover para a coluna 2 (${platformUnderTest.label})`
       );
 
       // Percorrer verticalmente da fileira 0 até a fileira 11 (cruzando a fronteira da janela 0..7)
@@ -4460,17 +4439,17 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
         const activeRowBlock = activeEl?.closest('[data-home-row-index]') as HTMLElement | null;
         assert(
           activeRowBlock,
-          `O foco nunca deve se perder ao avançar para a fileira ${targetRow} no modo ${modeUnderTest}`
+          `O foco nunca deve se perder ao avançar para a fileira ${targetRow} (${platformUnderTest.label})`
         );
         assert.strictEqual(
           Number(activeRowBlock.getAttribute('data-home-row-index')),
           targetRow,
-          `O foco deve pousar exatamente na fileira ${targetRow} ao descer com o D-Pad no modo ${modeUnderTest}`
+          `O foco deve pousar exatamente na fileira ${targetRow} ao descer com o D-Pad (${platformUnderTest.label})`
         );
         assert.strictEqual(
           activeEl?.getAttribute('data-row-card-index'),
           '2',
-          `A coluna 2 deve ser preservada ao cruzar fileiras e limites de virtualização (fileira ${targetRow}, modo ${modeUnderTest})`
+          `A coluna 2 deve ser preservada ao cruzar fileiras e limites de virtualização (fileira ${targetRow}, ${platformUnderTest.label})`
         );
       }
 
@@ -4485,27 +4464,28 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
         const activeRowBlock = activeEl?.closest('[data-home-row-index]') as HTMLElement | null;
         assert(
           activeRowBlock,
-          `O foco nunca deve se perder ao subir para a fileira ${targetRow} no modo ${modeUnderTest}`
+          `O foco nunca deve se perder ao subir para a fileira ${targetRow} (${platformUnderTest.label})`
         );
         assert.strictEqual(
           Number(activeRowBlock.getAttribute('data-home-row-index')),
           targetRow,
-          `O foco deve pousar exatamente na fileira ${targetRow} ao subir com o D-Pad no modo ${modeUnderTest}`
+          `O foco deve pousar exatamente na fileira ${targetRow} ao subir com o D-Pad (${platformUnderTest.label})`
         );
         assert.strictEqual(
           activeEl?.getAttribute('data-row-card-index'),
           '2',
-          `A coluna 2 deve ser preservada ao subir pelas fileiras virtualizadas (fileira ${targetRow}, modo ${modeUnderTest})`
+          `A coluna 2 deve ser preservada ao subir pelas fileiras virtualizadas (fileira ${targetRow}, ${platformUnderTest.label})`
         );
       }
 
       const modeDiagSnap = getDpadFluidityDiagnosticsSnapshot();
+      assert.strictEqual(modeDiagSnap.behaviorMode, modeUnderTest);
       if (modeUnderTest === 'current') {
         assert(
           modeDiagSnap.flushSyncCount >= 1 &&
             modeDiagSnap.geometryMeasureCount >= 1 &&
             modeDiagSnap.rowsMountedDuringNav >= 1,
-          `O diagnóstico no modo current deve registrar flushSync síncronos (${modeDiagSnap.flushSyncCount}), medições de geometria (${modeDiagSnap.geometryMeasureCount}) e fileiras montadas (${modeDiagSnap.rowsMountedDuringNav})`
+          `Na Web (current), deve manter o comportamento padrão (${modeDiagSnap.flushSyncCount} flushSync, ${modeDiagSnap.rowsMountedDuringNav} fileiras)`
         );
         (container as any).__currentModeFlushSyncCount = modeDiagSnap.flushSyncCount;
       } else {
@@ -4513,12 +4493,12 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
         assert.strictEqual(
           modeDiagSnap.flushSyncCount,
           0,
-          `A travessia vertical passo a passo da fileira 0 à 11 e retorno à 0 no modo optimized deve ocorrer com ZERO flushSync síncronos (atual=${modeDiagSnap.flushSyncCount}, current=${baselineFlushCount})`
+          `No Android (optimized), a travessia vertical passo a passo da fileira 0 à 11 e retorno à 0 deve ocorrer com ZERO flushSync síncronos (atual=${modeDiagSnap.flushSyncCount}, web=${baselineFlushCount})`
         );
         assert(
           modeDiagSnap.geometryMeasureCount >= 1 &&
             modeDiagSnap.rowsMountedDuringNav >= 8,
-          `A preparação assíncrona no modo optimized deve montar as novas fileiras normalmente sem flushSync (rowsMounted=${modeDiagSnap.rowsMountedDuringNav}, geometryMeasures=${modeDiagSnap.geometryMeasureCount})`
+          `No Android (optimized), a preparação assíncrona deve montar as novas fileiras normalmente sem flushSync (rowsMounted=${modeDiagSnap.rowsMountedDuringNav}, geometryMeasures=${modeDiagSnap.geometryMeasureCount})`
         );
       }
     }
@@ -4555,11 +4535,11 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
 
     // -------------------------------------------------------------------------
     // 9.5. Conexão real das métricas de imagens e ordenação de categorias durante
-    //      navegação ativa + Integração visual em ConfigView (Arquitetura & Diagnóstico)
+    //      navegação ativa + ConfigView sem seletores A/B mantendo diagnósticos
     // -------------------------------------------------------------------------
+    setAndroidPlatformOverrideForDpadTest(true);
     resetDpadFluidityDiagnostics({
       enabled: true,
-      behaviorMode: 'optimized',
     });
 
     // 1) Registrar um movimento real de D-Pad para abrir a janela de "navegação ativa"
@@ -4592,7 +4572,7 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       `Requisições de imagem iniciadas (${connectedDiagSnap.imageRequestsStartedDuringNav}) e concluídas (${connectedDiagSnap.imageRequestsCompletedDuringNav}) durante navegação ativa devem ser contabilizadas`
     );
 
-    // 4) Renderizar ConfigView e validar os botões de diagnóstico e modo de comportamento na UI
+    // 4) Renderizar ConfigView e validar ausência total de seletores A/B e preservação dos diagnósticos
     await act(async () => {
       root.render(
         React.createElement(
@@ -4622,8 +4602,14 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       await new Promise((r) => setTimeout(r, 30));
     });
 
+    const catalogDiagToggleBtn = container.querySelector(
+      '[data-catalog-diagnostics-toggle="true"]'
+    ) as HTMLButtonElement | null;
     const dpadDiagToggleBtn = container.querySelector(
       '[data-dpad-fluidity-diagnostics-toggle="true"]'
+    ) as HTMLButtonElement | null;
+    const startupModeToggleBtn = container.querySelector(
+      '[data-startup-image-mode-toggle="true"]'
     ) as HTMLButtonElement | null;
     const dpadModeToggleBtn = container.querySelector(
       '[data-dpad-behavior-mode-toggle="true"]'
@@ -4631,48 +4617,35 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     const dpadSectionEl = container.querySelector(
       '[data-dpad-fluidity-diagnostics-section="true"]'
     ) as HTMLElement | null;
+    const dpadPolicyLabelEl = container.querySelector(
+      '[data-diag-dpad-mode="true"]'
+    ) as HTMLElement | null;
 
+    assert.strictEqual(
+      startupModeToggleBtn,
+      null,
+      'ConfigView NÃO deve mais renderizar seletor A/B de modo de abertura (Modo A/Modo B)'
+    );
+    assert.strictEqual(
+      dpadModeToggleBtn,
+      null,
+      'ConfigView NÃO deve mais renderizar seletor A/B de modo de navegação D-Pad'
+    );
+    assert(
+      catalogDiagToggleBtn,
+      'Botão de coleta de diagnóstico de abertura deve permanecer preservado em Arquitetura & Diagnóstico'
+    );
     assert(
       dpadDiagToggleBtn,
-      'Botão de ativação/desativação do Diagnóstico D-Pad deve estar presente em Arquitetura & Diagnóstico'
+      'Botão de ativação/desativação do Diagnóstico D-Pad deve permanecer preservado em Arquitetura & Diagnóstico'
     );
     assert(
-      dpadModeToggleBtn,
-      'Botão de alternância entre Comportamento atual e Comportamento otimizado deve estar presente em Arquitetura & Diagnóstico'
+      dpadSectionEl && dpadPolicyLabelEl,
+      'Seção Grupo 5 (Fluidez de Navegação D-Pad) deve permanecer no painel de diagnóstico'
     );
     assert(
-      dpadSectionEl,
-      'Seção Grupo 5 (Fluidez de Navegação D-Pad) deve estar presente no painel de diagnóstico'
-    );
-    assert(
-      (dpadModeToggleBtn.textContent || '').includes('Comportamento otimizado'),
-      'O botão de modo deve exibir inicialmente "Comportamento otimizado"'
-    );
-
-    // Alternar o modo pelo botão da interface para "Comportamento atual"
-    await act(async () => {
-      dpadModeToggleBtn.click();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    assert.strictEqual(
-      getDpadNavigationBehaviorMode(),
-      'current',
-      'Clicar no botão de modo em ConfigView deve alternar para current (Comportamento atual)'
-    );
-    assert(
-      (dpadModeToggleBtn.textContent || '').includes('Comportamento atual'),
-      'O texto do botão em ConfigView deve atualizar para "Comportamento atual"'
-    );
-
-    // Alternar de volta para "Comportamento otimizado"
-    await act(async () => {
-      dpadModeToggleBtn.click();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    assert.strictEqual(
-      getDpadNavigationBehaviorMode(),
-      'optimized',
-      'Clicar novamente no botão de modo deve retornar para optimized (Comportamento otimizado)'
+      (dpadPolicyLabelEl.textContent || '').includes('Comportamento otimizado (Android)'),
+      'Grupo 5 deve exibir a política definitiva da plataforma Android'
     );
 
     // Validar que o relatório completo gerado para "Copiar diagnóstico" inclui a seção de Fluidez do D-Pad
@@ -4701,10 +4674,14 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     await clearImageCacheOnLogout();
   } finally {
     (XtreamService as any).authenticate = originalAuthenticate;
+    try {
+      window.localStorage.removeItem('nc_dpad_nav_behavior_mode_v1');
+    } catch {
+      // ignore
+    }
     setAndroidPlatformOverrideForDpadTest(null);
     resetDpadFluidityDiagnostics({
       enabled: false,
-      clearExplicitMode: true,
     });
     harness.uninstall();
     setMediaImageRetryDelayMsForTest(2000);
@@ -4718,7 +4695,7 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
   }
 
   console.log(
-    '✅ Etapa 3 (inicialização Web/Android, persistência de modo, repetição de teclas 48ms, limites de virtualização e diagnóstico D-Pad) validada!'
+    '✅ Etapa 3 (política definitiva Android/Web desacoplada, imunidade a storage legado, ConfigView sem seletores A/B, repetição de teclas e limites de virtualização) validada!'
   );
 }
 
@@ -5145,190 +5122,201 @@ async function runDeliveryAHeroBannerConsolidationTests(): Promise<void> {
       container_extension: 'mp4',
     }));
 
-    // Mount inside a real [data-scroll-container="true"]
-    await act(async () => {
-      root.render(
-        React.createElement(
-          XtreamProvider,
-          { credentials: accountA },
-          React.createElement(CatalogShowcaseView, {
-            section: 'movies',
-            credentials: accountA,
-            onPlay: () => {},
-            vodCategories: [{ category_id: '10', category_name: 'Ação' }],
-            vodStreams: vodForScrollTest,
-            allVodStreams: vodForScrollTest,
-            sessionReady: true,
-          })
-        )
-      );
-      await new Promise((r) => setTimeout(r, 25));
-    });
+    // Mount inside a real [data-scroll-container="true"] with IntersectionObserver absent
+    // so this sub-test specifically validates the scroll/resize geometric fallback path
+    const origWindowIOForFallback = (windowInstance as any).IntersectionObserver;
+    const origGlobalIOForFallback = (globalThis as any).IntersectionObserver;
+    (windowInstance as any).IntersectionObserver = undefined;
+    (globalThis as any).IntersectionObserver = undefined;
 
-    const scrollContainerEl = container.querySelector(
-      '[data-scroll-container="true"]'
-    ) as any;
-    const heroWrapperEl = container.querySelector('.nc-tv-hero') as any;
-    const heroStageEl = container.querySelector('[data-hero-stage="true"]') as any;
-    assert(scrollContainerEl && heroWrapperEl && heroStageEl, 'Container de scroll e HeroBanner devem estar montados');
-
-    // Provide measurable viewport geometry for scroll visibility assertions
-    let heroRectTop = 64;
-    let heroRectBottom = 594;
-    (scrollContainerEl as any).getBoundingClientRect = () => ({
-      top: 64,
-      bottom: 720,
-      left: 0,
-      right: 1280,
-      width: 1280,
-      height: 656,
-    });
-    (heroWrapperEl as any).getBoundingClientRect = () => ({
-      top: heroRectTop,
-      bottom: heroRectBottom,
-      left: 0,
-      right: 1280,
-      width: 1280,
-      height: 530,
-    });
-
-    // Request for slide 0 is currently in flight (`resolveSlowVod` pending), with abort tracking
-    assert.strictEqual(vodInfoCalls.length, 1, 'Slide 0 visível iniciou 1 consulta get_vod_info');
-    assert.strictEqual(heroStageEl.getAttribute('data-hero-paused'), 'false');
-    assert.strictEqual(activeHeroIntervals.length, 1, 'Timer 8000ms deve estar ativo quando visível');
-
-    // Scroll down past the HeroBanner so heroRect.bottom <= containerRect.top!
-    heroRectTop = -700;
-    heroRectBottom = -170;
-    await act(async () => {
-      scrollContainerEl.scrollTop = 764;
-      scrollContainerEl.dispatchEvent(new Event('scroll'));
-      await new Promise((r) => setTimeout(r, 20));
-    });
-
-    assert.strictEqual(
-      heroStageEl.getAttribute('data-hero-paused'),
-      'true',
-      'Ao rolar para baixo tirando o HeroBanner da área visível, ele deve entrar em pausa completa'
-    );
-    assert.strictEqual(
-      activeHeroIntervals.length,
-      0,
-      'Enquanto invisível, o timer de troca de slides do HeroBanner deve ser suspenso'
-    );
-    assert.strictEqual(
-      slowVodAborted,
-      true,
-      'Ao ficar invisível, a solicitação não essencial exclusiva do HeroBanner deve ser cancelada'
-    );
-
-    // Late resolution of an aborted or stale request must be ignored cleanly
-    const callsWhileInvisibleBefore = vodInfoCalls.length;
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 25));
-    });
-    assert.strictEqual(
-      vodInfoCalls.length,
-      callsWhileInvisibleBefore,
-      'Nenhuma nova consulta de detalhes deve iniciar enquanto o HeroBanner estiver invisível'
-    );
-
-    // Test shared consumer safety: start in-flight request with HeroBanner + MovieDetails, then cancel HeroBanner's AbortController
-    clearHeroSessionCache();
-    let sharedAborted = false;
-    let resolveShared: ((val: any) => void) | null = null;
-    XtreamService.getVodInfo = (_creds, _vodId, opts) =>
-      new Promise((resolve, reject) => {
-        if (opts?.signal) {
-          opts.signal.addEventListener('abort', () => {
-            sharedAborted = true;
-            reject(new Error('Operação cancelada pelo usuário.'));
-          });
-        }
-        resolveShared = resolve;
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            XtreamProvider,
+            { credentials: accountA },
+            React.createElement(CatalogShowcaseView, {
+              section: 'movies',
+              credentials: accountA,
+              onPlay: () => {},
+              vodCategories: [{ category_id: '10', category_name: 'Ação' }],
+              vodStreams: vodForScrollTest,
+              allVodStreams: vodForScrollTest,
+              sessionReady: true,
+            })
+          )
+        );
+        await new Promise((r) => setTimeout(r, 25));
       });
 
-    const heroCtrl = new AbortController();
-    const activeConsumerCtrl = new AbortController();
-    const sharedItem = { stream_id: 7777, stream_type: 'movie', name: 'Shared Item' };
-    const pBanner = fetchOrReuseHeroDetails(accountA, sharedItem, { signal: heroCtrl.signal });
-    const pDetails = fetchOrReuseHeroDetails(accountA, sharedItem, {
-      signal: activeConsumerCtrl.signal,
-      throwOnError: true,
-    });
-    heroCtrl.abort(); // Banner scrolled away / switched slide
-    const bannerCancelledResult = await pBanner;
-    assert.strictEqual(bannerCancelledResult, null);
-    assert.strictEqual(
-      sharedAborted,
-      false,
-      'Cancelar o sinal do HeroBanner NÃO pode abortar a mesma consulta aguardada por outro consumidor ativo (ex.: MovieDetails/Assistir)'
-    );
-    resolveShared!({
-      info: { plot: 'Sinopse compartilhada', backdrop_path: ['http://img.hero.tv/7777.jpg'] },
-      movie_data: { stream_id: 7777, container_extension: 'mp4' },
-    });
-    const activeDetailsRes = await pDetails;
-    assert.strictEqual(
-      activeDetailsRes.info.plot,
-      'Sinopse compartilhada',
-      'O consumidor ativo deve receber normalmente o resultado da consulta compartilhada'
-    );
+      const scrollContainerEl = container.querySelector(
+        '[data-scroll-container="true"]'
+      ) as any;
+      const heroWrapperEl = container.querySelector('.nc-tv-hero') as any;
+      const heroStageEl = container.querySelector('[data-hero-stage="true"]') as any;
+      assert(scrollContainerEl && heroWrapperEl && heroStageEl, 'Container de scroll e HeroBanner devem estar montados');
 
-    // Restore synchronous mock & scroll HeroBanner back into view
-    XtreamService.getVodInfo = async (creds, vodId) => {
-      vodInfoCalls.push({ id: String(vodId), user: creds.username });
-      return {
-        info: {
-          backdrop_path: [`http://img.hero.tv/vod/backdrop_${vodId}.jpg`],
-          plot: `Sinopse ${vodId}`,
-        },
-        movie_data: { stream_id: Number(vodId), container_extension: 'mp4' },
+      // Provide measurable viewport geometry for scroll visibility assertions
+      let heroRectTop = 64;
+      let heroRectBottom = 594;
+      (scrollContainerEl as any).getBoundingClientRect = () => ({
+        top: 64,
+        bottom: 720,
+        left: 0,
+        right: 1280,
+        width: 1280,
+        height: 656,
+      });
+      (heroWrapperEl as any).getBoundingClientRect = () => ({
+        top: heroRectTop,
+        bottom: heroRectBottom,
+        left: 0,
+        right: 1280,
+        width: 1280,
+        height: 530,
+      });
+
+      // Request for slide 0 is currently in flight (`resolveSlowVod` pending), with abort tracking
+      assert.strictEqual(vodInfoCalls.length, 1, 'Slide 0 visível iniciou 1 consulta get_vod_info');
+      assert.strictEqual(heroStageEl.getAttribute('data-hero-paused'), 'false');
+      assert.strictEqual(activeHeroIntervals.length, 1, 'Timer 8000ms deve estar ativo quando visível');
+
+      // Scroll down past the HeroBanner so heroRect.bottom <= containerRect.top!
+      heroRectTop = -700;
+      heroRectBottom = -170;
+      await act(async () => {
+        scrollContainerEl.scrollTop = 764;
+        scrollContainerEl.dispatchEvent(new Event('scroll'));
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      assert.strictEqual(
+        heroStageEl.getAttribute('data-hero-paused'),
+        'true',
+        'Ao rolar para baixo tirando o HeroBanner da área visível, ele deve entrar em pausa completa'
+      );
+      assert.strictEqual(
+        activeHeroIntervals.length,
+        0,
+        'Enquanto invisível, o timer de troca de slides do HeroBanner deve ser suspenso'
+      );
+      assert.strictEqual(
+        slowVodAborted,
+        true,
+        'Ao ficar invisível, a solicitação não essencial exclusiva do HeroBanner deve ser cancelada'
+      );
+
+      // Late resolution of an aborted or stale request must be ignored cleanly
+      const callsWhileInvisibleBefore = vodInfoCalls.length;
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+      });
+      assert.strictEqual(
+        vodInfoCalls.length,
+        callsWhileInvisibleBefore,
+        'Nenhuma nova consulta de detalhes deve iniciar enquanto o HeroBanner estiver invisível'
+      );
+
+      // Test shared consumer safety: start in-flight request with HeroBanner + MovieDetails, then cancel HeroBanner's AbortController
+      clearHeroSessionCache();
+      let sharedAborted = false;
+      let resolveShared: ((val: any) => void) | null = null;
+      XtreamService.getVodInfo = (_creds, _vodId, opts) =>
+        new Promise((resolve, reject) => {
+          if (opts?.signal) {
+            opts.signal.addEventListener('abort', () => {
+              sharedAborted = true;
+              reject(new Error('Operação cancelada pelo usuário.'));
+            });
+          }
+          resolveShared = resolve;
+        });
+
+      const heroCtrl = new AbortController();
+      const activeConsumerCtrl = new AbortController();
+      const sharedItem = { stream_id: 7777, stream_type: 'movie', name: 'Shared Item' };
+      const pBanner = fetchOrReuseHeroDetails(accountA, sharedItem, { signal: heroCtrl.signal });
+      const pDetails = fetchOrReuseHeroDetails(accountA, sharedItem, {
+        signal: activeConsumerCtrl.signal,
+        throwOnError: true,
+      });
+      heroCtrl.abort(); // Banner scrolled away / switched slide
+      const bannerCancelledResult = await pBanner;
+      assert.strictEqual(bannerCancelledResult, null);
+      assert.strictEqual(
+        sharedAborted,
+        false,
+        'Cancelar o sinal do HeroBanner NÃO pode abortar a mesma consulta aguardada por outro consumidor ativo (ex.: MovieDetails/Assistir)'
+      );
+      resolveShared!({
+        info: { plot: 'Sinopse compartilhada', backdrop_path: ['http://img.hero.tv/7777.jpg'] },
+        movie_data: { stream_id: 7777, container_extension: 'mp4' },
+      });
+      const activeDetailsRes = await pDetails;
+      assert.strictEqual(
+        activeDetailsRes.info.plot,
+        'Sinopse compartilhada',
+        'O consumidor ativo deve receber normalmente o resultado da consulta compartilhada'
+      );
+
+      // Restore synchronous mock & scroll HeroBanner back into view
+      XtreamService.getVodInfo = async (creds, vodId) => {
+        vodInfoCalls.push({ id: String(vodId), user: creds.username });
+        return {
+          info: {
+            backdrop_path: [`http://img.hero.tv/vod/backdrop_${vodId}.jpg`],
+            plot: `Sinopse ${vodId}`,
+          },
+          movie_data: { stream_id: Number(vodId), container_extension: 'mp4' },
+        };
       };
-    };
 
-    heroRectTop = 64;
-    heroRectBottom = 594;
-    await act(async () => {
-      scrollContainerEl.scrollTop = 0;
-      scrollContainerEl.dispatchEvent(new Event('scroll'));
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    assert.strictEqual(
-      heroStageEl.getAttribute('data-hero-paused'),
-      'false',
-      'Ao voltar ao topo, o HeroBanner deve retomar a atividade no mesmo índice preservado'
-    );
-    assert.strictEqual(
-      heroStageEl.getAttribute('data-hero-index'),
-      '0',
-      'O índice atual deve permanecer preservado ao pausar e retomar visibilidade'
-    );
-    assert.strictEqual(activeHeroIntervals.length, 1, 'Timer 8000ms deve ser reativado ao retornar à área visível');
+      heroRectTop = 64;
+      heroRectBottom = 594;
+      await act(async () => {
+        scrollContainerEl.scrollTop = 0;
+        scrollContainerEl.dispatchEvent(new Event('scroll'));
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      assert.strictEqual(
+        heroStageEl.getAttribute('data-hero-paused'),
+        'false',
+        'Ao voltar ao topo, o HeroBanner deve retomar a atividade no mesmo índice preservado'
+      );
+      assert.strictEqual(
+        heroStageEl.getAttribute('data-hero-index'),
+        '0',
+        'O índice atual deve permanecer preservado ao pausar e retomar visibilidade'
+      );
+      assert.strictEqual(activeHeroIntervals.length, 1, 'Timer 8000ms deve ser reativado ao retornar à área visível');
 
-    // Clean up DOM rects before next sub-test
-    delete (scrollContainerEl as any).getBoundingClientRect;
-    delete (heroWrapperEl as any).getBoundingClientRect;
+      // Clean up DOM rects before next sub-test
+      delete (scrollContainerEl as any).getBoundingClientRect;
+      delete (heroWrapperEl as any).getBoundingClientRect;
 
-    // Also test document.hidden pause
-    Object.defineProperty(doc, 'hidden', { value: true, configurable: true });
-    Object.defineProperty(doc, 'visibilityState', { value: 'hidden', configurable: true });
-    await act(async () => {
-      doc.dispatchEvent(new Event('visibilitychange') as any);
-      await new Promise((r) => setTimeout(r, 15));
-    });
-    assert.strictEqual(
-      heroStageEl.getAttribute('data-hero-paused'),
-      'true',
-      'Quando document.visibilityState=hidden, o HeroBanner deve pausar integralmente'
-    );
-    Object.defineProperty(doc, 'hidden', { value: false, configurable: true });
-    Object.defineProperty(doc, 'visibilityState', { value: 'visible', configurable: true });
-    await act(async () => {
-      doc.dispatchEvent(new Event('visibilitychange') as any);
-      await new Promise((r) => setTimeout(r, 15));
-    });
-    assert.strictEqual(heroStageEl.getAttribute('data-hero-paused'), 'false');
+      // Also test document.hidden pause
+      Object.defineProperty(doc, 'hidden', { value: true, configurable: true });
+      Object.defineProperty(doc, 'visibilityState', { value: 'hidden', configurable: true });
+      await act(async () => {
+        doc.dispatchEvent(new Event('visibilitychange') as any);
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        heroStageEl.getAttribute('data-hero-paused'),
+        'true',
+        'Quando document.visibilityState=hidden, o HeroBanner deve pausar integralmente'
+      );
+      Object.defineProperty(doc, 'hidden', { value: false, configurable: true });
+      Object.defineProperty(doc, 'visibilityState', { value: 'visible', configurable: true });
+      await act(async () => {
+        doc.dispatchEvent(new Event('visibilitychange') as any);
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(heroStageEl.getAttribute('data-hero-paused'), 'false');
+    } finally {
+      (windowInstance as any).IntersectionObserver = origWindowIOForFallback;
+      (globalThis as any).IntersectionObserver = origGlobalIOForFallback;
+    }
 
     // -----------------------------------------------------------------------
     // 10.4. Preservação da sequência por página (Início, Filmes, Séries) +
@@ -5594,6 +5582,138 @@ async function runDeliveryAHeroBannerConsolidationTests(): Promise<void> {
       );
     } finally {
       androidHarness.uninstall();
+    }
+
+    // -----------------------------------------------------------------------
+    // 10.8. Entrega B — HeroBanner com IntersectionObserver ativo NÃO deve
+    //       anexar listener contínuo de scroll nem chamar getBoundingClientRect() a cada rolagem
+    // -----------------------------------------------------------------------
+    await act(async () => {
+      root.render(React.createElement('div'));
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    clearHeroSessionCache();
+    vodInfoCalls = [];
+    activeHeroIntervals = [];
+
+    const origWindowIO = (windowInstance as any).IntersectionObserver;
+    const origGlobalIO = (globalThis as any).IntersectionObserver;
+    let capturedIOCallback: ((entries: any[]) => void) | null = null;
+    let ioObservedElements = 0;
+    let ioDisconnected = false;
+
+    class MockIntersectionObserver {
+      private cb: (entries: any[]) => void;
+      private isHeroObserver = false;
+      constructor(cb: (entries: any[]) => void) {
+        this.cb = cb;
+      }
+      observe(el: any) {
+        if (el?.classList?.contains?.('nc-tv-hero')) {
+          this.isHeroObserver = true;
+          capturedIOCallback = this.cb;
+          ioObservedElements++;
+        }
+      }
+      unobserve() {}
+      disconnect() {
+        if (this.isHeroObserver) {
+          ioDisconnected = true;
+        }
+      }
+    }
+
+    (windowInstance as any).IntersectionObserver = MockIntersectionObserver;
+    (globalThis as any).IntersectionObserver = MockIntersectionObserver;
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            XtreamProvider,
+            { credentials: accountA },
+            React.createElement(CatalogShowcaseView, {
+              section: 'movies',
+              credentials: accountA,
+              onPlay: () => {},
+              vodCategories: [{ category_id: '10', category_name: 'Ação' }],
+              vodStreams: vodForScrollTest,
+              allVodStreams: vodForScrollTest,
+              sessionReady: true,
+            })
+          )
+        );
+        await new Promise((r) => setTimeout(r, 25));
+      });
+
+      const ioScrollContainer = container.querySelector('[data-scroll-container="true"]') as any;
+      const ioHeroWrapper = container.querySelector('.nc-tv-hero') as any;
+      const ioHeroStage = container.querySelector('[data-hero-stage="true"]') as any;
+      assert(ioScrollContainer && ioHeroWrapper && ioHeroStage);
+      assert.strictEqual(ioObservedElements, 1, 'HeroBanner deve observar heroEl via IntersectionObserver');
+      assert(capturedIOCallback, 'Callback do IntersectionObserver deve estar registrado');
+
+      // Contabilizar chamadas de getBoundingClientRect no próprio HeroBanner durante múltiplos eventos de scroll/resize
+      let heroRectCallsDuringScroll = 0;
+      ioScrollContainer.getBoundingClientRect = () => ({
+        top: 64,
+        bottom: 720,
+        left: 0,
+        right: 1280,
+        width: 1280,
+        height: 656,
+      });
+      ioHeroWrapper.getBoundingClientRect = () => {
+        heroRectCallsDuringScroll++;
+        return { top: 64, bottom: 594, left: 0, right: 1280, width: 1280, height: 530 };
+      };
+
+      await act(async () => {
+        for (let step = 1; step <= 10; step++) {
+          ioScrollContainer.scrollTop = step * 80;
+          ioScrollContainer.dispatchEvent(new Event('scroll'));
+        }
+        windowInstance.dispatchEvent(new Event('resize') as any);
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      assert.strictEqual(
+        heroRectCallsDuringScroll,
+        0,
+        `Com IntersectionObserver ativo, scroll e resize NÃO devem disparar getBoundingClientRect() contínuo no HeroBanner (chamadas=${heroRectCallsDuringScroll})`
+      );
+
+      // Pausa e retomada continuam funcionando normalmente via IntersectionObserver
+      await act(async () => {
+        capturedIOCallback!([{ isIntersecting: false, intersectionRatio: 0 }]);
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        ioHeroStage.getAttribute('data-hero-paused'),
+        'true',
+        'IntersectionObserver com isIntersecting=false deve pausar o HeroBanner'
+      );
+      assert.strictEqual(activeHeroIntervals.length, 0);
+
+      await act(async () => {
+        capturedIOCallback!([{ isIntersecting: true, intersectionRatio: 0.75 }]);
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        ioHeroStage.getAttribute('data-hero-paused'),
+        'false',
+        'IntersectionObserver com isIntersecting=true deve retomar o HeroBanner'
+      );
+      assert.strictEqual(activeHeroIntervals.length, 1);
+
+      await act(async () => {
+        root.render(React.createElement('div'));
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      assert.strictEqual(ioDisconnected, true, 'Ao desmontar, HeroBanner deve chamar observer.disconnect()');
+    } finally {
+      (windowInstance as any).IntersectionObserver = origWindowIO;
+      (globalThis as any).IntersectionObserver = origGlobalIO;
     }
   } finally {
     restoreHeroIntervalTracker();

@@ -33,10 +33,7 @@ import {
   focusElementSafely,
   isDpadFluidityDiagnosticsEnabled,
   setDpadFluidityDiagnosticsEnabled,
-  getDpadNavigationBehaviorMode,
-  setDpadNavigationBehaviorMode,
   getDpadFluidityDiagnosticsSnapshot,
-  DpadNavigationBehaviorMode,
 } from '../navigation';
 import {
   isCatalogLoadDiagnosticsEnabled,
@@ -45,11 +42,6 @@ import {
   getCatalogDiagnosticsSnapshot,
   formatCatalogDiagnosticsReport,
 } from '../utils/catalogDiagnostics';
-import {
-  getStartupImageCoordinationMode,
-  setStartupImageCoordinationMode,
-  StartupImageCoordinationMode,
-} from '../services/androidImageCache';
 
 export interface ConfigViewProps {
   focusTarget?: 'presentation' | 'account';
@@ -68,14 +60,8 @@ export const ConfigView = React.memo(function ConfigView({
   const [catalogDiagEnabled, setCatalogDiagEnabled] = useState(() =>
     isCatalogLoadDiagnosticsEnabled()
   );
-  const [startupImageMode, setStartupImageMode] = useState<StartupImageCoordinationMode>(() =>
-    getStartupImageCoordinationMode()
-  );
   const [dpadFluidityDiagEnabled, setDpadFluidityDiagEnabled] = useState(() =>
     isDpadFluidityDiagnosticsEnabled()
-  );
-  const [dpadBehaviorMode, setDpadBehaviorMode] = useState<DpadNavigationBehaviorMode>(() =>
-    getDpadNavigationBehaviorMode()
   );
   const catalogDiagSnapshot = useCatalogLoadDiagnostics(
     showScreenDiagnostics && catalogDiagEnabled
@@ -279,24 +265,10 @@ export const ConfigView = React.memo(function ConfigView({
     setCatalogDiagEnabled(isCatalogLoadDiagnosticsEnabled());
   };
 
-  const handleToggleStartupImageMode = () => {
-    const next: StartupImageCoordinationMode =
-      startupImageMode === 'mode_a' ? 'mode_b' : 'mode_a';
-    setStartupImageCoordinationMode(next);
-    setStartupImageMode(getStartupImageCoordinationMode());
-  };
-
   const handleToggleDpadFluidityDiagnostics = () => {
     const next = !dpadFluidityDiagEnabled;
     setDpadFluidityDiagnosticsEnabled(next);
     setDpadFluidityDiagEnabled(isDpadFluidityDiagnosticsEnabled());
-  };
-
-  const handleToggleDpadBehaviorMode = () => {
-    const next: DpadNavigationBehaviorMode =
-      dpadBehaviorMode === 'optimized' ? 'current' : 'optimized';
-    setDpadNavigationBehaviorMode(next);
-    setDpadBehaviorMode(getDpadNavigationBehaviorMode());
   };
 
   const buildSanitizedDiagnosticsText = useCallback(
@@ -653,21 +625,6 @@ export const ConfigView = React.memo(function ConfigView({
 
                 <button
                   type="button"
-                  data-startup-image-mode-toggle="true"
-                  data-startup-image-mode={startupImageMode}
-                  data-nav-item="true"
-                  onClick={handleToggleStartupImageMode}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nc-bg-input border border-nc-border/60 text-xs font-medium text-gray-200 hover:text-white hover:border-white/40 transition-colors"
-                >
-                  <span>
-                    {startupImageMode === 'mode_a'
-                      ? 'Modo abertura: A (Catálogos prioritários)'
-                      : 'Modo abertura: B (Cache otimizado)'}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
                   data-dpad-fluidity-diagnostics-toggle="true"
                   data-dpad-fluidity-diagnostics-enabled={dpadFluidityDiagEnabled ? 'true' : 'false'}
                   data-nav-item="true"
@@ -682,21 +639,6 @@ export const ConfigView = React.memo(function ConfigView({
                     {dpadFluidityDiagEnabled
                       ? 'Diagnóstico D-Pad: Ativo'
                       : 'Ativar diagnóstico D-Pad'}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  data-dpad-behavior-mode-toggle="true"
-                  data-dpad-behavior-mode={dpadBehaviorMode}
-                  data-nav-item="true"
-                  onClick={handleToggleDpadBehaviorMode}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-nc-bg-input border border-nc-border/60 text-xs font-medium text-gray-200 hover:text-white hover:border-white/40 transition-colors"
-                >
-                  <span>
-                    {dpadBehaviorMode === 'optimized'
-                      ? 'Navegação D-Pad: Comportamento otimizado'
-                      : 'Navegação D-Pad: Comportamento atual'}
                   </span>
                 </button>
 
@@ -1001,15 +943,15 @@ export const ConfigView = React.memo(function ConfigView({
                       <div className="bg-black/30 p-3 rounded-lg border border-nc-border/30 space-y-2">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-gray-400">
-                            Modo de Navegação Selecionado:
+                            Política de Navegação da Plataforma:
                           </span>
                           <span
                             className="font-mono text-white"
                             data-diag-dpad-mode="true"
                           >
                             {dpadSnap.behaviorMode === 'optimized'
-                              ? 'Comportamento otimizado'
-                              : 'Comportamento atual'}
+                              ? 'Comportamento otimizado (Android)'
+                              : 'Comportamento padrão (Web)'}
                           </span>
                         </div>
                         <div className="flex flex-wrap items-center justify-between gap-2">

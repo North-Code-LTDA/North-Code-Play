@@ -13,11 +13,10 @@ export const IMAGE_DISK_CACHE_PLUGIN_NAME = 'ImageDiskCache';
 export const IMAGE_CACHE_SUBDIR_NAME = 'nc_image_cache';
 export const DEFAULT_IMAGE_CACHE_MAX_BYTES = 120 * 1024 * 1024; // 120 MB
 export const VISITED_CATEGORIES_STORAGE_KEY = 'nc_visited_image_categories_v1';
-export const STARTUP_IMAGE_MODE_STORAGE_KEY = 'nc_startup_image_mode_v1';
 export const MAX_VISITED_CATEGORIES_HISTORY = 16;
 export const MAX_LOW_PRIORITY_PENDING_TASKS = 24;
 
-export type StartupImageCoordinationMode = 'mode_a' | 'mode_b';
+export type StartupImageCoordinationMode = 'mode_b';
 
 const SAFE_IMAGE_FILE_NAME_REGEX =
   /^img_[a-f0-9]{64}\.(?:jpg|png|webp|gif|bmp|ico|avif|svg|bin)$/;
@@ -234,25 +233,9 @@ let lastDpadActivityTimestampMs = 0;
 let dpadThrottleTimer: ReturnType<typeof setTimeout> | null = null;
 let cooperativeUrlCountTimers: Array<ReturnType<typeof setTimeout>> = [];
 
-function readStoredCoordinationMode(): StartupImageCoordinationMode {
-  const res = safeReadStorage(STARTUP_IMAGE_MODE_STORAGE_KEY);
-  if (res.success && res.value === 'mode_a') {
-    return 'mode_a';
-  }
-  return 'mode_b';
-}
-
 export function getStartupImageCoordinationMode(): StartupImageCoordinationMode {
-  const mode = readStoredCoordinationMode();
-  runtimeStats.coordinationMode = mode;
-  return mode;
-}
-
-export function setStartupImageCoordinationMode(mode: StartupImageCoordinationMode): void {
-  const normalized: StartupImageCoordinationMode = mode === 'mode_a' ? 'mode_a' : 'mode_b';
-  safeSetStorage(STARTUP_IMAGE_MODE_STORAGE_KEY, normalized);
-  runtimeStats.coordinationMode = normalized;
-  syncStatsToCatalogDiagnostics();
+  runtimeStats.coordinationMode = 'mode_b';
+  return 'mode_b';
 }
 
 export function setCatalogTransferPhaseActiveForImageCache(active: boolean): void {
@@ -278,7 +261,7 @@ export function isVideoPlaybackThrottlingActiveForTest(): boolean {
 }
 
 const runtimeStats: ImageCacheRuntimeStats = {
-  coordinationMode: readStoredCoordinationMode(),
+  coordinationMode: 'mode_b',
   initialHydratedEntriesCount: 0,
   downloadsDuringCatalogsCount: 0,
   hitsDuringCatalogsCount: 0,
@@ -2210,7 +2193,6 @@ export function resetAndroidImageCacheForTest(): void {
     clearTimeout(dpadThrottleTimer);
     dpadThrottleTimer = null;
   }
-  safeSetStorage(STARTUP_IMAGE_MODE_STORAGE_KEY, 'mode_b');
   runtimeStats.coordinationMode = 'mode_b';
   runtimeStats.initialHydratedEntriesCount = 0;
   runtimeStats.downloadsDuringCatalogsCount = 0;

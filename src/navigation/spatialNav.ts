@@ -1,5 +1,5 @@
+import { isDpadOptimizedPathActive } from './navigationPlatformPolicy';
 import {
-  isDpadOptimizedPathActive,
   recordDpadKeydownReceived,
   recordDpadMoveResolution,
 } from './dpadFluidityDiagnostics';

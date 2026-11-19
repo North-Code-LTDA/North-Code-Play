@@ -66,15 +66,17 @@ export type {
 } from './capacitorBackAdapter';
 
 export {
-  DPAD_FLUIDITY_DIAGNOSTICS_ENABLED_KEY,
-  DPAD_NAVIGATION_BEHAVIOR_MODE_KEY,
   setAndroidPlatformOverrideForDpadTest,
   isAndroidCapacitorPlatform,
+  getDpadNavigationBehaviorMode,
+  isDpadOptimizedPathActive,
+} from './navigationPlatformPolicy';
+export type { DpadNavigationBehaviorMode } from './navigationPlatformPolicy';
+
+export {
+  DPAD_FLUIDITY_DIAGNOSTICS_ENABLED_KEY,
   isDpadFluidityDiagnosticsEnabled,
   setDpadFluidityDiagnosticsEnabled,
-  getDpadNavigationBehaviorMode,
-  setDpadNavigationBehaviorMode,
-  isDpadOptimizedPathActive,
   isDpadNavigationCurrentlyActiveWindow,
   setDpadFluidityClockForTest,
   resetDpadFluidityDiagnostics,
@@ -90,7 +92,6 @@ export {
   formatDpadFluidityDiagnosticsReport,
 } from './dpadFluidityDiagnostics';
 export type {
-  DpadNavigationBehaviorMode,
   DpadLatencySummary,
   DpadDirectionBreakdown,
   DpadFluidityDiagnosticsSnapshot,
