@@ -815,6 +815,8 @@ export function computeHeroItemsFromList(items: any[]): any[] {
   return markAsPrecomputedHeroArray(result);
 }
 
+const CANONICAL_EMPTY_ARRAY: any[] = [];
+
 const heroPairCache = new WeakMap<
   any[],
   WeakMap<any[], { maxYear: number; result: any[] }>
@@ -835,16 +837,39 @@ function compareRankedHeroCandidate(a: any, b: any, maxYear: number): number {
   return -1; // VOD precedes Series on exact tie
 }
 
+function selectTopHeroFromSingleSortedList(sorted: any[]): any[] {
+  const seenNames = new Set<string>();
+  const result: any[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const item = sorted[i];
+    if (!hasHeroImage(item)) continue;
+    const cleanName = normalizeHeroTitleForDedup(item.name || item.title || '');
+    if (!seenNames.has(cleanName)) {
+      seenNames.add(cleanName);
+      result.push(item);
+      if (result.length >= 30) break;
+    }
+  }
+  return markAsPrecomputedHeroArray(result);
+}
+
 /**
- * Computes and caches the top 30 deduplicated HeroBanner items from (allVodStreams, allSeriesStreams)
- * by merging the already-sorted VOD and Series catalog indexes without concatenating or re-sorting
- * 27,000 items. Mathematically identical to computeHeroItemsFromList([...allVodStreams, ...allSeriesStreams]).
+ * Computes and caches the top 30 deduplicated HeroBanner items from (allVodStreams, allSeriesStreams).
+ * For single-domain calls (`vod + []` or `[] + series`), selects top 30 from that domain's sorted index.
+ * For combined Home calls (`vod + series`), reuses the exact top-30 Movies and top-30 Series selections
+ * and merges up to 60 items using the identical comparator and title deduplication rules.
  */
 export function getHeroBannerItems(allVodStreams: any[], allSeriesStreams: any[]): any[] {
-  const safeVod = Array.isArray(allVodStreams) ? allVodStreams : [];
-  const safeSeries = Array.isArray(allSeriesStreams) ? allSeriesStreams : [];
+  const safeVod =
+    Array.isArray(allVodStreams) && allVodStreams.length > 0
+      ? allVodStreams
+      : CANONICAL_EMPTY_ARRAY;
+  const safeSeries =
+    Array.isArray(allSeriesStreams) && allSeriesStreams.length > 0
+      ? allSeriesStreams
+      : CANONICAL_EMPTY_ARRAY;
 
-  if (safeVod.length === 0 && safeSeries.length === 0) {
+  if (safeVod === CANONICAL_EMPTY_ARRAY && safeSeries === CANONICAL_EMPTY_ARRAY) {
     return markAsPrecomputedHeroArray([]);
   }
 
@@ -865,49 +890,52 @@ export function getHeroBannerItems(allVodStreams: any[], allSeriesStreams: any[]
   }
 
   indexPerfStats.heroComputations++;
-  const vodSorted = getOrCreateVodIndex(safeVod).getSortedAll();
-  const seriesSorted = getOrCreateSeriesIndex(safeSeries).getSortedAll();
-
   const heroStartMs = trackDiag ? nowMonotonicMs() : 0;
 
-  const seenNames = new Set<string>();
-  const result: any[] = [];
+  let marked: any[];
 
-  let i = 0;
-  let j = 0;
-  const nVod = vodSorted.length;
-  const nSeries = seriesSorted.length;
+  if (safeSeries === CANONICAL_EMPTY_ARRAY) {
+    const vodSorted = getOrCreateVodIndex(safeVod).getSortedAll();
+    marked = selectTopHeroFromSingleSortedList(vodSorted);
+  } else if (safeVod === CANONICAL_EMPTY_ARRAY) {
+    const seriesSorted = getOrCreateSeriesIndex(safeSeries).getSortedAll();
+    marked = selectTopHeroFromSingleSortedList(seriesSorted);
+  } else {
+    // Reuse top-30 Movies and top-30 Series selections directly (mathematically identical to scanning full arrays)
+    const vodTop30 = getHeroBannerItems(safeVod, CANONICAL_EMPTY_ARRAY);
+    const seriesTop30 = getHeroBannerItems(CANONICAL_EMPTY_ARRAY, safeSeries);
 
-  while ((i < nVod || j < nSeries) && result.length < 30) {
-    while (i < nVod && !hasHeroImage(vodSorted[i])) {
-      i++;
-    }
-    while (j < nSeries && !hasHeroImage(seriesSorted[j])) {
-      j++;
-    }
-    if (i >= nVod && j >= nSeries) break;
+    const seenNames = new Set<string>();
+    const result: any[] = [];
+    let i = 0;
+    let j = 0;
+    const nVod = vodTop30.length;
+    const nSeries = seriesTop30.length;
 
-    let chosen: any;
-    if (i < nVod && j < nSeries) {
-      if (compareRankedHeroCandidate(vodSorted[i], seriesSorted[j], maxYear) <= 0) {
-        chosen = vodSorted[i++];
+    while ((i < nVod || j < nSeries) && result.length < 30) {
+      let chosen: any;
+      if (i < nVod && j < nSeries) {
+        if (compareRankedHeroCandidate(vodTop30[i], seriesTop30[j], maxYear) <= 0) {
+          chosen = vodTop30[i++];
+        } else {
+          chosen = seriesTop30[j++];
+        }
+      } else if (i < nVod) {
+        chosen = vodTop30[i++];
       } else {
-        chosen = seriesSorted[j++];
+        chosen = seriesTop30[j++];
       }
-    } else if (i < nVod) {
-      chosen = vodSorted[i++];
-    } else {
-      chosen = seriesSorted[j++];
+
+      const cleanName = normalizeHeroTitleForDedup(chosen.name || chosen.title || '');
+      if (!seenNames.has(cleanName)) {
+        seenNames.add(cleanName);
+        result.push(chosen);
+      }
     }
 
-    const cleanName = normalizeHeroTitleForDedup(chosen.name || chosen.title || '');
-    if (!seenNames.has(cleanName)) {
-      seenNames.add(cleanName);
-      result.push(chosen);
-    }
+    marked = markAsPrecomputedHeroArray(result);
   }
 
-  const marked = markAsPrecomputedHeroArray(result);
   innerMap.set(safeSeries, { maxYear, result: marked });
   if (trackDiag) {
     recordCatalogSortDiagnostic(

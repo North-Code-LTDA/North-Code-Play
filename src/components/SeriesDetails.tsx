@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
 import { useXtreamCredentials } from '../context/XtreamContext';
-import { XtreamService } from '../services/xtreamService';
+import { fetchOrReuseHeroDetails } from '../services/heroSessionCache';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { VideoPlayer } from './VideoPlayer';
 import { ExternalSubtitleTrackInput } from './player/types';
@@ -533,6 +533,8 @@ export const SeriesDetails = React.memo(function SeriesDetails({
 
   useEffect(() => {
     let cancelled = false;
+    const abortController =
+      typeof AbortController !== 'undefined' ? new AbortController() : null;
     setIsSeasonMenuOpen(false);
     setShowResumeModal(false);
     setPlayError(null);
@@ -548,8 +550,16 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       try {
         setLoadingInfo(true);
         setErrorInfo(null);
-        const info = await XtreamService.getSeriesInfo(credentials, seriesId);
-        if (cancelled) return;
+        const info = await fetchOrReuseHeroDetails(
+          credentials,
+          { series_id: seriesId, stream_type: 'series' },
+          {
+            signal: abortController?.signal,
+            requireEpisodes: true,
+            throwOnError: true,
+          }
+        );
+        if (cancelled || abortController?.signal.aborted) return;
         if (!info || typeof info !== 'object') {
           setSeriesInfo(null);
           setErrorInfo('Não foi possível carregar os detalhes da série.');
@@ -571,8 +581,8 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         } else {
           setSelectedSeason(null);
         }
-      } catch (err) {
-        if (cancelled) return;
+      } catch (err: any) {
+        if (cancelled || abortController?.signal.aborted || err?.name === 'AbortError') return;
         console.error(err);
         setSeriesInfo(null);
         setErrorInfo('Não foi possível carregar os detalhes da série.');
@@ -585,6 +595,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     fetchInfo();
     return () => {
       cancelled = true;
+      abortController?.abort();
     };
   }, [credentials, seriesId]);
 

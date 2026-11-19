@@ -50,6 +50,7 @@ import {
   getStartupImageCoordinationMode,
 } from '../services/androidImageCache';
 import { clearLoadedImageUrlCache } from '../components/MediaImage';
+import { clearHeroSessionCache } from '../services/heroSessionCache';
 
 export type ViewType = MainSectionId;
 
@@ -629,6 +630,7 @@ function HomeContent({ credentials }: { credentials: any }) {
       return;
     }
     clearLoadedImageUrlCache();
+    clearHeroSessionCache();
     void clearImageCacheOnLogout();
     setLogoutError(null);
     navigate('/');

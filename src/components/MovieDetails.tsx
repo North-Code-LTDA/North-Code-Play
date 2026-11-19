@@ -7,7 +7,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { useXtreamCredentials } from '../context/XtreamContext';
-import { XtreamService } from '../services/xtreamService';
+import { fetchOrReuseHeroDetails } from '../services/heroSessionCache';
 import { useFavorites } from '../hooks/useFavorites';
 import {
   getItemProgress,
@@ -304,6 +304,8 @@ export const MovieDetails = React.memo(function MovieDetails({
 
   useEffect(() => {
     let cancelled = false;
+    const abortController =
+      typeof AbortController !== 'undefined' ? new AbortController() : null;
 
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
@@ -319,11 +321,18 @@ export const MovieDetails = React.memo(function MovieDetails({
       try {
         setLoading(true);
         setError(null);
-        const data = await XtreamService.getVodInfo(credentials, activeStreamId);
-        if (cancelled) return;
+        const data = await fetchOrReuseHeroDetails(
+          credentials,
+          { stream_id: activeStreamId, stream_type: 'movie' },
+          {
+            signal: abortController?.signal,
+            throwOnError: true,
+          }
+        );
+        if (cancelled || abortController?.signal.aborted) return;
         setDetails(data);
       } catch (err: any) {
-        if (cancelled) return;
+        if (cancelled || abortController?.signal.aborted || err?.name === 'AbortError') return;
         console.error('Error fetching movie details:', err);
         setError('Não foi possível carregar os detalhes do filme.');
       } finally {
@@ -336,6 +345,7 @@ export const MovieDetails = React.memo(function MovieDetails({
     fetchInfo();
     return () => {
       cancelled = true;
+      abortController?.abort();
     };
   }, [credentials, activeStreamId]);
 

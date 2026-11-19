@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { XtreamCredentials } from '../types';
 import { HeroBanner, fetchOrReuseHeroDetails } from './HeroBanner';
+import { getCachedHeroDetails } from '../services/heroSessionCache';
 import { HorizontalRow } from './HorizontalRow';
 import { MovieDetails } from './MovieDetails';
 import { SeriesDetails } from './SeriesDetails';
@@ -2555,9 +2556,19 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           handleSelectItem(item);
         };
 
-        const existingEpisodesMap = detailsResponse?.episodes || item?.episodes;
-        if (existingEpisodesMap && typeof existingEpisodesMap === 'object') {
-          executeConfirmedSeriesPlay(detailsResponse);
+        const cachedFullSeries = creds
+          ? getCachedHeroDetails(creds, item, { requireEpisodes: true })
+          : null;
+        const existingEpisodesSource =
+          detailsResponse?.episodes && typeof detailsResponse.episodes === 'object'
+            ? detailsResponse
+            : item?.episodes && typeof item.episodes === 'object'
+              ? item
+              : cachedFullSeries?.episodes && typeof cachedFullSeries.episodes === 'object'
+                ? cachedFullSeries
+                : null;
+        if (existingEpisodesSource) {
+          executeConfirmedSeriesPlay(existingEpisodesSource);
           return;
         }
 
@@ -2578,7 +2589,9 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
 
         return (async () => {
           try {
-            const fetchedDetails = await fetchOrReuseHeroDetails(creds, item);
+            const fetchedDetails = await fetchOrReuseHeroDetails(creds, item, {
+              requireEpisodes: true,
+            });
             if (
               !isMountedRef.current ||
               heroPlaySessionRef.current !== sessionAtClick ||
@@ -2598,8 +2611,10 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       // Movie direct play / resume
       const movieId = item.stream_id ?? item.id;
       if (creds?.serverUrl && creds?.username && creds?.password && movieId !== undefined) {
+        const effectiveMovieDetails =
+          detailsResponse || getCachedHeroDetails(creds, item);
         const ext =
-          detailsResponse?.movie_data?.container_extension ||
+          effectiveMovieDetails?.movie_data?.container_extension ||
           item.container_extension ||
           'mp4';
         const directUrl = buildDirectMediaUrl(creds, {
@@ -2613,7 +2628,10 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
             records.find((r) => r.type === 'movie' && String(r.id) === String(movieId))
               ?.positionSec ?? 0;
           const resumeSec = Math.max(savedSec, recordSec);
-          const movieSubs = extractXtreamSubtitles(detailsResponse || item, creds.serverUrl);
+          const movieSubs = extractXtreamSubtitles(
+            effectiveMovieDetails || item,
+            creds.serverUrl
+          );
           playFn(
             directUrl,
             item.name || item.title || 'Filme',
@@ -3646,6 +3664,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                   onInfo={handleSelectItem}
                   isPaused={isPaused || Boolean(selectedMovie || selectedSeries)}
                   canContinueItem={canContinueItem}
+                  domain={section}
+                  scrollContainerRef={mainContainerRef}
                 />
               )}
             </div>

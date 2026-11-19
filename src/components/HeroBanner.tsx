@@ -2,55 +2,67 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { Play, Info, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamCredentials } from '../context/XtreamContext';
-import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from './MediaImage';
-import { normalizeImageSource } from '../utils/mediaUtils';
+import { buildDirectImageUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { getValidYear } from '../utils/catalogRanking';
 import { computeHeroItemsFromList } from '../utils/catalogIndex';
+import {
+  computeHeroItemsSignature,
+  fetchOrReuseHeroDetails,
+  getCachedHeroDetails,
+  getHeroAccountScopeKey,
+  getSavedHeroSlideIndex,
+  HeroDomainKey,
+  needsHeroDetailsFetch,
+  setSavedHeroSlideIndex,
+} from '../services/heroSessionCache';
+import {
+  getInstantCachedImageSrc,
+  isAndroidPersistentImageCacheAvailable,
+  scheduleBackgroundLowPriorityPreload,
+} from '../services/androidImageCache';
 
-const inFlightHeroDetailsMap = new Map<string, Promise<any>>();
+export { fetchOrReuseHeroDetails };
 
-/**
- * Starts or reuses an in-flight getVodInfo / getSeriesInfo request for a HeroBanner item,
- * preventing duplicate requests when the user clicks "Continuar" / "Assistir" before
- * initial HeroBanner metadata arrives.
- */
-export function fetchOrReuseHeroDetails(credentials: any, item: any): Promise<any> {
-  if (!credentials?.serverUrl || !credentials?.username || !item) {
-    return Promise.resolve(null);
+function evaluateHeroContainerVisibility(
+  heroEl: HTMLElement | null,
+  containerEl: HTMLElement | null
+): boolean {
+  if (!heroEl) return true;
+  if (typeof document !== 'undefined' && (document.hidden || document.visibilityState === 'hidden')) {
+    return false;
   }
-  const isMovie =
-    item.stream_type === 'movie' || Boolean(item.stream_id && !item.series_id);
-  const targetId = isMovie
-    ? item.stream_id
-    : item.series_id ?? item.stream_id ?? item.id;
-  if (targetId === undefined || targetId === null || targetId === '') {
-    return Promise.resolve(null);
+
+  const container =
+    containerEl ?? (heroEl.closest('[data-scroll-container="true"]') as HTMLElement | null);
+  const heroRect = heroEl.getBoundingClientRect();
+  const containerRect = container ? container.getBoundingClientRect() : null;
+
+  const heroHeight =
+    heroRect.height > 0 ? heroRect.height : Math.max(0, heroRect.bottom - heroRect.top);
+  const containerHeight = containerRect
+    ? containerRect.height > 0
+      ? containerRect.height
+      : Math.max(0, containerRect.bottom - containerRect.top)
+    : typeof window !== 'undefined'
+      ? window.innerHeight || 0
+      : 0;
+
+  if (heroHeight > 0 && containerHeight > 0) {
+    const containerTop = containerRect ? containerRect.top : 0;
+    const containerBottom = containerTop + containerHeight;
+    return heroRect.bottom > containerTop && heroRect.top < containerBottom;
   }
 
-  const key = `${credentials.serverUrl}|${credentials.username}|${isMovie ? 'vod' : 'series'}|${targetId}`;
-  const existing = inFlightHeroDetailsMap.get(key);
-  if (existing) {
-    return existing;
+  // Fallback for test DOM environments without computed layout geometry (0x0 rects)
+  if (container) {
+    const scrollTop = container.scrollTop || 0;
+    const estHeroBottom =
+      heroEl.offsetHeight > 0 ? (heroEl.offsetTop || 0) + heroEl.offsetHeight : 530;
+    return estHeroBottom > scrollTop;
   }
 
-  const promise = (
-    isMovie
-      ? XtreamService.getVodInfo(credentials, targetId)
-      : XtreamService.getSeriesInfo(credentials, targetId)
-  )
-    .catch((error) => {
-      console.warn('Failed to fetch details for hero item:', error);
-      return null;
-    })
-    .finally(() => {
-      if (inFlightHeroDetailsMap.get(key) === promise) {
-        inFlightHeroDetailsMap.delete(key);
-      }
-    });
-
-  inFlightHeroDetailsMap.set(key, promise);
-  return promise;
+  return true;
 }
 
 export interface HeroBannerProps {
@@ -59,6 +71,8 @@ export interface HeroBannerProps {
   onInfo: (item: any) => void;
   isPaused?: boolean;
   canContinueItem?: (item: any) => boolean;
+  domain?: HeroDomainKey;
+  scrollContainerRef?: React.RefObject<HTMLElement | null>;
 }
 
 export const HeroBanner = React.memo(function HeroBanner({
@@ -67,13 +81,21 @@ export const HeroBanner = React.memo(function HeroBanner({
   onInfo,
   isPaused = false,
   canContinueItem,
+  domain = 'standalone',
+  scrollContainerRef,
 }: HeroBannerProps) {
-  const [currentIndex, setCurrentIndex] = useState(0);
   const { credentials } = useXtreamCredentials();
-  const [activeDetailsResponse, setActiveDetailsResponse] = useState<any>(null);
+  const heroRootRef = useRef<HTMLDivElement | null>(null);
   const [isPlayPending, setIsPlayPending] = useState(false);
   const playPendingRef = useRef(false);
   const isMountedRef = useRef(true);
+
+  const [isInViewport, setIsInViewport] = useState<boolean>(true);
+  const [isDocumentVisible, setIsDocumentVisible] = useState<boolean>(() =>
+    typeof document === 'undefined'
+      ? true
+      : !document.hidden && document.visibilityState !== 'hidden'
+  );
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -86,19 +108,138 @@ export const HeroBanner = React.memo(function HeroBanner({
     return computeHeroItemsFromList(items);
   }, [items]);
 
-  useEffect(() => {
-    setCurrentIndex(0);
+  const itemsSignature = useMemo(() => {
+    return computeHeroItemsSignature(heroItems);
   }, [heroItems]);
 
+  const scopeKey = getHeroAccountScopeKey(credentials);
+  const sequenceIdentity = `${scopeKey}::${domain}::${itemsSignature}`;
+  const prevSequenceIdentityRef = useRef<string>(sequenceIdentity);
+
+  const [currentIndex, setCurrentIndex] = useState<number>(() =>
+    getSavedHeroSlideIndex(credentials, domain, itemsSignature, heroItems.length)
+  );
+
+  // Synchronize index immediately when account/domain/content signature genuinely changes
+  if (prevSequenceIdentityRef.current !== sequenceIdentity) {
+    prevSequenceIdentityRef.current = sequenceIdentity;
+    const nextIdx = getSavedHeroSlideIndex(
+      credentials,
+      domain,
+      itemsSignature,
+      heroItems.length
+    );
+    if (nextIdx !== currentIndex) {
+      setCurrentIndex(nextIdx);
+    }
+  }
+
+  const safeCurrentIndex =
+    heroItems.length > 0 ? Math.min(Math.max(0, currentIndex), heroItems.length - 1) : 0;
+
   useEffect(() => {
-    if (heroItems.length <= 1 || isPaused || isPlayPending) return;
+    if (heroItems.length > 0 && itemsSignature) {
+      setSavedHeroSlideIndex(credentials, domain, itemsSignature, safeCurrentIndex);
+    }
+  }, [credentials, domain, itemsSignature, safeCurrentIndex, heroItems.length]);
+
+  // Real visibility tracking inside the scroll container and document lifecycle
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (typeof document === 'undefined') return;
+      setIsDocumentVisible(!document.hidden && document.visibilityState !== 'hidden');
+    };
+
+    if (typeof document !== 'undefined') {
+      handleVisibilityChange();
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
+
+    const heroEl = heroRootRef.current;
+    const container =
+      scrollContainerRef?.current ??
+      ((heroEl?.closest('[data-scroll-container="true"]') as HTMLElement | null) || null);
+
+    const syncGeometryVisibility = () => {
+      if (!isMountedRef.current) return;
+      setIsInViewport(evaluateHeroContainerVisibility(heroRootRef.current, container));
+    };
+
+    syncGeometryVisibility();
+
+    let observer: IntersectionObserver | null = null;
+    const IO =
+      typeof window !== 'undefined' && typeof (window as any).IntersectionObserver === 'function'
+        ? ((window as any).IntersectionObserver as typeof IntersectionObserver)
+        : typeof globalThis !== 'undefined' &&
+            typeof (globalThis as any).IntersectionObserver === 'function'
+          ? ((globalThis as any).IntersectionObserver as typeof IntersectionObserver)
+          : null;
+
+    if (IO && heroEl) {
+      try {
+        observer = new IO(
+          (entries) => {
+            if (!isMountedRef.current || entries.length === 0) return;
+            const entry = entries[entries.length - 1];
+            const intersecting = Boolean(
+              entry.isIntersecting ||
+                (typeof entry.intersectionRatio === 'number' && entry.intersectionRatio > 0)
+            );
+            setIsInViewport(intersecting);
+          },
+          {
+            root: container ?? null,
+            threshold: 0,
+          }
+        );
+        observer.observe(heroEl);
+      } catch {
+        observer = null;
+      }
+    }
+
+    const scrollTarget: EventTarget | null =
+      container ?? (typeof window !== 'undefined' ? window : null);
+
+    if (scrollTarget && typeof scrollTarget.addEventListener === 'function') {
+      scrollTarget.addEventListener('scroll', syncGeometryVisibility, { passive: true });
+    }
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('resize', syncGeometryVisibility);
+    }
+
+    return () => {
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
+      if (observer) {
+        observer.disconnect();
+      }
+      if (scrollTarget && typeof scrollTarget.removeEventListener === 'function') {
+        scrollTarget.removeEventListener('scroll', syncGeometryVisibility);
+      }
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('resize', syncGeometryVisibility);
+      }
+    };
+  }, [scrollContainerRef, heroItems.length]);
+
+  const effectivelyPaused = Boolean(isPaused || !isInViewport || !isDocumentVisible);
+
+  useEffect(() => {
+    if (heroItems.length <= 1 || effectivelyPaused || isPlayPending) return;
     const timer = setInterval(() => {
       setCurrentIndex((prev) => (prev + 1) % heroItems.length);
     }, 8000);
     return () => clearInterval(timer);
-  }, [heroItems.length, isPaused, isPlayPending]);
+  }, [heroItems, domain, effectivelyPaused, isPlayPending]);
 
-  const currentItem = heroItems[currentIndex];
+  const currentItem = heroItems[safeCurrentIndex];
+
+  const [activeDetailsResponse, setActiveDetailsResponse] = useState<any>(() =>
+    currentItem && credentials ? getCachedHeroDetails(credentials, currentItem) : null
+  );
 
   useEffect(() => {
     playPendingRef.current = false;
@@ -106,21 +247,74 @@ export const HeroBanner = React.memo(function HeroBanner({
   }, [currentItem, credentials]);
 
   useEffect(() => {
-    if (!currentItem || !credentials || isPaused) return;
+    if (!currentItem || !credentials) {
+      setActiveDetailsResponse(null);
+      return;
+    }
 
-    let isCurrent = true;
+    const cached = getCachedHeroDetails(credentials, currentItem);
+    if (cached !== null) {
+      setActiveDetailsResponse(cached);
+      return;
+    }
+
     setActiveDetailsResponse(null);
 
-    fetchOrReuseHeroDetails(credentials, currentItem).then((res) => {
-      if (isCurrent && res) {
+    if (effectivelyPaused) return;
+    if (!needsHeroDetailsFetch(credentials, currentItem)) return;
+
+    let isCurrent = true;
+    const abortController =
+      typeof AbortController !== 'undefined' ? new AbortController() : null;
+
+    fetchOrReuseHeroDetails(credentials, currentItem, {
+      signal: abortController?.signal,
+      requireEpisodes: false,
+    }).then((res) => {
+      if (isCurrent && !abortController?.signal.aborted && res) {
         setActiveDetailsResponse(res);
       }
     });
 
     return () => {
       isCurrent = false;
+      abortController?.abort();
     };
-  }, [currentItem, credentials, isPaused]);
+  }, [currentItem, credentials, effectivelyPaused]);
+
+  // Gradual preparation of at most the single immediate next slide on Android after stabilizing current slide
+  useEffect(() => {
+    if (
+      effectivelyPaused ||
+      heroItems.length <= 1 ||
+      !credentials?.serverUrl ||
+      !isAndroidPersistentImageCacheAvailable()
+    ) {
+      return;
+    }
+
+    const nextIndex = (safeCurrentIndex + 1) % heroItems.length;
+    const nextItem = heroItems[nextIndex];
+    if (!nextItem) return;
+
+    const timer = setTimeout(() => {
+      if (!isMountedRef.current || effectivelyPaused) return;
+      const cachedNext = getCachedHeroDetails(credentials, nextItem);
+      const rawNextImg =
+        normalizeImageSource(cachedNext?.info?.backdrop_path) ||
+        normalizeImageSource(nextItem.backdrop_path) ||
+        normalizeImageSource(nextItem.cover) ||
+        normalizeImageSource(nextItem.stream_icon);
+      if (!rawNextImg) return;
+      const resolvedNextUrl = buildDirectImageUrl(rawNextImg, credentials.serverUrl);
+      if (!resolvedNextUrl || getInstantCachedImageSrc(resolvedNextUrl)) return;
+      scheduleBackgroundLowPriorityPreload([resolvedNextUrl]);
+    }, 600);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [effectivelyPaused, safeCurrentIndex, heroItems, credentials]);
 
   if (heroItems.length === 0 || !currentItem) return null;
 
@@ -159,12 +353,24 @@ export const HeroBanner = React.memo(function HeroBanner({
     currentItem.plot ||
     currentItem.overview ||
     '';
+  const genreLabel = activeDetails?.genre || currentItem.genre || currentItem.category_name;
+  const releaseLabel =
+    activeDetails?.releasedate ||
+    activeDetails?.releaseDate ||
+    currentItem.releasedate ||
+    currentItem.releaseDate ||
+    (getValidYear(currentItem) > 0 ? getValidYear(currentItem) : '');
 
   return (
-    <div className="nc-tv-hero w-full shrink-0 px-4 sm:px-6 md:px-10 pt-2 sm:pt-3 pb-2 bg-nc-bg">
+    <div
+      ref={heroRootRef}
+      className="nc-tv-hero w-full shrink-0 px-4 sm:px-6 md:px-10 pt-2 sm:pt-3 pb-2 bg-nc-bg"
+    >
       <div
         data-hero-stage="true"
         data-hero-image-mode={imageMode}
+        data-hero-paused={effectivelyPaused ? 'true' : 'false'}
+        data-hero-index={String(safeCurrentIndex)}
         className="relative w-full min-h-[320px] sm:min-h-[390px] md:min-h-[470px] lg:min-h-[530px] rounded-2xl md:rounded-3xl overflow-hidden border border-white/10 bg-[#0b0c10] shadow-[0_20px_50px_rgba(0,0,0,0.65)] flex flex-col justify-end p-5 sm:p-8 md:p-11 lg:p-14"
       >
         <AnimatePresence mode="popLayout">
@@ -185,6 +391,7 @@ export const HeroBanner = React.memo(function HeroBanner({
                   itemId={itemKey}
                   itemName={currentItem.name}
                   priority={true}
+                  active={!effectivelyPaused}
                   className="w-full h-full object-cover object-center opacity-85"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/55 to-black/15" />
@@ -200,6 +407,7 @@ export const HeroBanner = React.memo(function HeroBanner({
                     itemId={itemKey}
                     itemName={currentItem.name}
                     priority={true}
+                    active={!effectivelyPaused}
                     className="h-full max-h-[260px] sm:max-h-[360px] md:max-h-[420px] w-auto aspect-[2/3] object-contain rounded-xl shadow-2xl border border-white/15"
                   />
                 </div>
@@ -230,20 +438,16 @@ export const HeroBanner = React.memo(function HeroBanner({
                 <span className="text-white/95 font-semibold">
                   {isSeries ? 'Série' : 'Filme'}
                 </span>
-                {(activeDetails?.genre || currentItem.category_name) && (
+                {genreLabel && (
                   <>
                     <span className="text-white/40">•</span>
-                    <span className="text-white/85 break-words">
-                      {activeDetails?.genre || currentItem.category_name}
-                    </span>
+                    <span className="text-white/85 break-words">{genreLabel}</span>
                   </>
                 )}
-                {(activeDetails?.releasedate || getValidYear(currentItem) > 0) && (
+                {releaseLabel && (
                   <>
                     <span className="text-white/40">•</span>
-                    <span className="text-white/90 font-medium">
-                      {activeDetails?.releasedate || getValidYear(currentItem) || ''}
-                    </span>
+                    <span className="text-white/90 font-medium">{releaseLabel}</span>
                   </>
                 )}
                 {currentItem.rating && currentItem.rating !== '0' && (
