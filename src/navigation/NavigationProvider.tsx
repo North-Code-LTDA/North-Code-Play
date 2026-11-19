@@ -7,7 +7,6 @@ import {
   moveSpatialFocus,
   SpatialDirection,
 } from './spatialNav';
-import { recordDpadKeydownReceived } from './dpadFluidityDiagnostics';
 import { executeBackAction, setCentralBackPolicyAttached } from './backPolicy';
 import { attachCapacitorBackAdapter } from './capacitorBackAdapter';
 import { syncDocumentDisplayAttributes } from '../platform/tvEnvironment';
@@ -143,11 +142,6 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
             lastRepeatDirection === direction &&
             now - lastRepeatTimestamp < KEY_REPEAT_THROTTLE_MS
           ) {
-            recordDpadKeydownReceived({
-              direction,
-              isRepeat: true,
-              coalesced: true,
-            });
             return;
           }
           lastRepeatTimestamp = now;

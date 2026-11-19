@@ -3,7 +3,6 @@ import {
   nowMonotonicMs,
   recordCatalogImageCacheDiagnosticsUpdate,
 } from '../utils/catalogDiagnostics';
-import { recordDpadNavImageActivity } from '../navigation/dpadFluidityDiagnostics';
 import { buildDirectImageUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { safeReadStorage, safeSetStorage } from '../utils/accountUtils';
 import { getOrCreateVodIndex, getOrCreateSeriesIndex, getHeroBannerItems } from '../utils/catalogIndex';
@@ -914,20 +913,14 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
     const startedDuringCatalogs = isCatalogTransferPhaseActive;
     const recentAccessedKeys = drainPendingTouchedKeys();
     const plugin = getNativeImageCachePlugin();
-    recordDpadNavImageActivity('request-start');
-    let nativeRes: AcquireImageNativeResult;
-    try {
-      nativeRes = await plugin.acquireImage({
-        url,
-        forceRefresh,
-        revalidate,
-        connectTimeout: 10000,
-        readTimeout: 15000,
-        recentAccessedKeys: recentAccessedKeys.length > 0 ? recentAccessedKeys : undefined,
-      });
-    } finally {
-      recordDpadNavImageActivity('request-complete');
-    }
+    const nativeRes: AcquireImageNativeResult = await plugin.acquireImage({
+      url,
+      forceRefresh,
+      revalidate,
+      connectTimeout: 10000,
+      readTimeout: 15000,
+      recentAccessedKeys: recentAccessedKeys.length > 0 ? recentAccessedKeys : undefined,
+    });
 
     if (currentSessionEpoch !== epochAtEnqueue) {
       throw new Error('Sessão de imagens encerrada após transferência.');

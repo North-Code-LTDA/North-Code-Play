@@ -58,9 +58,6 @@ import {
   unregisterShowcaseRowController,
   invalidateCandidateCache,
   isDpadOptimizedPathActive,
-  recordDpadFlushSyncExecution,
-  recordDpadGeometryMeasurement,
-  recordDpadVirtualMountDelta,
 } from '../navigation';
 
 function isSeriesItem(item: any): boolean {
@@ -1254,15 +1251,10 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   );
 
   const measureMountedShowcaseGeometry = useCallback(
-    (phase: 'before-virtual' | 'after-virtual' = 'after-virtual'): void => {
+    (): void => {
       const mainEl = mainContainerRef.current;
       const rowsContainerEl = showcaseRowsContainerRef.current;
       if (!mainEl || !rowsContainerEl) return;
-
-      const t0 =
-        typeof performance !== 'undefined' && typeof performance.now === 'function'
-          ? performance.now()
-          : Date.now();
 
       const mainRect = mainEl.getBoundingClientRect();
       const scrollTop = mainEl.scrollTop || 0;
@@ -1333,11 +1325,6 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           }
         }
 
-        const t1 =
-          typeof performance !== 'undefined' && typeof performance.now === 'function'
-            ? performance.now()
-            : Date.now();
-        recordDpadGeometryMeasurement(phase, Math.max(0, t1 - t0));
         return;
       }
 
@@ -1400,12 +1387,6 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           measuredRowHeightsRef.current.set(rIdx, Math.round(rawHeight));
         }
       }
-
-      const t1 =
-        typeof performance !== 'undefined' && typeof performance.now === 'function'
-          ? performance.now()
-          : Date.now();
-      recordDpadGeometryMeasurement(phase, Math.max(0, t1 - t0));
     },
     [liveViewportWidth, maxRowWindowStart, shouldVirtualizeShowcaseRows, totalShowcaseRows]
   );
@@ -1671,7 +1652,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       pendingAsyncAnchorCompensationRef.current = null;
       isProgrammaticRowShiftRef.current = true;
       try {
-        measureMountedShowcaseGeometry('after-virtual');
+        measureMountedShowcaseGeometry();
         if (
           pendingAsyncComp.anchorRowIdx >= 0 &&
           pendingAsyncComp.visualTopBefore !== null &&
@@ -1702,7 +1683,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       // Skip duplicate measurement inside flushSync; shiftShowcaseWindowWithAnchor measures once right after flushSync
       return;
     }
-    measureMountedShowcaseGeometry('after-virtual');
+    measureMountedShowcaseGeometry();
   }, [
     isGridMode,
     section,
@@ -1869,23 +1850,13 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         }
 
         if (measuredRowHeightsRef.current.size === 0) {
-          measureMountedShowcaseGeometry('before-virtual');
+          measureMountedShowcaseGeometry();
         }
 
         const curEnd = Math.min(totalShowcaseRows, curStart + SHOWCASE_ROW_WINDOW_SIZE);
         const nextEnd = Math.min(totalShowcaseRows, clampedDesired + SHOWCASE_ROW_WINDOW_SIZE);
         const overlapStart = Math.max(curStart, clampedDesired);
         const overlapEnd = Math.min(curEnd, nextEnd);
-
-        const rowsDelta = Math.abs(clampedDesired - curStart);
-        if (rowsDelta > 0) {
-          recordDpadVirtualMountDelta({
-            rowsMounted: rowsDelta,
-            rowsUnmounted: rowsDelta,
-            cardsMounted: rowsDelta * 24,
-            cardsUnmounted: rowsDelta * 24,
-          });
-        }
 
         let anchorRowIdx = -1;
         if (overlapStart < overlapEnd) {
@@ -1956,23 +1927,13 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
 
       const optimizedPath = isDpadOptimizedPathActive();
       if (!optimizedPath || measuredRowHeightsRef.current.size === 0) {
-        measureMountedShowcaseGeometry('before-virtual');
+        measureMountedShowcaseGeometry();
       }
 
       const curEnd = Math.min(totalShowcaseRows, curStart + SHOWCASE_ROW_WINDOW_SIZE);
       const nextEnd = Math.min(totalShowcaseRows, clampedDesired + SHOWCASE_ROW_WINDOW_SIZE);
       const overlapStart = Math.max(curStart, clampedDesired);
       const overlapEnd = Math.min(curEnd, nextEnd);
-
-      const rowsDelta = Math.abs(clampedDesired - curStart);
-      if (rowsDelta > 0) {
-        recordDpadVirtualMountDelta({
-          rowsMounted: rowsDelta,
-          rowsUnmounted: rowsDelta,
-          cardsMounted: rowsDelta * 24,
-          cardsUnmounted: rowsDelta * 24,
-        });
-      }
 
       let anchorRowIdx = -1;
       if (overlapStart < overlapEnd) {
@@ -2013,10 +1974,6 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       isProgrammaticRowShiftRef.current = true;
       rowWindowStartRef.current = clampedDesired;
       try {
-        const flushT0 =
-          typeof performance !== 'undefined' && typeof performance.now === 'function'
-            ? performance.now()
-            : Date.now();
         try {
           flushSync(() => {
             setRowWindowStart(clampedDesired);
@@ -2024,13 +1981,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         } catch {
           setRowWindowStart(clampedDesired);
         }
-        const flushT1 =
-          typeof performance !== 'undefined' && typeof performance.now === 'function'
-            ? performance.now()
-            : Date.now();
-        recordDpadFlushSyncExecution(Math.max(0, flushT1 - flushT0));
 
-        measureMountedShowcaseGeometry('after-virtual');
+        measureMountedShowcaseGeometry();
 
         if (anchorRowIdx >= 0 && visualTopBefore !== null && mainContainerRef.current) {
           const visualTopAfter = measureShowcaseRowVisualTop(

@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { safeReadStorage, safeSetStorage } from './accountUtils';
 import { isUsingCapacitorNativeTransport } from '../services/httpTransport';
-import { formatDpadFluidityDiagnosticsReport } from '../navigation/dpadFluidityDiagnostics';
 
 export const CATALOG_DIAGNOSTICS_ENABLED_KEY = 'northcode_catalog_diag_enabled';
 
@@ -1754,15 +1753,11 @@ export function formatCatalogDiagnosticsReport(
     lines.push(
       `Status: Coleta desativada. Ative o diagnóstico nas Configurações e reabra o aplicativo para registrar as métricas da abertura.`
     );
-    lines.push('');
-    lines.push(formatDpadFluidityDiagnosticsReport());
     return lines.join('\n');
   }
 
   if (!report) {
     lines.push(`Status: Aguardando início da sessão de carregamento em memória.`);
-    lines.push('');
-    lines.push(formatDpadFluidityDiagnosticsReport());
     return lines.join('\n');
   }
 
@@ -2009,8 +2004,6 @@ export function formatCatalogDiagnosticsReport(
   lines.push(
     `• Saúde da fila de imagens: tarefas nativas simultâneas máx.=${ic.maxSimultaneousNativeTasks} | tarefas obsoletas canceladas=${ic.cancelledStaleQueueTasksCount}`
   );
-  lines.push('');
-  lines.push(formatDpadFluidityDiagnosticsReport());
 
   return lines.join('\n');
 }

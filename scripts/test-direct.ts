@@ -273,13 +273,8 @@ import {
   NavigationProvider,
   isAndroidCapacitorPlatform,
   setAndroidPlatformOverrideForDpadTest,
-  isDpadFluidityDiagnosticsEnabled,
-  setDpadFluidityDiagnosticsEnabled,
   getDpadNavigationBehaviorMode,
   isDpadOptimizedPathActive,
-  resetDpadFluidityDiagnostics,
-  getDpadFluidityDiagnosticsSnapshot,
-  formatDpadFluidityDiagnosticsReport,
 } from '../src/navigation';
 import { HorizontalRow } from '../src/components/HorizontalRow';
 import { MediaImage, setMediaImageRetryDelayMsForTest } from '../src/components/MediaImage';
@@ -4026,7 +4021,16 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     '--- 9. Etapa 3: Fluidez do D-Pad, Repetição de Teclas, Limites de Virtualização e Diagnóstico ---'
   );
 
-  const harness = createSimulatedPersistentImageDiskHarness({ initialMaxBytes: 30 * 1024 * 1024 });
+  let customResponderFn: ((url: string) => {
+    status?: number;
+    contentType?: string;
+    bodyBytes?: Uint8Array;
+    delayMs?: number;
+  } | null) | null = null;
+  const harness = createSimulatedPersistentImageDiskHarness({
+    initialMaxBytes: 30 * 1024 * 1024,
+    customResponder: (url) => (customResponderFn ? customResponderFn(url) : null),
+  });
   harness.install();
   setMediaImageRetryDelayMsForTest(30);
 
@@ -4059,7 +4063,7 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
   try {
     // -------------------------------------------------------------------------
     // 9.1. Política definitiva por plataforma (Web = padrão, Android = otimizado)
-    //      desacoplada do diagnóstico e imune a chaves legadas de localStorage
+    //      desacoplada de qualquer diagnóstico e imune a chaves legadas de localStorage
     // -------------------------------------------------------------------------
     const policySource = fs.readFileSync(
       path.resolve(process.cwd(), 'src/navigation/navigationPlatformPolicy.ts'),
@@ -4069,10 +4073,14 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       !policySource.includes('dpadFluidityDiagnostics'),
       'navigationPlatformPolicy.ts não deve depender de dpadFluidityDiagnostics.ts'
     );
+    assert.strictEqual(
+      fs.existsSync(path.resolve(process.cwd(), 'src/navigation/dpadFluidityDiagnostics.ts')),
+      false,
+      'dpadFluidityDiagnostics.ts deve ter sido excluído fisicamente na Entrega C1'
+    );
 
     setAndroidPlatformOverrideForDpadTest(false);
     window.localStorage.setItem('nc_dpad_nav_behavior_mode_v1', 'optimized');
-    resetDpadFluidityDiagnostics({ enabled: false });
 
     assert.strictEqual(
       isAndroidCapacitorPlatform(),
@@ -4093,7 +4101,6 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     // Simular Capacitor Android nativo com chave legada 'current' no localStorage
     setAndroidPlatformOverrideForDpadTest(true);
     window.localStorage.setItem('nc_dpad_nav_behavior_mode_v1', 'current');
-    resetDpadFluidityDiagnostics({ enabled: false });
 
     assert.strictEqual(
       isAndroidCapacitorPlatform(),
@@ -4111,22 +4118,10 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       'Em Capacitor Android nativo, isDpadOptimizedPathActive deve sempre retornar true'
     );
 
-    // Alternar diagnóstico D-Pad ligado/desligado não deve alterar a política operacional
-    setDpadFluidityDiagnosticsEnabled(true);
-    assert.strictEqual(isDpadOptimizedPathActive(), true);
-    setDpadFluidityDiagnosticsEnabled(false);
-    assert.strictEqual(isDpadOptimizedPathActive(), true);
-
     // -------------------------------------------------------------------------
-    // 9.2. Diagnóstico desativado por padrão vs ativado +
-    //      Teclas repetidas (e.repeat) e mudança rápida de direção
+    // 9.2. Navegação D-Pad com teclas repetidas (e.repeat), coalescência de
+    //      48ms e mudança rápida de direção
     // -------------------------------------------------------------------------
-    resetDpadFluidityDiagnostics({ enabled: false });
-    assert.strictEqual(
-      isDpadFluidityDiagnosticsEnabled(),
-      false,
-      'O diagnóstico de fluidez do D-Pad deve permanecer desativado por padrão'
-    );
 
     // Montar uma grade controlada dentro do NavigationProvider para testar eventos reais de teclado (incluindo e.repeat)
     const assignRect = (el: HTMLElement, left: number, top: number, width: number, height: number) => {
@@ -4198,7 +4193,7 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     focusElementSafely(firstBtn);
     assert.strictEqual(document.activeElement, firstBtn, 'Foco inicial deve estar em 0-0');
 
-    // Com diagnóstico desativado, disparar ArrowDown e verificar que nenhuma métrica é acumulada
+    // Disparar ArrowDown inicial e verificar movimento funcional
     window.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
     );
@@ -4207,19 +4202,8 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       'dpad-grid-btn-1-0',
       'ArrowDown deve mover o foco para 1-0'
     );
-    assert.strictEqual(
-      getDpadFluidityDiagnosticsSnapshot().totalEventsReceived,
-      0,
-      'Com diagnóstico desativado, totalEventsReceived deve permanecer 0'
-    );
 
-    // Agora ativar o diagnóstico de fluidez e testar rajada de teclas repetidas (e.repeat = true) e mudança rápida de direção
-    setDpadFluidityDiagnosticsEnabled(true);
-    assert.strictEqual(
-      isDpadFluidityDiagnosticsEnabled(),
-      true,
-      'setDpadFluidityDiagnosticsEnabled(true) deve ativar a coleta de métricas do D-Pad'
-    );
+    // Testar rajada de teclas repetidas (e.repeat = true) e mudança rápida de direção
 
     // Disparar 1º repeat ArrowDown (deve executar imediatamente: 1-0 -> 2-0)
     window.dispatchEvent(
@@ -4297,15 +4281,6 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       'Após 48ms, novo repeat na mesma direção deve avançar normalmente de 1-1 para 0-1'
     );
 
-    const snapAfterRepeatBurst = getDpadFluidityDiagnosticsSnapshot();
-    assert(
-      snapAfterRepeatBurst.totalEventsReceived >= 5 &&
-        snapAfterRepeatBurst.repeatPressEventsCount >= 4 &&
-        snapAfterRepeatBurst.coalescedRepeatEventsCount >= 1 &&
-        snapAfterRepeatBurst.completedMovesCount >= 4,
-      'O diagnóstico deve contabilizar com precisão eventos totais, eventos repeat, repeats coalescidos e movimentos concluídos'
-    );
-
     // -------------------------------------------------------------------------
     // 9.3. Preservação do foco ao cruzar limites de virtualização em CatalogShowcaseView
     //      (Comparação entre Comportamento atual e Comportamento otimizado +
@@ -4359,11 +4334,12 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       { label: 'web', isAndroid: false, expectedMode: 'current' as const },
       { label: 'android', isAndroid: true, expectedMode: 'optimized' as const },
     ]) {
-      const modeUnderTest = platformUnderTest.expectedMode;
       setAndroidPlatformOverrideForDpadTest(platformUnderTest.isAndroid);
-      resetDpadFluidityDiagnostics({
-        enabled: true,
-      });
+      assert.strictEqual(
+        getDpadNavigationBehaviorMode(),
+        platformUnderTest.expectedMode,
+        `Plataforma ${platformUnderTest.label} deve operar no modo ${platformUnderTest.expectedMode}`
+      );
 
       await act(async () => {
         root.render(
@@ -4478,29 +4454,12 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
         );
       }
 
-      const modeDiagSnap = getDpadFluidityDiagnosticsSnapshot();
-      assert.strictEqual(modeDiagSnap.behaviorMode, modeUnderTest);
-      if (modeUnderTest === 'current') {
-        assert(
-          modeDiagSnap.flushSyncCount >= 1 &&
-            modeDiagSnap.geometryMeasureCount >= 1 &&
-            modeDiagSnap.rowsMountedDuringNav >= 1,
-          `Na Web (current), deve manter o comportamento padrão (${modeDiagSnap.flushSyncCount} flushSync, ${modeDiagSnap.rowsMountedDuringNav} fileiras)`
-        );
-        (container as any).__currentModeFlushSyncCount = modeDiagSnap.flushSyncCount;
-      } else {
-        const baselineFlushCount = (container as any).__currentModeFlushSyncCount ?? 8;
-        assert.strictEqual(
-          modeDiagSnap.flushSyncCount,
-          0,
-          `No Android (optimized), a travessia vertical passo a passo da fileira 0 à 11 e retorno à 0 deve ocorrer com ZERO flushSync síncronos (atual=${modeDiagSnap.flushSyncCount}, web=${baselineFlushCount})`
-        );
-        assert(
-          modeDiagSnap.geometryMeasureCount >= 1 &&
-            modeDiagSnap.rowsMountedDuringNav >= 8,
-          `No Android (optimized), a preparação assíncrona deve montar as novas fileiras normalmente sem flushSync (rowsMounted=${modeDiagSnap.rowsMountedDuringNav}, geometryMeasures=${modeDiagSnap.geometryMeasureCount})`
-        );
-      }
+      // Confirmar que a janela virtualizada acompanhou corretamente a navegação e retornou ao topo
+      assert(
+        rowsContainer.querySelector('[data-home-row-index="0"]') !== null &&
+          rowsContainer.querySelector('[data-home-row-index="7"]') !== null,
+        `Ao retornar para a fileira 0, a janela virtualizada deve restaurar o intervalo inicial (${platformUnderTest.label})`
+      );
     }
 
     // -------------------------------------------------------------------------
@@ -4534,25 +4493,21 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     );
 
     // -------------------------------------------------------------------------
-    // 9.5. Conexão real das métricas de imagens e ordenação de categorias durante
-    //      navegação ativa + ConfigView sem seletores A/B mantendo diagnósticos
+    // 9.5. Coordenação operacional entre navegação D-Pad e cache de imagens +
+    //      ConfigView sem diagnóstico D-Pad e sem seletores A/B (preservando C2/C3)
     // -------------------------------------------------------------------------
     setAndroidPlatformOverrideForDpadTest(true);
-    resetDpadFluidityDiagnostics({
-      enabled: true,
-    });
 
-    // 1) Registrar um movimento real de D-Pad para abrir a janela de "navegação ativa"
+    // 1) Registrar um movimento real de D-Pad (aciona notifyDpadNavigationActivityForImagePreload)
     await act(async () => {
       moveSpatialFocus('down');
     });
 
-    // 2) Executar ordenação de categoria em um novo índice de catálogo durante a janela ativa do D-Pad
+    // 2) Ordenação de categoria e aquisição de imagem continuam operando normalmente durante navegação
     const freshCatalogIndex = getOrCreateVodIndex([...showcaseStreams]);
     const sortedCatItems = freshCatalogIndex.getSortedByCategory('512');
     assert(sortedCatItems.length > 0, 'getOrCreateVodIndex().getSortedByCategory deve retornar os itens ordenados');
 
-    // 3) Executar aquisição real de imagem no cache persistente durante a janela ativa do D-Pad
     const activeNavImageUrl = 'http://img.provider.tv/dpad_fluidity/active_nav_cover_test.jpg';
     const acquiredDuringNav = await acquireCachedImage(activeNavImageUrl);
     assert.strictEqual(
@@ -4561,18 +4516,63 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       'A imagem solicitada durante a navegação ativa deve ser adquirida com sucesso'
     );
 
-    const connectedDiagSnap = getDpadFluidityDiagnosticsSnapshot();
+    // 3) Verificar que durante rajada recente do D-Pad a concorrência de downloads do cache é limitada a <= 2
+    let inFlightBurstCount = 0;
+    let maxConcurrentDuringDpadBurst = 0;
+    const burstUrls = Array.from(
+      { length: 6 },
+      (_, idx) => `http://img.provider.tv/dpad_throttle/item_${idx}.jpg`
+    );
+    customResponderFn = (url) => {
+      if (url.includes('/dpad_throttle/')) {
+        return {
+          status: 200,
+          contentType: 'image/jpeg',
+          bodyBytes: createValidTestJpegBytes(1024),
+          delayMs: 35,
+        };
+      }
+      return null;
+    };
+    const origAcquireImage = harness.plugin.acquireImage.bind(harness.plugin);
+    harness.plugin.acquireImage = async (opts) => {
+      const isBurstUrl = opts.url.includes('/dpad_throttle/');
+      if (isBurstUrl) {
+        inFlightBurstCount++;
+        if (inFlightBurstCount > maxConcurrentDuringDpadBurst) {
+          maxConcurrentDuringDpadBurst = inFlightBurstCount;
+        }
+      }
+      try {
+        return await origAcquireImage(opts);
+      } finally {
+        if (isBurstUrl) {
+          inFlightBurstCount--;
+        }
+      }
+    };
+    let throttleResults: Awaited<ReturnType<typeof acquireCachedImage>>[] = [];
+    try {
+      await act(async () => {
+        moveSpatialFocus('down');
+      });
+      throttleResults = await Promise.all(
+        burstUrls.map((u) => acquireCachedImage(u, { priority: 'normal' }))
+      );
+    } finally {
+      harness.plugin.acquireImage = origAcquireImage;
+      customResponderFn = null;
+    }
     assert(
-      connectedDiagSnap.categorySortsExecutedDuringNav >= 1,
-      `Ordenações de categoria durante navegação ativa devem ser contabilizadas (atual=${connectedDiagSnap.categorySortsExecutedDuringNav})`
+      throttleResults.every((r) => r.isLocalFile),
+      'Todas as imagens da fila após rajada D-Pad devem concluir normalmente'
     );
     assert(
-      connectedDiagSnap.imageRequestsStartedDuringNav >= 1 &&
-        connectedDiagSnap.imageRequestsCompletedDuringNav >= 1,
-      `Requisições de imagem iniciadas (${connectedDiagSnap.imageRequestsStartedDuringNav}) e concluídas (${connectedDiagSnap.imageRequestsCompletedDuringNav}) durante navegação ativa devem ser contabilizadas`
+      maxConcurrentDuringDpadBurst <= 2,
+      `Durante navegação D-Pad ativa, a concorrência máxima de imagens deve ser reduzida para <= 2 (atual=${maxConcurrentDuringDpadBurst})`
     );
 
-    // 4) Renderizar ConfigView e validar ausência total de seletores A/B e preservação dos diagnósticos
+    // 4) Renderizar ConfigView e validar ausência total do diagnóstico D-Pad e dos seletores A/B
     await act(async () => {
       root.render(
         React.createElement(
@@ -4617,62 +4617,43 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     const dpadSectionEl = container.querySelector(
       '[data-dpad-fluidity-diagnostics-section="true"]'
     ) as HTMLElement | null;
-    const dpadPolicyLabelEl = container.querySelector(
-      '[data-diag-dpad-mode="true"]'
-    ) as HTMLElement | null;
 
     assert.strictEqual(
       startupModeToggleBtn,
       null,
-      'ConfigView NÃO deve mais renderizar seletor A/B de modo de abertura (Modo A/Modo B)'
+      'ConfigView NÃO deve renderizar seletor A/B de modo de abertura (Modo A/Modo B)'
     );
     assert.strictEqual(
       dpadModeToggleBtn,
       null,
-      'ConfigView NÃO deve mais renderizar seletor A/B de modo de navegação D-Pad'
+      'ConfigView NÃO deve renderizar seletor A/B de modo de navegação D-Pad'
+    );
+    assert.strictEqual(
+      dpadDiagToggleBtn,
+      null,
+      'ConfigView NÃO deve mais renderizar botão de Diagnóstico de fluidez do D-Pad (Entrega C1)'
+    );
+    assert.strictEqual(
+      dpadSectionEl,
+      null,
+      'ConfigView NÃO deve mais renderizar Grupo 5 (Diagnóstico de Fluidez do D-Pad)'
     );
     assert(
       catalogDiagToggleBtn,
-      'Botão de coleta de diagnóstico de abertura deve permanecer preservado em Arquitetura & Diagnóstico'
-    );
-    assert(
-      dpadDiagToggleBtn,
-      'Botão de ativação/desativação do Diagnóstico D-Pad deve permanecer preservado em Arquitetura & Diagnóstico'
-    );
-    assert(
-      dpadSectionEl && dpadPolicyLabelEl,
-      'Seção Grupo 5 (Fluidez de Navegação D-Pad) deve permanecer no painel de diagnóstico'
-    );
-    assert(
-      (dpadPolicyLabelEl.textContent || '').includes('Comportamento otimizado (Android)'),
-      'Grupo 5 deve exibir a política definitiva da plataforma Android'
+      'Botão de coleta de diagnóstico de abertura (C2) deve permanecer preservado em Arquitetura & Diagnóstico'
     );
 
-    // Validar que o relatório completo gerado para "Copiar diagnóstico" inclui a seção de Fluidez do D-Pad
-    const fullDiagnosticReport = formatCatalogDiagnosticsReport(getCatalogDiagnosticsSnapshot());
-    const standaloneDpadReport = formatDpadFluidityDiagnosticsReport(
-      getDpadFluidityDiagnosticsSnapshot()
-    );
+    // Validar que o relatório restante de catálogos NÃO inclui mais o bloco de Fluidez do D-Pad
+    const remainingCatalogReport = formatCatalogDiagnosticsReport(getCatalogDiagnosticsSnapshot());
     assert(
-      fullDiagnosticReport.includes('[Diagnóstico de Fluidez do D-Pad (Etapa 3)]') &&
-        fullDiagnosticReport.includes('Comportamento otimizado') &&
-        standaloneDpadReport.includes('Eventos D-Pad recebidos: total='),
-      'O relatório de diagnóstico exportado deve incluir o bloco completo de Fluidez do D-Pad'
-    );
-
-    // Desativar o diagnóstico pelo botão da interface e confirmar estado
-    await act(async () => {
-      dpadDiagToggleBtn.click();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    assert.strictEqual(
-      isDpadFluidityDiagnosticsEnabled(),
-      false,
-      'Clicar no botão de Diagnóstico D-Pad quando ativo deve desativá-lo'
+      !remainingCatalogReport.includes('[Diagnóstico de Fluidez do D-Pad (Etapa 3)]') &&
+        !remainingCatalogReport.includes('Eventos D-Pad recebidos'),
+      'O relatório de catálogos não deve mais depender nem incluir o diagnóstico de fluidez do D-Pad'
     );
 
     await clearImageCacheOnLogout();
   } finally {
+    customResponderFn = null;
     (XtreamService as any).authenticate = originalAuthenticate;
     try {
       window.localStorage.removeItem('nc_dpad_nav_behavior_mode_v1');
@@ -4680,9 +4661,6 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       // ignore
     }
     setAndroidPlatformOverrideForDpadTest(null);
-    resetDpadFluidityDiagnostics({
-      enabled: false,
-    });
     harness.uninstall();
     setMediaImageRetryDelayMsForTest(2000);
     resetCatalogDiagnosticsForTest(false);
@@ -4695,7 +4673,7 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
   }
 
   console.log(
-    '✅ Etapa 3 (política definitiva Android/Web desacoplada, imunidade a storage legado, ConfigView sem seletores A/B, repetição de teclas e limites de virtualização) validada!'
+    '✅ Etapa 3 / Entrega C1 (política Android/Web sem diagnóstico D-Pad, repetição 48ms, virtualização, redução de concorrência de imagens e ConfigView limpo) validada!'
   );
 }
 

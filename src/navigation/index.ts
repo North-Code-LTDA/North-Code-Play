@@ -73,27 +73,3 @@ export {
 } from './navigationPlatformPolicy';
 export type { DpadNavigationBehaviorMode } from './navigationPlatformPolicy';
 
-export {
-  DPAD_FLUIDITY_DIAGNOSTICS_ENABLED_KEY,
-  isDpadFluidityDiagnosticsEnabled,
-  setDpadFluidityDiagnosticsEnabled,
-  isDpadNavigationCurrentlyActiveWindow,
-  setDpadFluidityClockForTest,
-  resetDpadFluidityDiagnostics,
-  recordDpadKeydownReceived,
-  recordDpadMoveResolution,
-  recordDpadFlushSyncExecution,
-  recordDpadGeometryMeasurement,
-  recordDpadVirtualMountDelta,
-  recordDpadNavImageActivity,
-  recordDpadNavCategorySortActivity,
-  getDpadFluidityDiagnosticsSnapshot,
-  subscribeDpadFluidityDiagnostics,
-  formatDpadFluidityDiagnosticsReport,
-} from './dpadFluidityDiagnostics';
-export type {
-  DpadLatencySummary,
-  DpadDirectionBreakdown,
-  DpadFluidityDiagnosticsSnapshot,
-} from './dpadFluidityDiagnostics';
-

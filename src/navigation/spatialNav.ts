@@ -1,8 +1,4 @@
 import { isDpadOptimizedPathActive } from './navigationPlatformPolicy';
-import {
-  recordDpadKeydownReceived,
-  recordDpadMoveResolution,
-} from './dpadFluidityDiagnostics';
 import { notifyDpadNavigationActivityForImagePreload } from '../services/androidImageCache';
 
 export type NavMode = 'pointer' | 'remote';
@@ -2560,16 +2556,11 @@ function tryFastHorizontalRowCardMove(
 export function moveSpatialFocus(
   direction: SpatialDirection,
   _unused?: unknown,
-  options?: { isRepeat?: boolean }
+  _options?: { isRepeat?: boolean }
 ): HTMLElement | null {
   if (typeof document === 'undefined') return null;
   spatialPerfStats.moveCalls++;
   notifyDpadNavigationActivityForImagePreload();
-
-  const commandStartMs = recordDpadKeydownReceived({
-    direction,
-    isRepeat: Boolean(options?.isRepeat),
-  });
 
   // Any new spatial navigation immediately discards pending focus restorations
   cancelPendingFocusRestore();
@@ -2585,27 +2576,15 @@ export function moveSpatialFocus(
     ? tryFastHorizontalRowCardMove(initialActive, direction, ctx)
     : tryFastVerticalMove(initialActive, direction, ctx);
   if (fastResult.handled) {
-    recordDpadMoveResolution({
-      commandStartMs,
-      moved: Boolean(fastResult.target && fastResult.target !== initialActive),
-      resolutionPath: isHorizontal ? 'fast-horizontal' : 'fast-vertical',
-    });
     return fastResult.target;
   }
 
-  const fallbackTarget = moveSpatialFocusFallback(
+  return moveSpatialFocusFallback(
     direction,
     initialActive,
     ctx,
     fastResult.virtualExpansionHandled
   );
-  recordDpadMoveResolution({
-    commandStartMs,
-    moved: Boolean(fallbackTarget && fallbackTarget !== initialActive),
-    resolutionPath:
-      fallbackTarget && fallbackTarget !== initialActive ? 'global-fallback' : 'none',
-  });
-  return fallbackTarget;
 }
 
 function moveSpatialFocusFallback(
