@@ -129,10 +129,12 @@ export function PlayerSettingsMenu({
       : qualities.find((q) => q.id === currentQuality)?.name || 'Automático';
 
   const currentAudioLabel =
-    audioTracks.length > 0
-      ? audioTracks.find((a) => a.id === currentAudioTrack)?.name ||
-        (audioTracks.length === 1 ? audioTracks[0].name : 'Padrão')
-      : 'Padrão';
+    pendingAudioTrack !== -1 && pendingAudioTrack !== currentAudioTrack
+      ? 'Trocando...'
+      : audioTracks.length > 0
+        ? audioTracks.find((a) => a.id === currentAudioTrack)?.name ||
+          (audioTracks.length === 1 ? audioTracks[0].name : 'Padrão')
+        : 'Padrão';
 
   const currentSubtitleLabel =
     subtitleTracks.length === 0
@@ -260,6 +262,15 @@ export function PlayerSettingsMenu({
               <ChevronRight className="w-3.5 h-3.5" />
             </div>
           </button>
+          {audioTrackFeedback && (
+            <p
+              data-audio-track-feedback="true"
+              role="status"
+              className="px-2 pb-1 text-[11px] text-amber-300 leading-snug"
+            >
+              {audioTrackFeedback}
+            </p>
+          )}
 
           {/* Subtitles (always accessible so user can enable, disable, or see availability) */}
           <button
@@ -380,17 +391,19 @@ export function PlayerSettingsMenu({
                     data-track-active={isSelected ? 'true' : 'false'}
                     data-track-pending={isPending ? 'true' : 'false'}
                     aria-pressed={isSelected}
+                    aria-busy={isPending || undefined}
                     onClick={() => {
-                      const accepted = onSelectAudioTrack(tr.id);
-                      if (accepted !== false) {
-                        setActiveSubMenu('main');
-                      }
+                      onSelectAudioTrack(tr.id);
                     }}
                     className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
                   >
                     <span className="truncate pr-2">{tr.name}</span>
                     {isPending ? (
-                      <span className="text-[10px] text-nc-text-secondary shrink-0">
+                      <span
+                        data-audio-track-pending-label="true"
+                        role="status"
+                        className="text-[10px] text-nc-text-secondary shrink-0"
+                      >
                         Trocando...
                       </span>
                     ) : (
@@ -405,15 +418,6 @@ export function PlayerSettingsMenu({
                   className="px-2 py-1.5 text-[11px] text-nc-text-secondary leading-snug"
                 >
                   Faixa única disponível nesta transmissão.
-                </p>
-              )}
-              {audioTrackFeedback && (
-                <p
-                  data-audio-track-feedback="true"
-                  role="status"
-                  className="px-2 py-1.5 text-[11px] text-amber-300 leading-snug"
-                >
-                  {audioTrackFeedback}
                 </p>
               )}
             </>
@@ -437,6 +441,15 @@ export function PlayerSettingsMenu({
                 Nenhuma faixa de áudio adicional exposta pelo fluxo ou navegador.
               </p>
             </>
+          )}
+          {audioTrackFeedback && (
+            <p
+              data-audio-track-feedback="true"
+              role="status"
+              className="px-2 py-1.5 text-[11px] text-amber-300 leading-snug"
+            >
+              {audioTrackFeedback}
+            </p>
           )}
         </div>
       )}

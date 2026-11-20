@@ -6833,7 +6833,7 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
     'Helper determinístico setAndroidPlatformOverrideForDpadTest deve permanecer preservado'
   );
 
-  // 13.9. Seleção real de faixas de áudio (HLS índice vs id, confirmação assíncrona, erro sem falsa confirmação, nativo e vazio)
+  // 13.9. Seleção real de faixas de áudio (HLS assíncrono, índice vs id, AUDIO_TRACKS_UPDATED intermediário, evento atrasado, falha honesta, feedback visível, troca de mídia, nativo e vazio)
   {
     const audioContainer = doc.createElement('div');
     doc.body.appendChild(audioContainer);
@@ -6842,11 +6842,33 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
     clearAllBackHandlersForTest();
     setNavMode('remote');
 
-    // Simular faixas HLS com id de metadados diferente do índice do array (10 e 25 vs índices 0 e 1)
+    // Simular 3 faixas HLS com id de metadados diferente do índice do array (10, 25, 40 vs índices 0, 1, 2)
     nextHlsInitialTracks = {
       audioTracks: [
-        { id: 10, name: 'Português', lang: 'pt-BR', default: true, url: 'http://cdn/audio-pt.m3u8' },
-        { id: 25, name: 'Inglês', lang: 'en', default: false, url: 'http://cdn/audio-en.m3u8' },
+        {
+          id: 10,
+          groupId: 'aud',
+          name: 'Português',
+          lang: 'pt-BR',
+          default: true,
+          url: 'http://cdn/audio-pt.m3u8',
+        },
+        {
+          id: 25,
+          groupId: 'aud',
+          name: 'Inglês',
+          lang: 'en',
+          default: false,
+          url: 'http://cdn/audio-en.m3u8',
+        },
+        {
+          id: 40,
+          groupId: 'aud',
+          name: 'Espanhol',
+          lang: 'es',
+          default: false,
+          url: 'http://cdn/audio-es.m3u8',
+        },
       ],
       subtitleTracks: [],
       audioTrack: 0,
@@ -6868,6 +6890,14 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
 
       const hlsCtrl = activeHlsControllers[activeHlsControllers.length - 1];
       assert(hlsCtrl, 'Controlador mock HLS deve estar ativo para teste de troca de áudio');
+      await act(async () => {
+        hlsCtrl.emit(Hls.Events.MANIFEST_PARSED, {
+          levels: hlsCtrl.levels,
+          audioTracks: hlsCtrl.audioTracks,
+          subtitleTracks: hlsCtrl.subtitleTracks,
+        });
+        await new Promise((r) => setTimeout(r, 15));
+      });
 
       const playerEl = doc.querySelector('[data-player-container="true"]') as HTMLElement;
       assert(playerEl, 'Player multi-áudio HLS deve montar');
@@ -6894,9 +6924,15 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
       };
 
       await openAudioSub();
+      const settingsMenuEl = playerEl.querySelector(
+        '[data-player-settings-menu="true"]'
+      ) as HTMLElement;
+      assert.strictEqual(settingsMenuEl.getAttribute('data-active-submenu'), 'audio');
+
       const trackBtn0 = playerEl.querySelector('button[data-audio-track-id="0"]') as HTMLButtonElement;
       const trackBtn1 = playerEl.querySelector('button[data-audio-track-id="1"]') as HTMLButtonElement;
-      assert(trackBtn0 && trackBtn1, 'Ambas as faixas reais HLS devem ser listadas pelos índices 0 e 1');
+      const trackBtn2 = playerEl.querySelector('button[data-audio-track-id="2"]') as HTMLButtonElement;
+      assert(trackBtn0 && trackBtn1 && trackBtn2, 'As 3 faixas reais HLS devem ser listadas pelos índices 0, 1 e 2');
       assert.strictEqual(trackBtn0.getAttribute('data-track-active'), 'true', 'Faixa 0 deve iniciar ativa');
       assert.strictEqual(trackBtn1.getAttribute('data-track-active'), 'false', 'Faixa 1 deve iniciar inativa');
 
@@ -6912,6 +6948,24 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
         origEmit(ev, payload);
       };
 
+      // 1) Clicar na faixa já ativa (0) não deve criar estado pendente artificial
+      await act(async () => {
+        trackBtn0.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        settingsMenuEl.getAttribute('data-active-submenu'),
+        'audio',
+        'Submenu de áudio deve permanecer aberto sem fechamento abrupto'
+      );
+      assert.strictEqual(
+        trackBtn0.getAttribute('data-track-pending'),
+        'false',
+        'Selecionar faixa já ativa não deve criar estado pendente artificial'
+      );
+      assert.strictEqual(trackBtn0.getAttribute('data-track-active'), 'true');
+
+      // 2) Solicitar troca A (0) -> B (1): submenu permanece aberto e exibe Trocando... visível imediatamente
       await act(async () => {
         trackBtn1.click();
         await new Promise((r) => setTimeout(r, 15));
@@ -6923,32 +6977,114 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
         'Troca de áudio HLS deve atribuir índice real 1 do array hls.audioTracks (e não id de metadado 25)'
       );
       assert.strictEqual(hlsCtrl.audioTrack, 1, 'Propriedade hls.audioTrack deve refletir índice 1');
-
-      // Reabrir aba Áudio antes de AUDIO_TRACK_SWITCHED: NÃO deve confirmar faixa 1 falsamente
-      const mainAudioItem = playerEl.querySelector('button[data-settings-item="audio"]') as HTMLButtonElement;
-      await act(async () => {
-        mainAudioItem.click();
-        await new Promise((r) => setTimeout(r, 15));
-      });
-      const pendingBtn1 = playerEl.querySelector('button[data-audio-track-id="1"]') as HTMLButtonElement;
-      const stillActiveBtn0 = playerEl.querySelector('button[data-audio-track-id="0"]') as HTMLButtonElement;
       assert.strictEqual(
-        pendingBtn1.getAttribute('data-track-active'),
+        settingsMenuEl.getAttribute('data-active-submenu'),
+        'audio',
+        'Submenu de áudio deve permanecer aberto enquanto a troca está pendente para exibir Trocando...'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-active'),
         'false',
         'Faixa 1 não pode ser confirmada como ativa antes de AUDIO_TRACK_SWITCHED'
       );
       assert.strictEqual(
-        pendingBtn1.getAttribute('data-track-pending'),
+        playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-pending'),
         'true',
-        'Faixa 1 deve indicar estado pendente enquanto aguarda confirmação do motor HLS'
+        'Faixa 1 deve exibir estado pendente visível imediatamente no submenu aberto'
       );
       assert.strictEqual(
-        stillActiveBtn0.getAttribute('data-track-active'),
+        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-active'),
         'true',
         'Faixa 0 deve permanecer como ativa confirmada até a troca concluir'
       );
 
-      // Simular falha não fatal ao carregar faixa de áudio -> não deve quebrar vídeo nem confirmar faixa 1
+      // 3) AUDIO_TRACKS_UPDATED intermediário durante troca pendente NÃO pode promover faixa 1 a confirmada
+      await act(async () => {
+        origEmit(Hls.Events.AUDIO_TRACKS_UPDATED, { audioTracks: hlsCtrl.audioTracks });
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-active'),
+        'false',
+        'AUDIO_TRACKS_UPDATED intermediário não pode confirmar prematuramente a faixa 1'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-pending'),
+        'true',
+        'Após AUDIO_TRACKS_UPDATED intermediário, faixa 1 deve continuar pendente'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-active'),
+        'true',
+        'Após AUDIO_TRACKS_UPDATED intermediário, faixa 0 anteriormente confirmada deve continuar ativa'
+      );
+
+      // 4) Eventos fora de ordem: usuário solicita C (2) antes de B (1) concluir; confirmação atrasada de B NÃO confirma C
+      await act(async () => {
+        trackBtn2.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(hlsCtrl.audioTrack, 2, 'hls.audioTrack deve receber índice 2 para faixa C');
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="2"]')?.getAttribute('data-track-pending'),
+        'true',
+        'Faixa 2 deve ficar pendente'
+      );
+
+      // Confirmação atrasada da faixa B (id 25, url audio-en.m3u8) chega enquanto solicitação atual é C (2)
+      await act(async () => {
+        origEmit(Hls.Events.AUDIO_TRACK_SWITCHED, {
+          id: 25,
+          groupId: 'aud',
+          name: 'Inglês',
+          lang: 'en',
+          url: 'http://cdn/audio-en.m3u8',
+        });
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="2"]')?.getAttribute('data-track-active'),
+        'false',
+        'Evento atrasado de faixa B não deve confirmar equivocadamente a solicitação mais recente C'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="2"]')?.getAttribute('data-track-pending'),
+        'true',
+        'Solicitação mais recente C deve permanecer pendente após evento atrasado de B'
+      );
+
+      // Agora confirmação real da faixa C chega e conclui a troca
+      await act(async () => {
+        origEmit(Hls.Events.AUDIO_TRACK_SWITCHED, {
+          id: 40,
+          groupId: 'aud',
+          name: 'Espanhol',
+          lang: 'es',
+          url: 'http://cdn/audio-es.m3u8',
+        });
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="2"]')?.getAttribute('data-track-active'),
+        'true',
+        'Após AUDIO_TRACK_SWITCHED correspondente a C, faixa 2 deve ser confirmada como ativa'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="2"]')?.getAttribute('data-track-pending'),
+        'false',
+        'Estado pendente deve encerrar após confirmação de C'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-active'),
+        'false',
+        'Faixa anterior deve deixar de estar ativa após confirmação de C'
+      );
+
+      // 5) Falha não fatal ao carregar faixa B (com hls.audioTrack em B, sem confirmar B e sem afirmar C se engine diverge)
+      await act(async () => {
+        trackBtn1.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
       await act(async () => {
         origEmit(Hls.Events.ERROR, {
           fatal: false,
@@ -6960,38 +7096,152 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
       assert.strictEqual(
         playerEl.querySelector('[data-player-error-overlay="true"]'),
         null,
-        'Erro não fatal de faixa de áudio não deve exibir overlay de erro fatal no vídeo'
+        'Erro não fatal de faixa de áudio não deve interromper o vídeo'
+      );
+      assert.strictEqual(
+        settingsMenuEl.getAttribute('data-active-submenu'),
+        'audio',
+        'Submenu de áudio deve permanecer visível exibindo o erro ao usuário'
       );
       assert(
         playerEl.querySelector('[data-audio-track-feedback="true"]'),
-        'Falha ao carregar faixa de áudio deve comunicar feedback honesto ao usuário'
+        'Falha ao carregar faixa de áudio deve exibir mensagem visível ao usuário'
       );
       assert.strictEqual(
-        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-active'),
-        'true',
-        'Após falha na troca, faixa anterior confirmada deve continuar marcada como ativa'
+        playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-pending'),
+        'false',
+        'Estado pendente deve encerrar após erro de carregamento'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-active'),
+        'false',
+        'Faixa com erro de carregamento não deve ser marcada como confirmada'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="2"]')?.getAttribute('data-track-active'),
+        'false',
+        'Não deve afirmar que a faixa anterior continua tocando quando hls.audioTrack já divergiu para a faixa com erro'
       );
 
-      // Agora confirmar troca real via AUDIO_TRACK_SWITCHED
-      suppressSyncAudioSwitched = false;
+      // Mesmo se AUDIO_TRACKS_UPDATED ocorrer depois da falha, não deve promover a faixa com falha
       await act(async () => {
-        origEmit(Hls.Events.AUDIO_TRACK_SWITCHED, { id: 1, url: 'http://cdn/audio-en.m3u8' });
+        origEmit(Hls.Events.AUDIO_TRACKS_UPDATED, { audioTracks: hlsCtrl.audioTracks });
         await new Promise((r) => setTimeout(r, 15));
       });
       assert.strictEqual(
         playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-active'),
-        'true',
-        'Após AUDIO_TRACK_SWITCHED real, faixa 1 deve ser confirmada como ativa'
-      );
-      assert.strictEqual(
-        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-active'),
         'false',
-        'Após AUDIO_TRACK_SWITCHED real, faixa 0 deve ficar inativa'
+        'AUDIO_TRACKS_UPDATED após falha não pode promover a faixa que falhou'
       );
+
+      // 5b) Faixa solicitada desaparece em AUDIO_TRACKS_UPDATED durante troca pendente -> cancela pendente e informa indisponibilidade
+      await act(async () => {
+        trackBtn0.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-pending'),
+        'true',
+        'Faixa 0 deve ficar pendente antes da remoção da lista'
+      );
+      await act(async () => {
+        hlsCtrl.audioTracks = [hlsCtrl.audioTracks[2]];
+        hlsCtrl.audioTrack = 0;
+        origEmit(Hls.Events.AUDIO_TRACKS_UPDATED, { audioTracks: hlsCtrl.audioTracks });
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-pending'),
+        'false',
+        'Remoção da faixa pendente deve encerrar estado pendente sem travamento'
+      );
+      assert(
+        playerEl.querySelector('[data-audio-track-feedback="true"]')?.textContent?.includes('não está mais disponível'),
+        'Remoção da faixa pendente deve exibir mensagem clara de indisponibilidade'
+      );
+
+      // 6) Mudança de mídia durante troca pendente deve limpar estado pendente e descartar callback antigo
+      hlsCtrl.audioTracks = [
+        { id: 10, groupId: 'aud', name: 'Português', lang: 'pt-BR', default: true, url: 'http://cdn/audio-pt.m3u8' },
+        { id: 25, groupId: 'aud', name: 'Inglês', lang: 'en', default: false, url: 'http://cdn/audio-en.m3u8' },
+      ];
+      await act(async () => {
+        origEmit(Hls.Events.AUDIO_TRACKS_UPDATED, { audioTracks: hlsCtrl.audioTracks });
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      await act(async () => {
+        (playerEl.querySelector('button[data-audio-track-id="1"]') as HTMLButtonElement).click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-pending'),
+        'true'
+      );
+
+      nextHlsInitialTracks = {
+        audioTracks: [
+          {
+            id: 99,
+            groupId: 'aud2',
+            name: 'Português',
+            lang: 'pt-BR',
+            default: true,
+            url: 'http://cdn/new-pt.m3u8',
+          },
+        ],
+        subtitleTracks: [],
+        audioTrack: 0,
+        subtitleTrack: -1,
+      };
+
+      await act(async () => {
+        audioRoot.render(
+          React.createElement(VideoPlayer, {
+            streamUrl: 'http://server.tv:8080/movie/user/pass/9101.m3u8',
+            title: 'Nova Mídia HLS',
+            contentType: 'movie',
+            onBack: () => {},
+          })
+        );
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      const hlsCtrl2 = activeHlsControllers[activeHlsControllers.length - 1];
+      assert(hlsCtrl2 && hlsCtrl2 !== hlsCtrl, 'Nova mídia deve inicializar nova instância HLS');
+      await act(async () => {
+        hlsCtrl2.emit(Hls.Events.MANIFEST_PARSED, {
+          levels: hlsCtrl2.levels,
+          audioTracks: hlsCtrl2.audioTracks,
+          subtitleTracks: hlsCtrl2.subtitleTracks,
+        });
+        await new Promise((r) => setTimeout(r, 15));
+      });
+
+      // Callback atrasado da sessão antiga deve ser ignorado sem transferir estado pendente
+      await act(async () => {
+        origEmit(Hls.Events.AUDIO_TRACK_SWITCHED, {
+          id: 10,
+          groupId: 'aud',
+          name: 'Português',
+          lang: 'pt-BR',
+          url: 'http://cdn/audio-pt.m3u8',
+        });
+        await new Promise((r) => setTimeout(r, 15));
+      });
+
       assert.strictEqual(
         playerEl.querySelector('[data-audio-track-feedback="true"]'),
         null,
-        'Feedback de erro deve ser limpo após confirmação bem-sucedida'
+        'Mudança de mídia deve limpar feedback de erro da sessão anterior'
+      );
+      assert(
+        playerEl.querySelector('[data-audio-single-note="true"]'),
+        'Nova mídia com faixa única deve exibir nota honesta de faixa única sem estado pendente herdado'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-pending'),
+        'false',
+        'Nova mídia não deve herdar estado pendente da mídia anterior'
       );
     } finally {
       await act(async () => {
@@ -7109,14 +7359,14 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
       });
       assert.strictEqual(track1Enabled, true, 'Faixa nativa 1 deve ter enabled=true');
       assert.strictEqual(track0Enabled, false, 'Faixa nativa 0 deve ter enabled=false');
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-active'),
+        'true',
+        'Troca nativa confirmada imediatamente deve ficar visível no submenu aberto'
+      );
 
       // Bloquear escrita em track0 (simulando navegador que ignora alteração de .enabled) e tentar voltar para faixa 0
       lockTrack0ReadOnly = true;
-      const mainAudioItem = playerEl.querySelector('button[data-settings-item="audio"]') as HTMLButtonElement;
-      await act(async () => {
-        mainAudioItem.click();
-        await new Promise((r) => setTimeout(r, 15));
-      });
       const natBtn0 = playerEl.querySelector('button[data-audio-track-id="0"]') as HTMLButtonElement;
       await act(async () => {
         natBtn0.click();
@@ -7129,7 +7379,7 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
       );
       assert(
         playerEl.querySelector('[data-audio-track-feedback="true"]'),
-        'Deve informar feedback quando navegador impedir troca de faixa nativa'
+        'Deve informar feedback visível quando navegador impedir troca de faixa nativa'
       );
     } finally {
       await act(async () => {

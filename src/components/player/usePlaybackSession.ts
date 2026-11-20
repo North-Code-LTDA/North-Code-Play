@@ -25,6 +25,22 @@ interface InternalAudioTrackDescriptor extends MediaTrackInfo {
   rawName?: string;
 }
 
+interface HlsAudioTrackIdentity {
+  index: number;
+  hlsTrackId?: number;
+  hlsGroupId?: string;
+  hlsUrl?: string;
+  rawName?: string;
+  lang?: string;
+}
+
+interface PendingHlsAudioRequest extends HlsAudioTrackIdentity {
+  requestId: number;
+  trackId: number;
+  targetIndex: number;
+  confirmed: boolean;
+}
+
 interface InternalSubtitleTrackDescriptor extends MediaTrackInfo {
   nativeTrackObj?: TextTrack | any;
   trackElement?: HTMLTrackElement | null;
@@ -266,6 +282,155 @@ function classifyHlsFatalError(
   };
 }
 
+function extractHlsAudioIdentity(
+  track: InternalAudioTrackDescriptor
+): HlsAudioTrackIdentity {
+  return {
+    index: track.hlsTrackIndex ?? track.id,
+    hlsTrackId: track.hlsTrackId,
+    hlsGroupId: track.hlsGroupId,
+    hlsUrl: track.hlsUrl,
+    rawName: track.rawName,
+    lang: track.lang,
+  };
+}
+
+function doesDescriptorMatchIdentity(
+  track: InternalAudioTrackDescriptor,
+  identity: HlsAudioTrackIdentity
+): boolean {
+  if (identity.hlsUrl && track.hlsUrl) {
+    return track.hlsUrl === identity.hlsUrl;
+  }
+  if (identity.hlsGroupId && identity.rawName && track.hlsGroupId && track.rawName) {
+    return (
+      track.hlsGroupId === identity.hlsGroupId &&
+      track.rawName === identity.rawName &&
+      (!identity.lang || !track.lang || track.lang === identity.lang)
+    );
+  }
+  if (identity.rawName && track.rawName && identity.lang && track.lang) {
+    return track.rawName === identity.rawName && track.lang === identity.lang;
+  }
+  if (typeof identity.hlsTrackId === 'number' && typeof track.hlsTrackId === 'number') {
+    if (track.hlsTrackId === identity.hlsTrackId) {
+      return true;
+    }
+  }
+  return (track.hlsTrackIndex ?? track.id) === identity.index;
+}
+
+function findDescriptorByIdentity(
+  list: InternalAudioTrackDescriptor[],
+  identity: HlsAudioTrackIdentity
+): InternalAudioTrackDescriptor | undefined {
+  if (list.length === 0) return undefined;
+
+  if (identity.hlsUrl) {
+    const byUrl = list.find((t) => t.source === 'hls' && t.hlsUrl === identity.hlsUrl);
+    if (byUrl) return byUrl;
+  }
+
+  if (identity.hlsGroupId && identity.rawName) {
+    const byGroupName = list.find(
+      (t) =>
+        t.source === 'hls' &&
+        t.hlsGroupId === identity.hlsGroupId &&
+        t.rawName === identity.rawName &&
+        (!identity.lang || !t.lang || t.lang === identity.lang)
+    );
+    if (byGroupName) return byGroupName;
+  }
+
+  if (identity.rawName && identity.lang) {
+    const byNameLang = list.find(
+      (t) => t.source === 'hls' && t.rawName === identity.rawName && t.lang === identity.lang
+    );
+    if (byNameLang) return byNameLang;
+  }
+
+  if (typeof identity.hlsTrackId === 'number') {
+    const byMetaId = list.find((t) => t.source === 'hls' && t.hlsTrackId === identity.hlsTrackId);
+    if (byMetaId) return byMetaId;
+  }
+
+  // Only fall back to array index when the identity had no stronger URL/group/name/metaId markers
+  const hasStrongMarkers = Boolean(
+    identity.hlsUrl ||
+      (identity.hlsGroupId && identity.rawName) ||
+      (identity.rawName && identity.lang) ||
+      typeof identity.hlsTrackId === 'number'
+  );
+  if (!hasStrongMarkers && identity.index >= 0) {
+    return list.find((t) => t.source === 'hls' && t.hlsTrackIndex === identity.index);
+  }
+
+  return undefined;
+}
+
+function resolveAudioTrackFromEventPayload(
+  data: any,
+  list: InternalAudioTrackDescriptor[]
+): InternalAudioTrackDescriptor | undefined {
+  if (!data || typeof data !== 'object' || list.length === 0) {
+    return undefined;
+  }
+
+  // 1. Match by track URL (MediaPlaylist.url emitted by HLS.js)
+  if (typeof data.url === 'string' && data.url.trim()) {
+    const urlMatches = list.filter((t) => t.source === 'hls' && t.hlsUrl === data.url);
+    if (urlMatches.length === 1) return urlMatches[0];
+    if (urlMatches.length > 1) {
+      const narrowed = urlMatches.find(
+        (t) =>
+          (!data.groupId || t.hlsGroupId === data.groupId) &&
+          (!data.name || t.rawName === data.name) &&
+          (!data.lang || t.lang === data.lang)
+      );
+      if (narrowed) return narrowed;
+      return urlMatches[0];
+    }
+  }
+
+  // 2. Match by groupId + name (+ lang) for MediaPlaylist objects (including muxed tracks with empty url)
+  if (typeof data.name === 'string' && data.name.trim()) {
+    const byMeta = list.find(
+      (t) =>
+        t.source === 'hls' &&
+        t.rawName === data.name &&
+        (!data.groupId || !t.hlsGroupId || t.hlsGroupId === data.groupId) &&
+        (!data.lang || !t.lang || t.lang === data.lang)
+    );
+    if (byMeta) return byMeta;
+  }
+
+  // 3. Match by numeric id:
+  //    - If payload carries MediaPlaylist metadata (url/name/groupId/lang), data.id is track.id (hlsTrackId) first.
+  //    - If payload only carries { id }, treat data.id as hlsTrackIndex first (compatible with lightweight mocks).
+  if (typeof data.id === 'number' && data.id >= 0) {
+    const hasPlaylistMetadata = Boolean(
+      (typeof data.url === 'string' && data.url.length > 0) ||
+        (typeof data.name === 'string' && data.name.length > 0) ||
+        (typeof data.groupId === 'string' && data.groupId.length > 0) ||
+        (typeof data.lang === 'string' && data.lang.length > 0)
+    );
+
+    if (hasPlaylistMetadata) {
+      const byMetaId = list.find((t) => t.source === 'hls' && t.hlsTrackId === data.id);
+      if (byMetaId) return byMetaId;
+      const byIndex = list.find((t) => t.source === 'hls' && t.hlsTrackIndex === data.id);
+      if (byIndex) return byIndex;
+    } else {
+      const byIndex = list.find((t) => t.source === 'hls' && t.hlsTrackIndex === data.id);
+      if (byIndex) return byIndex;
+      const byMetaId = list.find((t) => t.source === 'hls' && t.hlsTrackId === data.id);
+      if (byMetaId) return byMetaId;
+    }
+  }
+
+  return undefined;
+}
+
 function resolveLiveHlsAudioTrackIndex(
   hlsTracks: any[],
   target: InternalAudioTrackDescriptor
@@ -344,12 +509,10 @@ export function usePlaybackSession({
   const selectedSubtitleTrackIdRef = useRef<number>(-1);
   const syncAudioTracksFnRef = useRef<(() => void) | null>(null);
   const syncSubtitleTracksFnRef = useRef<(() => void) | null>(null);
-  const pendingAudioRequestRef = useRef<{
-    trackId: number;
-    targetIndex: number;
-    confirmed: boolean;
-  } | null>(null);
-  const lastConfirmedHlsAudioIndexRef = useRef<number>(-1);
+  const pendingAudioRequestRef = useRef<PendingHlsAudioRequest | null>(null);
+  const lastConfirmedHlsAudioTrackRef = useRef<HlsAudioTrackIdentity | null>(null);
+  const failedHlsAudioTrackRef = useRef<HlsAudioTrackIdentity | null>(null);
+  const audioRequestSeqRef = useRef(0);
 
   // Buffer profile state
   const [bufferProfile, setBufferProfileState] = useState<BufferProfileKey>(() => {
@@ -649,7 +812,9 @@ export function usePlaybackSession({
       subtitleTracksRef.current = [];
       selectedSubtitleTrackIdRef.current = -1;
       pendingAudioRequestRef.current = null;
-      lastConfirmedHlsAudioIndexRef.current = -1;
+      lastConfirmedHlsAudioTrackRef.current = null;
+      failedHlsAudioTrackRef.current = null;
+      audioRequestSeqRef.current += 1;
       syncAudioTracksFnRef.current = null;
       syncSubtitleTracksFnRef.current = null;
       setLiveSyncPosition(null);
@@ -908,25 +1073,91 @@ export function usePlaybackSession({
 
         const activeHlsIndex =
           typeof hlsInstance.audioTrack === 'number' ? hlsInstance.audioTrack : -1;
+        const activePending = pendingAudioRequestRef.current;
+
+        // While an audio switch is pending, NEVER promote hlsInstance.audioTrack to confirmed
+        // on an intermediate AUDIO_TRACKS_UPDATED event.
+        if (activePending) {
+          const matchedPending = findDescriptorByIdentity(disambiguated, activePending);
+          if (matchedPending) {
+            activePending.trackId = matchedPending.id;
+            activePending.targetIndex = matchedPending.hlsTrackIndex ?? matchedPending.id;
+            activePending.index = activePending.targetIndex;
+            setPendingAudioTrack(matchedPending.id);
+
+            const prevConfirmed = lastConfirmedHlsAudioTrackRef.current;
+            if (prevConfirmed) {
+              const matchedConfirmed = findDescriptorByIdentity(disambiguated, prevConfirmed);
+              if (matchedConfirmed) {
+                lastConfirmedHlsAudioTrackRef.current = extractHlsAudioIdentity(matchedConfirmed);
+                setCurrentAudioTrack(matchedConfirmed.id);
+              } else {
+                lastConfirmedHlsAudioTrackRef.current = null;
+                setCurrentAudioTrack(-1);
+              }
+            } else {
+              setCurrentAudioTrack(-1);
+            }
+            return;
+          }
+
+          // Pending target disappeared from the updated track list: cancel invalid request cleanly
+          pendingAudioRequestRef.current = null;
+          setPendingAudioTrack(-1);
+          setAudioTrackFeedback(
+            'A faixa de áudio solicitada não está mais disponível nesta transmissão.'
+          );
+
+          const matchedEngineAfterRemoval = disambiguated.find(
+            (t) => t.hlsTrackIndex === activeHlsIndex
+          );
+          if (matchedEngineAfterRemoval) {
+            lastConfirmedHlsAudioTrackRef.current = extractHlsAudioIdentity(
+              matchedEngineAfterRemoval
+            );
+            setCurrentAudioTrack(matchedEngineAfterRemoval.id);
+          } else if (lastConfirmedHlsAudioTrackRef.current) {
+            const stillConfirmed = findDescriptorByIdentity(
+              disambiguated,
+              lastConfirmedHlsAudioTrackRef.current
+            );
+            if (stillConfirmed) {
+              lastConfirmedHlsAudioTrackRef.current = extractHlsAudioIdentity(stillConfirmed);
+              setCurrentAudioTrack(stillConfirmed.id);
+            } else {
+              lastConfirmedHlsAudioTrackRef.current = null;
+              setCurrentAudioTrack(-1);
+            }
+          } else {
+            lastConfirmedHlsAudioTrackRef.current = null;
+            setCurrentAudioTrack(-1);
+          }
+          return;
+        }
+
         const matchedActive = disambiguated.find((t) => t.hlsTrackIndex === activeHlsIndex);
+        if (
+          matchedActive &&
+          failedHlsAudioTrackRef.current &&
+          doesDescriptorMatchIdentity(matchedActive, failedHlsAudioTrackRef.current)
+        ) {
+          // Do not promote a previously failed target track on a subsequent AUDIO_TRACKS_UPDATED
+          setCurrentAudioTrack(-1);
+          return;
+        }
+
         if (matchedActive) {
-          lastConfirmedHlsAudioIndexRef.current = activeHlsIndex;
+          lastConfirmedHlsAudioTrackRef.current = extractHlsAudioIdentity(matchedActive);
           setCurrentAudioTrack(matchedActive.id);
         } else if (disambiguated.length === 1) {
-          lastConfirmedHlsAudioIndexRef.current = disambiguated[0].hlsTrackIndex ?? 0;
+          lastConfirmedHlsAudioTrackRef.current = extractHlsAudioIdentity(disambiguated[0]);
           setCurrentAudioTrack(disambiguated[0].id);
         } else {
           const defTrack = disambiguated.find((t) => t.isDefault);
-          lastConfirmedHlsAudioIndexRef.current = defTrack?.hlsTrackIndex ?? -1;
+          lastConfirmedHlsAudioTrackRef.current = defTrack
+            ? extractHlsAudioIdentity(defTrack)
+            : null;
           setCurrentAudioTrack(defTrack ? defTrack.id : -1);
-        }
-
-        if (
-          pendingAudioRequestRef.current &&
-          !disambiguated.some((t) => t.id === pendingAudioRequestRef.current?.trackId)
-        ) {
-          pendingAudioRequestRef.current = null;
-          setPendingAudioTrack(-1);
         }
         return;
       }
@@ -1230,55 +1461,41 @@ export function usePlaybackSession({
         }
       });
 
-      const resolveAudioTrackFromHlsEvent = (data: any): InternalAudioTrackDescriptor | undefined => {
-        const list = audioTracksRef.current;
-        if (list.length === 0) return undefined;
-        const hlsActiveIndex = typeof hls.audioTrack === 'number' ? hls.audioTrack : -1;
-        if (hlsActiveIndex >= 0) {
-          const byActiveIndex = list.find(
-            (t) => t.source === 'hls' && t.hlsTrackIndex === hlsActiveIndex
-          );
-          if (byActiveIndex) return byActiveIndex;
-        }
-        if (data && typeof data.url === 'string' && data.url) {
-          const byUrl = list.find((t) => t.source === 'hls' && t.hlsUrl === data.url);
-          if (byUrl) return byUrl;
-        }
-        if (data && typeof data.id === 'number') {
-          const byIndex = list.find((t) => t.source === 'hls' && t.hlsTrackIndex === data.id);
-          if (byIndex) return byIndex;
-          const byMetaId = list.find((t) => t.source === 'hls' && t.hlsTrackId === data.id);
-          if (byMetaId) return byMetaId;
-        }
-        return undefined;
-      };
-
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHING, (_event, data) => {
         if (sessionIdRef.current !== currentSessionId) return;
-        const matched = resolveAudioTrackFromHlsEvent(data);
-        if (matched) {
-          setPendingAudioTrack(matched.id);
+        const matched = resolveAudioTrackFromEventPayload(data, audioTracksRef.current);
+        if (!matched) return;
+        const activePending = pendingAudioRequestRef.current;
+        if (activePending && !doesDescriptorMatchIdentity(matched, activePending)) {
+          // Ignore stale/out-of-order switching event from an older request
+          return;
         }
+        setPendingAudioTrack(matched.id);
       });
 
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
         if (sessionIdRef.current !== currentSessionId) return;
-        const matched = resolveAudioTrackFromHlsEvent(data);
-        if (pendingAudioRequestRef.current) {
-          pendingAudioRequestRef.current.confirmed = true;
+        const matched = resolveAudioTrackFromEventPayload(data, audioTracksRef.current);
+        const activePending = pendingAudioRequestRef.current;
+
+        if (activePending) {
+          if (!matched || !doesDescriptorMatchIdentity(matched, activePending)) {
+            // Delayed/out-of-order confirmation for an older track MUST NOT complete a newer request
+            return;
+          }
+          activePending.confirmed = true;
           pendingAudioRequestRef.current = null;
         }
+
+        if (!matched) {
+          return;
+        }
+
+        failedHlsAudioTrackRef.current = null;
+        lastConfirmedHlsAudioTrackRef.current = extractHlsAudioIdentity(matched);
         setPendingAudioTrack(-1);
         setAudioTrackFeedback(null);
-        if (matched) {
-          lastConfirmedHlsAudioIndexRef.current =
-            matched.hlsTrackIndex ?? (typeof hls.audioTrack === 'number' ? hls.audioTrack : -1);
-          setCurrentAudioTrack(matched.id);
-        } else if (typeof data?.id === 'number' && data.id >= 0) {
-          lastConfirmedHlsAudioIndexRef.current =
-            typeof hls.audioTrack === 'number' && hls.audioTrack >= 0 ? hls.audioTrack : data.id;
-          setCurrentAudioTrack(data.id);
-        }
+        setCurrentAudioTrack(matched.id);
       });
 
       hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
@@ -1307,6 +1524,8 @@ export function usePlaybackSession({
       const finalizeFatalHlsError = (msg: string) => {
         recoveryTimersRef.current.forEach((t) => clearTimeout(t));
         recoveryTimersRef.current = [];
+        pendingAudioRequestRef.current = null;
+        setPendingAudioTrack(-1);
         setError(msg);
         setIsLoading(false);
         setIsBuffering(false);
@@ -1326,9 +1545,55 @@ export function usePlaybackSession({
           (data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_ERROR ||
             data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_TIMEOUT)
         ) {
-          pendingAudioRequestRef.current = null;
+          const activePending = pendingAudioRequestRef.current;
+          const errorUrl =
+            (typeof (data as any)?.url === 'string' && (data as any).url) ||
+            (typeof (data as any)?.context?.url === 'string' && (data as any).context.url) ||
+            (typeof (data as any)?.frag?.url === 'string' && (data as any).frag.url) ||
+            '';
+
+          // If a newer pending request is in flight and this error explicitly identifies an older track URL, ignore it
+          if (
+            activePending &&
+            errorUrl &&
+            activePending.hlsUrl &&
+            errorUrl !== activePending.hlsUrl &&
+            audioTracksRef.current.some((t) => t.hlsUrl === errorUrl)
+          ) {
+            return;
+          }
+
+          if (activePending) {
+            failedHlsAudioTrackRef.current = {
+              index: activePending.targetIndex,
+              hlsTrackId: activePending.hlsTrackId,
+              hlsGroupId: activePending.hlsGroupId,
+              hlsUrl: activePending.hlsUrl,
+              rawName: activePending.rawName,
+              lang: activePending.lang,
+            };
+            pendingAudioRequestRef.current = null;
+          }
+
           setPendingAudioTrack(-1);
           setAudioTrackFeedback('Não foi possível carregar a faixa de áudio selecionada.');
+
+          // Reflect real engine state honestly: only keep previous track confirmed if hls.audioTrack still matches it
+          const engineIndex = typeof hls.audioTrack === 'number' ? hls.audioTrack : -1;
+          const engineTrack = audioTracksRef.current.find(
+            (t) => t.source === 'hls' && t.hlsTrackIndex === engineIndex
+          );
+          const prevConfirmed = lastConfirmedHlsAudioTrackRef.current;
+          if (
+            engineTrack &&
+            prevConfirmed &&
+            doesDescriptorMatchIdentity(engineTrack, prevConfirmed)
+          ) {
+            setCurrentAudioTrack(engineTrack.id);
+          } else {
+            lastConfirmedHlsAudioTrackRef.current = null;
+            setCurrentAudioTrack(-1);
+          }
           return;
         }
 
@@ -1683,22 +1948,42 @@ export function usePlaybackSession({
         }
 
         if (
+          !pendingAudioRequestRef.current &&
           hls.audioTrack === targetIndex &&
-          lastConfirmedHlsAudioIndexRef.current === targetIndex
+          lastConfirmedHlsAudioTrackRef.current !== null &&
+          doesDescriptorMatchIdentity(target, lastConfirmedHlsAudioTrackRef.current)
         ) {
-          pendingAudioRequestRef.current = null;
           setPendingAudioTrack(-1);
           setAudioTrackFeedback(null);
           setCurrentAudioTrack(target.id);
           return true;
         }
 
-        const request = {
+        if (
+          pendingAudioRequestRef.current &&
+          pendingAudioRequestRef.current.targetIndex === targetIndex &&
+          hls.audioTrack === targetIndex &&
+          doesDescriptorMatchIdentity(target, pendingAudioRequestRef.current)
+        ) {
+          // Same target is already pending in flight
+          setPendingAudioTrack(target.id);
+          return true;
+        }
+
+        const request: PendingHlsAudioRequest = {
+          requestId: ++audioRequestSeqRef.current,
           trackId: target.id,
           targetIndex,
+          index: targetIndex,
+          hlsTrackId: target.hlsTrackId,
+          hlsGroupId: target.hlsGroupId,
+          hlsUrl: target.hlsUrl,
+          rawName: target.rawName,
+          lang: target.lang,
           confirmed: false,
         };
         pendingAudioRequestRef.current = request;
+        failedHlsAudioTrackRef.current = null;
         setAudioTrackFeedback(null);
 
         try {
@@ -1719,7 +2004,7 @@ export function usePlaybackSession({
           return false;
         }
 
-        if (!request.confirmed) {
+        if (!request.confirmed && pendingAudioRequestRef.current === request) {
           setPendingAudioTrack(target.id);
         }
         return true;
