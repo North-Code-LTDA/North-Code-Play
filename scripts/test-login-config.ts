@@ -209,7 +209,7 @@ function setNativeInputValue(input: HTMLInputElement, value: string) {
   if (tracker) {
     tracker.setValue(prevValue);
   }
-  input.dispatchEvent(new windowInstance.Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 const SYNTHETIC_CREDS = {
