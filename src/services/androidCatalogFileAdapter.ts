@@ -1,10 +1,11 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import {
-  type CapacitorNativeAttemptDiagnosticsInput,
-  type CatalogDiagnosticAttemptHandle,
-  nowMonotonicMs,
-} from '../utils/catalogDiagnostics';
 import type { TransportError } from './httpTransport';
+
+function getMonotonicNowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
 
 export const CATALOG_FILE_TRANSFER_PLUGIN_NAME = 'CatalogFileTransfer';
 export const CATALOG_TRANSFER_CACHE_SUBDIR = 'nc_catalog_transfers';
@@ -24,7 +25,6 @@ export interface DownloadCatalogToTempFileOptions {
   readTimeout?: number;
   disableRedirects?: boolean;
   headers?: Record<string, string>;
-  collectDiagnostics?: boolean;
 }
 
 export interface DownloadCatalogToTempFileResult {
@@ -32,8 +32,6 @@ export interface DownloadCatalogToTempFileResult {
   fileId?: string | null;
   filePath?: string | null;
   cacheDir?: string | null;
-  nativeDiagnostics?: CapacitorNativeAttemptDiagnosticsInput | null;
-  diagnostics?: CapacitorNativeAttemptDiagnosticsInput | null;
 }
 
 export interface CatalogFileTransferNativePlugin {
@@ -307,20 +305,6 @@ function createLocalFileReadError(detail?: string): TransportError {
   return localErr;
 }
 
-function extractNativeDiagnostics(
-  source: unknown
-): CapacitorNativeAttemptDiagnosticsInput | null {
-  if (!source || typeof source !== 'object') {
-    return null;
-  }
-  const candidate = source as Record<string, unknown>;
-  const rawDiag = candidate.nativeDiagnostics ?? candidate.diagnostics ?? null;
-  if (rawDiag && typeof rawDiag === 'object') {
-    return rawDiag as CapacitorNativeAttemptDiagnosticsInput;
-  }
-  return null;
-}
-
 function requestNativeTransferCancellation(
   plugin: CatalogFileTransferNativePlugin,
   transferId: string
@@ -363,19 +347,17 @@ export async function executeAndroidTempFileCatalogDownload({
   timeoutMs,
   deadlineAt,
   signal,
-  diagAttempt,
 }: {
   url: string;
   timeoutMs: number;
   deadlineAt?: number;
   signal?: AbortSignal;
-  diagAttempt?: CatalogDiagnosticAttemptHandle | null;
 }): Promise<string> {
   if (signal?.aborted) {
     throw new Error('Operação cancelada pelo usuário.');
   }
 
-  const attemptStartMs = nowMonotonicMs();
+  const attemptStartMs = getMonotonicNowMs();
   const effectiveDeadlineAt =
     typeof deadlineAt === 'number' && Number.isFinite(deadlineAt)
       ? deadlineAt
@@ -383,7 +365,7 @@ export async function executeAndroidTempFileCatalogDownload({
 
   let didTimeout = false;
   const isDeadlineExpired = (): boolean => {
-    if (didTimeout || nowMonotonicMs() >= effectiveDeadlineAt) {
+    if (didTimeout || getMonotonicNowMs() >= effectiveDeadlineAt) {
       didTimeout = true;
       return true;
     }
@@ -399,17 +381,9 @@ export async function executeAndroidTempFileCatalogDownload({
   const connectTimeout = Math.min(timeoutMs, MAX_NATIVE_CONNECT_TIMEOUT_MS);
   const readTimeout = timeoutMs;
 
-  if (diagAttempt?.isActive()) {
-    diagAttempt.setTransportKind('android-temp-file');
-  }
-
-  const trackDiag = Boolean(diagAttempt && diagAttempt.isActive());
-  const nativeCallStartMs = trackDiag ? attemptStartMs : 0;
-
   let queryFinished = false;
   let nativeTransferSettled = false;
   let localReadInProgress = false;
-  let localReadStartMs = 0;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let onCallerAbort: (() => void) | null = null;
   let localFetchAbortController: AbortController | null = null;
@@ -440,7 +414,7 @@ export async function executeAndroidTempFileCatalogDownload({
       signal.addEventListener('abort', onCallerAbort, { once: true });
     }
 
-    const remainingTimeoutMs = Math.max(0, effectiveDeadlineAt - nowMonotonicMs());
+    const remainingTimeoutMs = Math.max(0, effectiveDeadlineAt - getMonotonicNowMs());
     timeoutId = setTimeout(() => {
       if (queryFinished) return;
       didTimeout = true;
@@ -453,19 +427,9 @@ export async function executeAndroidTempFileCatalogDownload({
 
     const downloadResult = await new Promise<DownloadCatalogToTempFileResult>(
       (resolve, reject) => {
-        const settleNativeReject = (
-          err: Error,
-          errNativeDiag?: CapacitorNativeAttemptDiagnosticsInput | null
-        ) => {
+        const settleNativeReject = (err: Error) => {
           if (nativeTransferSettled) return;
           nativeTransferSettled = true;
-          if (diagAttempt?.isActive()) {
-            diagAttempt.recordAndroidTempFileTransfer(
-              nowMonotonicMs() - nativeCallStartMs,
-              undefined,
-              errNativeDiag
-            );
-          }
           reject(err);
         };
 
@@ -482,9 +446,6 @@ export async function executeAndroidTempFileCatalogDownload({
             Accept: 'application/json, text/plain, */*',
           },
         };
-        if (trackDiag) {
-          requestOptions.collectDiagnostics = true;
-        }
 
         plugin
           .downloadCatalogToTempFile(requestOptions)
@@ -501,9 +462,8 @@ export async function executeAndroidTempFileCatalogDownload({
           })
           .catch((err: any) => {
             if (nativeTransferSettled) return;
-            const errNativeDiag = extractNativeDiagnostics(err);
             if (signal?.aborted) {
-              settleNativeReject(new Error('Operação cancelada pelo usuário.'), errNativeDiag);
+              settleNativeReject(new Error('Operação cancelada pelo usuário.'));
               return;
             }
             const msg = String(err?.message || err?.code || err || '').toLowerCase();
@@ -513,14 +473,14 @@ export async function executeAndroidTempFileCatalogDownload({
               msg.includes('timed out') ||
               msg.includes('sockettimeout')
             ) {
-              settleNativeReject(createTimeoutError(), errNativeDiag);
+              settleNativeReject(createTimeoutError());
               return;
             }
             if (msg.includes('cancel') || msg.includes('abort')) {
-              settleNativeReject(new Error('Operação cancelada pelo usuário.'), errNativeDiag);
+              settleNativeReject(new Error('Operação cancelada pelo usuário.'));
               return;
             }
-            settleNativeReject(createNetworkError(), errNativeDiag);
+            settleNativeReject(createNetworkError());
           });
       }
     );
@@ -532,16 +492,6 @@ export async function executeAndroidTempFileCatalogDownload({
 
     if (typeof rawFileId === 'string' && SAFE_FINAL_FILE_ID_REGEX.test(rawFileId)) {
       acquiredFileId = rawFileId;
-    }
-
-    // Registra o término da chamada nativa ANTES da leitura local na WebView,
-    // para que `outsideNativeMeasuredMs` meça apenas a ponte nativa sem atribuir a leitura local à ponte.
-    if (diagAttempt?.isActive()) {
-      diagAttempt.recordAndroidTempFileTransfer(
-        nowMonotonicMs() - nativeCallStartMs,
-        status || undefined,
-        extractNativeDiagnostics(downloadResult)
-      );
     }
 
     if (signal?.aborted) {
@@ -558,9 +508,6 @@ export async function executeAndroidTempFileCatalogDownload({
     }
 
     if (!isValidCatalogTransferFileReference(rawFileId, rawFilePath, rawCacheDir)) {
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordAndroidLocalFileRead(0, null);
-      }
       throw createLocalFileReadError(
         'Referência de arquivo temporário inválida ou fora do diretório dedicado de cache.'
       );
@@ -571,9 +518,6 @@ export async function executeAndroidTempFileCatalogDownload({
     try {
       localFileUrl = convertTempFilePathToWebViewUrl(approvedFilePath);
     } catch (convErr) {
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordAndroidLocalFileRead(0, null);
-      }
       if ((convErr as TransportError)?.isLocalFileReadError) {
         throw convErr;
       }
@@ -581,9 +525,6 @@ export async function executeAndroidTempFileCatalogDownload({
     }
 
     if (!isValidConvertedLocalCatalogUrl(localFileUrl, approvedFilePath)) {
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordAndroidLocalFileRead(0, null);
-      }
       throw createLocalFileReadError(
         'URL local convertida inválida ou fora da origem local da WebView.'
       );
@@ -598,7 +539,6 @@ export async function executeAndroidTempFileCatalogDownload({
 
     localFetchAbortController = new AbortController();
     localReadInProgress = true;
-    localReadStartMs = diagAttempt?.isActive() ? nowMonotonicMs() : 0;
 
     let localResponse: Response;
     try {
@@ -616,13 +556,7 @@ export async function executeAndroidTempFileCatalogDownload({
         throw new Error('Operação cancelada pelo usuário.');
       }
       if (isDeadlineExpired()) {
-        if (diagAttempt?.isActive()) {
-          diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
-        }
         throw createTimeoutError();
-      }
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
       }
       throw createLocalFileReadError();
     }
@@ -633,9 +567,6 @@ export async function executeAndroidTempFileCatalogDownload({
     }
     if (isDeadlineExpired()) {
       localReadInProgress = false;
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
-      }
       throw createTimeoutError();
     }
 
@@ -646,9 +577,6 @@ export async function executeAndroidTempFileCatalogDownload({
       (localResponse.status >= 300 && localResponse.status < 400)
     ) {
       localReadInProgress = false;
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
-      }
       throw createLocalFileReadError();
     }
 
@@ -661,13 +589,7 @@ export async function executeAndroidTempFileCatalogDownload({
         throw new Error('Operação cancelada pelo usuário.');
       }
       if (isDeadlineExpired()) {
-        if (diagAttempt?.isActive()) {
-          diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
-        }
         throw createTimeoutError();
-      }
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
       }
       throw createLocalFileReadError();
     }
@@ -678,17 +600,7 @@ export async function executeAndroidTempFileCatalogDownload({
       throw new Error('Operação cancelada pelo usuário.');
     }
     if (isDeadlineExpired()) {
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordAndroidLocalFileRead(nowMonotonicMs() - localReadStartMs, null);
-      }
       throw createTimeoutError();
-    }
-
-    if (diagAttempt?.isActive()) {
-      diagAttempt.recordAndroidLocalFileRead(
-        nowMonotonicMs() - localReadStartMs,
-        textData.length
-      );
     }
 
     return textData;

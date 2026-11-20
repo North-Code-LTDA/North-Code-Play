@@ -1,58 +1,11 @@
 import { getValidYear, getValidRating, sortByYearAndRating } from './catalogRanking';
 import { groupLiveStreams, LiveChannelGroup } from './liveChannelGroups';
-import {
-  type CatalogDiagnosticOperationHandle,
-  isCatalogLoadDiagnosticsEnabled,
-  nowMonotonicMs,
-  recordCatalogSortDiagnostic,
-} from './catalogDiagnostics';
-
-export interface CatalogIndexPerfStats {
-  vodIndexBuilds: number;
-  seriesIndexBuilds: number;
-  liveIndexBuilds: number;
-  categoryLookups: number;
-  idLookups: number;
-  heroComputations: number;
-  batchesProcessed: number;
-  batchYields: number;
-  abortedBuilds: number;
-}
-
-const indexPerfStats: CatalogIndexPerfStats = {
-  vodIndexBuilds: 0,
-  seriesIndexBuilds: 0,
-  liveIndexBuilds: 0,
-  categoryLookups: 0,
-  idLookups: 0,
-  heroComputations: 0,
-  batchesProcessed: 0,
-  batchYields: 0,
-  abortedBuilds: 0,
-};
-
-export function getCatalogIndexPerfStats(): CatalogIndexPerfStats {
-  return { ...indexPerfStats };
-}
-
-export function resetCatalogIndexPerfStats(): void {
-  indexPerfStats.vodIndexBuilds = 0;
-  indexPerfStats.seriesIndexBuilds = 0;
-  indexPerfStats.liveIndexBuilds = 0;
-  indexPerfStats.categoryLookups = 0;
-  indexPerfStats.idLookups = 0;
-  indexPerfStats.heroComputations = 0;
-  indexPerfStats.batchesProcessed = 0;
-  indexPerfStats.batchYields = 0;
-  indexPerfStats.abortedBuilds = 0;
-}
 
 export interface CooperativeBuildOptions {
   batchSize?: number;
   signal?: AbortSignal;
   shouldCancel?: () => boolean;
   onBatchProgress?: (processedCount: number, totalCount: number, batchIndex: number) => void;
-  diagOp?: CatalogDiagnosticOperationHandle | null;
 }
 
 export interface RankedCatalogIndex<T> {
@@ -86,8 +39,7 @@ const inFlightLiveBuilds = new WeakMap<any[], Promise<LiveCatalogIndex<any> | nu
 function instantiateRankedCatalogIndex<T extends Record<string, any>>(
   safeItems: T[],
   byId: Map<string, T>,
-  byCategoryId: Map<string, T[]>,
-  domain: 'vod' | 'series'
+  byCategoryId: Map<string, T[]>
 ): RankedCatalogIndex<T> {
   let sortedAllCache: T[] | null = null;
   let sortedAllYear = 0;
@@ -98,49 +50,28 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
     byId,
     byCategoryId,
     getByCategory(categoryId) {
-      indexPerfStats.categoryLookups++;
       if (categoryId === undefined || categoryId === null) return [];
       return byCategoryId.get(String(categoryId)) || [];
     },
     getById(id) {
-      indexPerfStats.idLookups++;
       if (id === undefined || id === null || id === '') return undefined;
       return byId.get(String(id));
     },
     getSortedAll() {
       const maxYear = new Date().getFullYear() + 1;
-      const trackDiag = isCatalogLoadDiagnosticsEnabled();
       if (sortedAllCache && sortedAllYear === maxYear) {
-        if (trackDiag && sortedAllCache.length >= 2) {
-          recordCatalogSortDiagnostic(domain, true, 0, sortedAllCache.length);
-        }
         return sortedAllCache;
       }
-      const shouldRecordSort = trackDiag && safeItems.length >= 2;
-      const sortStart = shouldRecordSort ? nowMonotonicMs() : 0;
       sortedAllCache = sortByYearAndRating(safeItems);
       sortedAllYear = maxYear;
-      if (shouldRecordSort) {
-        recordCatalogSortDiagnostic(
-          domain,
-          false,
-          nowMonotonicMs() - sortStart,
-          safeItems.length
-        );
-      }
       return sortedAllCache;
     },
     getSortedByCategory(categoryId) {
-      indexPerfStats.categoryLookups++;
       if (categoryId === undefined || categoryId === null) return [];
       const key = String(categoryId);
       const maxYear = new Date().getFullYear() + 1;
-      const trackDiag = isCatalogLoadDiagnosticsEnabled();
       const existing = sortedByCategoryCache.get(key);
       if (existing && existing.year === maxYear) {
-        if (trackDiag && existing.sorted.length >= 2) {
-          recordCatalogSortDiagnostic(domain, true, 0, existing.sorted.length);
-        }
         return existing.sorted;
       }
       const rawCat = byCategoryId.get(key) || [];
@@ -150,23 +81,10 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
         sortedAllCache &&
         sortedAllYear === maxYear
       ) {
-        if (trackDiag && sortedAllCache.length >= 2) {
-          recordCatalogSortDiagnostic(domain, true, 0, sortedAllCache.length);
-        }
         sortedByCategoryCache.set(key, { year: maxYear, sorted: sortedAllCache });
         return sortedAllCache;
       }
-      const shouldRecordSort = trackDiag && rawCat.length >= 2;
-      const sortStart = shouldRecordSort ? nowMonotonicMs() : 0;
       const sorted = rawCat.length > 0 ? sortByYearAndRating(rawCat) : [];
-      if (shouldRecordSort) {
-        recordCatalogSortDiagnostic(
-          domain,
-          false,
-          Math.max(0, nowMonotonicMs() - sortStart),
-          rawCat.length
-        );
-      }
       sortedByCategoryCache.set(key, { year: maxYear, sorted });
       return sorted;
     },
@@ -175,16 +93,9 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
 
 function createRankedCatalogIndex<T extends Record<string, any>>(
   items: T[],
-  idField: 'stream_id' | 'series_id',
-  domain: 'vod' | 'series'
+  idField: 'stream_id' | 'series_id'
 ): RankedCatalogIndex<T> {
   const safeItems = Array.isArray(items) ? items : [];
-  if (domain === 'vod') {
-    indexPerfStats.vodIndexBuilds++;
-  } else {
-    indexPerfStats.seriesIndexBuilds++;
-  }
-
   const byId = new Map<string, T>();
   const byCategoryId = new Map<string, T[]>();
 
@@ -209,7 +120,7 @@ function createRankedCatalogIndex<T extends Record<string, any>>(
     bucket.push(item);
   }
 
-  return instantiateRankedCatalogIndex(safeItems, byId, byCategoryId, domain);
+  return instantiateRankedCatalogIndex(safeItems, byId, byCategoryId);
 }
 
 function instantiateLiveCatalogIndex<T = any>(
@@ -225,60 +136,30 @@ function instantiateLiveCatalogIndex<T = any>(
     byId,
     byCategoryId,
     getByCategory(categoryId) {
-      indexPerfStats.categoryLookups++;
       if (categoryId === undefined || categoryId === null) return [];
       return byCategoryId.get(String(categoryId)) || [];
     },
     getById(id) {
-      indexPerfStats.idLookups++;
       if (id === undefined || id === null || id === '') return undefined;
       return byId.get(String(id));
     },
     getGroupsByCategory(categoryId) {
-      indexPerfStats.categoryLookups++;
       if (categoryId === undefined || categoryId === null) return [];
       const key = String(categoryId);
-      const trackDiag = isCatalogLoadDiagnosticsEnabled();
       const cachedGroups = groupsByCategoryCache.get(key);
       if (cachedGroups) {
-        if (trackDiag && cachedGroups.length > 0) {
-          recordCatalogSortDiagnostic('liveGroups', true, 0, cachedGroups.length);
-        }
         return cachedGroups;
       }
       const rawCat = byCategoryId.get(key) || [];
-      const groupStart = trackDiag && rawCat.length > 0 ? nowMonotonicMs() : 0;
       const groups = rawCat.length > 0 ? groupLiveStreams(rawCat) : [];
-      if (trackDiag && rawCat.length > 0) {
-        recordCatalogSortDiagnostic(
-          'liveGroups',
-          false,
-          nowMonotonicMs() - groupStart,
-          rawCat.length
-        );
-      }
       groupsByCategoryCache.set(key, groups);
       return groups;
     },
     getAllGroups() {
-      const trackDiag = isCatalogLoadDiagnosticsEnabled();
       if (allGroupsCache) {
-        if (trackDiag && allGroupsCache.length > 0) {
-          recordCatalogSortDiagnostic('liveGroups', true, 0, allGroupsCache.length);
-        }
         return allGroupsCache;
       }
-      const shouldRecordGroup = trackDiag && safeItems.length > 0;
-      const groupStart = shouldRecordGroup ? nowMonotonicMs() : 0;
       allGroupsCache = groupLiveStreams(safeItems);
-      if (shouldRecordGroup) {
-        recordCatalogSortDiagnostic(
-          'liveGroups',
-          false,
-          nowMonotonicMs() - groupStart,
-          safeItems.length
-        );
-      }
       return allGroupsCache;
     },
   };
@@ -288,7 +169,7 @@ export function getOrCreateVodIndex<T = any>(vodStreams: T[]): RankedCatalogInde
   const safe = Array.isArray(vodStreams) ? vodStreams : [];
   const cached = vodIndexCache.get(safe);
   if (cached) return cached;
-  const created = createRankedCatalogIndex(safe as any[], 'stream_id', 'vod');
+  const created = createRankedCatalogIndex(safe as any[], 'stream_id');
   vodIndexCache.set(safe, created);
   return created;
 }
@@ -297,7 +178,7 @@ export function getOrCreateSeriesIndex<T = any>(seriesStreams: T[]): RankedCatal
   const safe = Array.isArray(seriesStreams) ? seriesStreams : [];
   const cached = seriesIndexCache.get(safe);
   if (cached) return cached;
-  const created = createRankedCatalogIndex(safe as any[], 'series_id', 'series');
+  const created = createRankedCatalogIndex(safe as any[], 'series_id');
   seriesIndexCache.set(safe, created);
   return created;
 }
@@ -307,7 +188,6 @@ export function getOrCreateLiveIndex<T = any>(liveStreams: T[]): LiveCatalogInde
   const cached = liveIndexCache.get(safe);
   if (cached) return cached;
 
-  indexPerfStats.liveIndexBuilds++;
   const byId = new Map<string, T>();
   const byCategoryId = new Map<string, T[]>();
 
@@ -340,51 +220,24 @@ export function getOrCreateLiveIndex<T = any>(liveStreams: T[]): LiveCatalogInde
 async function buildRankedCatalogIndexCooperatively<T extends Record<string, any>>(
   items: T[],
   idField: 'stream_id' | 'series_id',
-  domain: 'vod' | 'series',
   cache: WeakMap<any[], RankedCatalogIndex<any>>,
   inFlightMap: WeakMap<any[], Promise<RankedCatalogIndex<any> | null>>,
   options?: CooperativeBuildOptions
 ): Promise<RankedCatalogIndex<T> | null> {
   const safeItems = Array.isArray(items) ? items : [];
-  const diagOp = options?.diagOp;
   const isCancelled = () => Boolean(options?.signal?.aborted || options?.shouldCancel?.());
 
   if (isCancelled()) {
-    indexPerfStats.abortedBuilds++;
-    if (diagOp?.isActive()) {
-      diagOp.recordIndexBuild({
-        mode: 'async-cooperative',
-        fromCache: false,
-        elapsedMs: 0,
-        activeComputeMs: 0,
-        batchesProcessed: 0,
-        batchYields: 0,
-        indexedItemsCount: 0,
-        cancelled: true,
-      });
-    }
     return null;
   }
 
   const cached = cache.get(safeItems);
   if (cached) {
-    if (diagOp?.isActive()) {
-      diagOp.recordIndexBuild({
-        mode: 'memory-cache',
-        fromCache: true,
-        elapsedMs: 0,
-        activeComputeMs: 0,
-        batchesProcessed: 0,
-        batchYields: 0,
-        indexedItemsCount: safeItems.length,
-        cancelled: false,
-      });
-    }
     return cached;
   }
 
   const canShareInFlight =
-    !options?.onBatchProgress && !options?.signal && !options?.shouldCancel && !options?.diagOp;
+    !options?.onBatchProgress && !options?.signal && !options?.shouldCancel;
   const existingInFlight = canShareInFlight ? inFlightMap.get(safeItems) : undefined;
   if (existingInFlight) {
     const res = await existingInFlight;
@@ -396,34 +249,15 @@ async function buildRankedCatalogIndexCooperatively<T extends Record<string, any
   const batchSize = Math.max(100, Math.floor(options?.batchSize ?? 1000));
 
   const taskPromise = (async (): Promise<RankedCatalogIndex<T> | null> => {
-    const trackDiag = Boolean(diagOp && diagOp.isActive());
-    const buildStartMs = trackDiag ? nowMonotonicMs() : 0;
-    let activeComputeMs = 0;
-
     const byId = new Map<string, T>();
     const byCategoryId = new Map<string, T[]>();
     let batchIdx = 0;
-    let yieldsCount = 0;
 
     for (let start = 0; start < safeItems.length; start += batchSize) {
       if (isCancelled()) {
-        indexPerfStats.abortedBuilds++;
-        if (diagOp?.isActive()) {
-          diagOp.recordIndexBuild({
-            mode: 'async-cooperative',
-            fromCache: false,
-            elapsedMs: nowMonotonicMs() - buildStartMs,
-            activeComputeMs,
-            batchesProcessed: batchIdx,
-            batchYields: yieldsCount,
-            indexedItemsCount: start,
-            cancelled: true,
-          });
-        }
         return null;
       }
 
-      const batchStartMs = trackDiag ? nowMonotonicMs() : 0;
       const end = Math.min(safeItems.length, start + batchSize);
       for (let i = start; i < end; i++) {
         const item = safeItems[i];
@@ -446,75 +280,23 @@ async function buildRankedCatalogIndexCooperatively<T extends Record<string, any
         bucket.push(item);
       }
 
-      if (trackDiag) {
-        activeComputeMs += nowMonotonicMs() - batchStartMs;
-      }
-
-      indexPerfStats.batchesProcessed++;
       batchIdx++;
       options?.onBatchProgress?.(end, safeItems.length, batchIdx);
 
       if (isCancelled()) {
-        indexPerfStats.abortedBuilds++;
-        if (diagOp?.isActive()) {
-          diagOp.recordIndexBuild({
-            mode: 'async-cooperative',
-            fromCache: false,
-            elapsedMs: nowMonotonicMs() - buildStartMs,
-            activeComputeMs,
-            batchesProcessed: batchIdx,
-            batchYields: yieldsCount,
-            indexedItemsCount: end,
-            cancelled: true,
-          });
-        }
         return null;
       }
 
       if (end < safeItems.length) {
-        indexPerfStats.batchYields++;
-        yieldsCount++;
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         if (isCancelled()) {
-          indexPerfStats.abortedBuilds++;
-          if (diagOp?.isActive()) {
-            diagOp.recordIndexBuild({
-              mode: 'async-cooperative',
-              fromCache: false,
-              elapsedMs: nowMonotonicMs() - buildStartMs,
-              activeComputeMs,
-              batchesProcessed: batchIdx,
-              batchYields: yieldsCount,
-              indexedItemsCount: end,
-              cancelled: true,
-            });
-          }
           return null;
         }
       }
     }
 
-    if (domain === 'vod') {
-      indexPerfStats.vodIndexBuilds++;
-    } else {
-      indexPerfStats.seriesIndexBuilds++;
-    }
-
-    const index = instantiateRankedCatalogIndex(safeItems, byId, byCategoryId, domain);
+    const index = instantiateRankedCatalogIndex(safeItems, byId, byCategoryId);
     cache.set(safeItems, index);
-
-    if (diagOp?.isActive()) {
-      diagOp.recordIndexBuild({
-        mode: 'async-cooperative',
-        fromCache: false,
-        elapsedMs: nowMonotonicMs() - buildStartMs,
-        activeComputeMs,
-        batchesProcessed: batchIdx,
-        batchYields: yieldsCount,
-        indexedItemsCount: safeItems.length,
-        cancelled: false,
-      });
-    }
 
     return index;
   })();
@@ -538,7 +320,6 @@ export async function buildVodIndexAsync<T = any>(
   return buildRankedCatalogIndexCooperatively(
     vodStreams as any[],
     'stream_id',
-    'vod',
     vodIndexCache,
     inFlightVodBuilds,
     options
@@ -552,7 +333,6 @@ export async function buildSeriesIndexAsync<T = any>(
   return buildRankedCatalogIndexCooperatively(
     seriesStreams as any[],
     'series_id',
-    'series',
     seriesIndexCache,
     inFlightSeriesBuilds,
     options
@@ -564,45 +344,19 @@ export async function buildLiveIndexAsync<T = any>(
   options?: CooperativeBuildOptions
 ): Promise<LiveCatalogIndex<T> | null> {
   const safeItems = Array.isArray(liveStreams) ? liveStreams : [];
-  const diagOp = options?.diagOp;
   const isCancelled = () => Boolean(options?.signal?.aborted || options?.shouldCancel?.());
 
   if (isCancelled()) {
-    indexPerfStats.abortedBuilds++;
-    if (diagOp?.isActive()) {
-      diagOp.recordIndexBuild({
-        mode: 'async-cooperative',
-        fromCache: false,
-        elapsedMs: 0,
-        activeComputeMs: 0,
-        batchesProcessed: 0,
-        batchYields: 0,
-        indexedItemsCount: 0,
-        cancelled: true,
-      });
-    }
     return null;
   }
 
   const cached = liveIndexCache.get(safeItems);
   if (cached) {
-    if (diagOp?.isActive()) {
-      diagOp.recordIndexBuild({
-        mode: 'memory-cache',
-        fromCache: true,
-        elapsedMs: 0,
-        activeComputeMs: 0,
-        batchesProcessed: 0,
-        batchYields: 0,
-        indexedItemsCount: safeItems.length,
-        cancelled: false,
-      });
-    }
     return cached;
   }
 
   const canShareInFlight =
-    !options?.onBatchProgress && !options?.signal && !options?.shouldCancel && !options?.diagOp;
+    !options?.onBatchProgress && !options?.signal && !options?.shouldCancel;
   const existingInFlight = canShareInFlight ? inFlightLiveBuilds.get(safeItems) : undefined;
   if (existingInFlight) {
     const res = await existingInFlight;
@@ -614,34 +368,15 @@ export async function buildLiveIndexAsync<T = any>(
   const batchSize = Math.max(100, Math.floor(options?.batchSize ?? 1000));
 
   const taskPromise = (async (): Promise<LiveCatalogIndex<T> | null> => {
-    const trackDiag = Boolean(diagOp && diagOp.isActive());
-    const buildStartMs = trackDiag ? nowMonotonicMs() : 0;
-    let activeComputeMs = 0;
-
     const byId = new Map<string, T>();
     const byCategoryId = new Map<string, T[]>();
     let batchIdx = 0;
-    let yieldsCount = 0;
 
     for (let start = 0; start < safeItems.length; start += batchSize) {
       if (isCancelled()) {
-        indexPerfStats.abortedBuilds++;
-        if (diagOp?.isActive()) {
-          diagOp.recordIndexBuild({
-            mode: 'async-cooperative',
-            fromCache: false,
-            elapsedMs: nowMonotonicMs() - buildStartMs,
-            activeComputeMs,
-            batchesProcessed: batchIdx,
-            batchYields: yieldsCount,
-            indexedItemsCount: start,
-            cancelled: true,
-          });
-        }
         return null;
       }
 
-      const batchStartMs = trackDiag ? nowMonotonicMs() : 0;
       const end = Math.min(safeItems.length, start + batchSize);
       for (let i = start; i < end; i++) {
         const item = safeItems[i] as any;
@@ -664,70 +399,23 @@ export async function buildLiveIndexAsync<T = any>(
         bucket.push(item);
       }
 
-      if (trackDiag) {
-        activeComputeMs += nowMonotonicMs() - batchStartMs;
-      }
-
-      indexPerfStats.batchesProcessed++;
       batchIdx++;
       options?.onBatchProgress?.(end, safeItems.length, batchIdx);
 
       if (isCancelled()) {
-        indexPerfStats.abortedBuilds++;
-        if (diagOp?.isActive()) {
-          diagOp.recordIndexBuild({
-            mode: 'async-cooperative',
-            fromCache: false,
-            elapsedMs: nowMonotonicMs() - buildStartMs,
-            activeComputeMs,
-            batchesProcessed: batchIdx,
-            batchYields: yieldsCount,
-            indexedItemsCount: end,
-            cancelled: true,
-          });
-        }
         return null;
       }
 
       if (end < safeItems.length) {
-        indexPerfStats.batchYields++;
-        yieldsCount++;
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         if (isCancelled()) {
-          indexPerfStats.abortedBuilds++;
-          if (diagOp?.isActive()) {
-            diagOp.recordIndexBuild({
-              mode: 'async-cooperative',
-              fromCache: false,
-              elapsedMs: nowMonotonicMs() - buildStartMs,
-              activeComputeMs,
-              batchesProcessed: batchIdx,
-              batchYields: yieldsCount,
-              indexedItemsCount: end,
-              cancelled: true,
-            });
-          }
           return null;
         }
       }
     }
 
-    indexPerfStats.liveIndexBuilds++;
     const index = instantiateLiveCatalogIndex(safeItems, byId, byCategoryId);
     liveIndexCache.set(safeItems, index);
-
-    if (diagOp?.isActive()) {
-      diagOp.recordIndexBuild({
-        mode: 'async-cooperative',
-        fromCache: false,
-        elapsedMs: nowMonotonicMs() - buildStartMs,
-        activeComputeMs,
-        batchesProcessed: batchIdx,
-        batchYields: yieldsCount,
-        indexedItemsCount: safeItems.length,
-        cancelled: false,
-      });
-    }
 
     return index;
   })();
@@ -788,7 +476,6 @@ export function computeHeroItemsFromList(items: any[]): any[] {
   if (!items || !Array.isArray(items) || items.length === 0) return [];
   if (isPrecomputedHeroArray(items)) return items;
 
-  indexPerfStats.heroComputations++;
   const itemsWithImages = items.filter(hasHeroImage);
   if (itemsWithImages.length === 0) return [];
 
@@ -868,23 +555,16 @@ export function getHeroBannerItems(allVodStreams: any[], allSeriesStreams: any[]
   }
 
   const maxYear = new Date().getFullYear() + 1;
-  const trackDiag = isCatalogLoadDiagnosticsEnabled();
   let innerMap = heroPairCache.get(safeVod);
   if (innerMap) {
     const cached = innerMap.get(safeSeries);
     if (cached && cached.maxYear === maxYear) {
-      if (trackDiag) {
-        recordCatalogSortDiagnostic('hero', true, 0, cached.result.length);
-      }
       return cached.result;
     }
   } else {
     innerMap = new WeakMap();
     heroPairCache.set(safeVod, innerMap);
   }
-
-  indexPerfStats.heroComputations++;
-  const heroStartMs = trackDiag ? nowMonotonicMs() : 0;
 
   let marked: any[];
 
@@ -931,13 +611,5 @@ export function getHeroBannerItems(allVodStreams: any[], allSeriesStreams: any[]
   }
 
   innerMap.set(safeSeries, { maxYear, result: marked });
-  if (trackDiag) {
-    recordCatalogSortDiagnostic(
-      'hero',
-      false,
-      nowMonotonicMs() - heroStartMs,
-      marked.length
-    );
-  }
   return marked;
 }

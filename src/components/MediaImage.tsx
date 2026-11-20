@@ -10,7 +10,6 @@ import {
   acquireCachedImage,
   recoverFromCorruptedLocalImage,
 } from '../services/androidImageCache';
-import { recordCatalogImgElementLoadEvent } from '../utils/catalogDiagnostics';
 
 export interface MediaImageProps extends Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'src'> {
   src?: unknown;
@@ -1042,7 +1041,7 @@ function MediaImageInner({
       return;
     }
 
-    const syncHit = getInstantCachedImageSrc(resolvedUrl, { countHit: true });
+    const syncHit = getInstantCachedImageSrc(resolvedUrl);
     if (syncHit && !localRecoveryAttemptedRef.current) {
       rememberLoadedImageUrl(resolvedUrl);
       setEffectiveImgSrc(syncHit);
@@ -1188,7 +1187,6 @@ function MediaImageInner({
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
     rememberLoadedImageUrl(resolvedUrl);
-    recordCatalogImgElementLoadEvent();
     setStatus('loaded');
     onLoad?.(e);
   };

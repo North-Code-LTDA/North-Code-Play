@@ -248,8 +248,21 @@ import {
   getLiveTvRenderStatsForTest,
   resetLiveTvRenderStatsForTest,
 } from '../src/views/LiveTvView';
-import { XtreamProvider } from '../src/context/XtreamContext';
+import {
+  XtreamProvider,
+  useXtreamSession,
+  useXtreamLive,
+  useXtreamVod,
+  useXtreamSeries,
+} from '../src/context/XtreamContext';
 import { XtreamService } from '../src/services/xtreamService';
+import {
+  executeXtreamGetRequest,
+  setTransportTestConfig,
+  getAndroidCatalogAdapterLoadCountForTest,
+  resetAndroidCatalogAdapterLoadCountForTest,
+} from '../src/services/httpTransport';
+import { setAndroidCatalogFileAdapterTestOverride } from '../src/services/androidCatalogFileAdapter';
 import type { XtreamCredentials } from '../src/types';
 import {
   executeBackAction,
@@ -294,6 +307,8 @@ import {
   getHeroBannerItems,
   getOrCreateVodIndex,
 } from '../src/utils/catalogIndex';
+import * as androidImageCacheModule from '../src/services/androidImageCache';
+import * as catalogIndexModule from '../src/utils/catalogIndex';
 import {
   createSimulatedPersistentImageDiskHarness,
   createValidTestJpegBytes,
@@ -305,24 +320,13 @@ import {
   executeHomeStartupImagePreparation,
   recordVisitedShowcaseCategory,
   getVisitedShowcaseCategories,
-  getImageCacheRuntimeStatsSnapshot,
   isAndroidPersistentImageCacheAvailable,
   extractCatalogItemRawImage,
   isVideoPlaybackThrottlingActiveForTest,
   setCatalogTransferPhaseActiveForImageCache,
   isCatalogTransferPhaseActiveForImageCache,
-  getStartupImageCoordinationMode,
-  scheduleCooperativeCatalogUrlCount,
   scheduleBackgroundLowPriorityPreload,
 } from '../src/services/androidImageCache';
-import {
-  resetCatalogDiagnosticsForTest,
-  startCatalogDiagnosticsSession,
-  getCatalogDiagnosticsSnapshot,
-  formatCatalogDiagnosticsReport,
-  recordStartupCoordinatorReadyTimestamp,
-  recordHomeOpeningMilestone,
-} from '../src/utils/catalogDiagnostics';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -2570,8 +2574,6 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
   try {
     harness.install();
     setMediaImageRetryDelayMsForTest(25);
-    resetCatalogDiagnosticsForTest(true);
-    startCatalogDiagnosticsSession(7001, 2);
 
     // -------------------------------------------------------------------------
     // 7.5. Deduplicação de requisições simultâneas para a mesma URL
@@ -2608,11 +2610,6 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
     assert(
       dupRes1.src.includes('/_capacitor_file_/data/user/0/com.northcode.play/files/nc_image_cache/'),
       'A URL retornada deve apontar para o diretório persistente nc_image_cache via Capacitor'
-    );
-    assert.strictEqual(
-      getImageCacheRuntimeStatsSnapshot().deduplicatedDownloadsCount,
-      2,
-      'O gerenciador deve contabilizar exatamente 2 downloads deduplicados'
     );
     customResponderFn = null;
 
@@ -2867,7 +2864,7 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
     try {
       // No momento: lru_1 e lru_3 estão no disco (lru_1 é mais antigo que lru_3).
       // Acessamos lru_1 via getInstantCachedImageSrc no mesmo milissegundo para torná-lo mais recente que lru_3:
-      const hitSameMs = getInstantCachedImageSrc(lruUrl1, { countHit: true });
+      const hitSameMs = getInstantCachedImageSrc(lruUrl1);
       assert(hitSameMs, 'lru_1 deve responder sincronicamente em memória');
       // Agora adicionamos lru_4 no mesmo milissegundo: lru_3 deve ser descartado e lru_1 preservado!
       await acquireCachedImage(lruUrl4);
@@ -2891,12 +2888,13 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
       'A nova entrada lru_4 deve estar armazenada no disco'
     );
     assert(
-      getImageCacheRuntimeStatsSnapshot().bytesStoredCurrently <= 6000,
-      'O total de bytes armazenados deve respeitar estritamente o orçamento configurado'
+      harness.getTotalDiskBytes() <= 6000,
+      'O total de bytes armazenados em disco deve respeitar estritamente o orçamento configurado'
     );
-    assert(
-      getImageCacheRuntimeStatsSnapshot().evictedEntriesCount >= 2,
-      'A métrica de entradas removidas por limite de espaço (LRU) deve ser incrementada'
+    assert.strictEqual(
+      harness.getPhysicalFileCount(),
+      2,
+      'Ao atingir o limite de 6000 bytes (2 imagens de 2048B), apenas as 2 entradas mais recentes devem permanecer no disco'
     );
 
     // Restaurar orçamento padrão de 120 MB
@@ -2938,12 +2936,9 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
     const renderedImgAfterRecovery = container.querySelector('img');
     assert(
       renderedImgAfterRecovery &&
-        renderedImgAfterRecovery.getAttribute('src')?.includes('/_capacitor_file_/'),
+        renderedImgAfterRecovery.getAttribute('src')?.includes('/_capacitor_file_/') &&
+        !harness.isPhysicalFileMarkedCorrupted(renderedImgAfterRecovery.getAttribute('src')!),
       'Após recuperação corretiva, MediaImage deve renderizar o novo arquivo local íntegro'
-    );
-    assert(
-      getImageCacheRuntimeStatsSnapshot().corruptedLocalRecoveriesCount >= 1,
-      'A recuperação corretiva de arquivo local corrompido deve ser registrada nas métricas'
     );
 
     // -------------------------------------------------------------------------
@@ -3094,17 +3089,18 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
       'A preparação inicial deve armazenar todas as capas prioritárias no cache persistente'
     );
 
-    // Executar novamente quando já estão em cache: 0ms de atraso artificial
+    // Executar novamente quando já estão em cache: resposta imediata sem downloads extras
+    const cacheHitPrepStartMs = Date.now();
     const prepRes2 = await executeHomeStartupImagePreparation(planFullHdTv);
+    const cacheHitPrepElapsedMs = Date.now() - cacheHitPrepStartMs;
     assert.strictEqual(
       prepRes2.allAlreadyCached,
       true,
       'Quando as imagens prioritárias já estão no cache local, allAlreadyCached deve ser true'
     );
-    assert.strictEqual(
-      prepRes2.durationMs,
-      0,
-      'Quando as imagens prioritárias já estão no cache local, não deve haver atraso artificial (0ms)'
+    assert(
+      cacheHitPrepElapsedMs < 50,
+      `Quando as imagens prioritárias já estão no cache local, não deve haver atraso artificial (levou ${cacheHitPrepElapsedMs} ms)`
     );
 
     // Validar extração de imagem de itens do catálogo e pré-carregamento real das fileiras adjacentes
@@ -3275,42 +3271,14 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
     );
 
     // -------------------------------------------------------------------------
-    // 7.12. Diagnóstico sanitizado de imagens em catalogDiagnostics.ts
+    // 7.12. Tags <img> renderizam sem dependência de catalogDiagnostics.ts
     // -------------------------------------------------------------------------
-    // Simular eventos <img onLoad> em cartões montados para comprovar distinção entre eventos DOM e rede
     const mountedImgs = container.querySelectorAll('img');
     assert(mountedImgs.length > 0, 'Devem existir tags <img> montadas na vitrine');
     await act(async () => {
       (mountedImgs[0] as any).dispatchEvent(new Event('load'));
       if (mountedImgs[1]) (mountedImgs[1] as any).dispatchEvent(new Event('load'));
     });
-
-    const diagSnap = getCatalogDiagnosticsSnapshot();
-    assert(diagSnap, 'Snapshot de diagnóstico deve existir quando ativo');
-    assert(
-      diagSnap.imageCache.uniqueCatalogImageUrls > 0 &&
-        diagSnap.imageCache.uniqueHomeImageUrls > 0,
-      'Diagnóstico deve registrar total de URLs únicas no catálogo e nas fileiras da Home'
-    );
-    assert(
-      diagSnap.imageCache.persistentCacheHits > 0 &&
-        diagSnap.imageCache.cacheLayerDownloads > 0 &&
-        diagSnap.imageCache.bytesTransferredByCache > 0 &&
-        diagSnap.imageCache.bytesStoredCurrently > 0 &&
-        diagSnap.imageCache.imgElementLoadEventsCount >= 2 &&
-        diagSnap.imageCache.localRecoveryTimeMs !== null &&
-        diagSnap.imageCache.priorityCoversPreparationMs !== null,
-      'Diagnóstico deve registrar cache hits, downloads, bytes transferidos/armazenados, eventos <img> e tempos de recuperação/preparação'
-    );
-
-    const formattedReport = formatCatalogDiagnosticsReport(diagSnap);
-    assert(
-      formattedReport.includes('[Cache Persistente e Pré-Carregamento de Imagens]') &&
-        formattedReport.includes('Distinção explícita (renderização vs. rede): eventos <img onLoad>=') &&
-        !formattedReport.includes('pw1') &&
-        !formattedReport.includes('http://img.provider.tv'),
-      'Relatório formatado deve incluir a seção de imagens e manter sanitização completa sem expor credenciais nem URLs completas'
-    );
 
     // -------------------------------------------------------------------------
     // 7.13. Reconhecimento do preview ativo da TV ao Vivo na redução de concorrência
@@ -3475,14 +3443,14 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
       'Após logout final, nenhum arquivo deve permanecer no disco'
     );
     assert.strictEqual(
-      getImageCacheRuntimeStatsSnapshot().storedEntriesCount,
+      harness.getTotalDiskBytes(),
       0,
-      'Após logout, o índice em memória deve ficar completamente vazio'
+      'Após logout final, nenhum byte deve permanecer ocupado no disco'
     );
     assert.strictEqual(
-      getImageCacheRuntimeStatsSnapshot().bytesStoredCurrently,
-      0,
-      'Após logout, bytesStoredCurrently deve ser zero'
+      getInstantCachedImageSrc(nextSessionUrl),
+      null,
+      'Após logout, o índice em memória deve ficar completamente vazio'
     );
     assert.strictEqual(
       getVisitedShowcaseCategories().length,
@@ -3494,7 +3462,6 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
     customResponderFn = null;
     harness.uninstall();
     setMediaImageRetryDelayMsForTest(2000);
-    resetCatalogDiagnosticsForTest(false);
     clearAllBackHandlersForTest();
     clearFocusMemory();
     await act(async () => {
@@ -3504,7 +3471,7 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
   }
 
   console.log(
-    '✅ Etapa 1 (cache persistente Android, deduplicação, validação HTTP/assinatura, LRU, recuperação de corrupção, preparação prioritária, logout e diagnóstico) validada!'
+    '✅ Etapa 1 (cache persistente Android, deduplicação, validação HTTP/assinatura, LRU, recuperação de corrupção, preparação prioritária e logout) validada!'
   );
 }
 
@@ -3546,8 +3513,6 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
   try {
     harness.install();
     setMediaImageRetryDelayMsForTest(25);
-    resetCatalogDiagnosticsForTest(true);
-    startCatalogDiagnosticsSession(8001, 2);
 
     // -------------------------------------------------------------------------
     // 8.1. Coordenação entre carregamento dos 6 catálogos e cache de imagens
@@ -3568,7 +3533,7 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
     );
 
     // 1) Imagens já persistidas localmente continuam sendo reutilizadas imediatamente sem rede
-    const instantDuringCatalogs = getInstantCachedImageSrc(preCachedLogoUrl, { countHit: true });
+    const instantDuringCatalogs = getInstantCachedImageSrc(preCachedLogoUrl);
     assert(
       instantDuringCatalogs === preRes.src &&
         instantDuringCatalogs.includes(
@@ -3581,11 +3546,6 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
       acquireHitDuringCatalogs.fromCache,
       true,
       'acquireCachedImage também deve retornar hit local imediato durante os catálogos para imagens já persistidas'
-    );
-    const snapDuringCatalogs1 = getCatalogDiagnosticsSnapshot();
-    assert(
-      snapDuringCatalogs1.imageCache.hitsDuringCatalogsCount >= 2,
-      'Reutilização de imagem local durante os catálogos deve incrementar hitsDuringCatalogsCount'
     );
 
     // 2) Pré-carregamento oportunista de baixa prioridade deve ser bloqueado durante os catálogos
@@ -3621,11 +3581,6 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
       downloadsBeforeCatalogPhase,
       'Nenhum download remoto de imagem deve ocorrer durante a transferência dos catálogos'
     );
-    assert.strictEqual(
-      getCatalogDiagnosticsSnapshot().imageCache.downloadsDuringCatalogsCount,
-      0,
-      'downloadsDuringCatalogsCount deve permanecer 0 quando a coordenação está ativa'
-    );
 
     // Concluir os 6 catálogos -> libera a fila imediatamente
     setCatalogTransferPhaseActiveForImageCache(false);
@@ -3637,9 +3592,8 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
     );
 
     // -------------------------------------------------------------------------
-    // 8.2. Eliminação do intervalo oculto de ~8,1s pós-catálogos (deferFullUrlCount + lazy rows)
+    // 8.2. Plano rápido de abertura da Home sem varredura estatística de todo o catálogo
     // -------------------------------------------------------------------------
-    // Criar catálogo sintético volumoso com 120 categorias e 3.000 itens para validar o caminho crítico
     const manyVodCategories = Array.from({ length: 120 }, (_, i) => ({
       category_id: `cat_${i + 1}`,
       category_name: `Categoria Filmes ${i + 1}`,
@@ -3660,8 +3614,8 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
       direct_source: '',
     }));
 
-    const deferredPlanStartMs = Date.now();
-    const deferredPlan = buildHomeStartupImagePlan({
+    const startupPlanStartMs = Date.now();
+    const startupPlan = buildHomeStartupImagePlan({
       allLiveStreams: [
         {
           num: 1,
@@ -3683,68 +3637,21 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
       seriesCategories: [],
       allSeriesStreams: [],
       continueWatchingItems: [],
-      deferFullUrlCount: true,
     });
-    const deferredPlanElapsedMs = Date.now() - deferredPlanStartMs;
+    const startupPlanElapsedMs = Date.now() - startupPlanStartMs;
 
     assert(
-      deferredPlan.priorityUrls.length > 0,
-      'Plano com deferFullUrlCount deve produzir as URLs prioritárias da primeira dobra imediatamente'
+      startupPlan.priorityUrls.length > 0,
+      'buildHomeStartupImagePlan deve produzir as URLs prioritárias da primeira dobra imediatamente'
     );
     assert(
-      deferredPlanElapsedMs < 200,
-      `buildHomeStartupImagePlan com deferFullUrlCount deve executar rapidamente sem bloquear a thread principal (levou ${deferredPlanElapsedMs} ms)`
+      startupPlanElapsedMs < 200,
+      `buildHomeStartupImagePlan sem varredura estatística deve executar rapidamente (levou ${startupPlanElapsedMs} ms)`
     );
-
-    const diagAfterDeferredPlan = getCatalogDiagnosticsSnapshot();
-    assert(
-      diagAfterDeferredPlan.imageCache.planBuildTotalMs !== null &&
-        diagAfterDeferredPlan.imageCache.planCategorySelectionAndSortMs !== null,
-      'Diagnóstico deve registrar planBuildTotalMs e planCategorySelectionAndSortMs separadamente'
-    );
-
-    // Executar contagem cooperativa em segundo plano e validar que converge para o total exato
-    scheduleCooperativeCatalogUrlCount({
-      allLiveStreams: [
-        {
-          stream_icon: 'http://img.provider.tv/live/ch_901.jpg',
-        },
-      ] as any,
-      allVodStreams: manyVodStreams as any,
-      allSeriesStreams: [],
-      vodCategories: manyVodCategories as any,
-      seriesCategories: [],
-      continueWatchingItems: [],
-      batchSize: 800,
-    });
-    await new Promise((r) => setTimeout(r, 80));
-
-    const diagAfterCoopCount = getCatalogDiagnosticsSnapshot();
     assert.strictEqual(
-      diagAfterCoopCount.imageCache.uniqueCatalogImageUrls,
-      3001,
-      'Contagem cooperativa em segundo plano deve apurar exatamente as 3.001 URLs únicas do catálogo sem travar a abertura da Home'
-    );
-    assert(
-      diagAfterCoopCount.imageCache.planUniqueUrlCountMs !== null &&
-        diagAfterCoopCount.imageCache.planUniqueUrlCountMs >= 0,
-      'Diagnóstico deve registrar planUniqueUrlCountMs após a contagem cooperativa'
-    );
-
-    // Validar medição de onReadyToHomeAvailableMs
-    recordStartupCoordinatorReadyTimestamp();
-    await new Promise((r) => setTimeout(r, 12));
-    recordHomeOpeningMilestone({
-      isDisplaySetupOpen: false,
-      isOverlayActive: false,
-      isAuthRejected: false,
-      allSixFinished: true,
-    });
-    const diagAfterHomeRelease = getCatalogDiagnosticsSnapshot();
-    assert(
-      diagAfterHomeRelease.imageCache.onReadyToHomeAvailableMs !== null &&
-        diagAfterHomeRelease.imageCache.onReadyToHomeAvailableMs >= 0,
-      'Diagnóstico deve registrar onReadyToHomeAvailableMs entre onReady() e a liberação efetiva da Home'
+      typeof (androidImageCacheModule as any).scheduleCooperativeCatalogUrlCount,
+      'undefined',
+      'scheduleCooperativeCatalogUrlCount deve ter sido removida definitivamente (Entrega C2.1)'
     );
 
     // -------------------------------------------------------------------------
@@ -3798,13 +3705,8 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
           failPriorityUrl,
           slowPendingPriorityUrl,
         ],
-        uniqueCatalogImageUrlsCount: 4,
-        uniqueHomeImageUrlsCount: 4,
         posterCardsPerRow: 6,
         landscapeCardsPerRow: 4,
-        planBuildTotalMs: 1,
-        planCategorySelectionAndSortMs: 0.5,
-        planUniqueUrlCountMs: 0,
       },
       { maxWaitMs: 60 }
     );
@@ -3849,8 +3751,6 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
       delayMs: 45,
     });
 
-    const staleBeforeCount =
-      getCatalogDiagnosticsSnapshot().imageCache.cancelledStaleQueueTasksCount;
     const downloadsBeforeVerticalBurst = harness.getNetworkFetchCount();
 
     // Disparar 4 downloads que ocupam os 4 workers ativos (capacidade ociosa padrão) +
@@ -3909,13 +3809,6 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
       5,
       'Somente os 4 workers ativos + 1 cartão de destino devem ter sido baixados pela rede (as 4 obsoletas foram removidas da fila)'
     );
-    const staleAfterCount =
-      getCatalogDiagnosticsSnapshot().imageCache.cancelledStaleQueueTasksCount;
-    assert.strictEqual(
-      staleAfterCount - staleBeforeCount,
-      4,
-      'cancelledStaleQueueTasksCount deve registrar exatamente as 4 tarefas obsoletas removidas da fila'
-    );
 
     // Verificar também que desmontar um componente <MediaImage /> antes do início do download cancela sua tarefa na fila
     const busy1 = acquireCachedImage('http://img.provider.tv/vnav/busy_media_1.jpg');
@@ -3948,45 +3841,29 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
     customResponderFn = null;
 
     // -------------------------------------------------------------------------
-    // 8.5. Consolidação definitiva do Modo B (Cache otimizado) ignorando legado Modo A
+    // 8.5. Consolidação definitiva do Modo B ignorando chave legada mode_a
     // -------------------------------------------------------------------------
     window.localStorage.setItem('nc_startup_image_mode_v1', 'mode_a');
-    assert.strictEqual(
-      getStartupImageCoordinationMode(),
-      'mode_b',
-      'O modo de coordenação de abertura no Android deve ser definitivamente mode_b, ignorando chave legada mode_a'
+    setCatalogTransferPhaseActiveForImageCache(true);
+    const fetchesBeforeModeBCheck = harness.getNetworkFetchCount();
+    const blockedInModeBPromise = acquireCachedImage(
+      'http://img.provider.tv/covers/mode_b_still_active_over_legacy_key.jpg',
+      { priority: 'normal' }
     );
+    await new Promise((r) => setTimeout(r, 25));
     assert.strictEqual(
-      getCatalogDiagnosticsSnapshot().imageCache.coordinationMode,
-      'mode_b',
-      'O snapshot de diagnóstico deve permanecer definitivamente em mode_b mesmo com preferência legada mode_a no storage'
+      harness.getNetworkFetchCount(),
+      fetchesBeforeModeBCheck,
+      'Mesmo com nc_startup_image_mode_v1=mode_a no storage, a coordenação consolidada continua retendo downloads remotos durante os catálogos'
     );
-    assert.strictEqual(
-      harness.hasPhysicalFileForUrl(preCachedLogoUrl),
-      true,
-      'Os arquivos já persistidos no disco devem ser preservados integralmente no Modo B consolidado'
-    );
-
-    const reportTextModeB = formatCatalogDiagnosticsReport(getCatalogDiagnosticsSnapshot());
     assert(
-      reportTextModeB.includes('Modo B (Cache persistente otimizado — padrão)') &&
-        !reportTextModeB.includes('Modo A (Catálogos prioritários') &&
-        reportTextModeB.includes('Atividade durante os 6 catálogos: downloads remotos iniciados=') &&
-        reportTextModeB.includes('Desfecho das imagens prioritárias da abertura') &&
-        reportTextModeB.includes('construção do plano=') &&
-        reportTextModeB.includes('onReady → Home liberada=') &&
-        reportTextModeB.includes('Saúde da fila de imagens: tarefas nativas simultâneas máx.='),
-      'Relatório de diagnóstico deve exibir Modo B consolidado e todas as métricas de coordenação e fila'
+      getInstantCachedImageSrc(preCachedLogoUrl) !== null &&
+        harness.hasPhysicalFileForUrl(preCachedLogoUrl),
+      'Os arquivos já persistidos no disco devem continuar sendo servidos e preservados mesmo com chave legada mode_a'
     );
-
-    // Verificar também que um reset de diagnóstico com chave legada mode_a no localStorage continua em mode_b
-    resetCatalogDiagnosticsForTest(true);
-    startCatalogDiagnosticsSession(8501, 2);
-    assert.strictEqual(
-      getCatalogDiagnosticsSnapshot().imageCache.coordinationMode,
-      'mode_b',
-      'Nova sessão de diagnóstico deve iniciar em mode_b mesmo se nc_startup_image_mode_v1=mode_a estiver no localStorage'
-    );
+    setCatalogTransferPhaseActiveForImageCache(false);
+    const unblockedAfterModeBCheck = await blockedInModeBPromise;
+    assert.strictEqual(unblockedAfterModeBCheck.isLocalFile, true);
 
     await clearImageCacheOnLogout();
   } finally {
@@ -3999,7 +3876,6 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
     setCatalogTransferPhaseActiveForImageCache(false);
     harness.uninstall();
     setMediaImageRetryDelayMsForTest(2000);
-    resetCatalogDiagnosticsForTest(false);
     clearAllBackHandlersForTest();
     clearFocusMemory();
     await act(async () => {
@@ -4638,17 +4514,46 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       null,
       'ConfigView NÃO deve mais renderizar Grupo 5 (Diagnóstico de Fluidez do D-Pad)'
     );
-    assert(
-      catalogDiagToggleBtn,
-      'Botão de coleta de diagnóstico de abertura (C2) deve permanecer preservado em Arquitetura & Diagnóstico'
-    );
+    const catalogDiagSectionEl = container.querySelector(
+      '[data-catalog-diagnostics-section="true"]'
+    ) as HTMLElement | null;
+    const screenDiagPanelEl = container.querySelector(
+      '[data-screen-diagnostics-panel="true"]'
+    ) as HTMLElement | null;
 
-    // Validar que o relatório restante de catálogos NÃO inclui mais o bloco de Fluidez do D-Pad
-    const remainingCatalogReport = formatCatalogDiagnosticsReport(getCatalogDiagnosticsSnapshot());
+    assert.strictEqual(
+      startupModeToggleBtn,
+      null,
+      'ConfigView NÃO deve renderizar seletor A/B de modo de abertura (Modo A/Modo B)'
+    );
+    assert.strictEqual(
+      dpadModeToggleBtn,
+      null,
+      'ConfigView NÃO deve renderizar seletor A/B de modo de navegação D-Pad'
+    );
+    assert.strictEqual(
+      dpadDiagToggleBtn,
+      null,
+      'ConfigView NÃO deve mais renderizar botão de Diagnóstico de fluidez do D-Pad (Entrega C1)'
+    );
+    assert.strictEqual(
+      dpadSectionEl,
+      null,
+      'ConfigView NÃO deve mais renderizar Grupo 5 (Diagnóstico de Fluidez do D-Pad)'
+    );
+    assert.strictEqual(
+      catalogDiagToggleBtn,
+      null,
+      'ConfigView NÃO deve mais renderizar botão de Diagnóstico de Carregamento dos Catálogos (Entrega C2.1)'
+    );
+    assert.strictEqual(
+      catalogDiagSectionEl,
+      null,
+      'ConfigView NÃO deve mais renderizar Grupo 4 (Diagnóstico de Carregamento Inicial dos Catálogos — Entrega C2.1)'
+    );
     assert(
-      !remainingCatalogReport.includes('[Diagnóstico de Fluidez do D-Pad (Etapa 3)]') &&
-        !remainingCatalogReport.includes('Eventos D-Pad recebidos'),
-      'O relatório de catálogos não deve mais depender nem incluir o diagnóstico de fluidez do D-Pad'
+      screenDiagPanelEl !== null,
+      'Diagnóstico da Tela (Grupos 1 a 3) deve permanecer preservado até a Entrega C3'
     );
 
     await clearImageCacheOnLogout();
@@ -4663,7 +4568,6 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     setAndroidPlatformOverrideForDpadTest(null);
     harness.uninstall();
     setMediaImageRetryDelayMsForTest(2000);
-    resetCatalogDiagnosticsForTest(false);
     clearAllBackHandlersForTest();
     clearFocusMemory();
     await act(async () => {
@@ -5710,6 +5614,255 @@ async function runDeliveryAHeroBannerConsolidationTests(): Promise<void> {
   );
 }
 
+// ============================================================================
+// 11. CONSOLIDAÇÃO PARA LANÇAMENTO — ENTREGA C2.1 (REMOÇÃO DE DIAGNÓSTICOS DE CATÁLOGO)
+// ============================================================================
+async function runDeliveryC21CatalogCleanupAndRegressionTests(): Promise<void> {
+  console.log(
+    '\n--- 11. Entrega C2.1: Remoção Física de catalogDiagnostics + Regressão Transporte & Orquestração ---'
+  );
+
+  // 1) Garantir exclusão física e ausência de símbolos removidos nos módulos
+  assert.strictEqual(
+    fs.existsSync(path.resolve('src/utils/catalogDiagnostics.ts')),
+    false,
+    'src/utils/catalogDiagnostics.ts deve ter sido excluído fisicamente'
+  );
+  for (const removedExport of [
+    'getImageCacheRuntimeStatsSnapshot',
+    'getStartupImageCoordinationMode',
+    'scheduleCooperativeCatalogUrlCount',
+  ]) {
+    assert.strictEqual(
+      typeof (androidImageCacheModule as any)[removedExport],
+      'undefined',
+      `androidImageCache não deve exportar ${removedExport}`
+    );
+  }
+  for (const removedIndexExport of ['getCatalogIndexPerfStats', 'resetCatalogIndexPerfStats']) {
+    assert.strictEqual(
+      typeof (catalogIndexModule as any)[removedIndexExport],
+      'undefined',
+      `catalogIndex não deve exportar ${removedIndexExport}`
+    );
+  }
+
+  const homeTsxSource = fs.readFileSync(path.resolve('src/pages/Home.tsx'), 'utf8');
+  assert(
+    !homeTsxSource.includes('deferFullUrlCount') &&
+      !homeTsxSource.includes('catalogDiagnostics') &&
+      homeTsxSource.includes('maxWaitMs: 3500'),
+    'Home.tsx deve preservar maxWaitMs: 3500 sem deferFullUrlCount ou catalogDiagnostics'
+  );
+
+  // 2) Transporte Web fetch vs arquivo temporário Android, rejeição de payload inválido e retry
+  const prevFetchResponder = customFetchResponder;
+  try {
+    // Web fetch válido
+    setTransportTestConfig({ mode: 'web', androidCatalogPluginAvailable: false });
+    customFetchResponder = async () =>
+      new Response(JSON.stringify([{ stream_id: 1, name: 'Filme Web' }]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    const webPayload = await executeXtreamGetRequest({
+      url: 'http://provider.tv/player_api.php?action=get_vod_streams',
+      timeoutMs: 5000,
+      isFullCatalogRequest: true,
+    });
+    assert(Array.isArray(webPayload) && webPayload.length === 1 && webPayload[0].stream_id === 1);
+
+    // JSON/HTML inválido deve falhar em normalizeCatalogArray via XtreamService
+    customFetchResponder = async () =>
+      new Response('<html><body>Erro 502</body></html>', { status: 200 });
+    let invalidCatalogFailed = false;
+    try {
+      await XtreamService.getVodStreams({
+        serverUrl: 'http://provider.tv',
+        username: 'u1',
+        password: 'p1',
+      });
+    } catch {
+      invalidCatalogFailed = true;
+    }
+    assert.strictEqual(
+      invalidCatalogFailed,
+      true,
+      'Resposta HTML/JSON inválida deve ser rejeitada pelo carregamento de catálogos'
+    );
+
+    // Retry único (1 retentativa) em erro transitório HTTP 503
+    let retryAttempts = 0;
+    customFetchResponder = async () => {
+      retryAttempts++;
+      if (retryAttempts === 1) {
+        return new Response('Busy', { status: 503 });
+      }
+      return new Response(JSON.stringify([{ stream_id: 2, name: 'Após Retry' }]), {
+        status: 200,
+      });
+    };
+    const retried = await XtreamService.getVodStreams({
+      serverUrl: 'http://provider.tv',
+      username: 'u1',
+      password: 'p1',
+    });
+    assert.strictEqual(retryAttempts, 2, 'Catálogo deve executar 1 retentativa em erro transitório');
+    assert.strictEqual(retried[0].stream_id, 2);
+
+    // Transferência Android por arquivo temporário (CatalogFileTransfer)
+    resetAndroidCatalogAdapterLoadCountForTest();
+    setTransportTestConfig({ mode: 'capacitor', androidCatalogPluginAvailable: true });
+    let cleanedFileId: string | null = null;
+    const tempPath = '/data/user/0/com.northcode.play/cache/nc_catalog_transfers/nc_catalog_test1.json';
+    const tempFileUrl = `${windowInstance.location.origin}/_capacitor_file_${tempPath}`;
+    setAndroidCatalogFileAdapterTestOverride({
+      convertFileSrc: () => tempFileUrl,
+      plugin: {
+        async downloadCatalogToTempFile() {
+          return {
+            status: 200,
+            fileId: 'nc_catalog_test1.json',
+            filePath: tempPath,
+            cacheDir: '/data/user/0/com.northcode.play/cache/nc_catalog_transfers',
+          };
+        },
+        async cancelTransfer() {
+          return { cancelled: true };
+        },
+        async cleanupTransferFile({ fileId }) {
+          cleanedFileId = fileId;
+          return { deleted: true };
+        },
+      },
+    });
+    customFetchResponder = async (url) => {
+      assert.strictEqual(url, tempFileUrl);
+      return new Response(JSON.stringify([{ stream_id: 99, name: 'Filme Temp Android' }]), {
+        status: 200,
+      });
+    };
+    const androidPayload = await executeXtreamGetRequest({
+      url: 'http://provider.tv/player_api.php?action=get_vod_streams',
+      timeoutMs: 5000,
+      isFullCatalogRequest: true,
+    });
+    assert.strictEqual(getAndroidCatalogAdapterLoadCountForTest(), 1);
+    assert.strictEqual(androidPayload[0].stream_id, 99);
+    assert.strictEqual(cleanedFileId, 'nc_catalog_test1.json');
+  } finally {
+    customFetchResponder = prevFetchResponder;
+    setAndroidCatalogFileAdapterTestOverride({ plugin: null, convertFileSrc: null });
+    setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null, androidCatalogPluginAvailable: null });
+  }
+
+  // 3) Orquestração das 6 operações em XtreamContext (concorrência máx 2 e allSixFinished)
+  const doc = windowInstance.document;
+  const container = doc.createElement('div');
+  doc.body.appendChild(container);
+  const root = createRoot(container);
+
+  const origMethods = {
+    getLiveCategories: XtreamService.getLiveCategories,
+    getVodCategories: XtreamService.getVodCategories,
+    getSeriesCategories: XtreamService.getSeriesCategories,
+    getLiveStreams: XtreamService.getLiveStreams,
+    getVodStreams: XtreamService.getVodStreams,
+    getSeries: XtreamService.getSeries,
+  };
+
+  let currentInFlightOps = 0;
+  let maxObservedConcurrentOps = 0;
+  let observedAllSixFinished = false;
+  let observedCounts = { live: 0, vod: 0, series: 0 };
+
+  const wrapConcurrent = <T,>(fn: () => Promise<T>) => async () => {
+    currentInFlightOps++;
+    if (currentInFlightOps > maxObservedConcurrentOps) {
+      maxObservedConcurrentOps = currentInFlightOps;
+    }
+    try {
+      await new Promise((r) => setTimeout(r, 15));
+      return await fn();
+    } finally {
+      currentInFlightOps--;
+    }
+  };
+
+  XtreamService.getLiveCategories = wrapConcurrent(async () => [
+    { category_id: '1', category_name: 'Canais', parent_id: 0 },
+  ]);
+  XtreamService.getVodCategories = wrapConcurrent(async () => [
+    { category_id: '2', category_name: 'Filmes', parent_id: 0 },
+  ]);
+  XtreamService.getSeriesCategories = wrapConcurrent(async () => [
+    { category_id: '3', category_name: 'Séries', parent_id: 0 },
+  ]);
+  XtreamService.getLiveStreams = wrapConcurrent(
+    async () => [{ stream_id: 11, name: 'Canal Teste', category_id: '1' } as any]
+  );
+  XtreamService.getVodStreams = wrapConcurrent(
+    async () => [{ stream_id: 22, name: 'Filme Teste', category_id: '2' } as any]
+  );
+  XtreamService.getSeries = wrapConcurrent(
+    async () => [{ series_id: 33, name: 'Série Teste', category_id: '3' } as any]
+  );
+
+  function ContextProbe() {
+    const session = useXtreamSession();
+    const live = useXtreamLive();
+    const vod = useXtreamVod();
+    const series = useXtreamSeries();
+    const triggeredRef = React.useRef(false);
+    React.useEffect(() => {
+      if (session.sessionReady && !triggeredRef.current) {
+        triggeredRef.current = true;
+        void live.fetchLiveStreams();
+        void vod.fetchVodStreams();
+        void series.fetchSeriesStreams();
+      }
+    }, [session.sessionReady, live, vod, series]);
+    observedAllSixFinished = session.allSixFinished;
+    observedCounts = {
+      live: live.allLiveStreams.length,
+      vod: vod.allVodStreams.length,
+      series: series.allSeriesStreams.length,
+    };
+    return null;
+  }
+
+  try {
+    await act(async () => {
+      root.render(
+        React.createElement(
+          XtreamProvider,
+          { credentials: { serverUrl: 'http://provider.tv', username: 'u1', password: 'p1' } },
+          React.createElement(ContextProbe)
+        )
+      );
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 250));
+    });
+    assert.strictEqual(observedAllSixFinished, true, 'XtreamContext deve concluir os 6 catálogos');
+    assert(
+      maxObservedConcurrentOps <= 2 && maxObservedConcurrentOps >= 1,
+      `Orquestração dos 6 catálogos deve manter concorrência máxima de 2 (observado=${maxObservedConcurrentOps})`
+    );
+    assert.deepStrictEqual(observedCounts, { live: 1, vod: 1, series: 1 });
+  } finally {
+    Object.assign(XtreamService, origMethods);
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  }
+
+  console.log(
+    '✅ Entrega C2.1 (exclusão física de catalogDiagnostics, preservação de transporte Web/Android, retries, validação de JSON inválido e fila de 6 catálogos) validada!'
+  );
+}
+
 async function main(): Promise<void> {
   console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — NORTH CODE PLAY\n');
   runEssentialTrackAndSecurityTests();
@@ -5722,6 +5875,7 @@ async function main(): Promise<void> {
   await runStep2StartupAndFluidityStabilizationTests();
   await runStep3DpadFluidityAndDiagnosticsTests();
   await runDeliveryAHeroBannerConsolidationTests();
+  await runDeliveryC21CatalogCleanupAndRegressionTests();
   for (const timer of rafTimers.values()) {
     clearTimeout(timer);
   }

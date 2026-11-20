@@ -34,11 +34,6 @@ import {
   isElementFocusable,
 } from '../navigation';
 import {
-  recordHomeOpeningMilestone,
-  recordHomeManualContinueIntent,
-  recordStartupCoordinatorReadyTimestamp,
-} from '../utils/catalogDiagnostics';
-import {
   isAndroidPersistentImageCacheAvailable,
   ensureAndroidImageCacheHydrated,
   buildHomeStartupImagePlan,
@@ -164,7 +159,6 @@ function StartupImageCacheCoordinator({
   useEffect(() => {
     if (isAuthRejected) {
       setCatalogTransferPhaseActiveForImageCache(false);
-      recordStartupCoordinatorReadyTimestamp();
       onReady();
       return;
     }
@@ -188,14 +182,12 @@ function StartupImageCacheCoordinator({
       seriesCategories,
       displayMode: mode,
       tvScale,
-      deferFullUrlCount: true,
     });
 
     if (
       !isAndroidPersistentImageCacheAvailable() ||
       plan.priorityUrls.length === 0
     ) {
-      recordStartupCoordinatorReadyTimestamp();
       onReady();
       return;
     }
@@ -205,7 +197,6 @@ function StartupImageCacheCoordinator({
       maxWaitMs: 3500,
     }).finally(() => {
       if (!abortController.signal.aborted) {
-        recordStartupCoordinatorReadyTimestamp();
         onReady();
       }
     });
@@ -542,15 +533,6 @@ function HomeContent({ credentials }: { credentials: any }) {
 
   const isOverlayActive =
     !isOpeningDismissed && !(allSixFinished && isPriorityImagesReady) && !isAuthRejected;
-
-  useEffect(() => {
-    recordHomeOpeningMilestone({
-      isDisplaySetupOpen,
-      isOverlayActive,
-      isAuthRejected,
-      allSixFinished,
-    });
-  }, [isDisplaySetupOpen, isOverlayActive, isAuthRejected, allSixFinished]);
 
   const handleReturnToLoginForRecovery = () => {
     const reason =
@@ -1051,7 +1033,6 @@ function HomeContent({ credentials }: { credentials: any }) {
                 type="button"
                 data-continue-while-loading="true"
                 onClick={() => {
-                  recordHomeManualContinueIntent();
                   setIsOpeningDismissed(true);
                 }}
                 className="px-5 py-2.5 bg-nc-bg-card hover:bg-nc-bg-input text-white border border-nc-border/80 rounded-xl text-sm font-medium transition-colors shadow-lg focus:outline-none focus:ring-2 focus:ring-nc-primary"

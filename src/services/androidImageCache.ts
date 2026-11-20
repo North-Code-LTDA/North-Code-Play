@@ -1,8 +1,4 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import {
-  nowMonotonicMs,
-  recordCatalogImageCacheDiagnosticsUpdate,
-} from '../utils/catalogDiagnostics';
 import { buildDirectImageUrl, normalizeImageSource } from '../utils/mediaUtils';
 import { safeReadStorage, safeSetStorage } from '../utils/accountUtils';
 import { getOrCreateVodIndex, getOrCreateSeriesIndex, getHeroBannerItems } from '../utils/catalogIndex';
@@ -15,7 +11,12 @@ export const VISITED_CATEGORIES_STORAGE_KEY = 'nc_visited_image_categories_v1';
 export const MAX_VISITED_CATEGORIES_HISTORY = 16;
 export const MAX_LOW_PRIORITY_PENDING_TASKS = 24;
 
-export type StartupImageCoordinationMode = 'mode_b';
+function getMonotonicNowMs(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
 
 const SAFE_IMAGE_FILE_NAME_REGEX =
   /^img_[a-f0-9]{64}\.(?:jpg|png|webp|gif|bmp|ico|avif|svg|bin)$/;
@@ -111,37 +112,6 @@ export interface ImageDiskCacheNativePlugin {
   }>;
 }
 
-export interface ImageCacheRuntimeStats {
-  coordinationMode: StartupImageCoordinationMode;
-  initialHydratedEntriesCount: number;
-  downloadsDuringCatalogsCount: number;
-  hitsDuringCatalogsCount: number;
-  uniqueCatalogImageUrls: number;
-  uniqueHomeImageUrls: number;
-  persistentCacheHits: number;
-  cacheLayerDownloads: number;
-  deduplicatedDownloadsCount: number;
-  downloadFailuresCount: number;
-  bytesTransferredByCache: number;
-  bytesStoredCurrently: number;
-  storedEntriesCount: number;
-  evictedEntriesCount: number;
-  corruptedLocalRecoveriesCount: number;
-  priorityTargetCount: number;
-  priorityFoundOnDiskCount: number;
-  priorityDownloadedSuccessCount: number;
-  priorityFailedCount: number;
-  priorityPendingAtReleaseCount: number;
-  localRecoveryTimeMs: number | null;
-  planBuildTotalMs: number | null;
-  planCategorySelectionAndSortMs: number | null;
-  planUniqueUrlCountMs: number | null;
-  priorityCoversPreparationMs: number | null;
-  maxSimultaneousNativeTasks: number;
-  cancelledStaleQueueTasksCount: number;
-  configuredMaxBytes: number;
-}
-
 interface InMemoryResolvedEntry {
   url: string;
   key: string;
@@ -230,12 +200,6 @@ let isLiveTvPreviewPlaybackActive = false;
 let isCatalogTransferPhaseActive = false;
 let lastDpadActivityTimestampMs = 0;
 let dpadThrottleTimer: ReturnType<typeof setTimeout> | null = null;
-let cooperativeUrlCountTimers: Array<ReturnType<typeof setTimeout>> = [];
-
-export function getStartupImageCoordinationMode(): StartupImageCoordinationMode {
-  runtimeStats.coordinationMode = 'mode_b';
-  return 'mode_b';
-}
 
 export function setCatalogTransferPhaseActiveForImageCache(active: boolean): void {
   const next = Boolean(active);
@@ -257,73 +221,6 @@ function isAnyVideoPlaybackActive(): boolean {
 
 export function isVideoPlaybackThrottlingActiveForTest(): boolean {
   return isAnyVideoPlaybackActive();
-}
-
-const runtimeStats: ImageCacheRuntimeStats = {
-  coordinationMode: 'mode_b',
-  initialHydratedEntriesCount: 0,
-  downloadsDuringCatalogsCount: 0,
-  hitsDuringCatalogsCount: 0,
-  uniqueCatalogImageUrls: 0,
-  uniqueHomeImageUrls: 0,
-  persistentCacheHits: 0,
-  cacheLayerDownloads: 0,
-  deduplicatedDownloadsCount: 0,
-  downloadFailuresCount: 0,
-  bytesTransferredByCache: 0,
-  bytesStoredCurrently: 0,
-  storedEntriesCount: 0,
-  evictedEntriesCount: 0,
-  corruptedLocalRecoveriesCount: 0,
-  priorityTargetCount: 0,
-  priorityFoundOnDiskCount: 0,
-  priorityDownloadedSuccessCount: 0,
-  priorityFailedCount: 0,
-  priorityPendingAtReleaseCount: 0,
-  localRecoveryTimeMs: null,
-  planBuildTotalMs: null,
-  planCategorySelectionAndSortMs: null,
-  planUniqueUrlCountMs: null,
-  priorityCoversPreparationMs: null,
-  maxSimultaneousNativeTasks: 0,
-  cancelledStaleQueueTasksCount: 0,
-  configuredMaxBytes: DEFAULT_IMAGE_CACHE_MAX_BYTES,
-};
-
-function syncStatsToCatalogDiagnostics(): void {
-  recordCatalogImageCacheDiagnosticsUpdate({
-    coordinationMode: runtimeStats.coordinationMode,
-    initialHydratedEntriesCount: runtimeStats.initialHydratedEntriesCount,
-    downloadsDuringCatalogsCount: runtimeStats.downloadsDuringCatalogsCount,
-    hitsDuringCatalogsCount: runtimeStats.hitsDuringCatalogsCount,
-    uniqueCatalogImageUrls: runtimeStats.uniqueCatalogImageUrls,
-    uniqueHomeImageUrls: runtimeStats.uniqueHomeImageUrls,
-    persistentCacheHits: runtimeStats.persistentCacheHits,
-    cacheLayerDownloads: runtimeStats.cacheLayerDownloads,
-    deduplicatedDownloads: runtimeStats.deduplicatedDownloadsCount,
-    downloadFailures: runtimeStats.downloadFailuresCount,
-    bytesTransferredByCache: runtimeStats.bytesTransferredByCache,
-    bytesStoredCurrently: runtimeStats.bytesStoredCurrently,
-    storedEntriesCount: runtimeStats.storedEntriesCount,
-    evictedEntriesCount: runtimeStats.evictedEntriesCount,
-    corruptedLocalRecoveriesCount: runtimeStats.corruptedLocalRecoveriesCount,
-    priorityTargetCount: runtimeStats.priorityTargetCount,
-    priorityFoundOnDiskCount: runtimeStats.priorityFoundOnDiskCount,
-    priorityDownloadedSuccessCount: runtimeStats.priorityDownloadedSuccessCount,
-    priorityFailedCount: runtimeStats.priorityFailedCount,
-    priorityPendingAtReleaseCount: runtimeStats.priorityPendingAtReleaseCount,
-    localRecoveryTimeMs: runtimeStats.localRecoveryTimeMs,
-    planBuildTotalMs: runtimeStats.planBuildTotalMs,
-    planCategorySelectionAndSortMs: runtimeStats.planCategorySelectionAndSortMs,
-    planUniqueUrlCountMs: runtimeStats.planUniqueUrlCountMs,
-    priorityCoversPreparationMs: runtimeStats.priorityCoversPreparationMs,
-    maxSimultaneousNativeTasks: runtimeStats.maxSimultaneousNativeTasks,
-    cancelledStaleQueueTasksCount: runtimeStats.cancelledStaleQueueTasksCount,
-  });
-}
-
-export function getImageCacheRuntimeStatsSnapshot(): ImageCacheRuntimeStats {
-  return { ...runtimeStats };
 }
 
 export function isAndroidPersistentImageCacheAvailable(): boolean {
@@ -617,7 +514,6 @@ function applyEvictedKeysToInMemoryIndex(evictedKeys: string[] | undefined): voi
       pendingTouchedKeys.splice(pendingIdx, 1);
     }
   }
-  runtimeStats.storedEntriesCount = hydratedByShaKeyMap.size;
 }
 
 export async function ensureAndroidImageCacheHydrated(): Promise<void> {
@@ -635,7 +531,6 @@ export async function ensureAndroidImageCacheHydrated(): Promise<void> {
   }
 
   const epochAtStart = currentSessionEpoch;
-  const startMono = nowMonotonicMs();
 
   hydrationPromise = (async () => {
     try {
@@ -649,21 +544,6 @@ export async function ensureAndroidImageCacheHydrated(): Promise<void> {
       const res = await plugin.getHydratedIndex();
       if (currentSessionEpoch !== epochAtStart) {
         return;
-      }
-
-      const elapsedMs = Math.max(0, nowMonotonicMs() - startMono);
-      runtimeStats.localRecoveryTimeMs = elapsedMs;
-      if (typeof res?.maxBytes === 'number' && res.maxBytes > 0) {
-        runtimeStats.configuredMaxBytes = res.maxBytes;
-      }
-      if (typeof res?.totalBytes === 'number' && res.totalBytes >= 0) {
-        runtimeStats.bytesStoredCurrently = res.totalBytes;
-      }
-      if (typeof res?.evictedEntriesCount === 'number' && res.evictedEntriesCount >= 0) {
-        runtimeStats.evictedEntriesCount = res.evictedEntriesCount;
-      }
-      if (typeof res?.corruptedRecoveriesCount === 'number' && res.corruptedRecoveriesCount >= 0) {
-        runtimeStats.corruptedLocalRecoveriesCount = res.corruptedRecoveriesCount;
       }
 
       const entries = Array.isArray(res?.entries) ? res.entries : [];
@@ -707,10 +587,7 @@ export async function ensureAndroidImageCacheHydrated(): Promise<void> {
         }
       }
 
-      runtimeStats.storedEntriesCount = hydratedByShaKeyMap.size;
-      runtimeStats.initialHydratedEntriesCount = hydratedByShaKeyMap.size;
       isHydrated = true;
-      syncStatsToCatalogDiagnostics();
     } catch {
       // Se falhar na hidratação inicial, opera sob demanda sem bloquear a UI
       isHydrated = true;
@@ -730,8 +607,7 @@ export async function ensureAndroidImageCacheHydrated(): Promise<void> {
  * recência de acesso (LRU) em lote para a camada nativa.
  */
 export function getInstantCachedImageSrc(
-  resolvedRemoteUrl: string | null | undefined,
-  options?: { countHit?: boolean }
+  resolvedRemoteUrl: string | null | undefined
 ): string | null {
   if (!resolvedRemoteUrl || !isAndroidPersistentImageCacheAvailable() || activeLogoutClearPromise) {
     return null;
@@ -749,13 +625,6 @@ export function getInstantCachedImageSrc(
     }
     direct.lastAccessedAtMs = nextLogicalAccessStamp();
     recordTouchedKeyForNativeSync(direct.key);
-    if (options?.countHit) {
-      runtimeStats.persistentCacheHits++;
-      if (isCatalogTransferPhaseActive) {
-        runtimeStats.hitsDuringCatalogsCount++;
-      }
-      syncStatsToCatalogDiagnostics();
-    }
     return direct.convertedSrc;
   }
 
@@ -773,13 +642,6 @@ export function getInstantCachedImageSrc(
     bySha.lastAccessedAtMs = nextLogicalAccessStamp();
     recordTouchedKeyForNativeSync(bySha.key);
     resolvedUrlToEntryMap.set(trimmed, bySha);
-    if (options?.countHit) {
-      runtimeStats.persistentCacheHits++;
-      if (isCatalogTransferPhaseActive) {
-        runtimeStats.hitsDuringCatalogsCount++;
-      }
-      syncStatsToCatalogDiagnostics();
-    }
     return bySha.convertedSrc;
   }
 
@@ -797,7 +659,7 @@ function getEffectiveMaxConcurrency(): number {
   if (isAnyVideoPlaybackActive()) {
     return 1;
   }
-  const now = nowMonotonicMs();
+  const now = getMonotonicNowMs();
   if (now - lastDpadActivityTimestampMs < 240) {
     // Durante rajadas rápidas de D-Pad, restringe a concorrência para não disputar CPU/IO
     return 2;
@@ -806,7 +668,7 @@ function getEffectiveMaxConcurrency(): number {
 }
 
 export function notifyDpadNavigationActivityForImagePreload(): void {
-  lastDpadActivityTimestampMs = nowMonotonicMs();
+  lastDpadActivityTimestampMs = getMonotonicNowMs();
   if (dpadThrottleTimer !== null) {
     clearTimeout(dpadThrottleTimer);
   }
@@ -854,7 +716,7 @@ function pumpAcquireQueue(): void {
 
     // Durante navegação D-Pad intensa ou vídeo ativo (player principal ou preview da TV ao Vivo),
     // tarefas de prioridade 'low' aguardam; e tarefas 'low' usam no máximo 1 worker simultâneo
-    const now = nowMonotonicMs();
+    const now = getMonotonicNowMs();
     const isDpadBurst = now - lastDpadActivityTimestampMs < 240;
     if (pendingQueue[0].priority === 'low') {
       if (isDpadBurst || isAnyVideoPlaybackActive() || activeWorkersCount >= 1) {
@@ -866,10 +728,6 @@ function pumpAcquireQueue(): void {
     if (!nextTask) break;
     nextTask.startedExecution = true;
     activeWorkersCount++;
-    if (activeWorkersCount > runtimeStats.maxSimultaneousNativeTasks) {
-      runtimeStats.maxSimultaneousNativeTasks = activeWorkersCount;
-      syncStatsToCatalogDiagnostics();
-    }
     void executeQueuedAcquireTask(nextTask).finally(() => {
       activeWorkersCount = Math.max(0, activeWorkersCount - 1);
       pumpAcquireQueue();
@@ -893,11 +751,6 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       const existingInstant = getInstantCachedImageSrc(url);
       if (existingInstant) {
         const entry = resolvedUrlToEntryMap.get(url);
-        runtimeStats.persistentCacheHits++;
-        if (isCatalogTransferPhaseActive) {
-          runtimeStats.hitsDuringCatalogsCount++;
-        }
-        syncStatsToCatalogDiagnostics();
         const hitOutcome: AcquireCachedImageOutcome = {
           src: existingInstant,
           fromCache: true,
@@ -910,7 +763,6 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       }
     }
 
-    const startedDuringCatalogs = isCatalogTransferPhaseActive;
     const recentAccessedKeys = drainPendingTouchedKeys();
     const plugin = getNativeImageCachePlugin();
     const nativeRes: AcquireImageNativeResult = await plugin.acquireImage({
@@ -930,16 +782,6 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       applyEvictedKeysToInMemoryIndex(nativeRes.evictedKeys);
     }
 
-    if (typeof nativeRes?.totalBytes === 'number' && nativeRes.totalBytes >= 0) {
-      runtimeStats.bytesStoredCurrently = nativeRes.totalBytes;
-    }
-    if (typeof nativeRes?.storedEntriesCount === 'number' && nativeRes.storedEntriesCount >= 0) {
-      runtimeStats.storedEntriesCount = nativeRes.storedEntriesCount;
-    }
-    if (typeof nativeRes?.evictedEntriesCount === 'number' && nativeRes.evictedEntriesCount >= 0) {
-      runtimeStats.evictedEntriesCount = nativeRes.evictedEntriesCount;
-    }
-
     // Caso o servidor tenha retornado Cache-Control: no-store, usa inlineDataUrl (1 único GET) sem persistir no disco
     if (nativeRes?.bypassedNoStore) {
       const shaKey = nativeRes?.key || computeDeterministicUrlSha256Hex(url);
@@ -949,10 +791,6 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
         typeof nativeRes.inlineDataUrl === 'string' && nativeRes.inlineDataUrl.startsWith('data:')
           ? nativeRes.inlineDataUrl
           : url;
-      if (startedDuringCatalogs) {
-        runtimeStats.downloadsDuringCatalogsCount++;
-      }
-      syncStatsToCatalogDiagnostics();
       settleTaskResolvers(
         task,
         {
@@ -1015,20 +853,6 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       await reconcileInMemoryEntriesWithNativeIndex(epochAtEnqueue);
     }
 
-    if (nativeRes.hit) {
-      runtimeStats.persistentCacheHits++;
-      if (startedDuringCatalogs) {
-        runtimeStats.hitsDuringCatalogsCount++;
-      }
-    } else {
-      runtimeStats.cacheLayerDownloads++;
-      runtimeStats.bytesTransferredByCache += byteSize;
-      if (startedDuringCatalogs) {
-        runtimeStats.downloadsDuringCatalogsCount++;
-      }
-    }
-    syncStatsToCatalogDiagnostics();
-
     settleTaskResolvers(
       task,
       {
@@ -1041,10 +865,6 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       null
     );
   } catch (err: any) {
-    if (currentSessionEpoch === epochAtEnqueue) {
-      runtimeStats.downloadFailuresCount++;
-      syncStatsToCatalogDiagnostics();
-    }
     const errorObj = err instanceof Error ? err : new Error(String(err || 'Falha no cache de imagem'));
     settleTaskResolvers(task, null, errorObj);
   }
@@ -1074,10 +894,6 @@ async function reconcileInMemoryEntriesWithNativeIndex(expectedEpoch: number): P
         }
       }
     }
-    if (typeof snap?.totalBytes === 'number') {
-      runtimeStats.bytesStoredCurrently = snap.totalBytes;
-    }
-    runtimeStats.storedEntriesCount = hydratedByShaKeyMap.size;
   } catch {
     // Ignora falha de reconciliação secundária
   }
@@ -1124,8 +940,6 @@ function attachResolverWithAbort(
         if (inFlightTasksByUrl.get(task.url) === task) {
           inFlightTasksByUrl.delete(task.url);
         }
-        runtimeStats.cancelledStaleQueueTasksCount++;
-        syncStatsToCatalogDiagnostics();
       }
     };
     resolverEntry.cleanupAbort = () => {
@@ -1187,11 +1001,6 @@ export async function acquireCachedImage(
     const instantSrc = getInstantCachedImageSrc(trimmed);
     if (instantSrc) {
       const entry = resolvedUrlToEntryMap.get(trimmed);
-      runtimeStats.persistentCacheHits++;
-      if (isCatalogTransferPhaseActive) {
-        runtimeStats.hitsDuringCatalogsCount++;
-      }
-      syncStatsToCatalogDiagnostics();
       return {
         src: instantSrc,
         fromCache: true,
@@ -1204,12 +1013,10 @@ export async function acquireCachedImage(
 
   const existingTask = inFlightTasksByUrl.get(trimmed);
   if (existingTask && existingTask.epochAtEnqueue === currentSessionEpoch) {
-    runtimeStats.deduplicatedDownloadsCount++;
     if (PRIORITY_WEIGHT[priority] > PRIORITY_WEIGHT[existingTask.priority]) {
       existingTask.priority = priority;
       sortPendingQueue();
     }
-    syncStatsToCatalogDiagnostics();
     return new Promise<AcquireCachedImageOutcome>((resolve, reject) => {
       attachResolverWithAbort(existingTask, resolve, reject, options?.signal);
     });
@@ -1258,23 +1065,13 @@ export async function recoverFromCorruptedLocalImage(
 
   try {
     const plugin = getNativeImageCachePlugin();
-    const invRes = await plugin.invalidateImage({
+    await plugin.invalidateImage({
       url: trimmed,
       key: shaKey,
       corruptedRecovery: true,
     });
-    runtimeStats.corruptedLocalRecoveriesCount =
-      typeof invRes?.corruptedRecoveriesCount === 'number'
-        ? invRes.corruptedRecoveriesCount
-        : runtimeStats.corruptedLocalRecoveriesCount + 1;
-    if (typeof invRes?.totalBytes === 'number') {
-      runtimeStats.bytesStoredCurrently = invRes.totalBytes;
-    }
-    runtimeStats.storedEntriesCount = hydratedByShaKeyMap.size;
-    syncStatsToCatalogDiagnostics();
   } catch {
-    runtimeStats.corruptedLocalRecoveriesCount++;
-    syncStatsToCatalogDiagnostics();
+    // Ignora falha na invalidação prévia; segue para reaquisição forçada
   }
 
   return acquireCachedImage(trimmed, {
@@ -1288,7 +1085,6 @@ export async function recoverFromCorruptedLocalImage(
  */
 export async function configureImageCacheStorageBudget(maxBytes: number): Promise<void> {
   const clamped = Math.max(1024, Math.floor(maxBytes));
-  runtimeStats.configuredMaxBytes = clamped;
   if (!isAndroidPersistentImageCacheAvailable()) {
     return;
   }
@@ -1306,22 +1102,10 @@ export async function configureImageCacheStorageBudget(maxBytes: number): Promis
     if (Array.isArray(res?.evictedKeys) && res.evictedKeys.length > 0) {
       applyEvictedKeysToInMemoryIndex(res.evictedKeys);
     }
-    if (typeof res?.evictedEntriesCount === 'number') {
-      runtimeStats.evictedEntriesCount = res.evictedEntriesCount;
-    }
     await reconcileInMemoryEntriesWithNativeIndex(epochNow);
-    syncStatsToCatalogDiagnostics();
   } catch {
     // Ignora erro de configuração
   }
-}
-
-function clearCooperativeUrlCountTimers(): void {
-  if (cooperativeUrlCountTimers.length === 0) return;
-  for (const timer of cooperativeUrlCountTimers) {
-    clearTimeout(timer);
-  }
-  cooperativeUrlCountTimers = [];
 }
 
 /**
@@ -1331,7 +1115,6 @@ function clearCooperativeUrlCountTimers(): void {
  */
 export async function clearImageCacheOnLogout(): Promise<void> {
   currentSessionEpoch++;
-  clearCooperativeUrlCountTimers();
   resolvedUrlToEntryMap.clear();
   hydratedByShaKeyMap.clear();
   shaKeyToUrlMap.clear();
@@ -1355,8 +1138,6 @@ export async function clearImageCacheOnLogout(): Promise<void> {
     }
   }
 
-  runtimeStats.bytesStoredCurrently = 0;
-  runtimeStats.storedEntriesCount = 0;
   clearVisitedShowcaseCategories();
 
   const runClear = (async () => {
@@ -1368,7 +1149,6 @@ export async function clearImageCacheOnLogout(): Promise<void> {
         // Ignora erro de limpeza nativa
       }
     }
-    syncStatsToCatalogDiagnostics();
   })();
 
   const trackedPromise = runClear.finally(() => {
@@ -1521,158 +1301,8 @@ export interface HomeStartupImagePlan {
   tier4VisitedCategoryUrls: string[];
   /** Lista unificada deduplicada das camadas prioritárias (1 + 2 + 3) para o carregamento inicial */
   priorityUrls: string[];
-  /** Total de URLs únicas de imagem no catálogo inteiro */
-  uniqueCatalogImageUrlsCount: number;
-  /** Total de URLs únicas de imagem nas fileiras montadas da Home */
-  uniqueHomeImageUrlsCount: number;
   posterCardsPerRow: number;
   landscapeCardsPerRow: number;
-  planBuildTotalMs: number;
-  planCategorySelectionAndSortMs: number;
-  planUniqueUrlCountMs: number;
-}
-
-/**
- * Executa a contagem diagnóstica de URLs únicas do catálogo e das fileiras da Home
- * de forma cooperativa em pequenos lotes assíncronos (`setTimeout(..., 0)`), evitando
- * bloquear a thread principal durante a liberação da Home em catálogos grandes (40k+ itens).
- */
-export function scheduleCooperativeCatalogUrlCount(params: {
-  serverUrl?: string | null;
-  allLiveStreams?: any[];
-  allVodStreams?: any[];
-  allSeriesStreams?: any[];
-  vodCategories?: any[];
-  seriesCategories?: any[];
-  continueWatchingItems?: any[];
-  batchSize?: number;
-  onComplete?: (result: {
-    uniqueCatalogImageUrlsCount: number;
-    uniqueHomeImageUrlsCount: number;
-    activeComputeMs: number;
-  }) => void;
-}): void {
-  clearCooperativeUrlCountTimers();
-  const {
-    serverUrl,
-    allLiveStreams = [],
-    allVodStreams = [],
-    allSeriesStreams = [],
-    vodCategories = [],
-    seriesCategories = [],
-    continueWatchingItems = [],
-    batchSize = 1800,
-    onComplete,
-  } = params;
-
-  const epochAtSchedule = currentSessionEpoch;
-  const catalogSet = new Set<string>();
-  const homeSet = new Set<string>();
-  let totalComputeMs = 0;
-
-  const vodIndex = getOrCreateVodIndex(allVodStreams);
-  const seriesIndex = getOrCreateSeriesIndex(allSeriesStreams);
-  const heroItems = getHeroBannerItems(allVodStreams, allSeriesStreams);
-
-  // Coletar referências leves dos itens das fileiras da Home (sem ordenar 100 categorias;
-  // getByCategory(id).slice(0, 24) contém o conjunto das fileiras de categorias)
-  const homeItemsFlat: any[] = [];
-  for (let i = 0; i < Math.min(2, heroItems.length); i++) {
-    homeItemsFlat.push(heroItems[i]);
-  }
-  if (Array.isArray(continueWatchingItems) && continueWatchingItems.length > 0) {
-    homeItemsFlat.push(...continueWatchingItems.slice(0, 24));
-  }
-  if (allLiveStreams.length > 0) {
-    homeItemsFlat.push(...allLiveStreams.slice(0, 24));
-  }
-  if (allVodStreams.length > 0) {
-    homeItemsFlat.push(...vodIndex.getSortedAll().slice(0, 24));
-  }
-  if (allSeriesStreams.length > 0) {
-    homeItemsFlat.push(...seriesIndex.getSortedAll().slice(0, 24));
-  }
-  for (const c of Array.isArray(vodCategories) ? vodCategories : []) {
-    if (!c) continue;
-    const catItems = vodIndex.getByCategory(c.category_id);
-    if (catItems.length > 0) {
-      homeItemsFlat.push(...catItems.slice(0, 24));
-    }
-  }
-  for (const c of Array.isArray(seriesCategories) ? seriesCategories : []) {
-    if (!c) continue;
-    const catItems = seriesIndex.getByCategory(c.category_id);
-    if (catItems.length > 0) {
-      homeItemsFlat.push(...catItems.slice(0, 24));
-    }
-  }
-
-  const arraysToScan: Array<{ arr: any[]; target: 'catalog' | 'home'; isHeroCheck?: boolean }> = [
-    { arr: homeItemsFlat, target: 'home', isHeroCheck: true },
-    { arr: allLiveStreams, target: 'catalog' },
-    { arr: allVodStreams, target: 'catalog' },
-    { arr: allSeriesStreams, target: 'catalog' },
-  ];
-
-  let arrayIdx = 0;
-  let itemIdx = 0;
-
-  const runBatch = () => {
-    if (currentSessionEpoch !== epochAtSchedule) return;
-    const sliceStart = nowMonotonicMs();
-    let processed = 0;
-
-    while (arrayIdx < arraysToScan.length && processed < batchSize) {
-      const current = arraysToScan[arrayIdx];
-      const arr = current.arr;
-      while (itemIdx < arr.length && processed < batchSize) {
-        const item = arr[itemIdx++];
-        processed++;
-        if (current.target === 'home') {
-          if (current.isHeroCheck && itemIdx <= 2) {
-            const backdropRaw =
-              (Array.isArray(item?.backdrop_path) ? item.backdrop_path[0] : item?.backdrop_path) ||
-              item?.cover_big ||
-              extractRawCoverFromItem(item);
-            const backdropUrl = buildDirectImageUrl(backdropRaw, serverUrl);
-            if (backdropUrl) homeSet.add(backdropUrl);
-          }
-          const raw = extractRawCoverFromItem(item);
-          const resolved = buildDirectImageUrl(raw, serverUrl);
-          if (resolved) homeSet.add(resolved);
-        } else {
-          const raw = extractRawCoverFromItem(item);
-          const resolved = buildDirectImageUrl(raw, serverUrl);
-          if (resolved) catalogSet.add(resolved);
-        }
-      }
-      if (itemIdx >= arr.length) {
-        arrayIdx++;
-        itemIdx = 0;
-      }
-    }
-
-    totalComputeMs += Math.max(0, nowMonotonicMs() - sliceStart);
-
-    if (arrayIdx < arraysToScan.length) {
-      const t = setTimeout(runBatch, 0);
-      cooperativeUrlCountTimers.push(t);
-    } else {
-      clearCooperativeUrlCountTimers();
-      runtimeStats.uniqueCatalogImageUrls = catalogSet.size;
-      runtimeStats.uniqueHomeImageUrls = homeSet.size;
-      runtimeStats.planUniqueUrlCountMs = totalComputeMs;
-      syncStatsToCatalogDiagnostics();
-      onComplete?.({
-        uniqueCatalogImageUrlsCount: catalogSet.size,
-        uniqueHomeImageUrlsCount: homeSet.size,
-        activeComputeMs: totalComputeMs,
-      });
-    }
-  };
-
-  const firstTimer = setTimeout(runBatch, 0);
-  cooperativeUrlCountTimers.push(firstTimer);
 }
 
 /**
@@ -1680,10 +1310,6 @@ export function scheduleCooperativeCatalogUrlCount(params: {
  * do `CatalogShowcaseView.tsx`: HeroBanner, Continue Assistindo se houver, Canais em Destaque
  * com orçamento landscape, Filmes em Destaque, Séries em Destaque e categorias intercaladas
  * ordenadas apenas para as fileiras efetivamente inspecionadas nas Camadas 2, 3 e 4).
- *
- * Quando `deferFullUrlCount: true` é informado (caminho crítico da abertura da Home), a varredura
- * diagnóstica de todas as 40.000+ URLs do catálogo é agendada cooperativamente em segundo plano
- * para eliminar o bloqueio síncrono de ~8 segundos após a conclusão dos 6 catálogos.
  */
 export function buildHomeStartupImagePlan(params: {
   serverUrl?: string | null;
@@ -1697,9 +1323,7 @@ export function buildHomeStartupImagePlan(params: {
   viewportHeight?: number;
   displayMode?: DisplayMode;
   tvScale?: number;
-  deferFullUrlCount?: boolean;
 }): HomeStartupImagePlan {
-  const planStartMono = nowMonotonicMs();
   const {
     serverUrl,
     allLiveStreams = [],
@@ -1708,7 +1332,6 @@ export function buildHomeStartupImagePlan(params: {
     vodCategories = [],
     seriesCategories = [],
     continueWatchingItems = [],
-    deferFullUrlCount = false,
   } = params;
 
   const budget = computeAdaptiveInitialCardsPerRow({
@@ -1718,7 +1341,6 @@ export function buildHomeStartupImagePlan(params: {
     tvScale: params.tvScale,
   });
 
-  const sortStartMono = nowMonotonicMs();
   const vodIndex = getOrCreateVodIndex(allVodStreams);
   const seriesIndex = getOrCreateSeriesIndex(allSeriesStreams);
   const heroItems = getHeroBannerItems(allVodStreams, allSeriesStreams);
@@ -1727,12 +1349,10 @@ export function buildHomeStartupImagePlan(params: {
   const tier2FirstRowsVisibleUrls: string[] = [];
   const tier3NextRowsUrls: string[] = [];
   const tier4VisitedCategoryUrls: string[] = [];
-  const homeRowsUrlsSet = new Set<string>();
   const seenPriority = new Set<string>();
 
   const pushUnique = (url: string | null, bucket: string[]) => {
     if (!url) return;
-    homeRowsUrlsSet.add(url);
     if (!seenPriority.has(url)) {
       seenPriority.add(url);
       bucket.push(url);
@@ -1879,67 +1499,11 @@ export function buildHomeStartupImagePlan(params: {
     }
   }
 
-  const planCategorySelectionAndSortMs = Math.max(0, nowMonotonicMs() - sortStartMono);
-  let planUniqueUrlCountMs = 0;
-  let uniqueCatalogImageUrlsCount = homeRowsUrlsSet.size;
-  let uniqueHomeImageUrlsCount = homeRowsUrlsSet.size;
-
-  if (deferFullUrlCount) {
-    scheduleCooperativeCatalogUrlCount({
-      serverUrl,
-      allLiveStreams,
-      allVodStreams,
-      allSeriesStreams,
-      vodCategories,
-      seriesCategories,
-      continueWatchingItems,
-    });
-  } else {
-    const urlCountStartMono = nowMonotonicMs();
-    const allCatalogUrlsSet = new Set<string>();
-    const addItemUrlToSet = (item: any, targetSet: Set<string>) => {
-      const raw = extractRawCoverFromItem(item);
-      const resolved = buildDirectImageUrl(raw, serverUrl);
-      if (resolved) {
-        targetSet.add(resolved);
-      }
-    };
-
-    for (const ch of allLiveStreams) addItemUrlToSet(ch, allCatalogUrlsSet);
-    for (const m of allVodStreams) addItemUrlToSet(m, allCatalogUrlsSet);
-    for (const s of allSeriesStreams) addItemUrlToSet(s, allCatalogUrlsSet);
-
-    for (const c of nonEmptyVodCats) {
-      const items = vodIndex.getByCategory(c.category_id).slice(0, 24);
-      for (const it of items) addItemUrlToSet(it, homeRowsUrlsSet);
-    }
-    for (const c of nonEmptySeriesCats) {
-      const items = seriesIndex.getByCategory(c.category_id).slice(0, 24);
-      for (const it of items) addItemUrlToSet(it, homeRowsUrlsSet);
-    }
-    for (const ch of allLiveStreams.slice(0, 24)) addItemUrlToSet(ch, homeRowsUrlsSet);
-    for (const m of featuredMovies) addItemUrlToSet(m, homeRowsUrlsSet);
-    for (const s of featuredSeries) addItemUrlToSet(s, homeRowsUrlsSet);
-
-    uniqueCatalogImageUrlsCount = allCatalogUrlsSet.size;
-    uniqueHomeImageUrlsCount = homeRowsUrlsSet.size;
-    planUniqueUrlCountMs = Math.max(0, nowMonotonicMs() - urlCountStartMono);
-    runtimeStats.uniqueCatalogImageUrls = uniqueCatalogImageUrlsCount;
-    runtimeStats.uniqueHomeImageUrls = uniqueHomeImageUrlsCount;
-    runtimeStats.planUniqueUrlCountMs = planUniqueUrlCountMs;
-  }
-
   const priorityUrls = [
     ...tier1HeroUrls,
     ...tier2FirstRowsVisibleUrls,
     ...tier3NextRowsUrls,
   ];
-
-  const planBuildTotalMs = Math.max(0, nowMonotonicMs() - planStartMono);
-  runtimeStats.planBuildTotalMs = planBuildTotalMs;
-  runtimeStats.planCategorySelectionAndSortMs = planCategorySelectionAndSortMs;
-  runtimeStats.priorityTargetCount = priorityUrls.length;
-  syncStatsToCatalogDiagnostics();
 
   return {
     tier1HeroUrls,
@@ -1947,13 +1511,8 @@ export function buildHomeStartupImagePlan(params: {
     tier3NextRowsUrls,
     tier4VisitedCategoryUrls,
     priorityUrls,
-    uniqueCatalogImageUrlsCount,
-    uniqueHomeImageUrlsCount,
     posterCardsPerRow: budget.posterCardsPerRow,
     landscapeCardsPerRow: budget.landscapeCardsPerRow,
-    planBuildTotalMs,
-    planCategorySelectionAndSortMs,
-    planUniqueUrlCountMs,
   };
 }
 
@@ -1965,7 +1524,6 @@ export interface StartupImagePreparationResult {
   failedCount: number;
   pendingAtReleaseCount: number;
   totalTargetCount: number;
-  durationMs: number;
 }
 
 /**
@@ -1974,12 +1532,6 @@ export interface StartupImagePreparationResult {
  * 2. Primeiras fileiras visíveis ('high')
  * 3. Próximas fileiras imediatas ('normal')
  * E agenda a Camada 4 ('low') em segundo plano sem bloquear a liberação da Home.
- *
- * Separa rigorosamente:
- * - `foundOnDiskCount`: encontradas no disco na abertura
- * - `downloadedSuccessCount`: baixadas com sucesso na preparação inicial
- * - `failedCount`: que falharam (nunca contabilizadas como preparadas com sucesso!)
- * - `pendingAtReleaseCount`: ainda pendentes quando a Home foi liberada
  */
 export async function executeHomeStartupImagePreparation(
   plan: HomeStartupImagePlan,
@@ -1990,15 +1542,8 @@ export async function executeHomeStartupImagePreparation(
   }
 ): Promise<StartupImagePreparationResult> {
   const totalTargetCount = plan.priorityUrls.length;
-  runtimeStats.priorityTargetCount = totalTargetCount;
 
   if (totalTargetCount === 0 || !isAndroidPersistentImageCacheAvailable()) {
-    runtimeStats.priorityFoundOnDiskCount = 0;
-    runtimeStats.priorityDownloadedSuccessCount = 0;
-    runtimeStats.priorityFailedCount = 0;
-    runtimeStats.priorityPendingAtReleaseCount = 0;
-    runtimeStats.priorityCoversPreparationMs = 0;
-    syncStatsToCatalogDiagnostics();
     return {
       allAlreadyCached: true,
       preparedCount: totalTargetCount,
@@ -2007,17 +1552,15 @@ export async function executeHomeStartupImagePreparation(
       failedCount: 0,
       pendingAtReleaseCount: 0,
       totalTargetCount,
-      durationMs: 0,
     };
   }
 
-  const startMono = nowMonotonicMs();
   await ensureAndroidImageCacheHydrated();
 
   // Verificar quais URLs prioritárias já estão disponíveis sincronicamente no cache local
   const alreadyOnDiskSet = new Set<string>();
   for (const url of plan.priorityUrls) {
-    if (getInstantCachedImageSrc(url, { countHit: true })) {
+    if (getInstantCachedImageSrc(url)) {
       alreadyOnDiskSet.add(url);
     }
   }
@@ -2025,12 +1568,6 @@ export async function executeHomeStartupImagePreparation(
 
   if (foundOnDiskCount === totalTargetCount) {
     // Sem atraso artificial quando já estão em cache!
-    runtimeStats.priorityFoundOnDiskCount = foundOnDiskCount;
-    runtimeStats.priorityDownloadedSuccessCount = 0;
-    runtimeStats.priorityFailedCount = 0;
-    runtimeStats.priorityPendingAtReleaseCount = 0;
-    runtimeStats.priorityCoversPreparationMs = 0;
-    syncStatsToCatalogDiagnostics();
     options?.onProgress?.(totalTargetCount, totalTargetCount);
     // Disparar pré-carregamento oportunista da Camada 4 em segundo plano
     scheduleBackgroundLowPriorityPreload(plan.tier4VisitedCategoryUrls);
@@ -2042,7 +1579,6 @@ export async function executeHomeStartupImagePreparation(
       failedCount: 0,
       pendingAtReleaseCount: 0,
       totalTargetCount,
-      durationMs: 0,
     };
   }
 
@@ -2101,19 +1637,11 @@ export async function executeHomeStartupImagePreparation(
     clearTimeout(timeoutId);
   }
 
-  const durationMs = Math.max(0, nowMonotonicMs() - startMono);
   const pendingAtReleaseCount = Math.max(
     0,
     totalTargetCount - foundOnDiskCount - downloadedSuccessCount - failedCount
   );
   preparedCount = foundOnDiskCount + downloadedSuccessCount;
-
-  runtimeStats.priorityFoundOnDiskCount = foundOnDiskCount;
-  runtimeStats.priorityDownloadedSuccessCount = downloadedSuccessCount;
-  runtimeStats.priorityFailedCount = failedCount;
-  runtimeStats.priorityPendingAtReleaseCount = pendingAtReleaseCount;
-  runtimeStats.priorityCoversPreparationMs = durationMs;
-  syncStatsToCatalogDiagnostics();
 
   // Agendar Camada 4 (categorias seguintes / visitadas) em segundo plano com prioridade 'low'
   if (!options?.signal?.aborted) {
@@ -2128,7 +1656,6 @@ export async function executeHomeStartupImagePreparation(
     failedCount,
     pendingAtReleaseCount,
     totalTargetCount,
-    durationMs,
   };
 }
 
@@ -2167,7 +1694,6 @@ export function scheduleBackgroundLowPriorityPreload(urls: string[]): void {
  */
 export function resetAndroidImageCacheForTest(): void {
   currentSessionEpoch++;
-  clearCooperativeUrlCountTimers();
   resolvedUrlToEntryMap.clear();
   hydratedByShaKeyMap.clear();
   shaKeyToUrlMap.clear();
@@ -2186,34 +1712,6 @@ export function resetAndroidImageCacheForTest(): void {
     clearTimeout(dpadThrottleTimer);
     dpadThrottleTimer = null;
   }
-  runtimeStats.coordinationMode = 'mode_b';
-  runtimeStats.initialHydratedEntriesCount = 0;
-  runtimeStats.downloadsDuringCatalogsCount = 0;
-  runtimeStats.hitsDuringCatalogsCount = 0;
-  runtimeStats.uniqueCatalogImageUrls = 0;
-  runtimeStats.uniqueHomeImageUrls = 0;
-  runtimeStats.persistentCacheHits = 0;
-  runtimeStats.cacheLayerDownloads = 0;
-  runtimeStats.deduplicatedDownloadsCount = 0;
-  runtimeStats.downloadFailuresCount = 0;
-  runtimeStats.bytesTransferredByCache = 0;
-  runtimeStats.bytesStoredCurrently = 0;
-  runtimeStats.storedEntriesCount = 0;
-  runtimeStats.evictedEntriesCount = 0;
-  runtimeStats.corruptedLocalRecoveriesCount = 0;
-  runtimeStats.priorityTargetCount = 0;
-  runtimeStats.priorityFoundOnDiskCount = 0;
-  runtimeStats.priorityDownloadedSuccessCount = 0;
-  runtimeStats.priorityFailedCount = 0;
-  runtimeStats.priorityPendingAtReleaseCount = 0;
-  runtimeStats.localRecoveryTimeMs = null;
-  runtimeStats.planBuildTotalMs = null;
-  runtimeStats.planCategorySelectionAndSortMs = null;
-  runtimeStats.planUniqueUrlCountMs = null;
-  runtimeStats.priorityCoversPreparationMs = null;
-  runtimeStats.maxSimultaneousNativeTasks = 0;
-  runtimeStats.cancelledStaleQueueTasksCount = 0;
-  runtimeStats.configuredMaxBytes = DEFAULT_IMAGE_CACHE_MAX_BYTES;
   clearVisitedShowcaseCategories();
 }
 

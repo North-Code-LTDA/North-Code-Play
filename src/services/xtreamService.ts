@@ -8,15 +8,9 @@ import {
 } from "../types";
 import { normalizeServerUrl } from "../utils/mediaUtils";
 import { executeXtreamGetRequest } from "./httpTransport";
-import {
-  type CatalogDiagnosticOperationHandle,
-  nowMonotonicMs,
-  classifyDiagnosticErrorCategory,
-} from "../utils/catalogDiagnostics";
 
 export interface RequestOptions {
   signal?: AbortSignal;
-  diagOp?: CatalogDiagnosticOperationHandle | null;
 }
 
 export interface XtreamCategorizedError extends Error {
@@ -123,12 +117,8 @@ export function inspectPayloadForAuthError(data: unknown): void {
  */
 export function normalizeCatalogArray<T = any>(
   data: unknown,
-  invalidFormatMessage: string,
-  diagOp?: CatalogDiagnosticOperationHandle | null
+  invalidFormatMessage: string
 ): T[] {
-  const trackDiag = Boolean(diagOp && diagOp.isActive());
-  const startMs = trackDiag ? nowMonotonicMs() : 0;
-
   inspectPayloadForAuthError(data);
   if (!Array.isArray(data)) {
     throw new Error(invalidFormatMessage);
@@ -139,15 +129,6 @@ export function normalizeCatalogArray<T = any>(
     if (item !== null && typeof item === "object" && !Array.isArray(item)) {
       result.push(item as T);
     }
-  }
-
-  if (trackDiag) {
-    const durationMs = nowMonotonicMs() - startMs;
-    diagOp!.recordNormalization({
-      durationMs,
-      rawItemsCount: data.length,
-      validItemsCount: result.length,
-    });
   }
 
   return result;
@@ -252,7 +233,6 @@ export class XtreamService {
     }
 
     const callerSignal = options?.signal;
-    const diagOp = options?.diagOp;
     const isFullCatalogRequest = XtreamService.isFullCatalogQuery(action, params);
     const maxAttempts = 2;
 
@@ -261,20 +241,14 @@ export class XtreamService {
         throw new Error("Operação cancelada pelo usuário.");
       }
 
-      const diagAttempt = diagOp?.isActive() ? diagOp.startAttempt(attempt) : null;
-
       try {
         const payload = await executeXtreamGetRequest<T>({
           url: targetUrl.toString(),
           timeoutMs,
           signal: callerSignal,
-          diagAttempt,
           isFullCatalogRequest,
         });
         inspectPayloadForAuthError(payload);
-        if (diagAttempt?.isActive()) {
-          diagAttempt.finishAttempt("success", null);
-        }
         return payload;
       } catch (err: any) {
         const isAbort =
@@ -289,14 +263,6 @@ export class XtreamService {
                 err.status
               )
             : err;
-
-        if (diagAttempt?.isActive()) {
-          diagAttempt.finishAttempt(
-            isAbort ? "cancelled" : "error",
-            isAbort ? "cancelled" : classifyDiagnosticErrorCategory(effectiveErr),
-            typeof effectiveErr?.status === "number" ? effectiveErr.status : null
-          );
-        }
 
         // Do not retry caller aborts
         if (isAbort) {
@@ -315,19 +281,7 @@ export class XtreamService {
           throw err;
         }
         // Wait briefly before the single retry
-        const trackRetryWait = Boolean(diagOp && diagOp.isActive());
-        const retryWaitStartMs = trackRetryWait ? nowMonotonicMs() : 0;
-        try {
-          await XtreamService.sleep(XtreamService.retryDelayMs, callerSignal);
-          if (trackRetryWait && diagOp?.isActive()) {
-            diagOp.recordRetryWait(nowMonotonicMs() - retryWaitStartMs);
-          }
-        } catch (sleepErr) {
-          if (trackRetryWait && diagOp?.isActive()) {
-            diagOp.recordRetryWait(nowMonotonicMs() - retryWaitStartMs);
-          }
-          throw sleepErr;
-        }
+        await XtreamService.sleep(XtreamService.retryDelayMs, callerSignal);
       }
     }
 
@@ -383,8 +337,7 @@ export class XtreamService {
     );
     return normalizeCatalogArray<Category>(
       data,
-      "Resposta inválida do provedor ao buscar categorias de TV (esperava-se uma lista).",
-      options?.diagOp
+      "Resposta inválida do provedor ao buscar categorias de TV (esperava-se uma lista)."
     );
   }
 
@@ -406,8 +359,7 @@ export class XtreamService {
     );
     return normalizeCatalogArray<LiveStream>(
       data,
-      "Resposta inválida do provedor ao buscar canais ao vivo (esperava-se uma lista).",
-      options?.diagOp
+      "Resposta inválida do provedor ao buscar canais ao vivo (esperava-se uma lista)."
     );
   }
 
@@ -427,8 +379,7 @@ export class XtreamService {
     );
     return normalizeCatalogArray<Category>(
       data,
-      "Resposta inválida do provedor ao buscar categorias de filmes (esperava-se uma lista).",
-      options?.diagOp
+      "Resposta inválida do provedor ao buscar categorias de filmes (esperava-se uma lista)."
     );
   }
 
@@ -450,8 +401,7 @@ export class XtreamService {
     );
     return normalizeCatalogArray<VodStream>(
       data,
-      "Resposta inválida do provedor ao buscar catálogo de filmes (esperava-se uma lista).",
-      options?.diagOp
+      "Resposta inválida do provedor ao buscar catálogo de filmes (esperava-se uma lista)."
     );
   }
 
@@ -488,8 +438,7 @@ export class XtreamService {
     );
     return normalizeCatalogArray<Category>(
       data,
-      "Resposta inválida do provedor ao buscar categorias de séries (esperava-se uma lista).",
-      options?.diagOp
+      "Resposta inválida do provedor ao buscar categorias de séries (esperava-se uma lista)."
     );
   }
 
@@ -511,8 +460,7 @@ export class XtreamService {
     );
     return normalizeCatalogArray<SeriesStream>(
       data,
-      "Resposta inválida do provedor ao buscar catálogo de séries (esperava-se uma lista).",
-      options?.diagOp
+      "Resposta inválida do provedor ao buscar catálogo de séries (esperava-se uma lista)."
     );
   }
 

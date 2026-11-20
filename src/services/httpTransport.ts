@@ -1,25 +1,16 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import type { HttpOptions, HttpResponse } from '@capacitor/core';
-import {
-  type CapacitorNativeAttemptDiagnosticsInput,
-  type CatalogDiagnosticAttemptHandle,
-  nowMonotonicMs,
-} from '../utils/catalogDiagnostics';
 
-export type DiagnosticHttpOptions = HttpOptions & {
-  collectDiagnostics?: boolean;
-};
-
-export type DiagnosticHttpResponse = HttpResponse & {
-  nativeDiagnostics?: CapacitorNativeAttemptDiagnosticsInput | null;
-  diagnostics?: CapacitorNativeAttemptDiagnosticsInput | null;
-};
+function getMonotonicNowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
 
 export interface TransportRequestOptions {
   url: string;
   timeoutMs: number;
   signal?: AbortSignal;
-  diagAttempt?: CatalogDiagnosticAttemptHandle | null;
   isFullCatalogRequest?: boolean;
 }
 
@@ -38,7 +29,7 @@ const CATALOG_FILE_TRANSFER_PLUGIN_NAME = 'CatalogFileTransfer';
 
 let transportModeOverride: TransportMode = 'auto';
 let capacitorHttpGetOverride:
-  | ((options: DiagnosticHttpOptions) => Promise<DiagnosticHttpResponse>)
+  | ((options: HttpOptions) => Promise<HttpResponse>)
   | null = null;
 let androidCatalogPluginAvailableOverride: boolean | null = null;
 let androidAdapterLoadCountForTest = 0;
@@ -50,7 +41,7 @@ let androidAdapterLoadCountForTest = 0;
  */
 export function setTransportTestConfig(config: {
   mode?: TransportMode;
-  capacitorHttpGet?: ((options: DiagnosticHttpOptions) => Promise<DiagnosticHttpResponse>) | null;
+  capacitorHttpGet?: ((options: HttpOptions) => Promise<HttpResponse>) | null;
   androidCatalogPluginAvailable?: boolean | null;
 }): void {
   if (config.mode !== undefined) {
@@ -123,40 +114,21 @@ export function isAndroidTempFileCatalogTransportAvailable(): boolean {
  */
 export function normalizeTransportPayload<T = any>(
   rawPayload: unknown,
-  diagAttempt?: CatalogDiagnosticAttemptHandle | null,
   signal?: AbortSignal,
   deadlineAt?: number
 ): T {
   if (signal?.aborted) {
     throw new Error('Operação cancelada pelo usuário.');
   }
-  if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && nowMonotonicMs() >= deadlineAt) {
+  if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && getMonotonicNowMs() >= deadlineAt) {
     throw createTimeoutError();
   }
 
-  const trackDiag = Boolean(diagAttempt && diagAttempt.isActive());
-
   if (rawPayload === null || rawPayload === undefined) {
-    if (trackDiag) {
-      diagAttempt!.recordPayloadNormalization({
-        payloadFormat: 'empty',
-        jsonParseExecuted: false,
-        jsonParseMs: null,
-        payloadChars: 0,
-      });
-    }
     return [] as unknown as T;
   }
 
   if (typeof rawPayload === 'object') {
-    if (trackDiag) {
-      diagAttempt!.recordPayloadNormalization({
-        payloadFormat: 'pre-parsed-object',
-        jsonParseExecuted: false,
-        jsonParseMs: null,
-        payloadChars: null,
-      });
-    }
     return rawPayload as T;
   }
 
@@ -166,48 +138,20 @@ export function normalizeTransportPayload<T = any>(
       if (signal?.aborted) {
         throw new Error('Operação cancelada pelo usuário.');
       }
-      if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && nowMonotonicMs() >= deadlineAt) {
+      if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && getMonotonicNowMs() >= deadlineAt) {
         throw createTimeoutError();
-      }
-      if (trackDiag) {
-        diagAttempt!.recordPayloadNormalization({
-          payloadFormat: 'empty',
-          jsonParseExecuted: false,
-          jsonParseMs: null,
-          payloadChars: rawPayload.length,
-        });
       }
       return [] as unknown as T;
     }
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
     }
-    if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && nowMonotonicMs() >= deadlineAt) {
+    if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && getMonotonicNowMs() >= deadlineAt) {
       throw createTimeoutError();
     }
-    const parseStartMs = trackDiag ? nowMonotonicMs() : 0;
     try {
-      const parsed = JSON.parse(trimmed) as T;
-      if (trackDiag) {
-        const parseDurationMs = nowMonotonicMs() - parseStartMs;
-        diagAttempt!.recordPayloadNormalization({
-          payloadFormat: 'text-json',
-          jsonParseExecuted: true,
-          jsonParseMs: parseDurationMs,
-          payloadChars: rawPayload.length,
-        });
-      }
-      return parsed;
+      return JSON.parse(trimmed) as T;
     } catch {
-      if (trackDiag) {
-        const parseDurationMs = nowMonotonicMs() - parseStartMs;
-        diagAttempt!.recordPayloadNormalization({
-          payloadFormat: 'text-json',
-          jsonParseExecuted: true,
-          jsonParseMs: parseDurationMs,
-          payloadChars: rawPayload.length,
-        });
-      }
       const jsonError: TransportError = new Error(
         'O provedor retornou uma resposta em formato inválido (não é um JSON válido).'
       );
@@ -251,20 +195,6 @@ function createNetworkError(): TransportError {
   return netError;
 }
 
-function extractNativeDiagnosticsFromSource(
-  source: unknown
-): CapacitorNativeAttemptDiagnosticsInput | null {
-  if (!source || typeof source !== 'object') {
-    return null;
-  }
-  const candidate = source as Record<string, unknown>;
-  const rawDiag = candidate.nativeDiagnostics ?? candidate.diagnostics ?? null;
-  if (rawDiag && typeof rawDiag === 'object') {
-    return rawDiag as CapacitorNativeAttemptDiagnosticsInput;
-  }
-  return null;
-}
-
 /**
  * Executa uma consulta GET JSON para a API Xtream Codes:
  *
@@ -284,7 +214,6 @@ export async function executeXtreamGetRequest<T = any>({
   url,
   timeoutMs,
   signal,
-  diagAttempt,
   isFullCatalogRequest = false,
 }: TransportRequestOptions): Promise<T> {
   if (signal?.aborted) {
@@ -292,7 +221,7 @@ export async function executeXtreamGetRequest<T = any>({
   }
 
   if (isFullCatalogRequest && isAndroidTempFileCatalogTransportAvailable()) {
-    const deadlineAt = nowMonotonicMs() + timeoutMs;
+    const deadlineAt = getMonotonicNowMs() + timeoutMs;
     androidAdapterLoadCountForTest++;
     const { executeAndroidTempFileCatalogDownload } = await import(
       './androidCatalogFileAdapter'
@@ -300,7 +229,7 @@ export async function executeXtreamGetRequest<T = any>({
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
     }
-    if (nowMonotonicMs() >= deadlineAt) {
+    if (getMonotonicNowMs() >= deadlineAt) {
       throw createTimeoutError();
     }
     const rawText = await executeAndroidTempFileCatalogDownload({
@@ -308,29 +237,27 @@ export async function executeXtreamGetRequest<T = any>({
       timeoutMs,
       deadlineAt,
       signal,
-      diagAttempt,
     });
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
     }
-    if (nowMonotonicMs() >= deadlineAt) {
+    if (getMonotonicNowMs() >= deadlineAt) {
       throw createTimeoutError();
     }
-    return normalizeTransportPayload<T>(rawText, diagAttempt, signal, deadlineAt);
+    return normalizeTransportPayload<T>(rawText, signal, deadlineAt);
   }
 
   if (isUsingCapacitorNativeTransport()) {
-    return executeCapacitorHttpGet<T>({ url, timeoutMs, signal, diagAttempt });
+    return executeCapacitorHttpGet<T>({ url, timeoutMs, signal });
   }
 
-  return executeBrowserFetchGet<T>({ url, timeoutMs, signal, diagAttempt });
+  return executeBrowserFetchGet<T>({ url, timeoutMs, signal });
 }
 
 async function executeBrowserFetchGet<T = any>({
   url,
   timeoutMs,
   signal,
-  diagAttempt,
 }: TransportRequestOptions): Promise<T> {
   const controller = new AbortController();
   let didTimeout = false;
@@ -348,11 +275,8 @@ async function executeBrowserFetchGet<T = any>({
     signal.addEventListener('abort', onCallerAbort, { once: true });
   }
 
-  const trackDiag = Boolean(diagAttempt && diagAttempt.isActive());
-
   try {
     let response: Response;
-    const responseWaitStartMs = trackDiag ? nowMonotonicMs() : 0;
     try {
       response = await fetch(url, {
         method: 'GET',
@@ -363,24 +287,9 @@ async function executeBrowserFetchGet<T = any>({
         throw new Error('Operação cancelada pelo usuário.');
       }
       if (didTimeout) {
-        const tErr = createTimeoutError();
-        if (diagAttempt?.isActive()) {
-          diagAttempt.recordWebResponseWait(nowMonotonicMs() - responseWaitStartMs);
-        }
-        throw tErr;
+        throw createTimeoutError();
       }
-      const nErr = createNetworkError();
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordWebResponseWait(nowMonotonicMs() - responseWaitStartMs);
-      }
-      throw nErr;
-    }
-
-    if (diagAttempt?.isActive()) {
-      diagAttempt.recordWebResponseWait(
-        nowMonotonicMs() - responseWaitStartMs,
-        response.status
-      );
+      throw createNetworkError();
     }
 
     if (signal?.aborted) {
@@ -392,7 +301,6 @@ async function executeBrowserFetchGet<T = any>({
     }
 
     let textData: string;
-    const bodyReadStartMs = diagAttempt?.isActive() ? nowMonotonicMs() : 0;
     try {
       textData = await response.text();
     } catch {
@@ -400,20 +308,13 @@ async function executeBrowserFetchGet<T = any>({
         throw new Error('Operação cancelada pelo usuário.');
       }
       if (didTimeout) {
-        const tErr = createTimeoutError();
-        if (diagAttempt?.isActive()) {
-          diagAttempt.recordWebBodyRead(nowMonotonicMs() - bodyReadStartMs, 0);
-        }
-        throw tErr;
+        throw createTimeoutError();
       }
       const readError: TransportError = new Error(
         'Falha ao ler os dados da resposta do provedor.'
       );
       readError.isTransient = true;
       readError.status = response.status;
-      if (diagAttempt?.isActive()) {
-        diagAttempt.recordWebBodyRead(nowMonotonicMs() - bodyReadStartMs, 0);
-      }
       throw readError;
     }
 
@@ -421,14 +322,7 @@ async function executeBrowserFetchGet<T = any>({
       throw new Error('Operação cancelada pelo usuário.');
     }
 
-    if (diagAttempt?.isActive()) {
-      diagAttempt.recordWebBodyRead(
-        nowMonotonicMs() - bodyReadStartMs,
-        textData.length
-      );
-    }
-
-    return normalizeTransportPayload<T>(textData, diagAttempt, signal);
+    return normalizeTransportPayload<T>(textData, signal);
   } finally {
     clearTimeout(timeoutId);
     if (signal) {
@@ -441,28 +335,22 @@ async function executeCapacitorHttpGet<T = any>({
   url,
   timeoutMs,
   signal,
-  diagAttempt,
 }: TransportRequestOptions): Promise<T> {
   const connectTimeout = Math.min(timeoutMs, MAX_NATIVE_CONNECT_TIMEOUT_MS);
   const readTimeout = timeoutMs;
   const httpGetFn =
     capacitorHttpGetOverride ??
-    ((opts: DiagnosticHttpOptions) => CapacitorHttp.get(opts) as Promise<DiagnosticHttpResponse>);
+    ((opts: HttpOptions) => CapacitorHttp.get(opts));
 
   let settled = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let onCallerAbort: (() => void) | null = null;
-  const trackDiag = Boolean(diagAttempt && diagAttempt.isActive());
-  const nativeStartMs = trackDiag ? nowMonotonicMs() : 0;
 
   try {
-    const response = await new Promise<DiagnosticHttpResponse>((resolve, reject) => {
+    const response = await new Promise<HttpResponse>((resolve, reject) => {
       onCallerAbort = () => {
         if (settled) return;
         settled = true;
-        if (diagAttempt?.isActive()) {
-          diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
-        }
         reject(new Error('Operação cancelada pelo usuário.'));
       };
 
@@ -478,14 +366,10 @@ async function executeCapacitorHttpGet<T = any>({
       timeoutId = setTimeout(() => {
         if (settled) return;
         settled = true;
-        const tErr = createTimeoutError();
-        if (diagAttempt?.isActive()) {
-          diagAttempt.recordCapacitorTransportAndBridge(nowMonotonicMs() - nativeStartMs);
-        }
-        reject(tErr);
+        reject(createTimeoutError());
       }, timeoutMs);
 
-      const requestOptions: DiagnosticHttpOptions = {
+      const requestOptions: HttpOptions = {
         url,
         connectTimeout,
         readTimeout,
@@ -494,9 +378,6 @@ async function executeCapacitorHttpGet<T = any>({
           Accept: 'application/json, text/plain, */*',
         },
       };
-      if (trackDiag) {
-        requestOptions.collectDiagnostics = true;
-      }
 
       httpGetFn(requestOptions)
         .then((res) => {
@@ -510,51 +391,20 @@ async function executeCapacitorHttpGet<T = any>({
         .catch((err: any) => {
           if (settled) return;
           settled = true;
-          const errNativeDiag = extractNativeDiagnosticsFromSource(err);
           if (signal?.aborted) {
-            if (diagAttempt?.isActive()) {
-              diagAttempt.recordCapacitorTransportAndBridge(
-                nowMonotonicMs() - nativeStartMs,
-                undefined,
-                errNativeDiag
-              );
-            }
             reject(new Error('Operação cancelada pelo usuário.'));
             return;
           }
           const msg = String(err?.message || err || '').toLowerCase();
           if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('sockettimeout')) {
-            const tErr = createTimeoutError();
-            if (diagAttempt?.isActive()) {
-              diagAttempt.recordCapacitorTransportAndBridge(
-                nowMonotonicMs() - nativeStartMs,
-                undefined,
-                errNativeDiag
-              );
-            }
-            reject(tErr);
+            reject(createTimeoutError());
             return;
           }
-          const nErr = createNetworkError();
-          if (diagAttempt?.isActive()) {
-            diagAttempt.recordCapacitorTransportAndBridge(
-              nowMonotonicMs() - nativeStartMs,
-              undefined,
-              errNativeDiag
-            );
-          }
-          reject(nErr);
+          reject(createNetworkError());
         });
     });
 
     const status = typeof response?.status === 'number' ? response.status : 0;
-    if (diagAttempt?.isActive()) {
-      diagAttempt.recordCapacitorTransportAndBridge(
-        nowMonotonicMs() - nativeStartMs,
-        status || undefined,
-        extractNativeDiagnosticsFromSource(response)
-      );
-    }
 
     if (signal?.aborted) {
       throw new Error('Operação cancelada pelo usuário.');
@@ -564,7 +414,7 @@ async function executeCapacitorHttpGet<T = any>({
       throw createHttpError(status || 500, status ? `Status ${status}` : 'Erro');
     }
 
-    return normalizeTransportPayload<T>(response.data, diagAttempt, signal);
+    return normalizeTransportPayload<T>(response.data, signal);
   } finally {
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
