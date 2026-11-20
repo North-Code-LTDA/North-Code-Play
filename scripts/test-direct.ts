@@ -6553,7 +6553,7 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
           streamUrl: 'http://server.tv:8080/movie/user/pass/9001.m3u8',
           title: 'Filme Teste C3',
           contentType: 'movie',
-          error: 'Falha ao carregar transmissão',
+          errorMessage: 'Falha ao carregar transmissão',
           onBack: () => {},
         })
       );
@@ -6599,7 +6599,7 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
   );
   assert.strictEqual(
     mediaUtilsModule.buildDirectImageUrl(
-      '/api/image?url=https%3A%2F%2Fcdn.example.com%2Fcover.jpg&server=http%3A%2F%2Fprovider.tv',
+      '/api/media/image?url=https%3A%2F%2Fcdn.example.com%2Fcover.jpg&serverUrl=http%3A%2F%2Fprovider.tv',
       'http://provider.tv'
     ),
     'https://cdn.example.com/cover.jpg',
@@ -6755,6 +6755,9 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
       onUpdate: () => {},
     });
 
+    // Aguardar microtask de agendamento do liveEpgManager (Promise.resolve().then)
+    await new Promise((r) => setTimeout(r, 10));
+
     assert.strictEqual(
       maxObservedInFlight,
       2,
@@ -6787,8 +6790,8 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
       'Canal 504 na fila deve executar assim que houver slot disponível'
     );
     assert(
-      updates501A.includes('ready') && updates501B.includes('ready'),
-      'Ambos os assinantes deduplicados do canal 501 devem receber snapshot ready'
+      updates501A.includes('ok') && updates501B.includes('ok'),
+      'Ambos os assinantes deduplicados do canal 501 devem receber snapshot ok'
     );
 
     // Nova assinatura em 501 deve ser atendida diretamente pelo cache sem nova chamada de rede
@@ -6800,7 +6803,7 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
         cachedStatus = snap.status;
       },
     });
-    assert.strictEqual(cachedStatus, 'ready', 'Cache de EPG deve entregar snapshot ready imediatamente');
+    assert.strictEqual(cachedStatus, 'ok', 'Cache de EPG deve entregar snapshot ok imediatamente');
     assert.strictEqual(
       epgCallsByStream.get(501),
       1,
@@ -6830,8 +6833,614 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
     'Helper determinístico setAndroidPlatformOverrideForDpadTest deve permanecer preservado'
   );
 
+  // 13.9. Seleção real de faixas de áudio (HLS índice vs id, confirmação assíncrona, erro sem falsa confirmação, nativo e vazio)
+  {
+    const audioContainer = doc.createElement('div');
+    doc.body.appendChild(audioContainer);
+    const audioRoot = createRoot(audioContainer);
+    enableDeterministicHlsMock();
+    clearAllBackHandlersForTest();
+    setNavMode('remote');
+
+    // Simular faixas HLS com id de metadados diferente do índice do array (10 e 25 vs índices 0 e 1)
+    nextHlsInitialTracks = {
+      audioTracks: [
+        { id: 10, name: 'Português', lang: 'pt-BR', default: true, url: 'http://cdn/audio-pt.m3u8' },
+        { id: 25, name: 'Inglês', lang: 'en', default: false, url: 'http://cdn/audio-en.m3u8' },
+      ],
+      subtitleTracks: [],
+      audioTrack: 0,
+      subtitleTrack: -1,
+    };
+
+    try {
+      await act(async () => {
+        audioRoot.render(
+          React.createElement(VideoPlayer, {
+            streamUrl: 'http://server.tv:8080/movie/user/pass/9100.m3u8',
+            title: 'Filme Multi-Áudio HLS',
+            contentType: 'movie',
+            onBack: () => {},
+          })
+        );
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      const hlsCtrl = activeHlsControllers[activeHlsControllers.length - 1];
+      assert(hlsCtrl, 'Controlador mock HLS deve estar ativo para teste de troca de áudio');
+
+      const playerEl = doc.querySelector('[data-player-container="true"]') as HTMLElement;
+      assert(playerEl, 'Player multi-áudio HLS deve montar');
+
+      // Abrir menu -> aba Áudio
+      const openAudioSub = async () => {
+        const audioSubTrigger = playerEl.querySelector(
+          'button[data-player-control="audio-subtitles"]'
+        ) as HTMLButtonElement;
+        assert(audioSubTrigger, 'Botão Áudio e Legendas deve existir');
+        await act(async () => {
+          audioSubTrigger.click();
+          await new Promise((r) => setTimeout(r, 15));
+        });
+        const audioTab = playerEl.querySelector(
+          'button[data-settings-tab="audio"]'
+        ) as HTMLButtonElement | null;
+        if (audioTab) {
+          await act(async () => {
+            audioTab.click();
+            await new Promise((r) => setTimeout(r, 15));
+          });
+        }
+      };
+
+      await openAudioSub();
+      const trackBtn0 = playerEl.querySelector('button[data-audio-track-id="0"]') as HTMLButtonElement;
+      const trackBtn1 = playerEl.querySelector('button[data-audio-track-id="1"]') as HTMLButtonElement;
+      assert(trackBtn0 && trackBtn1, 'Ambas as faixas reais HLS devem ser listadas pelos índices 0 e 1');
+      assert.strictEqual(trackBtn0.getAttribute('data-track-active'), 'true', 'Faixa 0 deve iniciar ativa');
+      assert.strictEqual(trackBtn1.getAttribute('data-track-active'), 'false', 'Faixa 1 deve iniciar inativa');
+
+      // Tornar a troca assíncrona no mock (não emitir AUDIO_TRACK_SWITCHED imediatamente)
+      let assignedHlsIndex = -1;
+      const origEmit = hlsCtrl.emit;
+      let suppressSyncAudioSwitched = true;
+      hlsCtrl.emit = (ev: string, payload?: any) => {
+        if (suppressSyncAudioSwitched && ev === Hls.Events.AUDIO_TRACK_SWITCHED) {
+          assignedHlsIndex = payload?.id ?? -1;
+          return;
+        }
+        origEmit(ev, payload);
+      };
+
+      await act(async () => {
+        trackBtn1.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+
+      assert.strictEqual(
+        assignedHlsIndex,
+        1,
+        'Troca de áudio HLS deve atribuir índice real 1 do array hls.audioTracks (e não id de metadado 25)'
+      );
+      assert.strictEqual(hlsCtrl.audioTrack, 1, 'Propriedade hls.audioTrack deve refletir índice 1');
+
+      // Reabrir aba Áudio antes de AUDIO_TRACK_SWITCHED: NÃO deve confirmar faixa 1 falsamente
+      const mainAudioItem = playerEl.querySelector('button[data-settings-item="audio"]') as HTMLButtonElement;
+      await act(async () => {
+        mainAudioItem.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      const pendingBtn1 = playerEl.querySelector('button[data-audio-track-id="1"]') as HTMLButtonElement;
+      const stillActiveBtn0 = playerEl.querySelector('button[data-audio-track-id="0"]') as HTMLButtonElement;
+      assert.strictEqual(
+        pendingBtn1.getAttribute('data-track-active'),
+        'false',
+        'Faixa 1 não pode ser confirmada como ativa antes de AUDIO_TRACK_SWITCHED'
+      );
+      assert.strictEqual(
+        pendingBtn1.getAttribute('data-track-pending'),
+        'true',
+        'Faixa 1 deve indicar estado pendente enquanto aguarda confirmação do motor HLS'
+      );
+      assert.strictEqual(
+        stillActiveBtn0.getAttribute('data-track-active'),
+        'true',
+        'Faixa 0 deve permanecer como ativa confirmada até a troca concluir'
+      );
+
+      // Simular falha não fatal ao carregar faixa de áudio -> não deve quebrar vídeo nem confirmar faixa 1
+      await act(async () => {
+        origEmit(Hls.Events.ERROR, {
+          fatal: false,
+          type: Hls.ErrorTypes.NETWORK_ERROR,
+          details: Hls.ErrorDetails.AUDIO_TRACK_LOAD_ERROR,
+        });
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        playerEl.querySelector('[data-player-error-overlay="true"]'),
+        null,
+        'Erro não fatal de faixa de áudio não deve exibir overlay de erro fatal no vídeo'
+      );
+      assert(
+        playerEl.querySelector('[data-audio-track-feedback="true"]'),
+        'Falha ao carregar faixa de áudio deve comunicar feedback honesto ao usuário'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-active'),
+        'true',
+        'Após falha na troca, faixa anterior confirmada deve continuar marcada como ativa'
+      );
+
+      // Agora confirmar troca real via AUDIO_TRACK_SWITCHED
+      suppressSyncAudioSwitched = false;
+      await act(async () => {
+        origEmit(Hls.Events.AUDIO_TRACK_SWITCHED, { id: 1, url: 'http://cdn/audio-en.m3u8' });
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="1"]')?.getAttribute('data-track-active'),
+        'true',
+        'Após AUDIO_TRACK_SWITCHED real, faixa 1 deve ser confirmada como ativa'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('button[data-audio-track-id="0"]')?.getAttribute('data-track-active'),
+        'false',
+        'Após AUDIO_TRACK_SWITCHED real, faixa 0 deve ficar inativa'
+      );
+      assert.strictEqual(
+        playerEl.querySelector('[data-audio-track-feedback="true"]'),
+        null,
+        'Feedback de erro deve ser limpo após confirmação bem-sucedida'
+      );
+    } finally {
+      await act(async () => {
+        audioRoot.unmount();
+      });
+      restoreHlsMock();
+      clearAllBackHandlersForTest();
+      audioContainer.remove();
+    }
+
+    // 13.9b. Áudio nativo (HTMLMediaElement.audioTracks): leitura real de .enabled e recusa de falsa confirmação
+    const nativeContainer = doc.createElement('div');
+    doc.body.appendChild(nativeContainer);
+    const nativeRoot = createRoot(nativeContainer);
+    clearAllBackHandlersForTest();
+    setNavMode('remote');
+
+    try {
+      await act(async () => {
+        nativeRoot.render(
+          React.createElement(VideoPlayer, {
+            streamUrl: 'http://server.tv:8080/movie/user/pass/9200.mp4',
+            title: 'Filme MP4 Nativo',
+            contentType: 'movie',
+            onBack: () => {},
+          })
+        );
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      const playerEl = doc.querySelector('[data-player-container="true"]') as HTMLElement;
+      const videoEl = playerEl.querySelector('video') as any;
+      assert(videoEl, 'Elemento video deve existir no player nativo');
+
+      // Estado vazio inicial: sem faixas expostas -> estado honesto sem faixas fictícias
+      const openNativeAudioSub = async () => {
+        const trigger = playerEl.querySelector(
+          'button[data-player-control="audio-subtitles"]'
+        ) as HTMLButtonElement;
+        await act(async () => {
+          trigger.click();
+          await new Promise((r) => setTimeout(r, 15));
+        });
+        const audioTab = playerEl.querySelector(
+          'button[data-settings-tab="audio"]'
+        ) as HTMLButtonElement | null;
+        if (audioTab) {
+          await act(async () => {
+            audioTab.click();
+            await new Promise((r) => setTimeout(r, 15));
+          });
+        }
+      };
+
+      await openNativeAudioSub();
+      assert(
+        playerEl.querySelector('[data-audio-default-only="true"]') &&
+          playerEl.querySelector('[data-audio-empty-state="true"]'),
+        'Mídia progressiva sem faixas expostas deve informar honestamente ausência de faixas adicionais'
+      );
+
+      // Fechar menu, anexar audioTracks nativas reais e disparar loadedmetadata
+      await act(async () => {
+        executeBackAction();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+
+      let lockTrack0ReadOnly = false;
+      let track0Enabled = true;
+      let track1Enabled = false;
+      const nativeTrackList: any = [
+        {
+          id: 't0',
+          kind: 'main',
+          label: 'Dublado',
+          language: 'pt-BR',
+          get enabled() {
+            return track0Enabled;
+          },
+          set enabled(v: boolean) {
+            if (!lockTrack0ReadOnly) {
+              track0Enabled = Boolean(v);
+            }
+          },
+        },
+        {
+          id: 't1',
+          kind: 'alternative',
+          label: 'Original',
+          language: 'en',
+          get enabled() {
+            return track1Enabled;
+          },
+          set enabled(v: boolean) {
+            track1Enabled = Boolean(v);
+          },
+        },
+      ];
+      Object.defineProperty(videoEl, 'audioTracks', {
+        value: nativeTrackList,
+        configurable: true,
+      });
+
+      await act(async () => {
+        videoEl.dispatchEvent(new Event('loadedmetadata'));
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      await openNativeAudioSub();
+      const natBtn1 = playerEl.querySelector('button[data-audio-track-id="1"]') as HTMLButtonElement;
+      assert(natBtn1, 'Faixa nativa 1 deve ser listada após loadedmetadata');
+      await act(async () => {
+        natBtn1.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(track1Enabled, true, 'Faixa nativa 1 deve ter enabled=true');
+      assert.strictEqual(track0Enabled, false, 'Faixa nativa 0 deve ter enabled=false');
+
+      // Bloquear escrita em track0 (simulando navegador que ignora alteração de .enabled) e tentar voltar para faixa 0
+      lockTrack0ReadOnly = true;
+      const mainAudioItem = playerEl.querySelector('button[data-settings-item="audio"]') as HTMLButtonElement;
+      await act(async () => {
+        mainAudioItem.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      const natBtn0 = playerEl.querySelector('button[data-audio-track-id="0"]') as HTMLButtonElement;
+      await act(async () => {
+        natBtn0.click();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        natBtn0.getAttribute('data-track-active'),
+        'false',
+        'Não deve confirmar falsamente faixa nativa cujo .enabled não mudou para true'
+      );
+      assert(
+        playerEl.querySelector('[data-audio-track-feedback="true"]'),
+        'Deve informar feedback quando navegador impedir troca de faixa nativa'
+      );
+    } finally {
+      await act(async () => {
+        nativeRoot.unmount();
+      });
+      clearAllBackHandlersForTest();
+      nativeContainer.remove();
+    }
+  }
+
+  // 13.10. Navegação D-Pad no controle de volume sem prisão de foco + edição explícita + preservação de mouse
+  {
+    const volContainer = doc.createElement('div');
+    doc.body.appendChild(volContainer);
+    const volRoot = createRoot(volContainer);
+    clearAllBackHandlersForTest();
+    setNavMode('remote');
+    window.localStorage.setItem('nc_player_volume', '0.5');
+
+    let backCalled = false;
+    try {
+      await act(async () => {
+        volRoot.render(
+          React.createElement(
+            NavigationProvider,
+            null,
+            React.createElement(VideoPlayer, {
+              streamUrl: 'http://server.tv:8080/movie/user/pass/9300.mp4',
+              title: 'Filme Teste Volume D-Pad',
+              contentType: 'movie',
+              onBack: () => {
+                backCalled = true;
+              },
+            })
+          )
+        );
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      const playerEl = doc.querySelector('[data-player-container="true"]') as HTMLElement;
+      assert(playerEl, 'Player de teste de volume deve montar');
+
+      // Geometria horizontal determinística para a fileira inferior no happy-dom
+      const orderedControls = [
+        'play-pause',
+        'seek-back',
+        'seek-forward',
+        'mute',
+        'volume-slider',
+        'audio-subtitles',
+        'speed',
+        'fullscreen',
+      ];
+      orderedControls.forEach((ctrlName, idx) => {
+        const el = playerEl.querySelector(`[data-player-control="${ctrlName}"]`) as HTMLElement | null;
+        if (el) {
+          const left = 40 + idx * 90;
+          el.getBoundingClientRect = () =>
+            ({
+              left,
+              right: left + 60,
+              top: 620,
+              bottom: 660,
+              width: 60,
+              height: 40,
+              x: left,
+              y: 620,
+              toJSON: () => {},
+            }) as DOMRect;
+        }
+      });
+
+      const muteBtn = playerEl.querySelector('[data-player-control="mute"]') as HTMLButtonElement;
+      const volSlider = playerEl.querySelector(
+        'input[data-player-control="volume-slider"]'
+      ) as HTMLInputElement;
+      const audioSubBtn = playerEl.querySelector(
+        '[data-player-control="audio-subtitles"]'
+      ) as HTMLButtonElement;
+      assert(muteBtn && volSlider && audioSubBtn, 'Controles mute, volume-slider e audio-subtitles devem existir');
+
+      // 1) Focar slider sem modo de edição: ArrowRight NÃO pode prender o foco e NÃO pode alterar volume
+      await act(async () => {
+        volSlider.focus();
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      assert.strictEqual(volSlider.getAttribute('data-slider-editing'), 'false');
+      const initialVol = parseFloat(volSlider.value);
+
+      await act(async () => {
+        volSlider.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+        );
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        doc.activeElement,
+        audioSubBtn,
+        'ArrowRight fora do modo de edição deve sair do slider de volume para o controle à direita sem prender foco'
+      );
+      assert.strictEqual(
+        parseFloat(volSlider.value),
+        initialVol,
+        'Atravessar o slider com ArrowRight não deve alterar o volume acidentalmente'
+      );
+
+      // 2) Voltar para o slider e sair pela esquerda com ArrowLeft -> deve ir para mute
+      await act(async () => {
+        volSlider.focus();
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      await act(async () => {
+        volSlider.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })
+        );
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        doc.activeElement,
+        muteBtn,
+        'ArrowLeft fora do modo de edição deve sair do slider de volume para o botão mute'
+      );
+
+      // 3) Entrar no modo explícito de edição com Enter -> ajustar volume -> sair com Voltar sem fechar player
+      await act(async () => {
+        volSlider.focus();
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      await act(async () => {
+        volSlider.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+        );
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        volSlider.getAttribute('data-slider-editing'),
+        'true',
+        'Pressionar OK/Enter no slider de volume deve ativar modo de edição'
+      );
+
+      await act(async () => {
+        volSlider.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+        );
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        doc.activeElement,
+        volSlider,
+        'Durante modo de edição, ArrowRight deve manter o foco no slider enquanto ajusta o volume'
+      );
+      assert(
+        parseFloat(volSlider.value) > initialVol,
+        `ArrowRight no modo de edição deve aumentar o volume (antes=${initialVol}, depois=${volSlider.value})`
+      );
+
+      await act(async () => {
+        executeBackAction();
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        volSlider.getAttribute('data-slider-editing'),
+        'false',
+        'Voltar durante edição de volume deve encerrar o modo de edição'
+      );
+      assert.strictEqual(
+        backCalled,
+        false,
+        'Voltar durante edição de volume não deve fechar o player'
+      );
+
+      // 4) Confirmar saída livre após encerrar edição
+      await act(async () => {
+        volSlider.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+        );
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert.strictEqual(
+        doc.activeElement,
+        audioSubBtn,
+        'Após sair do modo de edição, ArrowRight deve voltar a navegar livremente para a direita'
+      );
+
+      // 5) Modo desktop/pointer preserva ajuste direto sem exigir Enter
+      setNavMode('pointer');
+      const volBeforePointer = parseFloat(volSlider.value);
+      await act(async () => {
+        volSlider.focus();
+        volSlider.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })
+        );
+        await new Promise((r) => setTimeout(r, 15));
+      });
+      assert(
+        parseFloat(volSlider.value) < volBeforePointer,
+        'Fora do modo remote, ajuste de teclado no slider deve continuar imediato sem exigir Enter'
+      );
+    } finally {
+      await act(async () => {
+        volRoot.unmount();
+      });
+      clearAllBackHandlersForTest();
+      window.localStorage.removeItem('nc_player_volume');
+      volContainer.remove();
+    }
+  }
+
+  // 13.11. Robustez e classificação de erros de reprodução (URL inválida, HLS HTTP 404 imediato, MKV nativo)
+  {
+    const errContainer = doc.createElement('div');
+    doc.body.appendChild(errContainer);
+    const errRoot = createRoot(errContainer);
+    enableDeterministicHlsMock();
+    clearAllBackHandlersForTest();
+
+    let finalErrors: string[] = [];
+    try {
+      // 13.11a. URL malformada deve falhar imediatamente sem carregamento infinito
+      await act(async () => {
+        errRoot.render(
+          React.createElement(VideoPlayer, {
+            streamUrl: 'url-malformada-sem-protocolo',
+            title: 'URL Inválida',
+            contentType: 'movie',
+            onBack: () => {},
+            onPlaybackFinalError: (msg) => finalErrors.push(msg),
+          })
+        );
+        await new Promise((r) => setTimeout(r, 25));
+      });
+      const invalidOverlay = doc.querySelector('[data-player-error-overlay="true"]') as HTMLElement | null;
+      assert(invalidOverlay, 'URL malformada deve exibir overlay de erro imediatamente');
+      assert(
+        (invalidOverlay.textContent || '').includes('inválido'),
+        'Mensagem de erro para URL malformada deve informar endereço inválido'
+      );
+      assert(finalErrors.length >= 1, 'onPlaybackFinalError deve ser notificado para URL malformada');
+
+      // 13.11b. HLS fatal HTTP 404 deve classificar como indisponível no provedor sem retries cegos
+      finalErrors = [];
+      await act(async () => {
+        errRoot.render(
+          React.createElement(VideoPlayer, {
+            streamUrl: 'http://server.tv:8080/series/user/pass/9404.m3u8',
+            title: 'Episódio 404',
+            contentType: 'episode',
+            onBack: () => {},
+            onPlaybackFinalError: (msg) => finalErrors.push(msg),
+          })
+        );
+        await new Promise((r) => setTimeout(r, 25));
+      });
+      const hls404Ctrl = activeHlsControllers[activeHlsControllers.length - 1];
+      assert(hls404Ctrl, 'Controlador HLS deve existir para teste de HTTP 404');
+      await act(async () => {
+        hls404Ctrl.emit(Hls.Events.ERROR, {
+          fatal: true,
+          type: Hls.ErrorTypes.NETWORK_ERROR,
+          details: Hls.ErrorDetails.MANIFEST_LOAD_ERROR,
+          response: { code: 404 },
+        });
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      const hls404Overlay = doc.querySelector('[data-player-error-overlay="true"]') as HTMLElement | null;
+      assert(hls404Overlay, 'HLS fatal HTTP 404 deve falhar prontamente sem esperar 3 retries');
+      assert(
+        (hls404Overlay.textContent || '').includes('HTTP 404'),
+        'Erro HLS 404 deve informar claramente indisponibilidade HTTP 404'
+      );
+
+      // 13.11c. Erro nativo code 4 em arquivo .mkv deve informar limitação real de contêiner/codec MKV
+      await act(async () => {
+        errRoot.render(
+          React.createElement(VideoPlayer, {
+            streamUrl: 'http://server.tv:8080/movie/user/pass/9500.mkv',
+            title: 'Filme MKV',
+            contentType: 'movie',
+            onBack: () => {},
+          })
+        );
+        await new Promise((r) => setTimeout(r, 25));
+      });
+      const mkvVideo = doc.querySelector('[data-player-container="true"] video') as any;
+      assert(mkvVideo, 'Elemento video deve existir para teste de erro MKV');
+      Object.defineProperty(mkvVideo, 'error', {
+        value: { code: 4 },
+        configurable: true,
+      });
+      await act(async () => {
+        mkvVideo.dispatchEvent(new Event('error'));
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      const mkvOverlay = doc.querySelector('[data-player-error-overlay="true"]') as HTMLElement | null;
+      assert(mkvOverlay, 'Erro nativo MKV deve exibir overlay de erro');
+      assert(
+        (mkvOverlay.textContent || '').includes('MKV'),
+        'Erro nativo em arquivo .mkv deve mencionar limitação de formato MKV no navegador'
+      );
+    } finally {
+      await act(async () => {
+        errRoot.unmount();
+      });
+      restoreHlsMock();
+      clearAllBackHandlersForTest();
+      errContainer.remove();
+    }
+  }
+
   console.log(
-    '✅ Entrega C3 (remoção final de diagnósticos e contadores + regressões funcionais de Player, ConfigView, mediaUtils, catalogRanking, playbackHistory e liveEpgManager) validada!'
+    '✅ Entrega C3 + Correções Pós-C3 (áudio real, volume D-Pad, erros de reprodução e EPG assíncrono) validadas!'
   );
 }
 

@@ -115,7 +115,7 @@ export const VideoPlayer = React.memo(
 
   useEffect(() => {
     setHasStartedPlaying(false);
-  }, [streamUrl, retryTrigger]);
+  }, [streamUrl, combinedRetryTrigger]);
 
   // Unique player instance identifier and registry tracking
   const playerId = useId();
@@ -1185,6 +1185,8 @@ export const VideoPlayer = React.memo(
         onSelectQuality={session.setQuality}
         audioTracks={session.audioTracks}
         currentAudioTrack={session.currentAudioTrack}
+        pendingAudioTrack={session.pendingAudioTrack}
+        audioTrackFeedback={session.audioTrackFeedback}
         onSelectAudioTrack={session.setAudioTrack}
         subtitleTracks={session.subtitleTracks}
         currentSubtitleTrack={session.currentSubtitleTrack}

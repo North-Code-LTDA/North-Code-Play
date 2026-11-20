@@ -29,7 +29,9 @@ interface PlayerSettingsMenuProps {
   onSelectQuality: (id: number) => void;
   audioTracks: MediaTrackInfo[];
   currentAudioTrack: number;
-  onSelectAudioTrack: (id: number) => void;
+  pendingAudioTrack?: number;
+  audioTrackFeedback?: string | null;
+  onSelectAudioTrack: (id: number) => boolean | void;
   subtitleTracks: MediaTrackInfo[];
   currentSubtitleTrack: number;
   onSelectSubtitleTrack: (id: number) => void;
@@ -49,6 +51,8 @@ export function PlayerSettingsMenu({
   onSelectQuality,
   audioTracks,
   currentAudioTrack,
+  pendingAudioTrack = -1,
+  audioTrackFeedback = null,
   onSelectAudioTrack,
   subtitleTracks,
   currentSubtitleTrack,
@@ -126,7 +130,8 @@ export function PlayerSettingsMenu({
 
   const currentAudioLabel =
     audioTracks.length > 0
-      ? audioTracks.find((a) => a.id === currentAudioTrack)?.name || audioTracks[0].name
+      ? audioTracks.find((a) => a.id === currentAudioTrack)?.name ||
+        (audioTracks.length === 1 ? audioTracks[0].name : 'Padrão')
       : 'Padrão';
 
   const currentSubtitleLabel =
@@ -363,23 +368,34 @@ export function PlayerSettingsMenu({
             <>
               {audioTracks.map((tr) => {
                 const isSelected =
-                  currentAudioTrack === tr.id ||
-                  (currentAudioTrack === -1 && audioTracks[0]?.id === tr.id);
+                  audioTracks.length === 1
+                    ? currentAudioTrack === tr.id || currentAudioTrack === -1
+                    : currentAudioTrack === tr.id;
+                const isPending = pendingAudioTrack === tr.id && !isSelected;
                 return (
                   <button
                     type="button"
                     key={tr.id}
                     data-audio-track-id={tr.id}
                     data-track-active={isSelected ? 'true' : 'false'}
+                    data-track-pending={isPending ? 'true' : 'false'}
                     aria-pressed={isSelected}
                     onClick={() => {
-                      onSelectAudioTrack(tr.id);
-                      setActiveSubMenu('main');
+                      const accepted = onSelectAudioTrack(tr.id);
+                      if (accepted !== false) {
+                        setActiveSubMenu('main');
+                      }
                     }}
                     className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
                   >
                     <span className="truncate pr-2">{tr.name}</span>
-                    {isSelected && <Check className="w-4 h-4 text-nc-primary shrink-0" />}
+                    {isPending ? (
+                      <span className="text-[10px] text-nc-text-secondary shrink-0">
+                        Trocando...
+                      </span>
+                    ) : (
+                      isSelected && <Check className="w-4 h-4 text-nc-primary shrink-0" />
+                    )}
                   </button>
                 );
               })}
@@ -389,6 +405,15 @@ export function PlayerSettingsMenu({
                   className="px-2 py-1.5 text-[11px] text-nc-text-secondary leading-snug"
                 >
                   Faixa única disponível nesta transmissão.
+                </p>
+              )}
+              {audioTrackFeedback && (
+                <p
+                  data-audio-track-feedback="true"
+                  role="status"
+                  className="px-2 py-1.5 text-[11px] text-amber-300 leading-snug"
+                >
+                  {audioTrackFeedback}
                 </p>
               )}
             </>

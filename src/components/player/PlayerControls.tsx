@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useId } from 'react';
 import {
   ArrowLeft,
   Play,
@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { PlayerTimeline } from './PlayerTimeline';
 import { BufferedTimeRange } from './types';
+import { getNavMode, useBackHandler, BACK_PRIORITY } from '../../navigation';
 
 interface PlayerControlsProps {
   embedded: boolean;
@@ -313,6 +314,28 @@ export function PlayerControls({
 }: PlayerControlsProps) {
   const [showVolumeSlider, setShowVolumeSlider] = useState(false);
   const [isVolumeGroupFocused, setIsVolumeGroupFocused] = useState(false);
+  const [isVolumeEditing, setIsVolumeEditing] = useState(false);
+  const controlsId = useId();
+
+  useEffect(() => {
+    if (!isVisible) {
+      setIsVolumeEditing(false);
+    }
+  }, [isVisible]);
+
+  useBackHandler(
+    `player-volume-edit-${controlsId}`,
+    BACK_PRIORITY.SUB_MODAL + 2,
+    () => {
+      if (isVolumeEditing) {
+        setIsVolumeEditing(false);
+        onUserInteraction?.();
+        return true;
+      }
+      return false;
+    },
+    isVolumeEditing
+  );
 
   const effectiveDuration = duration > 0 && isFinite(duration) ? duration : 0;
   const effectiveVolume = isMuted ? 0 : volume;
@@ -342,6 +365,71 @@ export function PlayerControls({
 
   const stopProp = (e: React.SyntheticEvent) => {
     e.stopPropagation();
+  };
+
+  const handleVolumeSliderKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const remoteActive = getNavMode() === 'remote';
+
+    if (remoteActive) {
+      if (
+        e.key === 'Enter' ||
+        e.key === 'NumpadEnter' ||
+        e.key === ' ' ||
+        e.key === 'Spacebar'
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        onUserInteraction?.();
+        setIsVolumeEditing((prev) => !prev);
+        return;
+      }
+
+      if (isVolumeEditing) {
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          e.preventDefault();
+          e.stopPropagation();
+          onUserInteraction?.();
+          const delta = e.key === 'ArrowRight' ? 0.05 : -0.05;
+          const nextVol = Math.max(
+            0,
+            Math.min(1, Number((effectiveVolume + delta).toFixed(2)))
+          );
+          onVolumeChange(nextVol);
+          return;
+        }
+        if (
+          e.key === 'Escape' ||
+          e.key === 'Backspace' ||
+          e.key === 'GoBack' ||
+          e.key === 'BrowserBack'
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          onUserInteraction?.();
+          setIsVolumeEditing(false);
+          return;
+        }
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          setIsVolumeEditing(false);
+          return;
+        }
+      } else {
+        // Traversal mode on remote/D-Pad: do not intercept ArrowLeft/ArrowRight
+        return;
+      }
+    }
+
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      e.stopPropagation();
+      onUserInteraction?.();
+      const delta = e.key === 'ArrowRight' ? 0.05 : -0.05;
+      const nextVol = Math.max(
+        0,
+        Math.min(1, Number((effectiveVolume + delta).toFixed(2)))
+      );
+      onVolumeChange(nextVol);
+    }
   };
 
   // Preserve the compact embedded Live TV preview layout untouched
@@ -497,6 +585,7 @@ export function PlayerControls({
                 onBlurCapture={(e) => {
                   if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
                     setIsVolumeGroupFocused(false);
+                    setIsVolumeEditing(false);
                   }
                 }}
                 onClick={stopProp}
@@ -514,7 +603,9 @@ export function PlayerControls({
                 </button>
 
                 <div
-                  className={`transition-all duration-200 overflow-hidden flex items-center px-1 ${
+                  className={`transition-all duration-200 overflow-hidden flex items-center px-1 rounded-lg ${
+                    isVolumeEditing ? 'ring-1 ring-nc-primary/80 bg-white/10' : ''
+                  } ${
                     isVolumeSliderExpanded
                       ? 'w-14 opacity-100'
                       : 'w-0 opacity-0 pointer-events-none invisible'
@@ -525,30 +616,22 @@ export function PlayerControls({
                   <input
                     type="range"
                     data-player-control="volume-slider"
+                    data-volume-explicit-edit="true"
+                    data-slider-editing={isVolumeEditing ? 'true' : 'false'}
                     aria-label="Volume"
+                    aria-valuetext={`${Math.round(effectiveVolume * 100)}%`}
                     min={0}
                     max={1}
                     step={0.05}
                     value={effectiveVolume}
                     tabIndex={isControlFocusable && isVolumeSliderExpanded ? 0 : -1}
+                    onBlur={() => setIsVolumeEditing(false)}
                     onChange={(e) => {
                       e.stopPropagation();
                       onUserInteraction?.();
                       onVolumeChange(parseFloat(e.target.value));
                     }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        onUserInteraction?.();
-                        const delta = e.key === 'ArrowRight' ? 0.05 : -0.05;
-                        const nextVol = Math.max(
-                          0,
-                          Math.min(1, Number((effectiveVolume + delta).toFixed(2)))
-                        );
-                        onVolumeChange(nextVol);
-                      }
-                    }}
+                    onKeyDown={handleVolumeSliderKeyDown}
                     className="nc-player-volume-slider w-full h-1.5 bg-white/30 rounded-lg appearance-none cursor-pointer accent-nc-primary"
                     title="Ajustar Volume"
                   />
@@ -765,6 +848,7 @@ export function PlayerControls({
               onBlurCapture={(e) => {
                 if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
                   setIsVolumeGroupFocused(false);
+                  setIsVolumeEditing(false);
                 }
               }}
               onClick={stopProp}
@@ -782,7 +866,9 @@ export function PlayerControls({
               </button>
 
               <div
-                className={`transition-all duration-200 overflow-hidden flex items-center px-1 ${
+                className={`transition-all duration-200 overflow-hidden flex items-center px-1 rounded-lg ${
+                  isVolumeEditing ? 'ring-1 ring-nc-primary/80 bg-white/10' : ''
+                } ${
                   isVolumeSliderExpanded
                     ? 'w-16 sm:w-24 opacity-100'
                     : 'w-0 opacity-0 pointer-events-none invisible'
@@ -793,30 +879,22 @@ export function PlayerControls({
                 <input
                   type="range"
                   data-player-control="volume-slider"
+                  data-volume-explicit-edit="true"
+                  data-slider-editing={isVolumeEditing ? 'true' : 'false'}
                   aria-label="Volume"
+                  aria-valuetext={`${Math.round(effectiveVolume * 100)}%`}
                   min={0}
                   max={1}
                   step={0.05}
                   value={effectiveVolume}
                   tabIndex={isControlFocusable && isVolumeSliderExpanded ? 0 : -1}
+                  onBlur={() => setIsVolumeEditing(false)}
                   onChange={(e) => {
                     e.stopPropagation();
                     onUserInteraction?.();
                     onVolumeChange(parseFloat(e.target.value));
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onUserInteraction?.();
-                      const delta = e.key === 'ArrowRight' ? 0.05 : -0.05;
-                      const nextVol = Math.max(
-                        0,
-                        Math.min(1, Number((effectiveVolume + delta).toFixed(2)))
-                      );
-                      onVolumeChange(nextVol);
-                    }
-                  }}
+                  onKeyDown={handleVolumeSliderKeyDown}
                   className="nc-player-volume-slider w-full h-1 bg-white/35 rounded-lg appearance-none cursor-pointer accent-nc-primary"
                   title="Ajustar Volume"
                 />

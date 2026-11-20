@@ -30,6 +30,7 @@ export interface MediaTrackInfo {
   lang?: string;
   source?: MediaTrackSource;
   hlsTrackId?: number;
+  hlsTrackIndex?: number;
   nativeTrackIndex?: number;
   externalUrl?: string;
   format?: 'vtt' | 'srt' | 'unknown';

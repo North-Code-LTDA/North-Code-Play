@@ -102,12 +102,20 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
         setNavMode('remote');
 
         // If user is on a range slider, allow left/right to adjust slider, up/down to navigate away
+        // Sliders marked with data-volume-explicit-edit="true" only capture left/right while actively editing
         if (
           activeEl &&
           (activeEl.getAttribute('role') === 'slider' ||
             (activeEl.tagName === 'INPUT' && (activeEl as HTMLInputElement).type === 'range'))
         ) {
-          if (direction === 'left' || direction === 'right') {
+          const requiresExplicitEdit =
+            activeEl.getAttribute('data-volume-explicit-edit') === 'true';
+          const isExplicitlyEditing =
+            activeEl.getAttribute('data-slider-editing') === 'true';
+          if (
+            (!requiresExplicitEdit || isExplicitlyEditing) &&
+            (direction === 'left' || direction === 'right')
+          ) {
             return;
           }
         }

@@ -20,6 +20,9 @@ import { recordPlaybackPosition, AccountIdentity, PlaybackType } from '../../uti
 
 interface InternalAudioTrackDescriptor extends MediaTrackInfo {
   nativeTrackObj?: any;
+  hlsGroupId?: string;
+  hlsUrl?: string;
+  rawName?: string;
 }
 
 interface InternalSubtitleTrackDescriptor extends MediaTrackInfo {
@@ -89,6 +92,226 @@ export function normalizePlayerVolume(raw: unknown, fallback: number = 1): numbe
   return safeFallback;
 }
 
+function validateStreamUrl(rawUrl: string): { valid: boolean; reason?: string } {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) {
+    return { valid: false, reason: 'Endereço de mídia não informado.' };
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const protocol = parsed.protocol.toLowerCase();
+    if (
+      protocol !== 'http:' &&
+      protocol !== 'https:' &&
+      protocol !== 'blob:' &&
+      protocol !== 'data:'
+    ) {
+      return {
+        valid: false,
+        reason: 'Protocolo de mídia não suportado pelo player.',
+      };
+    }
+    return { valid: true };
+  } catch {
+    return {
+      valid: false,
+      reason: 'Endereço de reprodução inválido ou malformado.',
+    };
+  }
+}
+
+function isMixedContentUrl(rawUrl: string): boolean {
+  if (typeof window === 'undefined' || !window.location) return false;
+  return (
+    window.location.protocol === 'https:' &&
+    /^http:\/\//i.test((rawUrl || '').trim())
+  );
+}
+
+function extractMediaExtension(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    const pathname = parsed.pathname.toLowerCase();
+    const match = pathname.match(/(\.[a-z0-9]{2,5})$/i);
+    return match ? match[1] : '';
+  } catch {
+    const clean = (rawUrl || '').split(/[?#]/)[0].toLowerCase();
+    const match = clean.match(/(\.[a-z0-9]{2,5})$/i);
+    return match ? match[1] : '';
+  }
+}
+
+function classifyNativeMediaError(
+  mediaErr: MediaError | null,
+  streamUrl: string
+): string {
+  if (!mediaErr) {
+    return 'Falha ao reproduzir mídia diretamente do provedor.';
+  }
+  if (mediaErr.code === 1) {
+    return 'A reprodução foi interrompida antes de iniciar.';
+  }
+  if (mediaErr.code === 2) {
+    return 'Erro de rede ao conectar à transmissão do provedor.';
+  }
+  if (mediaErr.code === 3) {
+    return 'Erro na decodificação do áudio ou vídeo deste conteúdo (codec incompatível ou fluxo corrompido).';
+  }
+  if (mediaErr.code === 4) {
+    if (isMixedContentUrl(streamUrl)) {
+      return 'Conteúdo HTTP bloqueado pelo navegador em página HTTPS (Mixed Content).';
+    }
+    const ext = extractMediaExtension(streamUrl);
+    if (ext === '.mkv' || ext === '.avi' || ext === '.ts' || ext === '.flv' || ext === '.wmv') {
+      return `Formato ${ext.slice(1).toUpperCase()} ou codec do provedor não suportado nativamente por este navegador.`;
+    }
+    return 'Não foi possível reproduzir esta mídia (formato/codec não suportado pelo navegador, origem indisponível ou bloqueio de CORS).';
+  }
+  return 'Falha ao reproduzir mídia diretamente do provedor.';
+}
+
+function classifyHlsFatalError(
+  data: any,
+  streamUrl: string
+): { message: string; retryable: boolean } {
+  const details = data?.details;
+  const responseCode = Number(data?.response?.code) || 0;
+
+  if (data?.type === Hls.ErrorTypes.NETWORK_ERROR) {
+    if (responseCode === 401 || responseCode === 403) {
+      return {
+        message: `Acesso negado ou credenciais expiradas no provedor (HTTP ${responseCode}).`,
+        retryable: false,
+      };
+    }
+    if (responseCode === 404 || responseCode === 410) {
+      return {
+        message: `Conteúdo indisponível ou removido no provedor (HTTP ${responseCode}).`,
+        retryable: false,
+      };
+    }
+    if (responseCode >= 500) {
+      return {
+        message: `O servidor do provedor retornou erro interno (HTTP ${responseCode}).`,
+        retryable: true,
+      };
+    }
+    if (responseCode >= 400) {
+      return {
+        message: `O provedor rejeitou a solicitação da transmissão (HTTP ${responseCode}).`,
+        retryable: false,
+      };
+    }
+    if (
+      details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR ||
+      details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR
+    ) {
+      return {
+        message: 'Manifesto HLS inválido ou codecs incompatíveis com este navegador.',
+        retryable: false,
+      };
+    }
+    if (
+      details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+      details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT ||
+      details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT
+    ) {
+      return {
+        message: 'Tempo esgotado ao carregar o fluxo HLS do provedor.',
+        retryable: true,
+      };
+    }
+    if (isMixedContentUrl(streamUrl)) {
+      return {
+        message: 'Fluxo HLS HTTP bloqueado pelo navegador em página HTTPS (Mixed Content).',
+        retryable: false,
+      };
+    }
+    if (
+      details === Hls.ErrorDetails.FRAG_LOAD_ERROR ||
+      details === Hls.ErrorDetails.LEVEL_LOAD_ERROR
+    ) {
+      return {
+        message:
+          'Falha ao carregar segmentos do fluxo HLS do provedor (origem indisponível, rede instável ou bloqueio de CORS).',
+        retryable: true,
+      };
+    }
+    return {
+      message:
+        'Falha de rede ou bloqueio de CORS ao carregar o manifesto HLS diretamente do provedor.',
+      retryable: true,
+    };
+  }
+
+  if (data?.type === Hls.ErrorTypes.MEDIA_ERROR) {
+    if (
+      details === Hls.ErrorDetails.BUFFER_ADD_CODEC_ERROR ||
+      details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR
+    ) {
+      return {
+        message: 'Codec de áudio ou vídeo incompatível com este navegador.',
+        retryable: false,
+      };
+    }
+    return {
+      message: 'Erro fatal irrecuperável na decodificação de mídia HLS.',
+      retryable: true,
+    };
+  }
+
+  return {
+    message: 'Erro fatal irrecuperável no fluxo HLS.',
+    retryable: false,
+  };
+}
+
+function resolveLiveHlsAudioTrackIndex(
+  hlsTracks: any[],
+  target: InternalAudioTrackDescriptor
+): number {
+  if (!Array.isArray(hlsTracks) || hlsTracks.length === 0) return -1;
+
+  if (
+    typeof target.hlsTrackIndex === 'number' &&
+    target.hlsTrackIndex >= 0 &&
+    target.hlsTrackIndex < hlsTracks.length
+  ) {
+    const candidate = hlsTracks[target.hlsTrackIndex];
+    const sameUrl = !target.hlsUrl || !candidate?.url || candidate.url === target.hlsUrl;
+    const sameGroup =
+      !target.hlsGroupId || !candidate?.groupId || candidate.groupId === target.hlsGroupId;
+    const sameRawName =
+      !target.rawName || !candidate?.name || candidate.name === target.rawName;
+    if (sameUrl && sameGroup && sameRawName) {
+      return target.hlsTrackIndex;
+    }
+  }
+
+  if (target.hlsUrl) {
+    const byUrl = hlsTracks.findIndex((tr) => tr && tr.url === target.hlsUrl);
+    if (byUrl !== -1) return byUrl;
+  }
+
+  if (target.hlsGroupId && target.rawName) {
+    const byGroupAndName = hlsTracks.findIndex(
+      (tr) =>
+        tr &&
+        tr.groupId === target.hlsGroupId &&
+        tr.name === target.rawName &&
+        (!target.lang || tr.lang === target.lang)
+    );
+    if (byGroupAndName !== -1) return byGroupAndName;
+  }
+
+  if (typeof target.hlsTrackId === 'number') {
+    const byMetaId = hlsTracks.findIndex((tr) => tr && tr.id === target.hlsTrackId);
+    if (byMetaId !== -1) return byMetaId;
+  }
+
+  return -1;
+}
+
 export function usePlaybackSession({
   videoRef,
   streamUrl,
@@ -119,7 +342,14 @@ export function usePlaybackSession({
   const audioTracksRef = useRef<InternalAudioTrackDescriptor[]>([]);
   const subtitleTracksRef = useRef<InternalSubtitleTrackDescriptor[]>([]);
   const selectedSubtitleTrackIdRef = useRef<number>(-1);
+  const syncAudioTracksFnRef = useRef<(() => void) | null>(null);
   const syncSubtitleTracksFnRef = useRef<(() => void) | null>(null);
+  const pendingAudioRequestRef = useRef<{
+    trackId: number;
+    targetIndex: number;
+    confirmed: boolean;
+  } | null>(null);
+  const lastConfirmedHlsAudioIndexRef = useRef<number>(-1);
 
   // Buffer profile state
   const [bufferProfile, setBufferProfileState] = useState<BufferProfileKey>(() => {
@@ -176,6 +406,8 @@ export function usePlaybackSession({
   const [currentQuality, setCurrentQuality] = useState<number>(-1); // -1 = Auto
   const [audioTracks, setAudioTracks] = useState<MediaTrackInfo[]>([]);
   const [currentAudioTrack, setCurrentAudioTrack] = useState<number>(-1);
+  const [pendingAudioTrack, setPendingAudioTrack] = useState<number>(-1);
+  const [audioTrackFeedback, setAudioTrackFeedback] = useState<string | null>(null);
   const [subtitleTracks, setSubtitleTracks] = useState<MediaTrackInfo[]>([]);
   const [currentSubtitleTrack, setCurrentSubtitleTrack] = useState<number>(-1); // -1 = Off
 
@@ -410,10 +642,15 @@ export function usePlaybackSession({
       setSubtitleTracks([]);
       setCurrentQuality(-1);
       setCurrentAudioTrack(-1);
+      setPendingAudioTrack(-1);
+      setAudioTrackFeedback(null);
       setCurrentSubtitleTrack(-1);
       audioTracksRef.current = [];
       subtitleTracksRef.current = [];
       selectedSubtitleTrackIdRef.current = -1;
+      pendingAudioRequestRef.current = null;
+      lastConfirmedHlsAudioIndexRef.current = -1;
+      syncAudioTracksFnRef.current = null;
       syncSubtitleTracksFnRef.current = null;
       setLiveSyncPosition(null);
       setLiveEdgeDistance(0);
@@ -433,6 +670,17 @@ export function usePlaybackSession({
     activeAccountRef.current = credentials || null;
     cleanup();
     resetSessionMetrics();
+
+    const urlValidation = validateStreamUrl(streamUrl);
+    if (!urlValidation.valid) {
+      const invalidMsg = urlValidation.reason || 'Endereço de reprodução inválido.';
+      setError(invalidMsg);
+      setIsLoading(false);
+      setIsBuffering(false);
+      onPlaybackFinalErrorRef.current?.(invalidMsg, activeAttemptId);
+      return;
+    }
+
     setIsLoading(true);
 
     // Initial video element setup using current ref values
@@ -615,34 +863,13 @@ export function usePlaybackSession({
     const handleError = () => {
       if (sessionIdRef.current !== currentSessionId) return;
       const mediaErr = video.error;
-      let msg = 'Falha ao reproduzir mídia diretamente do provedor.';
-      if (mediaErr) {
-        if (mediaErr.code === 4) {
-          msg =
-            'Formato não suportado nativamente pelo navegador ou bloqueio de CORS / Mixed Content pelo provedor.';
-        } else if (mediaErr.code === 2) {
-          msg = 'Erro de rede ao conectar à transmissão do provedor.';
-        } else if (mediaErr.code === 3) {
-          msg = 'Erro na decodificação do fluxo de vídeo.';
-        }
-      }
+      const msg = classifyNativeMediaError(mediaErr, streamUrl);
       setError(msg);
       setIsLoading(false);
       setIsBuffering(false);
       reportFinalError(msg);
     };
 
-    // Attach listeners to video element
-    video.addEventListener('playing', handlePlaying);
-    video.addEventListener('play', handlePlay);
-    video.addEventListener('pause', handlePause);
-    video.addEventListener('waiting', handleWaiting);
-    video.addEventListener('timeupdate', handleTimeUpdate);
-    video.addEventListener('durationchange', handleDurationChange);
-    video.addEventListener('loadedmetadata', handleLoadedMetadata);
-    video.addEventListener('progress', handleProgress);
-    video.addEventListener('volumechange', handleVolumeChange);
-    video.addEventListener('ratechange', handleRateChange);
     // Unified Audio Track discovery (HLS.js -> Native HTMLMediaElement.audioTracks)
     const syncAudioTracks = () => {
       if (sessionIdRef.current !== currentSessionId) return;
@@ -652,8 +879,12 @@ export function usePlaybackSession({
         const rawList: InternalAudioTrackDescriptor[] = hlsInstance.audioTracks.map((tr, idx) => {
           const hlsTrackId = typeof tr.id === 'number' ? tr.id : idx;
           return {
-            id: hlsTrackId,
+            id: idx,
+            hlsTrackIndex: idx,
             hlsTrackId,
+            hlsGroupId: typeof (tr as any).groupId === 'string' ? (tr as any).groupId : undefined,
+            hlsUrl: typeof (tr as any).url === 'string' ? (tr as any).url : undefined,
+            rawName: typeof tr.name === 'string' ? tr.name : undefined,
             source: 'hls',
             lang: tr.lang,
             channels: (tr as any).channels ? String((tr as any).channels) : undefined,
@@ -675,17 +906,27 @@ export function usePlaybackSession({
         audioTracksRef.current = disambiguated;
         setAudioTracks(disambiguated);
 
-        const activeHlsAudio = hlsInstance.audioTrack;
-        const matchedActive = disambiguated.find(
-          (t) => t.hlsTrackId === activeHlsAudio || t.id === activeHlsAudio
-        );
+        const activeHlsIndex =
+          typeof hlsInstance.audioTrack === 'number' ? hlsInstance.audioTrack : -1;
+        const matchedActive = disambiguated.find((t) => t.hlsTrackIndex === activeHlsIndex);
         if (matchedActive) {
+          lastConfirmedHlsAudioIndexRef.current = activeHlsIndex;
           setCurrentAudioTrack(matchedActive.id);
-        } else if (disambiguated.length > 0) {
-          const defTrack = disambiguated.find((t) => t.isDefault) || disambiguated[0];
-          setCurrentAudioTrack(defTrack.id);
+        } else if (disambiguated.length === 1) {
+          lastConfirmedHlsAudioIndexRef.current = disambiguated[0].hlsTrackIndex ?? 0;
+          setCurrentAudioTrack(disambiguated[0].id);
         } else {
-          setCurrentAudioTrack(-1);
+          const defTrack = disambiguated.find((t) => t.isDefault);
+          lastConfirmedHlsAudioIndexRef.current = defTrack?.hlsTrackIndex ?? -1;
+          setCurrentAudioTrack(defTrack ? defTrack.id : -1);
+        }
+
+        if (
+          pendingAudioRequestRef.current &&
+          !disambiguated.some((t) => t.id === pendingAudioRequestRef.current?.trackId)
+        ) {
+          pendingAudioRequestRef.current = null;
+          setPendingAudioTrack(-1);
         }
         return;
       }
@@ -718,14 +959,24 @@ export function usePlaybackSession({
         const disambiguated = disambiguateTrackNames(rawNative) as InternalAudioTrackDescriptor[];
         audioTracksRef.current = disambiguated;
         setAudioTracks(disambiguated);
-        setCurrentAudioTrack(enabledId !== -1 ? enabledId : disambiguated[0]?.id ?? -1);
+        if (enabledId !== -1) {
+          setCurrentAudioTrack(enabledId);
+        } else if (disambiguated.length === 1) {
+          setCurrentAudioTrack(disambiguated[0].id);
+        } else {
+          setCurrentAudioTrack(-1);
+        }
         return;
       }
 
       audioTracksRef.current = [];
+      pendingAudioRequestRef.current = null;
       setAudioTracks([]);
       setCurrentAudioTrack(-1);
+      setPendingAudioTrack(-1);
     };
+
+    syncAudioTracksFnRef.current = syncAudioTracks;
 
     // Unified Subtitle Track discovery (HLS.js + Native HTMLMediaElement.textTracks + External tracks)
     const syncSubtitleTracks = () => {
@@ -979,12 +1230,55 @@ export function usePlaybackSession({
         }
       });
 
+      const resolveAudioTrackFromHlsEvent = (data: any): InternalAudioTrackDescriptor | undefined => {
+        const list = audioTracksRef.current;
+        if (list.length === 0) return undefined;
+        const hlsActiveIndex = typeof hls.audioTrack === 'number' ? hls.audioTrack : -1;
+        if (hlsActiveIndex >= 0) {
+          const byActiveIndex = list.find(
+            (t) => t.source === 'hls' && t.hlsTrackIndex === hlsActiveIndex
+          );
+          if (byActiveIndex) return byActiveIndex;
+        }
+        if (data && typeof data.url === 'string' && data.url) {
+          const byUrl = list.find((t) => t.source === 'hls' && t.hlsUrl === data.url);
+          if (byUrl) return byUrl;
+        }
+        if (data && typeof data.id === 'number') {
+          const byIndex = list.find((t) => t.source === 'hls' && t.hlsTrackIndex === data.id);
+          if (byIndex) return byIndex;
+          const byMetaId = list.find((t) => t.source === 'hls' && t.hlsTrackId === data.id);
+          if (byMetaId) return byMetaId;
+        }
+        return undefined;
+      };
+
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHING, (_event, data) => {
+        if (sessionIdRef.current !== currentSessionId) return;
+        const matched = resolveAudioTrackFromHlsEvent(data);
+        if (matched) {
+          setPendingAudioTrack(matched.id);
+        }
+      });
+
       hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
         if (sessionIdRef.current !== currentSessionId) return;
-        const matched = audioTracksRef.current.find(
-          (t) => t.source === 'hls' && (t.hlsTrackId === data.id || t.id === data.id)
-        );
-        setCurrentAudioTrack(matched ? matched.id : data.id);
+        const matched = resolveAudioTrackFromHlsEvent(data);
+        if (pendingAudioRequestRef.current) {
+          pendingAudioRequestRef.current.confirmed = true;
+          pendingAudioRequestRef.current = null;
+        }
+        setPendingAudioTrack(-1);
+        setAudioTrackFeedback(null);
+        if (matched) {
+          lastConfirmedHlsAudioIndexRef.current =
+            matched.hlsTrackIndex ?? (typeof hls.audioTrack === 'number' ? hls.audioTrack : -1);
+          setCurrentAudioTrack(matched.id);
+        } else if (typeof data?.id === 'number' && data.id >= 0) {
+          lastConfirmedHlsAudioIndexRef.current =
+            typeof hls.audioTrack === 'number' && hls.audioTrack >= 0 ? hls.audioTrack : data.id;
+          setCurrentAudioTrack(data.id);
+        }
       });
 
       hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
@@ -1010,12 +1304,39 @@ export function usePlaybackSession({
         setCurrentSubtitleTrack(resolvedId);
       });
 
+      const finalizeFatalHlsError = (msg: string) => {
+        recoveryTimersRef.current.forEach((t) => clearTimeout(t));
+        recoveryTimersRef.current = [];
+        setError(msg);
+        setIsLoading(false);
+        setIsBuffering(false);
+        reportFinalError(msg);
+        try {
+          hls.destroy();
+        } catch {}
+        hlsRef.current = null;
+      };
+
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (sessionIdRef.current !== currentSessionId) return;
+
+        // Non-fatal audio track loading failures must not kill playback or falsely confirm the switch
+        if (
+          !data.fatal &&
+          (data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_ERROR ||
+            data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_TIMEOUT)
+        ) {
+          pendingAudioRequestRef.current = null;
+          setPendingAudioTrack(-1);
+          setAudioTrackFeedback('Não foi possível carregar a faixa de áudio selecionada.');
+          return;
+        }
+
         if (data.fatal) {
+          const classified = classifyHlsFatalError(data, streamUrl);
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              if (networkRecoveryAttempts < 3) {
+              if (classified.retryable && networkRecoveryAttempts < 3) {
                 networkRecoveryAttempts++;
                 const delayMs = networkRecoveryAttempts * 1000;
                 const timer = setTimeout(() => {
@@ -1025,39 +1346,19 @@ export function usePlaybackSession({
                 }, delayMs);
                 recoveryTimersRef.current.push(timer);
               } else {
-                const msg =
-                  'Falha de rede ou CORS ao carregar manifesto HLS diretamente do provedor. ' +
-                  'Verifique se o servidor do provedor permite requisições da web.';
-                setError(msg);
-                setIsLoading(false);
-                setIsBuffering(false);
-                reportFinalError(msg);
-                hls.destroy();
-                hlsRef.current = null;
+                finalizeFatalHlsError(classified.message);
               }
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
-              if (mediaRecoveryAttempts < 2) {
+              if (classified.retryable && mediaRecoveryAttempts < 2) {
                 mediaRecoveryAttempts++;
                 hls.recoverMediaError();
               } else {
-                const msg = 'Erro fatal irrecuperável na decodificação de mídia HLS.';
-                setError(msg);
-                setIsLoading(false);
-                setIsBuffering(false);
-                reportFinalError(msg);
-                hls.destroy();
-                hlsRef.current = null;
+                finalizeFatalHlsError(classified.message);
               }
               break;
             default: {
-              const msg = 'Erro fatal irrecuperável no fluxo HLS.';
-              setError(msg);
-              setIsLoading(false);
-              setIsBuffering(false);
-              reportFinalError(msg);
-              hls.destroy();
-              hlsRef.current = null;
+              finalizeFatalHlsError(classified.message);
               break;
             }
           }
@@ -1362,26 +1663,117 @@ export function usePlaybackSession({
   }, [streamUrl, retryTrigger, externalSubtitlesKey, videoRef, clearExternalTracksAndBlobs]);
 
   const setAudioTrack = useCallback(
-    (trackId: number) => {
+    (trackId: number): boolean => {
       const target = audioTracksRef.current.find((t) => t.id === trackId);
-      if (hlsRef.current && (!target || target.source === 'hls')) {
-        const hlsTargetId = target?.hlsTrackId ?? trackId;
-        hlsRef.current.audioTrack = hlsTargetId;
-        setCurrentAudioTrack(trackId);
-        return;
+      if (!target) {
+        return false;
+      }
+
+      if (hlsRef.current && target.source === 'hls') {
+        const hls = hlsRef.current;
+        const liveTracks = Array.isArray(hls.audioTracks) ? hls.audioTracks : [];
+        const targetIndex = resolveLiveHlsAudioTrackIndex(liveTracks, target);
+
+        if (targetIndex < 0 || targetIndex >= liveTracks.length) {
+          pendingAudioRequestRef.current = null;
+          setPendingAudioTrack(-1);
+          setAudioTrackFeedback('Faixa de áudio indisponível neste fluxo.');
+          syncAudioTracksFnRef.current?.();
+          return false;
+        }
+
+        if (
+          hls.audioTrack === targetIndex &&
+          lastConfirmedHlsAudioIndexRef.current === targetIndex
+        ) {
+          pendingAudioRequestRef.current = null;
+          setPendingAudioTrack(-1);
+          setAudioTrackFeedback(null);
+          setCurrentAudioTrack(target.id);
+          return true;
+        }
+
+        const request = {
+          trackId: target.id,
+          targetIndex,
+          confirmed: false,
+        };
+        pendingAudioRequestRef.current = request;
+        setAudioTrackFeedback(null);
+
+        try {
+          hls.audioTrack = targetIndex;
+        } catch {
+          pendingAudioRequestRef.current = null;
+          setPendingAudioTrack(-1);
+          setAudioTrackFeedback('Não foi possível alternar a faixa de áudio nesta transmissão.');
+          syncAudioTracksFnRef.current?.();
+          return false;
+        }
+
+        if (hls.audioTrack !== targetIndex) {
+          pendingAudioRequestRef.current = null;
+          setPendingAudioTrack(-1);
+          setAudioTrackFeedback('Não foi possível alternar a faixa de áudio nesta transmissão.');
+          syncAudioTracksFnRef.current?.();
+          return false;
+        }
+
+        if (!request.confirmed) {
+          setPendingAudioTrack(target.id);
+        }
+        return true;
       }
 
       const video = videoRef.current;
       const nativeAudioList = video ? (video as any).audioTracks : null;
-      if (nativeAudioList && typeof nativeAudioList.length === 'number' && nativeAudioList.length > 0) {
-        const targetIndex = target?.nativeTrackIndex ?? trackId;
+      if (
+        target.source === 'native' &&
+        nativeAudioList &&
+        typeof nativeAudioList.length === 'number' &&
+        nativeAudioList.length > 0
+      ) {
+        const targetIndex = target.nativeTrackIndex ?? target.id;
+        if (targetIndex < 0 || targetIndex >= nativeAudioList.length) {
+          setAudioTrackFeedback('Faixa de áudio indisponível nesta mídia.');
+          return false;
+        }
+
         for (let i = 0; i < nativeAudioList.length; i++) {
           try {
             nativeAudioList[i].enabled = i === targetIndex;
           } catch {}
         }
-        setCurrentAudioTrack(trackId);
+
+        const targetActuallyEnabled = Boolean(nativeAudioList[targetIndex]?.enabled);
+        if (targetActuallyEnabled) {
+          setPendingAudioTrack(-1);
+          setAudioTrackFeedback(null);
+          setCurrentAudioTrack(target.id);
+          return true;
+        }
+
+        let actualEnabledIndex = -1;
+        for (let i = 0; i < nativeAudioList.length; i++) {
+          if (nativeAudioList[i]?.enabled) {
+            actualEnabledIndex = i;
+            break;
+          }
+        }
+        if (actualEnabledIndex !== -1) {
+          const actualTrack = audioTracksRef.current.find(
+            (t) => t.source === 'native' && t.nativeTrackIndex === actualEnabledIndex
+          );
+          if (actualTrack) {
+            setCurrentAudioTrack(actualTrack.id);
+          }
+        }
+        setPendingAudioTrack(-1);
+        setAudioTrackFeedback('O navegador não permitiu alternar a faixa de áudio desta mídia.');
+        return false;
       }
+
+      return false;
     },
     [videoRef]
   );
@@ -1523,6 +1915,8 @@ export function usePlaybackSession({
     currentQuality,
     audioTracks,
     currentAudioTrack,
+    pendingAudioTrack,
+    audioTrackFeedback,
     subtitleTracks,
     currentSubtitleTrack,
     bufferProfile,
