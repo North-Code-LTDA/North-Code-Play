@@ -59,13 +59,20 @@ export const VideoPlayer = React.memo(
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isVisuallyExpanded, setIsVisuallyExpanded] = useState(false);
   const [isEnteringFullscreen, setIsEnteringFullscreen] = useState(false);
-  const [isExitingFullscreen, setIsExitingFullscreen] = useState(false);
   const [hasPiP, setHasPiP] = useState(false);
   const isMountedRef = useRef(true);
+  const embeddedRef = useRef(embedded);
+  embeddedRef.current = embedded;
+  const isFullscreenRef = useRef(false);
+  const isVisuallyExpandedRef = useRef(false);
   const isEnteringFullscreenRef = useRef(false);
   const isExitingFullscreenRef = useRef(false);
   const fullscreenEntryRequestIdRef = useRef(0);
+  const fullscreenExitRequestIdRef = useRef(0);
   const pendingFullscreenPromiseRef = useRef<Promise<boolean> | null>(null);
+  const pendingFullscreenExitPromiseRef = useRef<Promise<boolean> | null>(null);
+  const pendingFullscreenExitResolveRef = useRef<((didExit: boolean) => void) | null>(null);
+  const pendingFullscreenExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const activeSelectionKey = `${String(streamId ?? '')}|${String(streamUrl ?? '')}|${String(channelName ?? '')}`;
   const activeSelectionKeyRef = useRef(activeSelectionKey);
@@ -130,40 +137,6 @@ export const VideoPlayer = React.memo(
     }
   }, []);
 
-  // Sync fullscreen state with document events (isolated to this player container)
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      const container = containerRef.current;
-      const fsEl =
-        document.fullscreenElement ||
-        (document as any).webkitFullscreenElement ||
-        (document as any).mozFullScreenElement ||
-        (document as any).msFullscreenElement;
-
-      const isFs = Boolean(
-        container &&
-          fsEl &&
-          (fsEl === container || container.contains(fsEl as Node))
-      );
-
-      setIsFullscreen(isFs);
-      if (isFs) {
-        isEnteringFullscreenRef.current = false;
-        pendingFullscreenPromiseRef.current = null;
-        setIsEnteringFullscreen(false);
-      } else if (!isEnteringFullscreenRef.current) {
-        setIsVisuallyExpanded(false);
-      }
-    };
-
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
-    };
-  }, []);
-
   const isContainerCurrentlyFullscreen = useCallback(() => {
     if (typeof document === 'undefined') {
       return false;
@@ -182,7 +155,126 @@ export const VideoPlayer = React.memo(
     );
   }, []);
 
+  const syncFullscreenState = useCallback((next: boolean) => {
+    isFullscreenRef.current = next;
+    if (isMountedRef.current) {
+      setIsFullscreen(next);
+    }
+  }, []);
+
+  const syncVisuallyExpandedState = useCallback((next: boolean) => {
+    isVisuallyExpandedRef.current = next;
+    if (isMountedRef.current) {
+      setIsVisuallyExpanded(next);
+    }
+  }, []);
+
+  const syncEnteringFullscreenState = useCallback((next: boolean) => {
+    isEnteringFullscreenRef.current = next;
+    if (isMountedRef.current) {
+      setIsEnteringFullscreen(next);
+    }
+  }, []);
+
   const pendingFocusControlRef = useRef<string | null>(null);
+
+  const settlePendingFullscreenExit = useCallback(
+    (didExit: boolean, expectedRequestId?: number): boolean => {
+      if (
+        expectedRequestId !== undefined &&
+        fullscreenExitRequestIdRef.current !== expectedRequestId
+      ) {
+        return false;
+      }
+      if (!isExitingFullscreenRef.current && !pendingFullscreenExitResolveRef.current) {
+        return false;
+      }
+
+      fullscreenExitRequestIdRef.current += 1;
+      isExitingFullscreenRef.current = false;
+
+      if (pendingFullscreenExitTimerRef.current) {
+        clearTimeout(pendingFullscreenExitTimerRef.current);
+        pendingFullscreenExitTimerRef.current = null;
+      }
+
+      const resolve = pendingFullscreenExitResolveRef.current;
+      pendingFullscreenExitResolveRef.current = null;
+      pendingFullscreenExitPromiseRef.current = null;
+
+      if (didExit) {
+        pendingFocusControlRef.current = null;
+        syncFullscreenState(false);
+        syncVisuallyExpandedState(false);
+        syncEnteringFullscreenState(false);
+      } else {
+        syncEnteringFullscreenState(false);
+        syncFullscreenState(isContainerCurrentlyFullscreen());
+      }
+
+      if (resolve) {
+        resolve(didExit);
+      }
+      return true;
+    },
+    [
+      isContainerCurrentlyFullscreen,
+      syncFullscreenState,
+      syncVisuallyExpandedState,
+      syncEnteringFullscreenState,
+    ]
+  );
+
+  // Sync fullscreen state with document events (isolated to this player container)
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isFs = isContainerCurrentlyFullscreen();
+
+      if (isFs) {
+        syncFullscreenState(true);
+        pendingFullscreenPromiseRef.current = null;
+        syncEnteringFullscreenState(false);
+        return;
+      }
+
+      if (isExitingFullscreenRef.current) {
+        settlePendingFullscreenExit(true);
+        return;
+      }
+
+      const wasFullscreen = isFullscreenRef.current || isVisuallyExpandedRef.current;
+      syncFullscreenState(false);
+      if (!isEnteringFullscreenRef.current) {
+        pendingFocusControlRef.current = null;
+        syncVisuallyExpandedState(false);
+
+        // Native-initiated exit (e.g. Web Escape key) in embedded remote mode restores focus to origin channel
+        if (wasFullscreen && embeddedRef.current && getNavMode() === 'remote' && typeof document !== 'undefined') {
+          const selectedChannelBtn =
+            document.querySelector<HTMLButtonElement>('button[data-live-channel-origin="true"]') ||
+            document.querySelector<HTMLButtonElement>('button[data-live-channel-selected="true"]');
+          if (selectedChannelBtn && selectedChannelBtn.isConnected) {
+            focusElementSafely(selectedChannelBtn);
+          }
+        }
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+    };
+  }, [
+    isContainerCurrentlyFullscreen,
+    settlePendingFullscreenExit,
+    syncFullscreenState,
+    syncVisuallyExpandedState,
+    syncEnteringFullscreenState,
+  ]);
   const wasInFullLayerRef = useRef(false);
   const openOverlayRef = useRef({
     showSettings: false,
@@ -286,68 +378,133 @@ export const VideoPlayer = React.memo(
     };
   }, [isControlsVisible, scheduleAutoHide]);
 
-  const performFullscreenExit = useCallback(async (): Promise<boolean> => {
+  // Direct fullscreen exit invoked synchronously first (mirrors requestFullscreenImmediate)
+  const performFullscreenExit = useCallback((): Promise<boolean> => {
     if (isExitingFullscreenRef.current) {
-      return false;
+      return pendingFullscreenExitPromiseRef.current ?? Promise.resolve(false);
     }
 
     const isCurrentContainerFs = isContainerCurrentlyFullscreen();
+    const hadPendingEntry = isEnteringFullscreenRef.current || isEnteringFullscreen;
     const isFs =
       isCurrentContainerFs ||
+      isFullscreenRef.current ||
       isFullscreen ||
+      isVisuallyExpandedRef.current ||
       isVisuallyExpanded ||
-      isEnteringFullscreenRef.current ||
-      isEnteringFullscreen;
+      hadPendingEntry;
+
     if (!isFs) {
-      return false;
+      return Promise.resolve(false);
     }
 
     fullscreenEntryRequestIdRef.current += 1;
     isEnteringFullscreenRef.current = false;
     pendingFullscreenPromiseRef.current = null;
+
+    // Fast synchronous exit when no native fullscreen element is active (e.g. CSS visual expansion fallback)
+    if (!isCurrentContainerFs) {
+      pendingFocusControlRef.current = null;
+      syncFullscreenState(false);
+      syncVisuallyExpandedState(false);
+      syncEnteringFullscreenState(false);
+      return Promise.resolve(true);
+    }
+
+    const requestId = ++fullscreenExitRequestIdRef.current;
     isExitingFullscreenRef.current = true;
-    if (isMountedRef.current) {
-      setIsEnteringFullscreen(false);
-      setIsExitingFullscreen(true);
-    }
 
-    try {
-      if (isCurrentContainerFs && typeof document !== 'undefined') {
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
-        } else if ((document as any).webkitExitFullscreen) {
-          await (document as any).webkitExitFullscreen();
-        } else if ((document as any).mozCancelFullScreen) {
-          await (document as any).mozCancelFullScreen();
-        } else if ((document as any).msExitFullscreen) {
-          await (document as any).msExitFullscreen();
+    let nativePromise: Promise<void> | null = null;
+    let usedNativeCall = false;
+    let syncThrew = false;
+
+    // Invoke native fullscreen exit synchronously BEFORE scheduling any React state updates
+    if (typeof document !== 'undefined') {
+      try {
+        if (typeof document.exitFullscreen === 'function') {
+          usedNativeCall = true;
+          const res = document.exitFullscreen();
+          if (res && typeof (res as Promise<void>).then === 'function') {
+            nativePromise = res as Promise<void>;
+          }
+        } else if (typeof (document as any).webkitExitFullscreen === 'function') {
+          usedNativeCall = true;
+          const res = (document as any).webkitExitFullscreen();
+          if (res && typeof (res as Promise<void>).then === 'function') {
+            nativePromise = res as Promise<void>;
+          }
+        } else if (typeof (document as any).mozCancelFullScreen === 'function') {
+          usedNativeCall = true;
+          const res = (document as any).mozCancelFullScreen();
+          if (res && typeof (res as Promise<void>).then === 'function') {
+            nativePromise = res as Promise<void>;
+          }
+        } else if (typeof (document as any).msExitFullscreen === 'function') {
+          usedNativeCall = true;
+          const res = (document as any).msExitFullscreen();
+          if (res && typeof (res as Promise<void>).then === 'function') {
+            nativePromise = res as Promise<void>;
+          }
         }
+      } catch (err) {
+        console.warn('Exit fullscreen failed:', err);
+        syncThrew = true;
       }
-    } catch (err) {
-      console.warn('Exit fullscreen failed:', err);
-    } finally {
+    }
+
+    // If native fullscreen already exited synchronously during the call, complete immediately
+    if (!isContainerCurrentlyFullscreen()) {
+      if (nativePromise) {
+        nativePromise.catch(() => {});
+      }
       isExitingFullscreenRef.current = false;
-      if (isMountedRef.current) {
-        setIsExitingFullscreen(false);
-      }
+      pendingFocusControlRef.current = null;
+      syncFullscreenState(false);
+      syncVisuallyExpandedState(false);
+      syncEnteringFullscreenState(false);
+      return Promise.resolve(true);
     }
 
-    const stillContainerFs = isContainerCurrentlyFullscreen();
-    if (stillContainerFs) {
-      if (isMountedRef.current) {
-        setIsFullscreen(true);
-      }
-      return false;
+    if (!usedNativeCall || syncThrew) {
+      isExitingFullscreenRef.current = false;
+      syncEnteringFullscreenState(false);
+      syncFullscreenState(true);
+      return Promise.resolve(false);
     }
 
-    if (isMountedRef.current) {
-      setIsFullscreen(false);
-      setIsVisuallyExpanded(false);
-      setIsEnteringFullscreen(false);
+    // Coordinate completion on whichever arrives first: native fullscreenchange OR exitFullscreen Promise settlement
+    const completionPromise = new Promise<boolean>((resolve) => {
+      pendingFullscreenExitResolveRef.current = resolve;
+    });
+    pendingFullscreenExitPromiseRef.current = completionPromise;
+
+    if (nativePromise) {
+      nativePromise
+        .then(() => {
+          settlePendingFullscreenExit(!isContainerCurrentlyFullscreen(), requestId);
+        })
+        .catch((err) => {
+          console.warn('Exit fullscreen failed:', err);
+          settlePendingFullscreenExit(!isContainerCurrentlyFullscreen(), requestId);
+        });
+    } else {
+      // Legacy void vendor APIs signal completion via fullscreenchange; guard against missing event without faking exit
+      pendingFullscreenExitTimerRef.current = setTimeout(() => {
+        settlePendingFullscreenExit(!isContainerCurrentlyFullscreen(), requestId);
+      }, 1500);
     }
 
-    return true;
-  }, [isContainerCurrentlyFullscreen, isFullscreen, isVisuallyExpanded, isEnteringFullscreen]);
+    return completionPromise;
+  }, [
+    isContainerCurrentlyFullscreen,
+    isFullscreen,
+    isVisuallyExpanded,
+    isEnteringFullscreen,
+    settlePendingFullscreenExit,
+    syncFullscreenState,
+    syncVisuallyExpandedState,
+    syncEnteringFullscreenState,
+  ]);
 
   // Direct fullscreen entry invoked synchronously within user interaction context
   const requestFullscreenImmediate = useCallback((): Promise<boolean> => {
@@ -365,7 +522,13 @@ export const VideoPlayer = React.memo(
     }
 
     const isCurrentContainerFs = isContainerCurrentlyFullscreen();
-    if (isCurrentContainerFs || isFullscreen || isVisuallyExpanded) {
+    if (
+      isCurrentContainerFs ||
+      isFullscreenRef.current ||
+      isFullscreen ||
+      isVisuallyExpandedRef.current ||
+      isVisuallyExpanded
+    ) {
       resetInactivityTimer();
       return Promise.resolve(true);
     }
@@ -403,26 +566,24 @@ export const VideoPlayer = React.memo(
     }
 
     if (!usedNativeCall || syncThrew) {
-      isEnteringFullscreenRef.current = false;
       pendingFullscreenPromiseRef.current = null;
+      syncEnteringFullscreenState(false);
+      syncVisuallyExpandedState(true);
       if (isMountedRef.current) {
-        setIsEnteringFullscreen(false);
-        setIsVisuallyExpanded(true);
         setIsControlsVisible(true);
       }
       return Promise.resolve(true);
     }
 
     if (!nativePromise) {
-      isEnteringFullscreenRef.current = false;
       pendingFullscreenPromiseRef.current = null;
+      syncEnteringFullscreenState(false);
+      if (isContainerCurrentlyFullscreen()) {
+        syncFullscreenState(true);
+      } else {
+        syncVisuallyExpandedState(true);
+      }
       if (isMountedRef.current) {
-        setIsEnteringFullscreen(false);
-        if (isContainerCurrentlyFullscreen()) {
-          setIsFullscreen(true);
-        } else {
-          setIsVisuallyExpanded(true);
-        }
         setIsControlsVisible(true);
       }
       return Promise.resolve(true);
@@ -445,11 +606,10 @@ export const VideoPlayer = React.memo(
           }
           return false;
         }
-        isEnteringFullscreenRef.current = false;
         pendingFullscreenPromiseRef.current = null;
+        syncEnteringFullscreenState(false);
+        syncFullscreenState(true);
         if (isMountedRef.current) {
-          setIsEnteringFullscreen(false);
-          setIsFullscreen(true);
           if (
             getNavMode() === 'remote' &&
             containerRef.current &&
@@ -467,11 +627,10 @@ export const VideoPlayer = React.memo(
         if (fullscreenEntryRequestIdRef.current !== requestId) {
           return false;
         }
-        isEnteringFullscreenRef.current = false;
         pendingFullscreenPromiseRef.current = null;
+        syncEnteringFullscreenState(false);
+        syncVisuallyExpandedState(true);
         if (isMountedRef.current) {
-          setIsEnteringFullscreen(false);
-          setIsVisuallyExpanded(true);
           if (
             getNavMode() === 'remote' &&
             containerRef.current &&
@@ -494,6 +653,9 @@ export const VideoPlayer = React.memo(
     isVisuallyExpanded,
     resetInactivityTimer,
     focusPlayerControl,
+    syncFullscreenState,
+    syncVisuallyExpandedState,
+    syncEnteringFullscreenState,
   ]);
 
   // Fullscreen toggle: container requestFullscreen or visual expansion fallback
@@ -530,9 +692,12 @@ export const VideoPlayer = React.memo(
       isFullscreenOrPending: () =>
         Boolean(
           isEnteringFullscreenRef.current ||
+            isExitingFullscreenRef.current ||
             isEnteringFullscreen ||
             isContainerCurrentlyFullscreen() ||
+            isFullscreenRef.current ||
             isFullscreen ||
+            isVisuallyExpandedRef.current ||
             isVisuallyExpanded
         ),
     }),
@@ -579,7 +744,21 @@ export const VideoPlayer = React.memo(
     return () => {
       isMountedRef.current = false;
       selectionGenerationRef.current += 1;
-      if (typeof document !== 'undefined' && !isExitingFullscreenRef.current) {
+      fullscreenEntryRequestIdRef.current += 1;
+      fullscreenExitRequestIdRef.current += 1;
+      if (pendingFullscreenExitTimerRef.current) {
+        clearTimeout(pendingFullscreenExitTimerRef.current);
+        pendingFullscreenExitTimerRef.current = null;
+      }
+      const pendingResolve = pendingFullscreenExitResolveRef.current;
+      pendingFullscreenExitResolveRef.current = null;
+      pendingFullscreenExitPromiseRef.current = null;
+      if (pendingResolve) {
+        pendingResolve(false);
+      }
+      const wasExiting = isExitingFullscreenRef.current;
+      isExitingFullscreenRef.current = false;
+      if (typeof document !== 'undefined' && !wasExiting) {
         const fsEl =
           document.fullscreenElement ||
           (document as any).webkitFullscreenElement ||
@@ -619,7 +798,9 @@ export const VideoPlayer = React.memo(
     const isCurrentContainerFs = isContainerCurrentlyFullscreen();
     const isFs =
       isCurrentContainerFs ||
+      isFullscreenRef.current ||
       isFullscreen ||
+      isVisuallyExpandedRef.current ||
       isVisuallyExpanded ||
       isEnteringFullscreenRef.current ||
       isEnteringFullscreen;
@@ -726,17 +907,28 @@ export const VideoPlayer = React.memo(
     !embedded ||
       isFullscreen ||
       isVisuallyExpanded ||
-      isEnteringFullscreen ||
-      isExitingFullscreen
+      isEnteringFullscreen
   );
+  // Keep FULLSCREEN_PLAYER handler mounted and gate synchronously via refs so rapid/early Back presses never leak to LiveTvView
   useBackHandler(
     `player-fullscreen-${playerId}`,
     BACK_PRIORITY.FULLSCREEN_PLAYER,
     () => {
-      handleBack();
+      const shouldHandle =
+        !embeddedRef.current ||
+        openOverlayRef.current.showSettings ||
+        isExitingFullscreenRef.current ||
+        isEnteringFullscreenRef.current ||
+        isContainerCurrentlyFullscreen() ||
+        isFullscreenRef.current ||
+        isVisuallyExpandedRef.current;
+      if (!shouldHandle) {
+        return false;
+      }
+      void handleBack();
       return true;
     },
-    isPlayerInFullLayer
+    true
   );
 
   // PiP toggle
@@ -884,7 +1076,6 @@ export const VideoPlayer = React.memo(
     closeSettingsMenu,
     isFullscreen,
     isVisuallyExpanded,
-    isExitingFullscreen,
     embedded,
     onBack,
   });
@@ -897,7 +1088,6 @@ export const VideoPlayer = React.memo(
     closeSettingsMenu,
     isFullscreen,
     isVisuallyExpanded,
-    isExitingFullscreen,
     embedded,
     onBack,
   };
@@ -987,14 +1177,14 @@ export const VideoPlayer = React.memo(
               (ctx.isFullscreen ||
                 ctx.isVisuallyExpanded ||
                 isEnteringFullscreenRef.current ||
-                ctx.isExitingFullscreen)
+                isExitingFullscreenRef.current)
             ) {
               ctx.handleBack();
             } else if (
               ctx.isFullscreen ||
               ctx.isVisuallyExpanded ||
               isEnteringFullscreenRef.current ||
-              ctx.isExitingFullscreen
+              isExitingFullscreenRef.current
             ) {
               ctx.toggleFullscreen();
             } else if (!ctx.embedded && ctx.onBack) {
