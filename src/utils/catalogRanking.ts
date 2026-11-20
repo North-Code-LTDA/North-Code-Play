@@ -1,34 +1,11 @@
 const YEAR_REGEX = /\b(19\d\d|20\d{2})\b/;
 
-export interface CatalogRankingPerfStats {
-  sortCalls: number;
-  metadataExtractions: number;
-  comparatorEvaluations: number;
-}
-
-const rankingPerfStats: CatalogRankingPerfStats = {
-  sortCalls: 0,
-  metadataExtractions: 0,
-  comparatorEvaluations: 0,
-};
-
-export function getCatalogRankingPerfStats(): CatalogRankingPerfStats {
-  return { ...rankingPerfStats };
-}
-
-export function resetCatalogRankingPerfStats(): void {
-  rankingPerfStats.sortCalls = 0;
-  rankingPerfStats.metadataExtractions = 0;
-  rankingPerfStats.comparatorEvaluations = 0;
-}
-
 /**
  * Extract a valid release year from item metadata or title.
  * Valid range: 1900 to currentYear + 1.
  */
 export const getValidYear = (item: any, maxYearOverride?: number): number => {
   if (!item) return 0;
-  rankingPerfStats.metadataExtractions++;
   const currentMaxYear = maxYearOverride ?? new Date().getFullYear() + 1;
 
   // 1. Check direct year metadata (year, releaseDate, releasedate)
@@ -84,7 +61,6 @@ interface DecoratedStream<T> {
  */
 export const sortByYearAndRating = <T = any>(streams: T[]): T[] => {
   if (!Array.isArray(streams) || streams.length === 0) return [];
-  rankingPerfStats.sortCalls++;
 
   const n = streams.length;
   if (n === 1) {
@@ -108,7 +84,6 @@ export const sortByYearAndRating = <T = any>(streams: T[]): T[] => {
   }
 
   decorated.sort((a, b) => {
-    rankingPerfStats.comparatorEvaluations++;
     if (a.hasMeta && b.hasMeta) {
       if (a.year !== b.year) {
         return b.year - a.year;

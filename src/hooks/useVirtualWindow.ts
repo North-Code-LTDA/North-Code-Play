@@ -4,7 +4,6 @@ import { useDisplayPreferences } from '../platform/tvEnvironment';
 import {
   registerVirtualContainer,
   unregisterVirtualContainer,
-  getActiveVirtualContainerCount,
   invalidateCandidateCache,
 } from '../navigation';
 
@@ -45,27 +44,6 @@ export interface VirtualWindowBounds {
   endIndex: number;
   startRow: number;
   endRow: number;
-}
-
-export interface VirtualWindowDiagnostics {
-  activeScrollListeners: number;
-  activeVirtualContainers: number;
-  layoutMeasureCount: number;
-}
-
-const attachedScrollContainerCounts = new Map<HTMLElement, number>();
-let layoutMeasureCount = 0;
-
-export function getVirtualWindowDiagnostics(): VirtualWindowDiagnostics {
-  return {
-    activeScrollListeners: attachedScrollContainerCounts.size,
-    activeVirtualContainers: getActiveVirtualContainerCount(),
-    layoutMeasureCount,
-  };
-}
-
-export function resetVirtualWindowDiagnostics(): void {
-  layoutMeasureCount = 0;
 }
 
 /**
@@ -386,7 +364,6 @@ export function useVirtualWindow({
 
   // Measure real layout from DOM (grid columns, row stride, container offset, and variable list item heights)
   const remeasureLayout = useCallback(() => {
-    layoutMeasureCount++;
     const currentRootRem = getEffectiveRootFontSizePx(displayMode, tvScale);
     const currentScaleFactor = displayMode === 'tv' ? currentRootRem / 16 : 1;
 
@@ -777,10 +754,6 @@ export function useVirtualWindow({
     scrollEl.addEventListener('pointerdown', releaseDpadScrollControl, { passive: true });
     scrollEl.addEventListener('mousedown', releaseDpadScrollControl, { passive: true });
     scrollEl.addEventListener('scroll', handleScroll, { passive: true });
-    attachedScrollContainerCounts.set(
-      scrollEl,
-      (attachedScrollContainerCounts.get(scrollEl) ?? 0) + 1
-    );
 
     // Sync window immediately with the mounted container's current scrollTop
     if (!isFrozenRef.current && !(scrollEl as any).__ncDpadNavActive) {
@@ -802,12 +775,6 @@ export function useVirtualWindow({
       scrollEl.removeEventListener('pointerdown', releaseDpadScrollControl);
       scrollEl.removeEventListener('mousedown', releaseDpadScrollControl);
       scrollEl.removeEventListener('scroll', handleScroll);
-      const nextCount = (attachedScrollContainerCounts.get(scrollEl) ?? 1) - 1;
-      if (nextCount <= 0) {
-        attachedScrollContainerCounts.delete(scrollEl);
-      } else {
-        attachedScrollContainerCounts.set(scrollEl, nextCount);
-      }
     };
   }, [scrollEl]);
 

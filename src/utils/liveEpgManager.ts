@@ -27,18 +27,6 @@ export interface LiveEpgSnapshot {
   expiresAtMs: number;
 }
 
-export interface LiveEpgStats {
-  totalNetworkRequests: number;
-  deduplicatedHits: number;
-  cacheHits: number;
-  cancelledQueuedRequests: number;
-  staleIgnoredCount: number;
-  activeInFlightCount: number;
-  queuedCount: number;
-  maxObservedConcurrent: number;
-  requestsByStreamId: Record<number, number>;
-}
-
 const DEFAULT_OK_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_EMPTY_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_ERROR_TTL_MS = 15 * 1000;
@@ -71,18 +59,6 @@ let runningCount = 0;
 let nextSubscriberId = 1;
 let generationCounter = 1;
 
-const stats: LiveEpgStats = {
-  totalNetworkRequests: 0,
-  deduplicatedHits: 0,
-  cacheHits: 0,
-  cancelledQueuedRequests: 0,
-  staleIgnoredCount: 0,
-  activeInFlightCount: 0,
-  queuedCount: 0,
-  maxObservedConcurrent: 0,
-  requestsByStreamId: {},
-};
-
 export function getLiveEpgNowMs(): number {
   return customClockFn ? customClockFn() : Date.now();
 }
@@ -101,24 +77,6 @@ export function resetLiveEpgCacheForTest(): void {
   pendingQueue.length = 0;
   activeTasks.clear();
   runningCount = 0;
-  stats.totalNetworkRequests = 0;
-  stats.deduplicatedHits = 0;
-  stats.cacheHits = 0;
-  stats.cancelledQueuedRequests = 0;
-  stats.staleIgnoredCount = 0;
-  stats.activeInFlightCount = 0;
-  stats.queuedCount = 0;
-  stats.maxObservedConcurrent = 0;
-  stats.requestsByStreamId = {};
-}
-
-export function getLiveEpgStatsForTest(): LiveEpgStats {
-  return {
-    ...stats,
-    activeInFlightCount: runningCount,
-    queuedCount: pendingQueue.length,
-    requestsByStreamId: { ...stats.requestsByStreamId },
-  };
 }
 
 /**
@@ -520,7 +478,6 @@ function pumpQueue(): void {
     if (activeSubscribers === 0) {
       nextTask.status = 'cancelled';
       activeTasks.delete(nextTask.cacheKey);
-      stats.cancelledQueuedRequests++;
       continue;
     }
 
@@ -532,13 +489,6 @@ function executeTask(task: EpgTask): void {
   const taskGen = generationCounter;
   task.status = 'running';
   runningCount++;
-  if (runningCount > stats.maxObservedConcurrent) {
-    stats.maxObservedConcurrent = runningCount;
-  }
-
-  stats.totalNetworkRequests++;
-  stats.requestsByStreamId[task.streamId] =
-    (stats.requestsByStreamId[task.streamId] || 0) + 1;
 
   Promise.resolve()
     .then(() => XtreamService.getShortEpg(task.credentials, task.streamId, 10))
@@ -564,7 +514,6 @@ function executeTask(task: EpgTask): void {
       task.status = 'settled';
 
       if (taskGen !== generationCounter) {
-        stats.staleIgnoredCount++;
         task.resolvePromise(snapshot);
         pumpQueue();
         return;
@@ -574,7 +523,6 @@ function executeTask(task: EpgTask): void {
 
       task.subscribers.forEach((sub) => {
         if (sub.cancelled) {
-          stats.staleIgnoredCount++;
           return;
         }
         try {
@@ -632,7 +580,6 @@ export function subscribeLiveChannelEpg(options: {
   if (!forceRefresh) {
     const cached = getCachedLiveEpgSnapshot(credentials, numericStreamId);
     if (cached) {
-      stats.cacheHits++;
       onUpdate(cached);
       return () => {};
     }
@@ -647,7 +594,6 @@ export function subscribeLiveChannelEpg(options: {
 
   const existingTask = activeTasks.get(cacheKey);
   if (existingTask && (existingTask.status === 'queued' || existingTask.status === 'running')) {
-    stats.deduplicatedHits++;
     existingTask.subscribers.set(subId, subscriber);
     if (priority === 'high' && existingTask.priority !== 'high' && existingTask.status === 'queued') {
       existingTask.priority = 'high';
@@ -668,7 +614,6 @@ export function subscribeLiveChannelEpg(options: {
           pendingQueue.splice(qIdx, 1);
         }
         activeTasks.delete(cacheKey);
-        stats.cancelledQueuedRequests++;
       }
     };
   }
@@ -708,7 +653,6 @@ export function subscribeLiveChannelEpg(options: {
         pendingQueue.splice(qIdx, 1);
       }
       activeTasks.delete(cacheKey);
-      stats.cancelledQueuedRequests++;
     }
   };
 }

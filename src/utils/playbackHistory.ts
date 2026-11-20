@@ -1,5 +1,5 @@
 import { useSyncExternalStore, useCallback, useMemo } from 'react';
-import { getAccountKey, safeReadStorage, safeSetStorage, StorageReadResult } from './accountUtils';
+import { getAccountKey, safeReadStorage, safeSetStorage } from './accountUtils';
 
 export const HISTORY_KEY_PREFIX = 'northcode_history_';
 export const HISTORY_UPDATED_EVENT = 'northcode_history_updated';
@@ -20,15 +20,6 @@ export type PlaybackHistoryMap = Record<string, PlaybackHistoryRecord>;
 export interface AccountIdentity {
   serverUrl?: string | null;
   username?: string | null;
-}
-
-export interface PlaybackHistoryPerfStats {
-  storageReads: number;
-  storageWrites: number;
-  jsonParses: number;
-  recordValidations: number;
-  sortCalls: number;
-  cachedAccountsCount: number;
 }
 
 interface HistorySnapshot {
@@ -135,37 +126,6 @@ function isSnapshotVerifiedInCurrentMicrotask(snapshot: HistorySnapshot | undefi
 let activeConfirmedNotificationKey: string | null = null;
 let areGlobalHistoryListenersAttached = false;
 
-const perfStats = {
-  storageReads: 0,
-  storageWrites: 0,
-  jsonParses: 0,
-  recordValidations: 0,
-  sortCalls: 0,
-};
-
-export function getPlaybackHistoryPerfStats(): PlaybackHistoryPerfStats {
-  return {
-    ...perfStats,
-    cachedAccountsCount: historySnapshotCache.size,
-  };
-}
-
-export function resetPlaybackHistoryPerfStats(): void {
-  perfStats.storageReads = 0;
-  perfStats.storageWrites = 0;
-  perfStats.jsonParses = 0;
-  perfStats.recordValidations = 0;
-  perfStats.sortCalls = 0;
-  microtaskVerifiedSnapshots.forEach((snap) => {
-    snap.verifiedInCurrentMicrotask = false;
-    snap.pendingSubscriberRender = false;
-  });
-  microtaskVerifiedSnapshots.clear();
-  historySnapshotCache.forEach((snap) => {
-    snap.pendingSubscriberRender = false;
-  });
-}
-
 export function clearPlaybackHistoryMemoryCacheForTest(): void {
   microtaskVerifiedSnapshots.forEach((snap) => {
     snap.verifiedInCurrentMicrotask = false;
@@ -250,21 +210,10 @@ function notifyHistorySubscribers(historyKey: string, fromConfirmedSnapshot: boo
   }
 }
 
-function readStorageWithStats(historyKey: string): StorageReadResult {
-  perfStats.storageReads++;
-  return safeReadStorage(historyKey);
-}
-
-function writeStorageWithStats(historyKey: string, value: string): boolean {
-  perfStats.storageWrites++;
-  return safeSetStorage(historyKey, value);
-}
-
 function isValidHistoryRecord(
   key: string,
   item: unknown
 ): item is PlaybackHistoryRecord {
-  perfStats.recordValidations++;
   if (!item || typeof item !== 'object' || Array.isArray(item)) {
     return false;
   }
@@ -339,7 +288,6 @@ function validateAndFreezeHistoryMap(parsed: unknown): Readonly<PlaybackHistoryM
 }
 
 function parseAndValidateHistoryJson(raw: string): Readonly<PlaybackHistoryMap> | null {
-  perfStats.jsonParses++;
   try {
     const parsed = JSON.parse(raw);
     return validateAndFreezeHistoryMap(parsed);
@@ -372,7 +320,6 @@ function getSortedRecordsFromSnapshot(
     if (values.length === 0) {
       snapshot.sortedRecords = EMPTY_HISTORY_RECORDS;
     } else {
-      perfStats.sortCalls++;
       values.sort((a, b) => b.updatedAt - a.updatedAt);
       snapshot.sortedRecords = Object.freeze(values) as unknown as PlaybackHistoryRecord[];
     }
@@ -424,7 +371,7 @@ function resolveSnapshotForRead(
     }
   }
 
-  const readRes = readStorageWithStats(historyKey);
+  const readRes = safeReadStorage(historyKey);
   if (!readRes.success) {
     return cached ?? null;
   }
@@ -465,7 +412,7 @@ function readHistoryBaseMapForWrite(historyKey: string): Readonly<PlaybackHistor
   if (!historyKey) return null;
 
   const cached = getCachedSnapshot(historyKey);
-  const readRes = readStorageWithStats(historyKey);
+  const readRes = safeReadStorage(historyKey);
   if (!readRes.success) {
     return null;
   }
@@ -504,7 +451,7 @@ function commitValidatedHistoryMap(
   if (!historyKey) return false;
 
   const json = JSON.stringify(frozenMap);
-  const success = writeStorageWithStats(historyKey, json);
+  const success = safeSetStorage(historyKey, json);
   if (!success) {
     return false;
   }
@@ -563,7 +510,7 @@ function ensureHistoryListeners(): void {
 
       if (e.key.startsWith(HISTORY_KEY_PREFIX)) {
         const targetKey = e.key;
-        const readRes = readStorageWithStats(targetKey);
+        const readRes = safeReadStorage(targetKey);
         if (readRes.success) {
           const raw = readRes.value;
           if (raw === null || raw === undefined) {
@@ -619,7 +566,7 @@ export function readHistoryMap(historyKey: string): PlaybackHistoryMap | null {
   if (!historyKey) return {};
 
   const cached = getCachedSnapshot(historyKey);
-  const readRes = readStorageWithStats(historyKey);
+  const readRes = safeReadStorage(historyKey);
   if (!readRes.success) {
     return null;
   }

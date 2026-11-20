@@ -13,34 +13,6 @@ export interface VirtualContainerController {
   cancelPendingFocusRestore?: () => void;
 }
 
-export interface SpatialNavPerfStats {
-  moveCalls: number;
-  computedStyleCalls: number;
-  boundingRectCalls: number;
-  querySelectorCalls: number;
-  virtualWindowExpansions: number;
-}
-
-const spatialPerfStats: SpatialNavPerfStats = {
-  moveCalls: 0,
-  computedStyleCalls: 0,
-  boundingRectCalls: 0,
-  querySelectorCalls: 0,
-  virtualWindowExpansions: 0,
-};
-
-export function getSpatialNavPerfStats(): SpatialNavPerfStats {
-  return { ...spatialPerfStats };
-}
-
-export function resetSpatialNavPerfStats(): void {
-  spatialPerfStats.moveCalls = 0;
-  spatialPerfStats.computedStyleCalls = 0;
-  spatialPerfStats.boundingRectCalls = 0;
-  spatialPerfStats.querySelectorCalls = 0;
-  spatialPerfStats.virtualWindowExpansions = 0;
-}
-
 let fastHorizontalRowNavEnabled = true;
 
 export function setFastHorizontalRowNavEnabledForTest(enabled: boolean): void {
@@ -471,7 +443,6 @@ export function findScrollContainer(el: HTMLElement | null): HTMLElement | null 
     }
     if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
       try {
-        spatialPerfStats.computedStyleCalls++;
         const oy = window.getComputedStyle(curr).overflowY;
         if (oy === 'auto' || oy === 'scroll') {
           return curr;
@@ -532,7 +503,6 @@ export function ensureElementScrolledIntoView(
       const horizTargetEl = isLiveCategoryRow
         ? el.closest<HTMLElement>('[data-live-channel-card="true"]') || el
         : el;
-      spatialPerfStats.boundingRectCalls += 2;
       const rowRect = rowContainer.getBoundingClientRect();
       const elRect = horizTargetEl.getBoundingClientRect();
       if (rowRect.width > 0 && elRect.width > 0) {
@@ -669,7 +639,6 @@ export function ensureElementScrolledIntoView(
 
   const scrollContainer = findScrollContainer(el);
   if (scrollContainer) {
-    spatialPerfStats.boundingRectCalls++;
     const containerRect = scrollContainer.getBoundingClientRect();
     const showcaseRowsContainer = homeRowWrapper?.closest<HTMLElement>(
       '[data-showcase-rows-container="true"]'
@@ -714,7 +683,6 @@ export function ensureElementScrolledIntoView(
 
     if (topAnchor && scrollContainer.contains(topAnchor)) {
       if (containerRect.height > 0) {
-        spatialPerfStats.boundingRectCalls++;
         const elRect = el.getBoundingClientRect();
         if (elRect.height > 0) {
           const elBottomAtTopZero = elRect.bottom - containerRect.top + scrollContainer.scrollTop;
@@ -733,7 +701,6 @@ export function ensureElementScrolledIntoView(
     }
 
     if (containerRect.height > 0) {
-      spatialPerfStats.boundingRectCalls++;
       const blockRect = targetBlock.getBoundingClientRect();
 
       if (blockRect.height > 0) {
@@ -849,7 +816,6 @@ function isSingleNodeVisible(node: HTMLElement): boolean {
 
   if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
     try {
-      spatialPerfStats.computedStyleCalls++;
       const style = window.getComputedStyle(node);
       if (style.display === 'none' || style.visibility === 'hidden') {
         return false;
@@ -942,7 +908,6 @@ function queryRawCandidates(root: HTMLElement): HTMLElement[] {
     return cachedRawCandidates;
   }
 
-  spatialPerfStats.querySelectorCalls++;
   const rawList = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
   cachedScopeRoot = root;
   cachedScopeMutationVersion = domMutationVersion;
@@ -1112,7 +1077,6 @@ function createNavPassContext(): NavPassContext {
 function getCachedRect(el: HTMLElement, ctx: NavPassContext): DOMRect {
   let rect = ctx.rectCache.get(el);
   if (!rect) {
-    spatialPerfStats.boundingRectCalls++;
     rect = el.getBoundingClientRect();
     ctx.rectCache.set(el, rect);
   }
@@ -1273,7 +1237,6 @@ function pickBestItemInBlock(
 
       const expanded = targetController.ensureIndexMounted(desiredVirtualIndex);
       if (expanded) {
-        spatialPerfStats.virtualWindowExpansions++;
         invalidateCandidateCache();
       }
 
@@ -1526,7 +1489,6 @@ function findNextInGridBlock(
         if (!match) {
           const expanded = controller.ensureIndexMounted(targetVirtualIndex, currentIndex);
           if (expanded) {
-            spatialPerfStats.virtualWindowExpansions++;
             invalidateCandidateCache();
           }
           match = virtualContainer.querySelector<HTMLElement>(
@@ -1795,7 +1757,6 @@ function tryScrollFocusedSynopsis(
       (scrollContainer.scrollHeight || 0) - (scrollContainer.clientHeight || 0)
     );
     if (containerMaxScroll > 2) {
-      spatialPerfStats.boundingRectCalls += 2;
       const cRect = scrollContainer.getBoundingClientRect();
       const aRect = activeEl.getBoundingClientRect();
       const hasRects = cRect.height > 0 && aRect.height > 0;
@@ -1852,7 +1813,6 @@ function ensureVirtualTargetMountedIfNeeded(
           if (targetRowIndex >= 0 && targetRowIndex < rowController.totalRows) {
             const expanded = rowController.ensureRowMounted(targetRowIndex, currentRowIndex);
             if (expanded) {
-              spatialPerfStats.virtualWindowExpansions++;
               invalidateCandidateCache();
             }
           }
@@ -1875,7 +1835,6 @@ function ensureVirtualTargetMountedIfNeeded(
         if (rowController && rowController.totalRows > 0) {
           const expanded = rowController.ensureRowMounted(0, 0);
           if (expanded) {
-            spatialPerfStats.virtualWindowExpansions++;
             invalidateCandidateCache();
           }
         }
@@ -1889,7 +1848,6 @@ function ensureVirtualTargetMountedIfNeeded(
           if (gridController && gridController.totalCount > 0) {
             const expanded = gridController.ensureIndexMounted(0, 0);
             if (expanded) {
-              spatialPerfStats.virtualWindowExpansions++;
               invalidateCandidateCache();
             }
           }
@@ -1945,7 +1903,6 @@ function ensureVirtualTargetMountedIfNeeded(
     if (isHorizontalRow) {
       const expanded = controller.ensureIndexMounted(targetIndex, currentIndex);
       if (expanded) {
-        spatialPerfStats.virtualWindowExpansions++;
         invalidateCandidateCache();
       }
       return;
@@ -1957,7 +1914,6 @@ function ensureVirtualTargetMountedIfNeeded(
     if (!existingTarget) {
       const expanded = controller.ensureIndexMounted(targetIndex, currentIndex);
       if (expanded) {
-        spatialPerfStats.virtualWindowExpansions++;
         invalidateCandidateCache();
       }
     } else {
@@ -1973,7 +1929,6 @@ function ensureVirtualTargetMountedIfNeeded(
       if (!aheadEl) {
         const expanded = controller.ensureIndexMounted(targetIndex, currentIndex);
         if (expanded) {
-          spatialPerfStats.virtualWindowExpansions++;
           invalidateCandidateCache();
         }
       }
@@ -1991,7 +1946,6 @@ function ensureVirtualTargetMountedIfNeeded(
         if (nextController && nextController.totalCount > 0) {
           const expanded = nextController.ensureIndexMounted(0);
           if (expanded) {
-            spatialPerfStats.virtualWindowExpansions++;
             invalidateCandidateCache();
           }
         }
@@ -2000,7 +1954,6 @@ function ensureVirtualTargetMountedIfNeeded(
         if (prevController && prevController.totalCount > 0) {
           const expanded = prevController.ensureIndexMounted(prevController.totalCount - 1);
           if (expanded) {
-            spatialPerfStats.virtualWindowExpansions++;
             invalidateCandidateCache();
           }
         }
@@ -2237,7 +2190,6 @@ function tryFastVerticalMove(
             const expanded = rowController.ensureRowMounted(targetRowIndex, currentRowIndex);
             virtualExpansionHandled = true;
             if (expanded) {
-              spatialPerfStats.virtualWindowExpansions++;
               invalidateCandidateCache();
             }
           }
@@ -2248,7 +2200,6 @@ function tryFastVerticalMove(
           if ((!targetRowWrapper || !scopeRoot.contains(targetRowWrapper)) && rowController) {
             const fallbackExpanded = rowController.ensureRowMounted(targetRowIndex);
             if (fallbackExpanded) {
-              spatialPerfStats.virtualWindowExpansions++;
               invalidateCandidateCache();
             }
             targetRowWrapper = showcaseRowsContainer.querySelector<HTMLElement>(
@@ -2416,7 +2367,6 @@ function tryFastVerticalMove(
         if (!targetEl || !aheadEl) {
           const expanded = controller.ensureIndexMounted(targetVirtualIndex, currentIndex);
           if (expanded) {
-            spatialPerfStats.virtualWindowExpansions++;
             invalidateCandidateCache();
           }
           if (!targetEl || !targetEl.isConnected) {
@@ -2520,7 +2470,6 @@ function tryFastHorizontalRowCardMove(
     const expanded = rowController.ensureIndexMounted(targetCardIdx, currentCardIdx);
     virtualExpansionHandled = true;
     if (expanded) {
-      spatialPerfStats.virtualWindowExpansions++;
       invalidateCandidateCache();
     }
     if (!currentRow.isConnected || !scopeRoot.contains(currentRow)) {
@@ -2559,7 +2508,6 @@ export function moveSpatialFocus(
   _options?: { isRepeat?: boolean }
 ): HTMLElement | null {
   if (typeof document === 'undefined') return null;
-  spatialPerfStats.moveCalls++;
   notifyDpadNavigationActivityForImagePreload();
 
   // Any new spatial navigation immediately discards pending focus restorations
@@ -2775,7 +2723,6 @@ function moveSpatialFocusFallback(
                 currentRowIndex
               );
               if (expanded) {
-                spatialPerfStats.virtualWindowExpansions++;
                 invalidateCandidateCache();
               }
               targetRowWrapper = showcaseRowsContainer.querySelector<HTMLElement>(
@@ -3011,7 +2958,6 @@ function moveSpatialFocusFallback(
             if (!nextEl && !virtualExpansionAlreadyHandled) {
               const expanded = rowController.ensureIndexMounted(nextLogicalIdx, currentVirtualIdx);
               if (expanded) {
-                spatialPerfStats.virtualWindowExpansions++;
                 invalidateCandidateCache();
               }
               nextEl = currentRow.querySelector<HTMLElement>(targetSelector);
@@ -3057,7 +3003,6 @@ function moveSpatialFocusFallback(
             if (!prevEl && !virtualExpansionAlreadyHandled) {
               const expanded = rowController.ensureIndexMounted(prevLogicalIdx, currentVirtualIdx);
               if (expanded) {
-                spatialPerfStats.virtualWindowExpansions++;
                 invalidateCandidateCache();
               }
               prevEl = currentRow.querySelector<HTMLElement>(prevSelector);

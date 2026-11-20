@@ -31,8 +31,6 @@ export {
   cancelPendingFocusRestore,
   restoreVirtualItemByKey,
   invalidateCandidateCache,
-  getSpatialNavPerfStats,
-  resetSpatialNavPerfStats,
   setFastHorizontalRowNavEnabledForTest,
   setFastVerticalNavEnabledForTest,
 } from './spatialNav';
@@ -41,7 +39,6 @@ export type {
   SpatialDirection,
   VirtualContainerController,
   ShowcaseRowController,
-  SpatialNavPerfStats,
 } from './spatialNav';
 
 export {

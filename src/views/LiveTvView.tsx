@@ -67,34 +67,6 @@ export interface LiveFocusOriginSnapshot {
   cardIndex: number;
 }
 
-export interface LiveTvRenderStats {
-  viewRenders: number;
-  rowRenders: number;
-  cardRenders: number;
-  rightPaneRenders: number;
-  epgSectionRenders: number;
-}
-
-const liveTvRenderStats: LiveTvRenderStats = {
-  viewRenders: 0,
-  rowRenders: 0,
-  cardRenders: 0,
-  rightPaneRenders: 0,
-  epgSectionRenders: 0,
-};
-
-export function getLiveTvRenderStatsForTest(): LiveTvRenderStats {
-  return { ...liveTvRenderStats };
-}
-
-export function resetLiveTvRenderStatsForTest(): void {
-  liveTvRenderStats.viewRenders = 0;
-  liveTvRenderStats.rowRenders = 0;
-  liveTvRenderStats.cardRenders = 0;
-  liveTvRenderStats.rightPaneRenders = 0;
-  liveTvRenderStats.epgSectionRenders = 0;
-}
-
 export interface LiveChannelLaunchIntent {
   streamId: string | number;
   requestId: number;
@@ -420,7 +392,6 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
   onToggleFavorite,
   onFocusCard,
 }: LiveChannelCardProps) {
-  liveTvRenderStats.cardRenders += 1;
   const cardWrapRef = useRef<HTMLDivElement | null>(null);
   const channelBtnRef = useRef<HTMLButtonElement | null>(null);
   const [isHorizVisible, setIsHorizVisible] = useState<boolean>(cardIndex < 10);
@@ -889,7 +860,6 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
   onToggleFavorite,
   onFocusCard,
 }: LiveCategoryRowProps) {
-  liveTvRenderStats.rowRenders += 1;
   const sectionRef = useRef<HTMLElement | null>(null);
   const rowElRef = useRef<HTMLDivElement | null>(null);
   const [rowElState, setRowElState] = useState<HTMLDivElement | null>(null);
@@ -1296,7 +1266,6 @@ const LiveTvEpgSection = React.memo(function LiveTvEpgSection({
   rightPaneEpg,
   rightPaneEpgLoading,
 }: LiveTvEpgSectionProps) {
-  liveTvRenderStats.epgSectionRenders += 1;
   const epgTimeline = rightPaneEpg?.timeline ?? [];
 
   return (
@@ -1438,8 +1407,6 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
   onPlaybackSuccess,
   onPlaybackFinalError,
 }: LiveTvRightPaneProps) {
-  liveTvRenderStats.rightPaneRenders += 1;
-
   const activeStreamUrl = useMemo(() => {
     if (!credentials || !selectedChannel) return '';
     const sId = selectedChannel.stream_id ?? selectedChannel.id;
@@ -1693,7 +1660,6 @@ export const LiveTvView = React.memo(function LiveTvView({
   initialChannelIntent = null,
   onConsumeChannelIntent,
 }: LiveTvViewProps) {
-  liveTvRenderStats.viewRenders += 1;
   const { credentials } = useXtreamCredentials();
   const {
     liveCategories,

@@ -1,9 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  buildDirectImageUrl,
-  diagnoseImageUrl,
-  isDebugImagesEnabled,
-} from '../utils/mediaUtils';
+import { buildDirectImageUrl } from '../utils/mediaUtils';
 import {
   isAndroidPersistentImageCacheAvailable,
   getInstantCachedImageSrc,
@@ -122,24 +118,11 @@ export interface RootContainerMetrics {
   offsetLeft: number;
 }
 
-let perfIoCallbackInvocations = 0;
-let perfFallbackEvaluationPasses = 0;
-let perfRootRectReads = 0;
-let perfTargetRectReads = 0;
-
-export function resetSharedObserverPerfStats(): void {
-  perfIoCallbackInvocations = 0;
-  perfFallbackEvaluationPasses = 0;
-  perfRootRectReads = 0;
-  perfTargetRectReads = 0;
-}
-
 export function measureRootContainer(
   root: HTMLElement | null,
   axis: 'vertical' | 'horizontal'
 ): RootContainerMetrics {
   if (root) {
-    perfRootRectReads++;
     const rect = root.getBoundingClientRect();
     const scrollTop = root.scrollTop || 0;
     const scrollLeft = root.scrollLeft || 0;
@@ -268,7 +251,6 @@ export function inspectElementVisibilityWithRootMetrics(
     return { usable: false, isIntersecting: false };
   }
 
-  perfTargetRectReads++;
   const targetRect = target.getBoundingClientRect();
 
   if (axis === 'vertical') {
@@ -359,79 +341,6 @@ interface SharedObserverPoolEntry {
 
 const sharedObserverPool = new Map<HTMLElement | null, Map<string, SharedObserverPoolEntry>>();
 
-export interface SharedObserverDiagnostics {
-  activeObserverInstances: number;
-  activePoolEntries: number;
-  activeTargetSubscriptions: number;
-  verticalObserverRoots: Array<HTMLElement | null>;
-  horizontalObserverRoots: Array<HTMLElement | null>;
-  fallbackScrollListeners: number;
-  fallbackResizeListeners: number;
-  pendingFallbackFrames: number;
-  pendingGeometryFrames: number;
-  ioCallbackInvocations: number;
-  fallbackEvaluationPasses: number;
-  rootRectReads: number;
-  targetRectReads: number;
-}
-
-export function getSharedObserverDiagnostics(): SharedObserverDiagnostics {
-  let activeObserverInstances = 0;
-  let activePoolEntries = 0;
-  let activeTargetSubscriptions = 0;
-  let fallbackScrollListeners = 0;
-  let fallbackResizeListeners = 0;
-  let pendingFallbackFrames = 0;
-  let pendingGeometryFrames = 0;
-  const verticalObserverRoots: Array<HTMLElement | null> = [];
-  const horizontalObserverRoots: Array<HTMLElement | null> = [];
-
-  for (const [, byKey] of sharedObserverPool.entries()) {
-    for (const [, entry] of byKey.entries()) {
-      activePoolEntries++;
-      if (entry.observer) {
-        activeObserverInstances++;
-      }
-      if (entry.hasScrollListener) {
-        fallbackScrollListeners++;
-      }
-      if (entry.hasResizeListener) {
-        fallbackResizeListeners++;
-      }
-      if (entry.scheduledFallbackRafId !== null) {
-        pendingFallbackFrames++;
-      }
-      if (entry.scheduledGeometryRafId !== null) {
-        pendingGeometryFrames++;
-      }
-      if (entry.axis === 'vertical') {
-        verticalObserverRoots.push(entry.root);
-      } else {
-        horizontalObserverRoots.push(entry.root);
-      }
-      for (const [, targetRec] of entry.targets.entries()) {
-        activeTargetSubscriptions += targetRec.listeners.size;
-      }
-    }
-  }
-
-  return {
-    activeObserverInstances,
-    activePoolEntries,
-    activeTargetSubscriptions,
-    verticalObserverRoots,
-    horizontalObserverRoots,
-    fallbackScrollListeners,
-    fallbackResizeListeners,
-    pendingFallbackFrames,
-    pendingGeometryFrames,
-    ioCallbackInvocations: perfIoCallbackInvocations,
-    fallbackEvaluationPasses: perfFallbackEvaluationPasses,
-    rootRectReads: perfRootRectReads,
-    targetRectReads: perfTargetRectReads,
-  };
-}
-
 function getIntersectionObserverConstructor(): typeof IntersectionObserver | null {
   if (typeof window !== 'undefined' && typeof (window as any).IntersectionObserver === 'function') {
     return (window as any).IntersectionObserver;
@@ -496,7 +405,6 @@ function getOrMeasureSyncRootMetrics(entry: SharedObserverPoolEntry): RootContai
  */
 function reevaluatePoolEntryTargets(entry: SharedObserverPoolEntry): void {
   if (entry.targets.size === 0) return;
-  perfFallbackEvaluationPasses++;
 
   // Phase 1: Single container measurement for the entire pass
   const rootMetrics = measureRootContainer(entry.root, entry.axis);
@@ -700,7 +608,6 @@ function getOrCreateSharedPoolEntry(
     try {
       const observer = new IOConstructor(
         (ioEntries: IntersectionObserverEntry[]) => {
-          perfIoCallbackInvocations++;
           const pendingNotifications: Array<{
             targetRec: ObservedTargetRecord;
             isIntersecting: boolean;
@@ -1140,46 +1047,17 @@ function MediaImageInner({
     if (isFirstFailure) {
       setStatus('retrying');
 
-      if (isDebugImagesEnabled()) {
-        const diag = diagnoseImageUrl(src, serverUrl);
-        console.group(
-          `%c[NC Image Diagnostic] ⚠️ 1ª Falha ao carregar imagem: ${itemName || alt || 'sem nome'}`,
-          'color: #f59e0b; font-weight: bold;'
-        );
-        console.log('Item ID:', itemId ?? 'N/A');
-        console.log('Nome do item:', itemName || alt || 'N/A');
-        console.log('URL original:', src);
-        console.log('URL resolvida:', resolvedUrl);
-        console.log('Status: Primeira falha (agendando retentativa única em 2s com a mesma URL)');
-        console.log('Classificação:', diag.diffCategory, diag.notes);
-        console.groupEnd();
-      }
-
       clearScheduledRetryTimer();
       activeRetryTimersCount++;
       retryTimerRef.current = setTimeout(() => {
         retryTimerRef.current = null;
         activeRetryTimersCount = Math.max(0, activeRetryTimersCount - 1);
-        if (isDebugImagesEnabled()) {
-          console.log(`[NC Image Diagnostic] 🔄 Executando retentativa única para: ${itemName || alt || resolvedUrl}`);
-        }
         setAttempt(1);
         setStatus('loading');
       }, mediaImageRetryDelayMs);
     } else {
       // Second failure: definitive failure
       setStatus('failed');
-
-      if (isDebugImagesEnabled()) {
-        console.group(
-          `%c[NC Image Diagnostic] ❌ Falha definitiva após retentativa: ${itemName || alt || 'sem nome'}`,
-          'color: #ef4444; font-weight: bold;'
-        );
-        console.log('Item ID:', itemId ?? 'N/A');
-        console.log('URL resolvida tentada:', resolvedUrl);
-        console.log('Status: Falha definitiva (área mantida reservada e vazia sem ícone quebrado)');
-        console.groupEnd();
-      }
     }
 
     onError?.(e);
