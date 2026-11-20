@@ -7,7 +7,6 @@ import {
   Volume2,
   Subtitles,
   Activity,
-  Wrench,
   X,
 } from 'lucide-react';
 import { QualityLevel, MediaTrackInfo, BufferProfileKey } from './types';
@@ -24,7 +23,6 @@ interface PlayerSettingsMenuProps {
   isOpen: boolean;
   initialSubMenu?: SubMenuType;
   onClose: () => void;
-  onOpenDiagnostics?: () => void;
   isLive: boolean;
   qualities: QualityLevel[];
   currentQuality: number;
@@ -45,7 +43,6 @@ export function PlayerSettingsMenu({
   isOpen,
   initialSubMenu = 'main',
   onClose,
-  onOpenDiagnostics,
   isLive,
   qualities,
   currentQuality,
@@ -313,22 +310,6 @@ export function PlayerSettingsMenu({
               <ChevronRight className="w-3.5 h-3.5" />
             </div>
           </button>
-
-          {/* Technical Diagnostics */}
-          {onOpenDiagnostics && (
-            <button
-              type="button"
-              data-settings-item="diagnostics"
-              onClick={() => onOpenDiagnostics()}
-              className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors text-left cursor-pointer"
-            >
-              <div className="flex items-center gap-2">
-                <Wrench className="w-4 h-4 text-nc-text-secondary" />
-                <span>Diagnóstico Técnico</span>
-              </div>
-              <ChevronRight className="w-3.5 h-3.5 text-nc-text-secondary" />
-            </button>
-          )}
         </div>
       )}
 

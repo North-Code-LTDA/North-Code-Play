@@ -1,12 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback, useId, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
-import { AlertCircle, RefreshCw, Wrench, ArrowLeft } from 'lucide-react';
+import { AlertCircle, RefreshCw, ArrowLeft } from 'lucide-react';
 import { VideoPlayerProps, VideoPlayerHandle } from './player/types';
 import { usePlaybackSession } from './player/usePlaybackSession';
 import { PlayerControls } from './player/PlayerControls';
 import { PlayerSettingsMenu, SubMenuType } from './player/PlayerSettingsMenu';
-import { PlayerDiagnosticsModal } from './player/PlayerDiagnosticsModal';
 import { registerPlayer, setActivePlayer, isPlayerActive } from './player/playerRegistry';
 import { useOptionalXtreamCredentials } from '../context/XtreamContext';
 import {
@@ -55,7 +54,6 @@ export const VideoPlayer = React.memo(
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialSubMenu, setSettingsInitialSubMenu] = useState<SubMenuType>('main');
   const settingsOriginControlRef = useRef<string>('settings');
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   // Fullscreen & PiP states
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -101,8 +99,7 @@ export const VideoPlayer = React.memo(
     onPlaybackSuccess,
     onPlaybackFinalError,
     isControlsVisible:
-      isControlsVisible || !hasStartedPlaying || showSettings || showDiagnostics,
-    isDiagnosticsOpen: showDiagnostics,
+      isControlsVisible || !hasStartedPlaying || showSettings,
     externalSubtitles,
   });
 
@@ -189,13 +186,11 @@ export const VideoPlayer = React.memo(
   const wasInFullLayerRef = useRef(false);
   const openOverlayRef = useRef({
     showSettings: false,
-    showDiagnostics: false,
     hasError: false,
     isLoading: false,
   });
   openOverlayRef.current = {
     showSettings,
-    showDiagnostics,
     hasError: Boolean(activeError),
     isLoading: isCurrentlyLoading,
   };
@@ -214,7 +209,7 @@ export const VideoPlayer = React.memo(
     return false;
   }, []);
 
-  // Inactivity timer: hide control bars after inactivity while playing (unless settings/diagnostics/error are open)
+  // Inactivity timer: hide control bars after inactivity while playing (unless settings/error are open)
   const scheduleAutoHide = useCallback(() => {
     if (idleTimeoutRef.current) {
       clearTimeout(idleTimeoutRef.current);
@@ -224,7 +219,6 @@ export const VideoPlayer = React.memo(
     const canAutoHide =
       (session.isPlaying || (hasStartedPlaying && session.isBuffering)) &&
       !showSettings &&
-      !showDiagnostics &&
       !activeError;
 
     if (canAutoHide) {
@@ -232,7 +226,6 @@ export const VideoPlayer = React.memo(
       idleTimeoutRef.current = setTimeout(() => {
         if (
           openOverlayRef.current.showSettings ||
-          openOverlayRef.current.showDiagnostics ||
           openOverlayRef.current.hasError
         ) {
           return;
@@ -254,7 +247,6 @@ export const VideoPlayer = React.memo(
     session.isBuffering,
     hasStartedPlaying,
     showSettings,
-    showDiagnostics,
     activeError,
   ]);
 
@@ -463,8 +455,7 @@ export const VideoPlayer = React.memo(
             containerRef.current &&
             typeof document !== 'undefined' &&
             (!document.activeElement || !containerRef.current.contains(document.activeElement)) &&
-            !openOverlayRef.current.showSettings &&
-            !openOverlayRef.current.showDiagnostics
+            !openOverlayRef.current.showSettings
           ) {
             focusPlayerControl('play-pause');
           }
@@ -486,8 +477,7 @@ export const VideoPlayer = React.memo(
             containerRef.current &&
             typeof document !== 'undefined' &&
             (!document.activeElement || !containerRef.current.contains(document.activeElement)) &&
-            !openOverlayRef.current.showSettings &&
-            !openOverlayRef.current.showDiagnostics
+            !openOverlayRef.current.showSettings
           ) {
             focusPlayerControl('play-pause');
           }
@@ -614,21 +604,11 @@ export const VideoPlayer = React.memo(
     resetInactivityTimer();
   }, [resetInactivityTimer]);
 
-  const closeDiagnosticsModal = useCallback(() => {
-    setShowDiagnostics(false);
-    pendingFocusControlRef.current = 'diagnostics';
-    resetInactivityTimer();
-  }, [resetInactivityTimer]);
-
   // Back action: in embedded mode in fullscreen, first click exits fullscreen back to preview without unmounting video
   const handleBack = useCallback(async () => {
     setActivePlayer(playerId);
     if (showSettings) {
       closeSettingsMenu();
-      return;
-    }
-    if (showDiagnostics) {
-      closeDiagnosticsModal();
       return;
     }
 
@@ -722,9 +702,7 @@ export const VideoPlayer = React.memo(
     isVisuallyExpanded,
     isEnteringFullscreen,
     showSettings,
-    showDiagnostics,
     closeSettingsMenu,
-    closeDiagnosticsModal,
     performFullscreenExit,
     focusPlayerControl,
     onBack,
@@ -739,13 +717,9 @@ export const VideoPlayer = React.memo(
         closeSettingsMenu();
         return true;
       }
-      if (showDiagnostics) {
-        closeDiagnosticsModal();
-        return true;
-      }
       return false;
     },
-    showSettings || showDiagnostics
+    showSettings
   );
 
   const isPlayerInFullLayer = Boolean(
@@ -785,13 +759,12 @@ export const VideoPlayer = React.memo(
   // - explicitly visible (e.g. within inactivity window)
   // - before playback begins (!hasStartedPlaying)
   // - during pause (when video has started but is not playing and not loading/buffering)
-  // - when settings or diagnostics modal is open
+  // - when settings modal is open
   const areBarsVisible =
     isControlsVisible ||
     !hasStartedPlaying ||
     (!session.isPlaying && !isCurrentlyLoading && !session.isBuffering) ||
-    showSettings ||
-    showDiagnostics;
+    showSettings;
 
   // Move focus into the player ONCE when entering full-layer mode, completely decoupled from scheduleAutoHide and menu/playback state changes
   useEffect(() => {
@@ -811,7 +784,7 @@ export const VideoPlayer = React.memo(
       const root = containerRef.current;
       if (!root) return;
 
-      if (openOverlayRef.current.showSettings || openOverlayRef.current.showDiagnostics) {
+      if (openOverlayRef.current.showSettings) {
         return;
       }
 
@@ -845,7 +818,7 @@ export const VideoPlayer = React.memo(
   // Focus error overlay primary button when an error appears in remote mode
   useEffect(() => {
     if (!activeError || isCurrentlyLoading || !isPlayerInFullLayer) return;
-    if (showSettings || showDiagnostics) return;
+    if (showSettings) return;
     if (getNavMode() !== 'remote') return;
     const timer = setTimeout(() => {
       const retryBtn = containerRef.current?.querySelector<HTMLElement>(
@@ -856,11 +829,11 @@ export const VideoPlayer = React.memo(
       }
     }, 0);
     return () => clearTimeout(timer);
-  }, [activeError, isCurrentlyLoading, isPlayerInFullLayer, showSettings, showDiagnostics]);
+  }, [activeError, isCurrentlyLoading, isPlayerInFullLayer, showSettings]);
 
-  // Apply pending focus request (e.g. after waking hidden controls or closing Settings/Diagnostics modal)
+  // Apply pending focus request (e.g. after waking hidden controls or closing Settings modal)
   useEffect(() => {
-    if (!areBarsVisible || showSettings || showDiagnostics) return;
+    if (!areBarsVisible || showSettings) return;
     if (!pendingFocusControlRef.current) return;
 
     const targetControl = pendingFocusControlRef.current;
@@ -870,11 +843,11 @@ export const VideoPlayer = React.memo(
       focusPlayerControl(targetControl);
     }, 0);
     return () => clearTimeout(timer);
-  }, [areBarsVisible, showSettings, showDiagnostics, focusPlayerControl]);
+  }, [areBarsVisible, showSettings, focusPlayerControl]);
 
   // Capture-phase listener: when full-layer player controls are hidden, first remote/arrow/OK key reveals controls and focuses Play/Pause without firing other actions
   useEffect(() => {
-    if (!isPlayerInFullLayer || areBarsVisible || showSettings || showDiagnostics || activeError) {
+    if (!isPlayerInFullLayer || areBarsVisible || showSettings || activeError) {
       return;
     }
 
@@ -900,7 +873,7 @@ export const VideoPlayer = React.memo(
     return () => {
       window.removeEventListener('keydown', handleWakeKeyCapture, true);
     };
-  }, [isPlayerInFullLayer, areBarsVisible, showSettings, showDiagnostics, activeError, resetInactivityTimer]);
+  }, [isPlayerInFullLayer, areBarsVisible, showSettings, activeError, resetInactivityTimer]);
 
   const shortcutContextRef = useRef({
     session,
@@ -908,9 +881,7 @@ export const VideoPlayer = React.memo(
     toggleFullscreen,
     handleBack,
     showSettings,
-    showDiagnostics,
     closeSettingsMenu,
-    closeDiagnosticsModal,
     isFullscreen,
     isVisuallyExpanded,
     isExitingFullscreen,
@@ -923,9 +894,7 @@ export const VideoPlayer = React.memo(
     toggleFullscreen,
     handleBack,
     showSettings,
-    showDiagnostics,
     closeSettingsMenu,
-    closeDiagnosticsModal,
     isFullscreen,
     isVisuallyExpanded,
     isExitingFullscreen,
@@ -1013,8 +982,6 @@ export const VideoPlayer = React.memo(
             e.preventDefault();
             if (ctx.showSettings) {
               ctx.closeSettingsMenu();
-            } else if (ctx.showDiagnostics) {
-              ctx.closeDiagnosticsModal();
             } else if (
               ctx.embedded &&
               (ctx.isFullscreen ||
@@ -1065,13 +1032,9 @@ export const VideoPlayer = React.memo(
 
   const handleContainerClick = () => {
     setActivePlayer(playerId);
-    // If settings or diagnostics open, close them
+    // If settings menu is open, close it
     if (showSettings) {
       closeSettingsMenu();
-      return;
-    }
-    if (showDiagnostics) {
-      closeDiagnosticsModal();
       return;
     }
 
@@ -1173,7 +1136,6 @@ export const VideoPlayer = React.memo(
         onTogglePiP={togglePiP}
         onOpenSettings={() => {
           settingsOriginControlRef.current = 'settings';
-          setShowDiagnostics(false);
           if (showSettings && settingsInitialSubMenu === 'main') {
             closeSettingsMenu();
           } else {
@@ -1184,7 +1146,6 @@ export const VideoPlayer = React.memo(
         }}
         onOpenAudioSubtitles={() => {
           settingsOriginControlRef.current = 'audio-subtitles';
-          setShowDiagnostics(false);
           if (
             showSettings &&
             (settingsInitialSubMenu === 'subtitles' || settingsInitialSubMenu === 'audio')
@@ -1198,7 +1159,6 @@ export const VideoPlayer = React.memo(
         }}
         onOpenSpeed={() => {
           settingsOriginControlRef.current = 'speed';
-          setShowDiagnostics(false);
           if (showSettings && settingsInitialSubMenu === 'speed') {
             closeSettingsMenu();
           } else {
@@ -1206,11 +1166,6 @@ export const VideoPlayer = React.memo(
             setShowSettings(true);
             resetInactivityTimer();
           }
-        }}
-        onOpenDiagnostics={() => {
-          setShowSettings(false);
-          setShowDiagnostics((p) => !p);
-          resetInactivityTimer();
         }}
         onBack={onBack || (embedded && isPlayerInFullLayer) ? handleBack : undefined}
         onNext={onNext}
@@ -1224,11 +1179,6 @@ export const VideoPlayer = React.memo(
         isOpen={showSettings}
         initialSubMenu={settingsInitialSubMenu}
         onClose={closeSettingsMenu}
-        onOpenDiagnostics={() => {
-          setShowSettings(false);
-          setShowDiagnostics(true);
-          resetInactivityTimer();
-        }}
         isLive={session.isLive}
         qualities={session.qualities}
         currentQuality={session.currentQuality}
@@ -1243,16 +1193,6 @@ export const VideoPlayer = React.memo(
         onSelectPlaybackRate={session.setPlaybackRate}
         bufferProfile={session.bufferProfile}
         onSelectBufferProfile={session.setProfile}
-      />
-
-      {/* Diagnostics Modal Overlay */}
-      <PlayerDiagnosticsModal
-        isOpen={showDiagnostics}
-        onClose={closeDiagnosticsModal}
-        streamUrl={streamUrl}
-        contentType={session.isLive ? 'live' : contentType || 'movie'}
-        transport={session.inferredTransport}
-        stats={session.stats}
       />
 
       {/* Error Overlay */}
@@ -1305,19 +1245,6 @@ export const VideoPlayer = React.memo(
               }`}
             >
               <RefreshCw className={isCompactPreview ? 'w-3.5 h-3.5' : 'w-4 h-4'} /> Tentar Novamente
-            </button>
-            <button
-              type="button"
-              data-player-error-diagnostics="true"
-              onClick={() => {
-                setShowDiagnostics(true);
-                resetInactivityTimer();
-              }}
-              className={`bg-white/10 hover:bg-white/20 text-white font-medium rounded-xl transition-colors border border-nc-border/40 flex items-center gap-1.5 cursor-pointer ${
-                isCompactPreview ? 'px-2.5 py-1.5 text-xs' : 'px-5 py-2.5 text-sm gap-2'
-              }`}
-            >
-              <Wrench className={isCompactPreview ? 'w-3.5 h-3.5 text-nc-primary' : 'w-4 h-4 text-nc-primary'} /> Diagnóstico
             </button>
             {(onBack || (embedded && isPlayerInFullLayer)) && !isCompactPreview && (
               <button

@@ -44,22 +44,6 @@ export interface BufferedTimeRange {
   end: number;
 }
 
-export interface PlaybackStats {
-  width?: number;
-  height?: number;
-  duration?: number;
-  currentTime?: number;
-  bufferedAhead?: number;
-  bufferedRanges?: BufferedTimeRange[];
-  droppedFrames?: number;
-  currentBitrate?: number;
-  networkState?: number;
-  readyState?: number;
-  rebufferingCount: number;
-  liveLatency?: number;
-  engineLabel?: string;
-}
-
 export interface VideoPlayerHandle {
   requestFullscreenImmediate: () => Promise<boolean>;
   exitFullscreenImmediate: () => Promise<boolean>;

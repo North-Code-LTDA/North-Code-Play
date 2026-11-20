@@ -11,7 +11,6 @@ import {
   Maximize,
   Minimize,
   Settings,
-  Wrench,
   SkipBack,
   SkipForward,
   PictureInPicture2,
@@ -52,7 +51,6 @@ interface PlayerControlsProps {
   onOpenSettings: () => void;
   onOpenAudioSubtitles?: () => void;
   onOpenSpeed?: () => void;
-  onOpenDiagnostics: () => void;
   onBack?: () => void;
   onNext?: () => void;
   onPrevious?: () => void;
@@ -307,7 +305,6 @@ export function PlayerControls({
   onOpenSettings,
   onOpenAudioSubtitles,
   onOpenSpeed,
-  onOpenDiagnostics,
   onBack,
   onNext,
   onPrevious,
@@ -402,18 +399,6 @@ export function PlayerControls({
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              data-player-control="diagnostics"
-              onClick={(e) => handleControlClick(e, onOpenDiagnostics)}
-              tabIndex={isControlFocusable ? 0 : -1}
-              className="bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl text-white transition-colors cursor-pointer flex items-center gap-1 text-xs p-1.5 px-2"
-              title="Diagnóstico da Conexão Direta"
-              aria-label="Diagnóstico da Conexão Direta"
-            >
-              <Wrench className="w-3.5 h-3.5 text-nc-primary" />
-            </button>
-
             <button
               type="button"
               data-player-control="settings"
@@ -660,20 +645,8 @@ export function PlayerControls({
           )}
         </div>
 
-        {/* Top-Right Discrete Technical Controls (Diagnostics & Technical Settings) */}
+        {/* Top-Right Discrete Settings Control */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-          <button
-            type="button"
-            data-player-control="diagnostics"
-            onClick={(e) => handleControlClick(e, onOpenDiagnostics)}
-            tabIndex={isControlFocusable ? 0 : -1}
-            className="nc-player-ctrl-btn text-white/80 hover:text-white"
-            title="Diagnóstico Técnico"
-            aria-label="Diagnóstico Técnico"
-          >
-            <Wrench className="nc-player-icon stroke-[1.75] scale-90" />
-          </button>
-
           <button
             type="button"
             data-player-control="settings"

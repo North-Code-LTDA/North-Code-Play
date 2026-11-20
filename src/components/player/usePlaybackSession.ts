@@ -8,7 +8,6 @@ import {
   MediaTrackInfo,
   ExternalSubtitleTrackInput,
   BufferedTimeRange,
-  PlaybackStats,
 } from './types';
 import { BUFFER_PROFILES } from './profiles';
 import {
@@ -53,7 +52,6 @@ interface UsePlaybackSessionOptions {
   onPlaybackSuccess?: (attemptId?: number) => void;
   onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
   isControlsVisible?: boolean;
-  isDiagnosticsOpen?: boolean;
   externalSubtitles?: ExternalSubtitleTrackInput[];
 }
 
@@ -102,7 +100,6 @@ export function usePlaybackSession({
   onPlaybackSuccess,
   onPlaybackFinalError,
   isControlsVisible = true,
-  isDiagnosticsOpen = false,
   externalSubtitles,
 }: UsePlaybackSessionOptions) {
   const activeAccountRef = useRef<AccountIdentity | null>(credentials || null);
@@ -154,9 +151,6 @@ export function usePlaybackSession({
   const shouldPublishControlsRef = useRef(shouldPublishControls);
   shouldPublishControlsRef.current = shouldPublishControls;
 
-  const isDiagnosticsOpenRef = useRef(isDiagnosticsOpen);
-  isDiagnosticsOpenRef.current = isDiagnosticsOpen;
-
   const [volume, setVolumeState] = useState(() => {
     try {
       const saved = localStorage.getItem('nc_player_volume');
@@ -185,16 +179,13 @@ export function usePlaybackSession({
   const [subtitleTracks, setSubtitleTracks] = useState<MediaTrackInfo[]>([]);
   const [currentSubtitleTrack, setCurrentSubtitleTrack] = useState<number>(-1); // -1 = Off
 
-  // Live stream specifics & stats tracking refs to prevent stale closure
+  // Live stream specifics & refs to prevent stale closure
   const [liveSyncPosition, setLiveSyncPosition] = useState<number | null>(null);
   const [liveEdgeDistance, setLiveEdgeDistance] = useState<number>(0);
   const liveSyncPositionRef = useRef<number | null>(null);
-  const rebufferingCountRef = useRef(0);
   const liveEdgeDistanceRef = useRef(0);
 
   const lastRecordedTimeRef = useRef<number>(0);
-
-  const [stats, setStats] = useState<PlaybackStats>({ rebufferingCount: 0 });
 
   // Infer content type if not explicit
   const inferredContentType: PlayerContentType = (() => {
@@ -388,47 +379,6 @@ export function usePlaybackSession({
     }
   }, [videoRef, streamUrl, calculateBufferStats, isLive]);
 
-  const collectAndPublishDiagnosticsStats = useCallback(() => {
-    const video = videoRef.current;
-    if (!video || !streamUrl) return;
-    const { ranges, ahead } = calculateBufferStats(video);
-    const syncPos =
-      isLive && hlsRef.current ? hlsRef.current.liveSyncPosition : null;
-    const hasLiveLatency =
-      isLive && syncPos !== null && syncPos !== undefined && syncPos > 0;
-    const currentLiveLatency = hasLiveLatency
-      ? Math.max(0, syncPos - (video.currentTime || 0))
-      : isLive && liveSyncPositionRef.current !== null
-      ? liveEdgeDistanceRef.current
-      : undefined;
-    if (currentLiveLatency !== undefined) {
-      liveEdgeDistanceRef.current = currentLiveLatency;
-    }
-    setStats({
-      width: video.videoWidth,
-      height: video.videoHeight,
-      duration:
-        video.duration && isFinite(video.duration) && !isNaN(video.duration)
-          ? video.duration
-          : 0,
-      currentTime: video.currentTime || 0,
-      bufferedAhead: ahead,
-      bufferedRanges: ranges,
-      networkState: video.networkState,
-      readyState: video.readyState,
-      rebufferingCount: rebufferingCountRef.current,
-      liveLatency:
-        isLive && (hasLiveLatency || liveSyncPositionRef.current !== null)
-          ? currentLiveLatency
-          : undefined,
-      engineLabel: hlsRef.current
-        ? 'HLS (Hls.js / MediaSource)'
-        : inferredTransport === 'hls'
-        ? 'HLS Nativo (Safari / HTML5 Video)'
-        : 'Progressivo Nativo (HTML5 Video)',
-    });
-  }, [videoRef, streamUrl, calculateBufferStats, isLive, inferredTransport]);
-
   // Synchronize visual controls state immediately when controls become visible
   const wasPublishingControlsRef = useRef(shouldPublishControls);
   useEffect(() => {
@@ -438,20 +388,6 @@ export function usePlaybackSession({
       syncVisualControlsStateFromVideo();
     }
   }, [shouldPublishControls, syncVisualControlsStateFromVideo]);
-
-  // Poll diagnostics stats ONLY when the diagnostics panel is open
-  useEffect(() => {
-    if (!isDiagnosticsOpen || !streamUrl) {
-      return;
-    }
-    collectAndPublishDiagnosticsStats();
-    const statsTimer = setInterval(() => {
-      collectAndPublishDiagnosticsStats();
-    }, 1000);
-    return () => {
-      clearInterval(statsTimer);
-    };
-  }, [isDiagnosticsOpen, streamUrl, retryTrigger, collectAndPublishDiagnosticsStats]);
 
   // Main playback attachment effect (runs ONLY on streamUrl, retryTrigger, or structural media changes)
   useEffect(() => {
@@ -479,23 +415,11 @@ export function usePlaybackSession({
       subtitleTracksRef.current = [];
       selectedSubtitleTrackIdRef.current = -1;
       syncSubtitleTracksFnRef.current = null;
-      rebufferingCountRef.current = 0;
       setLiveSyncPosition(null);
       setLiveEdgeDistance(0);
       liveSyncPositionRef.current = null;
       liveEdgeDistanceRef.current = 0;
       lastRecordedTimeRef.current = startAt || 0;
-      setStats({
-        width: 0,
-        height: 0,
-        duration: 0,
-        currentTime: 0,
-        bufferedAhead: 0,
-        bufferedRanges: [],
-        rebufferingCount: 0,
-        liveLatency: undefined,
-        engineLabel: undefined,
-      });
     };
 
     if (!video || !streamUrl) {
@@ -589,10 +513,6 @@ export function usePlaybackSession({
     const handleWaiting = () => {
       if (sessionIdRef.current !== currentSessionId) return;
       setIsBuffering(true);
-      rebufferingCountRef.current += 1;
-      if (isDiagnosticsOpenRef.current) {
-        collectAndPublishDiagnosticsStats();
-      }
     };
 
     const handleTimeUpdate = () => {
@@ -615,7 +535,7 @@ export function usePlaybackSession({
         }
       }
 
-      // Live latency ref tracking (always kept fresh for diagnostics and live edge calculations)
+      // Live latency ref tracking (always kept fresh for live edge calculations)
       let liveSyncPos: number | null = null;
       let liveDist = 0;
       if (isLive && hlsRef.current) {
@@ -1196,7 +1116,6 @@ export function usePlaybackSession({
     inferredTransport,
     calculateBufferStats,
     syncVisualControlsStateFromVideo,
-    collectAndPublishDiagnosticsStats,
   ]);
 
   // Actions
@@ -1607,7 +1526,6 @@ export function usePlaybackSession({
     subtitleTracks,
     currentSubtitleTrack,
     bufferProfile,
-    stats,
     togglePlay,
     seek,
     seekBy,
