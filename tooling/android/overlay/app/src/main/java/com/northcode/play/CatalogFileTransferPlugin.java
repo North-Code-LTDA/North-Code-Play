@@ -8,16 +8,13 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.plugin.util.CapacitorHttpUrlConnection;
 import com.getcapacitor.plugin.util.HttpRequestHandler;
-import com.getcapacitor.plugin.util.ICapacitorHttpUrlConnection;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
 import java.net.URL;
-import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -195,40 +192,6 @@ public class CatalogFileTransferPlugin extends Plugin {
         }
     }
 
-    private static double nanosToMillis(long durationNs) {
-        return Math.max(0L, durationNs) / 1_000_000.0;
-    }
-
-    private static Long parseContentLengthHeader(ICapacitorHttpUrlConnection connection) {
-        String raw = connection.getHeaderField("Content-Length");
-        if (raw == null) {
-            raw = connection.getHeaderField("content-length");
-        }
-        if (raw == null && connection instanceof CapacitorHttpUrlConnection) {
-            Map<String, List<String>> fields = ((CapacitorHttpUrlConnection) connection).getHeaderFields();
-            if (fields != null) {
-                for (Map.Entry<String, List<String>> entry : fields.entrySet()) {
-                    if (entry.getKey() != null && "content-length".equalsIgnoreCase(entry.getKey())) {
-                        List<String> values = entry.getValue();
-                        if (values != null && !values.isEmpty()) {
-                            raw = values.get(0);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        if (raw == null) {
-            return null;
-        }
-        try {
-            long parsed = Long.parseLong(raw.trim());
-            return parsed >= 0L ? parsed : null;
-        } catch (NumberFormatException ignored) {
-            return null;
-        }
-    }
-
     private static String sanitizeTransferToken(String rawTransferId, long seq) {
         if (rawTransferId == null || rawTransferId.isEmpty()) {
             return "t" + seq;
@@ -245,10 +208,6 @@ public class CatalogFileTransferPlugin extends Plugin {
 
     @PluginMethod
     public void downloadCatalogToTempFile(final PluginCall call) {
-        final boolean collectDiagnostics = Boolean.TRUE.equals(
-            call.getBoolean("collectDiagnostics", false)
-        );
-        final long requestStartNs = collectDiagnostics ? System.nanoTime() : 0L;
         final String urlString = call.getString("url", "");
         final String rawTransferId = call.getString("transferId", "");
         final Integer connectTimeout = call.getInt("connectTimeout");
@@ -361,12 +320,6 @@ public class CatalogFileTransferPlugin extends Plugin {
 
                 connection.connect();
                 int statusCode = connection.getResponseCode();
-                double statusAndHeadersMs = collectDiagnostics
-                    ? nanosToMillis(System.nanoTime() - requestStartNs)
-                    : 0.0;
-                Long contentLengthHeaderBytes = collectDiagnostics
-                    ? parseContentLengthHeader(connection)
-                    : null;
 
                 if (activeTransfer.isCancelled()) {
                     call.reject("Operação cancelada pelo usuário.", "CANCELLED");
@@ -386,32 +339,9 @@ public class CatalogFileTransferPlugin extends Plugin {
                         parentCacheDir != null ? parentCacheDir.getPath() : JSONObject.NULL
                     );
 
-                    if (collectDiagnostics) {
-                        JSObject nativeDiagnostics = new JSObject();
-                        nativeDiagnostics.put("statusAndHeadersMs", statusAndHeadersMs);
-                        nativeDiagnostics.put("fileWriteMs", 0.0);
-                        nativeDiagnostics.put("nativeJsonParseExecuted", false);
-                        nativeDiagnostics.put("nativeJsonParseMs", JSONObject.NULL);
-                        nativeDiagnostics.put(
-                            "contentLengthHeaderBytes",
-                            contentLengthHeaderBytes != null
-                                ? contentLengthHeaderBytes.longValue()
-                                : JSONObject.NULL
-                        );
-                        nativeDiagnostics.put("bytesWritten", 0L);
-                        nativeDiagnostics.put(
-                            "nativeTotalMs",
-                            nanosToMillis(System.nanoTime() - requestStartNs)
-                        );
-                        errorStatusResult.put("nativeDiagnostics", nativeDiagnostics);
-                    }
-
                     call.resolve(errorStatusResult);
                     return;
                 }
-
-                long writeStartNs = collectDiagnostics ? System.nanoTime() : 0L;
-                long bytesWritten = 0L;
 
                 try (
                     InputStream inputStream = connection.getInputStream();
@@ -424,7 +354,6 @@ public class CatalogFileTransferPlugin extends Plugin {
                             throw new IOException("TRANSFER_CANCELLED");
                         }
                         fileOutput.write(buffer, 0, readCount);
-                        bytesWritten += readCount;
                     }
                     fileOutput.flush();
                 }
@@ -451,10 +380,6 @@ public class CatalogFileTransferPlugin extends Plugin {
                     throw new IOException("TEMP_FILE_OUTSIDE_CACHE_DIR");
                 }
 
-                double fileWriteMs = collectDiagnostics
-                    ? nanosToMillis(System.nanoTime() - writeStartNs)
-                    : 0.0;
-
                 if (activeTransfer.isCancelled()) {
                     safeDeleteFile(finalFile);
                     call.reject("Operação cancelada pelo usuário.", "CANCELLED");
@@ -468,26 +393,6 @@ public class CatalogFileTransferPlugin extends Plugin {
                 result.put("fileId", finalFileName);
                 result.put("filePath", canonicalFinalFile.getPath());
                 result.put("cacheDir", expectedCacheDir.getPath());
-
-                if (collectDiagnostics) {
-                    JSObject nativeDiagnostics = new JSObject();
-                    nativeDiagnostics.put("statusAndHeadersMs", statusAndHeadersMs);
-                    nativeDiagnostics.put("fileWriteMs", fileWriteMs);
-                    nativeDiagnostics.put("nativeJsonParseExecuted", false);
-                    nativeDiagnostics.put("nativeJsonParseMs", JSONObject.NULL);
-                    nativeDiagnostics.put(
-                        "contentLengthHeaderBytes",
-                        contentLengthHeaderBytes != null
-                            ? contentLengthHeaderBytes.longValue()
-                            : JSONObject.NULL
-                    );
-                    nativeDiagnostics.put("bytesWritten", bytesWritten);
-                    nativeDiagnostics.put(
-                        "nativeTotalMs",
-                        nanosToMillis(System.nanoTime() - requestStartNs)
-                    );
-                    result.put("nativeDiagnostics", nativeDiagnostics);
-                }
 
                 call.resolve(result);
             } catch (SocketTimeoutException timeoutEx) {

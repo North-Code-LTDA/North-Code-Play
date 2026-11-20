@@ -5,9 +5,8 @@
  *
  * Responsabilidades:
  * 1. Garantir que o build web (`dist/`) exista (executando `npm run build` quando necessário).
- * 2. Validar a versão travada de `@capacitor/android` (8.6.0) e aplicar de forma idempotente
- *    o patch mínimo `tooling/android/patches/capacitor-android-8.6.0-http-diagnostics.patch`
- *    para medição por etapa do carregamento dos catálogos no Android (P3.2).
+ * 2. Validar a versão travada de `@capacitor/android` (8.6.0) e garantir integridade limpa
+ *    da dependência nativa, sem resquícios de patch diagnóstico experimental.
  * 3. Gerar a estrutura `android/` via Capacitor CLI quando ausente, ou reutilizar uma pasta
  *    `android/` já existente sem apagá-la.
  * 4. Reaplicar de forma determinística e idempotente todas as personalizações preservadas em
@@ -28,38 +27,10 @@ const DEFAULT_ROOT_DIR = path.resolve(__dirname, '..', '..');
 
 export const EXPECTED_CAPACITOR_ANDROID_VERSION = '8.6.0';
 
-export const CAPACITOR_HTTP_DIAGNOSTICS_PATCH_REL_PATH = path.join(
-  'tooling',
-  'android',
-  'patches',
-  'capacitor-android-8.6.0-http-diagnostics.patch'
-);
-
-export const CAPACITOR_HTTP_HANDLER_REL_PATH = path.join(
-  'node_modules',
-  '@capacitor',
-  'android',
-  'capacitor',
-  'src',
-  'main',
-  'java',
-  'com',
-  'getcapacitor',
-  'plugin',
-  'util',
-  'HttpRequestHandler.java'
-);
-
-const REQUIRED_PATCH_MARKERS = [
+const LEGACY_HTTP_DIAGNOSTICS_MARKERS = [
   'boolean collectDiagnostics = Boolean.TRUE.equals(call.getBoolean("collectDiagnostics", false));',
-  'buildResponseWithDiagnostics(connection, responseType, requestStartNs, nativeDiagnostics)',
-  'nativeDiagnostics.put("statusAndHeadersMs", statusAndHeadersMs);',
-  'nativeDiagnostics.put("bodyReadMs", bodyReadMs);',
-  'nativeDiagnostics.put("nativeJsonParseExecuted", nativeJsonParseExecuted);',
-  'nativeDiagnostics.put("nativeJsonParseMs",',
-  'nativeDiagnostics.put("nativeTotalMs", nanosToMillis(System.nanoTime() - requestStartNs));',
-  '"contentLengthHeaderBytes"',
-  'nativeDiagnostics.put("payloadChars",',
+  'buildResponseWithDiagnostics(',
+  'nativeDiagnostics.put(',
   'response.put("nativeDiagnostics", nativeDiagnostics);',
 ];
 
@@ -86,89 +57,12 @@ export function computeAndroidVersionCode(versionString) {
   return major * 10000 + minor * 100 + patch;
 }
 
-function parseUnifiedDiffHunks(patchContent) {
-  const normalized = patchContent.replace(/\r\n/g, '\n');
-  const lines = normalized.split('\n');
-  const hunks = [];
-  let currentHunk = null;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.startsWith('--- ') || line.startsWith('+++ ')) {
-      continue;
-    }
-    const headerMatch = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-    if (headerMatch) {
-      if (currentHunk) {
-        hunks.push(currentHunk);
-      }
-      currentHunk = {
-        oldStart: Number.parseInt(headerMatch[1], 10),
-        oldCount: headerMatch[2] !== undefined ? Number.parseInt(headerMatch[2], 10) : 1,
-        newStart: Number.parseInt(headerMatch[3], 10),
-        newCount: headerMatch[4] !== undefined ? Number.parseInt(headerMatch[4], 10) : 1,
-        preLines: [],
-        postLines: [],
-      };
-      continue;
-    }
-    if (!currentHunk) {
-      continue;
-    }
-    if (line.startsWith(' ')) {
-      const content = line.slice(1);
-      currentHunk.preLines.push(content);
-      currentHunk.postLines.push(content);
-    } else if (line.startsWith('-')) {
-      currentHunk.preLines.push(line.slice(1));
-    } else if (line.startsWith('+')) {
-      currentHunk.postLines.push(line.slice(1));
-    }
-  }
-
-  if (currentHunk) {
-    hunks.push(currentHunk);
-  }
-
-  if (hunks.length === 0) {
-    throw new Error('Nenhum hunk válido encontrado no arquivo de patch P3.2.');
-  }
-
-  return hunks;
-}
-
-function linesSliceMatch(sourceLines, startIndexZeroBased, expectedLines) {
-  if (
-    startIndexZeroBased < 0 ||
-    startIndexZeroBased + expectedLines.length > sourceLines.length
-  ) {
-    return false;
-  }
-  for (let i = 0; i < expectedLines.length; i++) {
-    if (sourceLines[startIndexZeroBased + i] !== expectedLines[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function hasAllRequiredPatchMarkers(content) {
-  for (const marker of REQUIRED_PATCH_MARKERS) {
-    if (!content.includes(marker)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /**
- * Valida a versão instalada de `@capacitor/android` (8.6.0) e aplica de forma idempotente
- * o patch mínimo em `HttpRequestHandler.java` para a medição por etapa do P3.2.
- * Se o patch já estiver aplicado, encerra sem regravar o arquivo.
+ * Valida que `@capacitor/android` está na versão travada (8.6.0) e que seu arquivo
+ * `HttpRequestHandler.java` não contém marcadores residuais de patches diagnósticos antigos
+ * em uma árvore `node_modules/` reaproveitada.
  */
-export function applyCapacitorAndroidHttpDiagnosticsPatch({
-  rootDir = DEFAULT_ROOT_DIR,
-} = {}) {
+export function verifyCleanCapacitorAndroidDependency(rootDir = DEFAULT_ROOT_DIR) {
   const capAndroidPkgPath = path.join(
     rootDir,
     'node_modules',
@@ -186,107 +80,47 @@ export function applyCapacitorAndroidHttpDiagnosticsPatch({
   const installedVersion = String(capAndroidPkg.version || '').trim();
   if (installedVersion !== EXPECTED_CAPACITOR_ANDROID_VERSION) {
     throw new Error(
-      `Versão incompatível de @capacitor/android: esperado "${EXPECTED_CAPACITOR_ANDROID_VERSION}" para o patch P3.2, encontrado "${installedVersion}".`
+      `Versão incompatível de @capacitor/android: esperado "${EXPECTED_CAPACITOR_ANDROID_VERSION}", encontrado "${installedVersion}".`
     );
   }
 
-  const patchPath = path.join(rootDir, CAPACITOR_HTTP_DIAGNOSTICS_PATCH_REL_PATH);
-  if (!fs.existsSync(patchPath)) {
-    throw new Error(`Arquivo de patch Android P3.2 não encontrado em: ${patchPath}`);
-  }
-
-  const targetFile = path.join(rootDir, CAPACITOR_HTTP_HANDLER_REL_PATH);
-  if (!fs.existsSync(targetFile)) {
-    throw new Error(
-      `Fonte nativo HttpRequestHandler.java não encontrado em: ${targetFile}`
-    );
-  }
-
-  const patchText = fs.readFileSync(patchPath, 'utf8');
-  const hunks = parseUnifiedDiffHunks(patchText);
-
-  const rawTargetContent = fs.readFileSync(targetFile, 'utf8');
-  const normalizedTargetContent = rawTargetContent.replace(/\r\n/g, '\n');
-  const targetLines = normalizedTargetContent.split('\n');
-
-  const matchesPostState = hunks.every((hunk) =>
-    linesSliceMatch(targetLines, hunk.newStart - 1, hunk.postLines)
-  );
-  if (matchesPostState && hasAllRequiredPatchMarkers(normalizedTargetContent)) {
-    return {
-      applied: false,
-      alreadyApplied: true,
-      version: installedVersion,
-      targetFile,
-      patchPath,
-    };
-  }
-
-  const matchesPreState = hunks.every((hunk) =>
-    linesSliceMatch(targetLines, hunk.oldStart - 1, hunk.preLines)
-  );
-  if (!matchesPreState) {
-    throw new Error(
-      `Conteúdo inesperado em "${targetFile}": o arquivo não corresponde ao fonte original nem ao fonte já patcheado de @capacitor/android@${EXPECTED_CAPACITOR_ANDROID_VERSION}.`
-    );
-  }
-
-  const updatedLines = [...targetLines];
-  for (let i = hunks.length - 1; i >= 0; i--) {
-    const hunk = hunks[i];
-    updatedLines.splice(hunk.oldStart - 1, hunk.preLines.length, ...hunk.postLines);
-  }
-
-  const patchedContent = updatedLines.join('\n');
-  if (!hasAllRequiredPatchMarkers(patchedContent)) {
-    throw new Error(
-      `Falha ao validar marcadores do patch P3.2 após aplicação em "${targetFile}".`
-    );
-  }
-
-  fs.writeFileSync(targetFile, patchedContent, 'utf8');
-
-  return {
-    applied: true,
-    alreadyApplied: false,
-    version: installedVersion,
-    targetFile,
-    patchPath,
-  };
-}
-
-export function verifyCapacitorAndroidHttpDiagnosticsPatch(rootDir = DEFAULT_ROOT_DIR) {
-  const capAndroidPkgPath = path.join(
+  const httpRequestHandlerPath = path.join(
     rootDir,
     'node_modules',
     '@capacitor',
     'android',
-    'package.json'
+    'capacitor',
+    'src',
+    'main',
+    'java',
+    'com',
+    'getcapacitor',
+    'plugin',
+    'util',
+    'HttpRequestHandler.java'
   );
-  if (!fs.existsSync(capAndroidPkgPath)) {
+  if (!fs.existsSync(httpRequestHandlerPath)) {
     throw new Error(
-      `Validação pós-preparação falhou: @capacitor/android/package.json ausente em ${capAndroidPkgPath}`
-    );
-  }
-  const capAndroidPkg = JSON.parse(fs.readFileSync(capAndroidPkgPath, 'utf8'));
-  if (String(capAndroidPkg.version || '').trim() !== EXPECTED_CAPACITOR_ANDROID_VERSION) {
-    throw new Error(
-      `Validação pós-preparação falhou: versão de @capacitor/android (${capAndroidPkg.version}) difere da versão travada (${EXPECTED_CAPACITOR_ANDROID_VERSION}).`
+      `Fonte nativo HttpRequestHandler.java não encontrado em: ${httpRequestHandlerPath}`
     );
   }
 
-  const targetFile = path.join(rootDir, CAPACITOR_HTTP_HANDLER_REL_PATH);
-  if (!fs.existsSync(targetFile)) {
+  const httpHandlerContent = fs
+    .readFileSync(httpRequestHandlerPath, 'utf8')
+    .replace(/\r\n/g, '\n');
+  const detectedLegacyMarker = LEGACY_HTTP_DIAGNOSTICS_MARKERS.find((marker) =>
+    httpHandlerContent.includes(marker)
+  );
+  if (detectedLegacyMarker) {
     throw new Error(
-      `Validação pós-preparação falhou: HttpRequestHandler.java ausente em ${targetFile}`
+      `Integridade de @capacitor/android@${EXPECTED_CAPACITOR_ANDROID_VERSION} comprometida: foram detectados resquícios do antigo patch de diagnóstico HTTP em "${httpRequestHandlerPath}". Restaure a dependência original (ex.: execute "npm ci" ou reinstale "@capacitor/android@${EXPECTED_CAPACITOR_ANDROID_VERSION}") antes de preparar o projeto Android.`
     );
   }
-  const content = fs.readFileSync(targetFile, 'utf8').replace(/\r\n/g, '\n');
-  if (!hasAllRequiredPatchMarkers(content)) {
-    throw new Error(
-      'Validação pós-preparação falhou: HttpRequestHandler.java não contém a instrumentação por etapa do P3.2.'
-    );
-  }
+
+  return {
+    version: installedVersion,
+    httpRequestHandlerPath,
+  };
 }
 
 function copyDirectoryOverlayRecursive(srcDir, destDir) {
@@ -391,11 +225,10 @@ function resolveViteCliBin(rootDir) {
 }
 
 export function verifyAndroidCustomizations(rootDir, expectedVersionName, expectedVersionCode) {
-  verifyCapacitorAndroidHttpDiagnosticsPatch(rootDir);
+  verifyCleanCapacitorAndroidDependency(rootDir);
 
   const androidDir = path.join(rootDir, 'android');
   const requiredFiles = [
-    path.join(rootDir, CAPACITOR_HTTP_DIAGNOSTICS_PATCH_REL_PATH),
     path.join(androidDir, 'app', 'build.gradle'),
     path.join(androidDir, 'app', 'src', 'main', 'AndroidManifest.xml'),
     path.join(androidDir, 'app', 'src', 'main', 'java', 'com', 'northcode', 'play', 'MainActivity.java'),
@@ -504,7 +337,15 @@ export function verifyAndroidCustomizations(rootDir, expectedVersionName, expect
     !catalogPluginContent.includes('nc_catalog_transfers')
   ) {
     throw new Error(
-      'Validação pós-preparação falhou: CatalogFileTransferPlugin.java não contém todos os métodos nativos P3.3.'
+      'Validação pós-preparação falhou: CatalogFileTransferPlugin.java não contém todos os métodos nativos operacionais.'
+    );
+  }
+  if (
+    catalogPluginContent.includes('collectDiagnostics') ||
+    catalogPluginContent.includes('nativeDiagnostics')
+  ) {
+    throw new Error(
+      'Validação pós-preparação falhou: CatalogFileTransferPlugin.java ainda contém instrumentação de diagnóstico removida.'
     );
   }
 
@@ -573,16 +414,10 @@ export function prepareAndroidProject({
     );
   }
 
-  const patchResult = applyCapacitorAndroidHttpDiagnosticsPatch({ rootDir });
-  if (patchResult.applied) {
-    console.log(
-      `[android:prepare] Patch P3.2 aplicado em @capacitor/android@${patchResult.version} (HttpRequestHandler.java).`
-    );
-  } else {
-    console.log(
-      `[android:prepare] Patch P3.2 já estava aplicado em @capacitor/android@${patchResult.version} (reaplicação ignorada).`
-    );
-  }
+  const { version: capacitorAndroidVersion } = verifyCleanCapacitorAndroidDependency(rootDir);
+  console.log(
+    `[android:prepare] Dependência @capacitor/android@${capacitorAndroidVersion} validada (limpa).`
+  );
 
   const capBin = resolveCapacitorCliBin(rootDir);
   const androidDir = path.join(rootDir, 'android');
@@ -634,9 +469,7 @@ export function prepareAndroidProject({
 
   return {
     reusedExistingAndroid: androidExists,
-    patchApplied: patchResult.applied,
-    patchAlreadyApplied: patchResult.alreadyApplied,
-    capacitorAndroidVersion: patchResult.version,
+    capacitorAndroidVersion,
     versionName,
     versionCode,
     androidDir,
