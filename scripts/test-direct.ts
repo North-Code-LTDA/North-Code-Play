@@ -4606,8 +4606,9 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       `Durante navegação D-Pad ativa, a concorrência máxima de imagens deve ser reduzida para <= 2 (atual=${maxConcurrentDuringDpadBurst})`
     );
 
-    // 4) Renderizar ConfigView e validar ausência total de diagnósticos (C1, C2.1, C3) e seletores A/B,
-    //    bem como a preservação da calibração de apresentação, conta, formatos e Identificação do Build
+    // 4) Renderizar ConfigView e validar ausência total de diagnósticos (C1, C2.1, C3), seletores A/B e
+    //    campos técnicos (URL do Servidor, Informações do aplicativo, Identificação do Build, Formatos do Provedor),
+    //    bem como a nova ordem comercial (Informações da Conta antes de Apresentação) e a preservação da calibração
     try {
       window.localStorage.removeItem(tvEnvironmentModule.STORAGE_KEY_DISPLAY_PREFS);
     } catch {
@@ -4699,23 +4700,31 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     const configText = container.textContent || '';
     assert(configText.includes('Configurações'), 'ConfigView deve renderizar o título Configurações');
     assert(
-      configText.includes('Apresentação e Tamanho da Interface'),
-      'ConfigView deve preservar a seção de Apresentação e Tamanho da Interface'
-    );
-    assert(
       configText.includes('Informações da Conta') && configText.includes(mockCreds.username),
       'ConfigView deve preservar as Informações da Conta'
     );
     assert(
-      configText.includes('Formatos do Provedor'),
-      'ConfigView deve preservar a seção Formatos do Provedor'
+      configText.includes('Apresentação e Tamanho da Interface'),
+      'ConfigView deve preservar a seção de Apresentação e Tamanho da Interface'
+    );
+    const accountSectionEl = container.querySelector('[data-config-section="account"]');
+    const presentationSectionEl = container.querySelector('[data-config-section="presentation"]');
+    assert(
+      accountSectionEl &&
+        presentationSectionEl &&
+        Boolean(accountSectionEl.compareDocumentPosition(presentationSectionEl) & Node.DOCUMENT_POSITION_FOLLOWING),
+      'ConfigView deve exibir Informações da Conta antes de Apresentação e Tamanho da Interface na ordem DOM'
     );
     assert(
-      configText.includes('Informações do aplicativo') &&
-        configText.includes('Identificação do Build') &&
-        configText.includes(`v${APP_VERSION}`) &&
-        configText.includes(formatCommitShort(APP_COMMIT)),
-      'ConfigView deve preservar Informações do aplicativo e Identificação do Build (versão e commit)'
+      !configText.includes('URL do Servidor') && !configText.includes(mockCreds.serverUrl),
+      'ConfigView NÃO deve exibir o bloco URL do Servidor nem o valor de credentials.serverUrl'
+    );
+    assert(
+      !configText.includes('Informações do aplicativo') &&
+        !configText.includes('Identificação do Build') &&
+        !configText.includes('Formatos do Provedor') &&
+        !configText.includes('Reprodução 100% Direta no Navegador'),
+      'ConfigView NÃO deve exibir a seção técnica Informações do aplicativo, Identificação do Build, Formatos do Provedor ou texto técnico de arquitetura'
     );
     assert(
       !configText.includes('Arquitetura & Diagnóstico') &&
