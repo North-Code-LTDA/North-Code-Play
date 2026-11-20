@@ -74,7 +74,7 @@ interface ShowcaseRowSlotProps {
   rowKey: string;
   rowIndex: number;
   title: string;
-  type: 'movie' | 'series' | 'live';
+  type: 'vod' | 'series' | 'live';
   virtualize: boolean;
   isMounted: boolean;
   items: any[];
@@ -260,6 +260,7 @@ const VIRTUAL_CATEGORIES = [
 ] as const;
 
 const SHOWCASE_ROW_WINDOW_SIZE = 8;
+const SHOWCASE_HORIZONTAL_VIRTUALIZE_THRESHOLD = 24;
 const SHOWCASE_SCROLL_HYSTERESIS_PX = 24;
 const SEARCH_IMAGE_ACTIVE_BUDGET = 24;
 
@@ -980,26 +981,26 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     return EMPTY_ARRAY;
   }, [section, favorites, vodIndex, seriesIndex]);
 
-  // Featured items
+  // Featured items (complete sorted catalog references cached by catalogIndex; virtualized horizontally when large)
   const featuredMovies = useMemo(() => {
     if (section === 'series') return EMPTY_ARRAY;
-    if (allVodStreams.length > 0) return vodIndex.getSortedAll().slice(0, 24);
-    if (vodStreams.length > 0) return vodStreams.slice(0, 24);
+    if (allVodStreams.length > 0) return vodIndex.getSortedAll();
+    if (vodStreams.length > 0) return vodStreams;
     return EMPTY_ARRAY;
   }, [section, vodIndex, allVodStreams.length, vodStreams]);
 
   const featuredSeries = useMemo(() => {
     if (section === 'movies') return EMPTY_ARRAY;
-    if (allSeriesStreams.length > 0) return seriesIndex.getSortedAll().slice(0, 24);
-    if (seriesStreams.length > 0) return seriesStreams.slice(0, 24);
+    if (allSeriesStreams.length > 0) return seriesIndex.getSortedAll();
+    if (seriesStreams.length > 0) return seriesStreams;
     return EMPTY_ARRAY;
   }, [section, seriesIndex, allSeriesStreams.length, seriesStreams]);
 
-  // Live highlights (for 'inicio')
+  // Live highlights (for 'inicio': complete available live catalog; virtualized horizontally when large)
   const liveHighlights = useMemo(() => {
     if (section !== 'inicio') return EMPTY_ARRAY;
     const pool = allLiveStreams.length > 0 ? allLiveStreams : liveStreams;
-    return pool.length > 0 ? pool.slice(0, 24) : EMPTY_ARRAY;
+    return pool.length > 0 ? pool : EMPTY_ARRAY;
   }, [section, allLiveStreams, liveStreams]);
 
   // Lightweight non-empty category descriptors (O(1) membership check via in-memory index, NO upfront sorting)
@@ -1539,50 +1540,22 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       )
     : 0;
 
-  // Cache stable 24-item slices per category descriptor so shifting effectiveRowStart does not create
-  // fresh array references that defeat React.memo(HorizontalRow) on the remaining 6-7 mounted rows.
-  const rowItemsSliceCacheRef = useRef<{
-    vodIndex: any;
-    seriesIndex: any;
-    slices: Map<string, any[]>;
-  }>({
-    vodIndex: null,
-    seriesIndex: null,
-    slices: new Map<string, any[]>(),
-  });
-  if (
-    rowItemsSliceCacheRef.current.vodIndex !== vodIndex ||
-    rowItemsSliceCacheRef.current.seriesIndex !== seriesIndex
-  ) {
-    rowItemsSliceCacheRef.current = {
-      vodIndex,
-      seriesIndex,
-      slices: new Map<string, any[]>(),
-    };
-  }
-
-  const getCategoryRowSlice24 = useCallback(
+  // Resolve complete, referentially stable row collections directly from catalogIndex caches
+  // so shifting effectiveRowStart preserves React.memo(HorizontalRow) without duplicating large arrays.
+  const getShowcaseRowItems = useCallback(
     (desc: ShowcaseRowDescriptor): any[] => {
       if (desc.fixedItems) {
         return desc.fixedItems;
       }
-      const useStableSliceCache = isDpadOptimizedPathActive();
-      if (useStableSliceCache) {
-        const cached = rowItemsSliceCacheRef.current.slices.get(desc.key);
-        if (cached) {
-          return cached;
-        }
-      }
-      let slice: any[] = EMPTY_ARRAY;
       if (desc.kind === 'vod_category' && desc.categoryId) {
-        slice = vodIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
-      } else if (desc.kind === 'series_category' && desc.categoryId) {
-        slice = seriesIndex.getSortedByCategory(desc.categoryId).slice(0, 24);
+        const sorted = vodIndex.getSortedByCategory(desc.categoryId);
+        return sorted.length > 0 ? sorted : EMPTY_ARRAY;
       }
-      if (useStableSliceCache && slice.length > 0) {
-        rowItemsSliceCacheRef.current.slices.set(desc.key, slice);
+      if (desc.kind === 'series_category' && desc.categoryId) {
+        const sorted = seriesIndex.getSortedByCategory(desc.categoryId);
+        return sorted.length > 0 ? sorted : EMPTY_ARRAY;
       }
-      return slice;
+      return EMPTY_ARRAY;
     },
     [vodIndex, seriesIndex]
   );
@@ -1591,12 +1564,16 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   const showcaseRowsData = useMemo(() => {
     return showcaseRowDescriptors.map((desc, rowIndex) => {
       const isMounted = rowIndex >= effectiveRowStart && rowIndex < effectiveRowEnd;
-      const items = isMounted ? getCategoryRowSlice24(desc) : EMPTY_ARRAY;
+      const items = isMounted ? getShowcaseRowItems(desc) : EMPTY_ARRAY;
+      const shouldVirtualizeRow =
+        Boolean(desc.virtualize) ||
+        items.length > SHOWCASE_HORIZONTAL_VIRTUALIZE_THRESHOLD;
       return {
         ...desc,
         rowIndex,
         isMounted,
         items,
+        virtualize: shouldVirtualizeRow,
         reservedHeightPx: getRowSlotHeight(rowIndex),
       };
     });
@@ -1604,7 +1581,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     showcaseRowDescriptors,
     effectiveRowStart,
     effectiveRowEnd,
-    getCategoryRowSlice24,
+    getShowcaseRowItems,
     getRowSlotHeight,
   ]);
 
@@ -1712,7 +1689,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     }
 
     const timerId = setTimeout(() => {
-      // In optimized mode, pre-warm category sorting and 24-item slices for the next 3 rows around the window
+      // In optimized mode, pre-warm full category sorting in catalogIndex for the adjacent rows around the window
       // so the first vertical D-Pad pass into an unvisited category never sorts synchronously inside flushSync.
       if (isDpadOptimizedPathActive()) {
         const prewarmIndices = [
@@ -1726,7 +1703,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           if (r >= 0 && r < totalShowcaseRows) {
             const desc = showcaseRowDescriptors[r];
             if (desc && (desc.kind === 'vod_category' || desc.kind === 'series_category')) {
-              getCategoryRowSlice24(desc);
+              getShowcaseRowItems(desc);
             }
           }
         }
@@ -1755,7 +1732,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       for (const r of candidateAdjacentRowIndices) {
         const desc = showcaseRowDescriptors[r];
         if (!desc) continue;
-        const items = getCategoryRowSlice24(desc);
+        const items = getShowcaseRowItems(desc);
         const rowBudget =
           desc.type === 'live' ? budget.landscapeCardsPerRow : budget.posterCardsPerRow;
         const limit = Math.min(rowBudget, items.length);
@@ -1785,7 +1762,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     effectiveRowStart,
     effectiveRowEnd,
     showcaseRowDescriptors,
-    getCategoryRowSlice24,
+    getShowcaseRowItems,
     liveViewportWidth,
     liveViewportHeight,
     credentials?.serverUrl,

@@ -14,6 +14,7 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test": "tsx scripts/test-direct.ts",
+    "test:carousels": "tsx scripts/test-showcase-carousels.ts",
     "cap:sync": "node tooling/android/prepare-android.mjs --skip-web-build",
     "android:sync": "npm run build && node tooling/android/prepare-android.mjs --skip-web-build",
     "android:prepare": "npm run build && node tooling/android/prepare-android.mjs --skip-web-build",
