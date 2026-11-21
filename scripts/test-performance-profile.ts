@@ -450,12 +450,15 @@ async function runTests() {
     }
   );
 
-  // 8. Foco D-Pad continua visível e regras CSS são estritamente condicionadas sem wildcard *
+  // 8. Foco D-Pad continua visível e regras CSS são estritamente condicionadas sem seletores genéricos abrangentes
   await runCase(
-    '8. Regras CSS do modo Lite mantêm foco branco visível, desativam scale/smooth-scroll e não usam wildcard global *',
+    '8. Regras CSS do modo Lite mantêm foco branco visível, restringem escopo sem seletores genéricos globais e preservam controles funcionais',
     async () => {
       const cssPath = path.resolve(process.cwd(), 'src/index.css');
       const cssContent = fs.readFileSync(cssPath, 'utf8');
+      const liteBlockIndex = cssContent.indexOf('Visual Performance Profile: Lite Mode');
+      assert.ok(liteBlockIndex !== -1, 'Bloco CSS do modo Lite deve existir em src/index.css');
+      const liteBlock = cssContent.slice(liteBlockIndex);
 
       // Garantir ausência de regra global indiscriminada * { animation: none ... }
       assert.ok(
@@ -463,30 +466,51 @@ async function runTests() {
         'CSS não deve conter regra global indiscriminada * { animation/transition: none }'
       );
 
-      // Regras de modo Lite estritamente condicionadas ao atributo raiz
+      // Garantir que o bloco Lite não utilize seletores genéricos globais que atinjam controles do player ou formulários
       assert.ok(
-        cssContent.includes('html[data-performance-mode="lite"] .nc-card-visual-layer'),
+        !/html\[data-performance-mode="lite"\](?:\[data-nav-mode="remote"\])?\s+(?:button|input|select|textarea|a|\[tabindex\]|\[data-nav-item="true"\])(?:\s|,|:)/i.test(
+          liteBlock
+        ),
+        'Bloco Lite não deve aplicar regras genéricas a button/input/select/textarea/a/[tabindex]/[data-nav-item]'
+      );
+      assert.ok(
+        !liteBlock.includes('.nc-player-ctrl-btn'),
+        'Bloco Lite não deve alterar seletores dos botões do player'
+      );
+
+      // Regras de modo Lite estritamente condicionadas ao atributo raiz e a componentes específicos
+      assert.ok(
+        liteBlock.includes('html[data-performance-mode="lite"] .nc-card-visual-layer'),
         'Deve conter otimização condicional para .nc-card-visual-layer'
       );
       assert.ok(
-        cssContent.includes('html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer'),
+        liteBlock.includes(
+          'html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer'
+        ),
         'Deve cobrir cards horizontais da TV ao Vivo no modo Lite'
       );
       assert.ok(
-        cssContent.includes('border: 2px solid #ffffff;'),
+        liteBlock.includes(
+          'html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-showcase-card,'
+        ),
+        'Deve restringir desativação de transições de foco aos componentes específicos de navegação visual'
+      );
+      assert.ok(
+        liteBlock.includes('border: 2px solid #ffffff;'),
         'Deve preservar borda branca visível nos cards focados sem ampliação'
       );
       assert.ok(
         cssContent.includes('outline: 2px solid #ffffff !important;'),
-        'Deve preservar contorno branco de foco D-Pad'
+        'Deve preservar contorno branco de foco D-Pad nas regras originais e específicas'
       );
       assert.ok(
-        cssContent.includes('html[data-performance-mode="lite"][data-nav-mode="remote"] [data-scroll-container="true"]') &&
-          cssContent.includes('scroll-behavior: auto !important;'),
+        liteBlock.includes(
+          'html[data-performance-mode="lite"][data-nav-mode="remote"] [data-scroll-container="true"]'
+        ) && liteBlock.includes('scroll-behavior: auto !important;'),
         'Deve desativar scroll-behavior: smooth apenas em modo Lite + remote'
       );
       assert.ok(
-        cssContent.includes('html[data-performance-mode="lite"] .nc-card-visual-layer img'),
+        liteBlock.includes('html[data-performance-mode="lite"] .nc-card-visual-layer img'),
         'Deve reduzir transição cosmética de opacidade das imagens dos cards sem alterar estado loaded'
       );
     }

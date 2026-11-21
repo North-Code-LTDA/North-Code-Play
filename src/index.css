@@ -1291,26 +1291,19 @@ html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-live-horizontal-c
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.78);
 }
 
-/* 2. Remote D-Pad focus: drop transition and soft glow shadow while preserving
- *    bright 2px white outline and crisp dark contrast ring (excluding cards and
- *    top header pills that render their own dedicated focus rings). */
-html[data-performance-mode="lite"][data-nav-mode="remote"] button,
-html[data-performance-mode="lite"][data-nav-mode="remote"] input,
-html[data-performance-mode="lite"][data-nav-mode="remote"] select,
-html[data-performance-mode="lite"][data-nav-mode="remote"] textarea,
-html[data-performance-mode="lite"][data-nav-mode="remote"] a,
-html[data-performance-mode="lite"][data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]),
-html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-item="true"] {
+/* 2. Targeted visual navigation items (cards, Live TV channel/EPG cards, header pills):
+ *    disable cosmetic focus transitions and soft outer glow shadows strictly on these
+ *    specific components so player controls, forms, and functional menus keep their
+ *    original transitions and D-Pad focus rules intact. */
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-showcase-card,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-showcase-rows-container="true"] [data-row-card-index],
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-live-horizontal-card [data-live-channel-btn="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-pill,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-card,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-state {
   transition: none !important;
 }
 
-html[data-performance-mode="lite"][data-nav-mode="remote"] button:not(.nc-showcase-card):not(.nc-top-header-pill):focus,
-html[data-performance-mode="lite"][data-nav-mode="remote"] input:focus,
-html[data-performance-mode="lite"][data-nav-mode="remote"] select:focus,
-html[data-performance-mode="lite"][data-nav-mode="remote"] textarea:focus,
-html[data-performance-mode="lite"][data-nav-mode="remote"] a:focus,
-html[data-performance-mode="lite"][data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]):not(.nc-showcase-card):not(.nc-top-header-pill):focus,
-html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-item="true"]:not(.nc-showcase-card):not(.nc-top-header-pill):focus,
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-card:focus,
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-card:focus-visible,
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-state:focus,
@@ -1318,13 +1311,10 @@ html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-state:focu
   outline: 2px solid #ffffff !important;
   outline-offset: 2px !important;
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.9) !important;
-  transform: none !important;
 }
 
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-pill:focus,
-html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-pill:focus-visible,
-html[data-performance-mode="lite"][data-nav-mode="remote"] [data-header-nav-strip="true"] [data-nav-item="true"]:focus,
-html[data-performance-mode="lite"][data-nav-mode="remote"] [data-header-nav-strip="true"] [data-nav-item="true"]:focus-visible {
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-pill:focus-visible {
   outline: 2px solid #ffffff !important;
   outline-offset: -2px !important;
   box-shadow: inset 0 0 0 2px #ffffff, inset 0 0 0 3px rgba(0, 0, 0, 0.85) !important;
