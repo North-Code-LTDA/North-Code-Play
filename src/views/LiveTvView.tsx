@@ -62,6 +62,460 @@ export function getLiveFallbackTimeoutMsForTest(): number {
   return liveFallbackTimeoutMs;
 }
 
+const FULL_VERTICAL_VISIBILITY_MARGIN = '240px 0px';
+const FULL_HORIZ_VISIBILITY_MARGIN = '0px 280px';
+const LITE_VERTICAL_VISIBILITY_MARGIN = '32px 0px';
+const LITE_HORIZ_VISIBILITY_MARGIN = '0px 32px';
+
+const LITE_EPG_SECONDARY_DELAY_MS = 150;
+const LITE_EPG_FOCUSED_BURST_MS = 55;
+const LITE_EPG_BURST_WINDOW_MS = 90;
+
+let nextLiteEpgEntryId = 1;
+
+function resolveRemPxFromScaleKey(displayScaleKey: string): number {
+  const parts = displayScaleKey.split(':');
+  if (parts[0] === 'tv') {
+    const raw = parseFloat(parts[1] || '');
+    const ratio = Number.isFinite(raw) && raw > 0 ? (raw > 2 ? raw / 100 : raw) : 0.85;
+    return 16 * Math.max(0.5, Math.min(1.25, ratio));
+  }
+  return 16;
+}
+
+function computeLiteInitialVisibleRowRange(
+  leftScrollEl: HTMLElement | null,
+  displayScaleKey: string
+): { startRow: number; endRow: number } {
+  const remPx = resolveRemPxFromScaleKey(displayScaleKey);
+  const scaleRatio = remPx / 16;
+  let viewportHeight = 0;
+  let scrollTop = 0;
+
+  if (leftScrollEl) {
+    scrollTop = leftScrollEl.scrollTop || 0;
+    if (leftScrollEl.clientHeight > 0) {
+      viewportHeight = leftScrollEl.clientHeight;
+    } else {
+      const rect = leftScrollEl.getBoundingClientRect();
+      if (rect.height > 0) viewportHeight = rect.height;
+    }
+  }
+
+  if (viewportHeight <= 0) {
+    const winH =
+      typeof window !== 'undefined' && typeof window.innerHeight === 'number' && window.innerHeight > 0
+        ? window.innerHeight
+        : 720;
+    const headerReserve = Math.round((68 + 56) * scaleRatio);
+    viewportHeight = Math.max(180, winH - headerReserve);
+  }
+
+  const rowStridePx = Math.max(88, Math.round(9.15 * remPx));
+  const startRow = Math.max(0, Math.floor(Math.max(0, scrollTop) / rowStridePx));
+  const visibleRows = Math.max(1, Math.ceil(viewportHeight / rowStridePx));
+  return { startRow, endRow: startRow + visibleRows };
+}
+
+function computeLiteInitialVisibleCardRange(
+  rowScrollEl: HTMLElement | null,
+  leftScrollEl: HTMLElement | null,
+  displayScaleKey: string
+): { startCard: number; endCard: number } {
+  const remPx = resolveRemPxFromScaleKey(displayScaleKey);
+  const isSmUp =
+    typeof window === 'undefined' ||
+    typeof window.innerWidth !== 'number' ||
+    window.innerWidth === 0 ||
+    window.innerWidth >= 640;
+
+  const cardWidth = (isSmUp ? 16.75 : 15.75) * remPx;
+  const gap = 0.75 * remPx;
+  const stride = Math.max(1, cardWidth + gap);
+
+  let viewportWidth = 0;
+  let scrollLeft = 0;
+
+  if (rowScrollEl) {
+    scrollLeft = rowScrollEl.scrollLeft || 0;
+    if (rowScrollEl.clientWidth > 0) {
+      viewportWidth = rowScrollEl.clientWidth;
+    }
+  }
+
+  if (viewportWidth <= 0 && leftScrollEl && leftScrollEl.clientWidth > 0) {
+    viewportWidth = Math.max(cardWidth, leftScrollEl.clientWidth - 3 * remPx);
+  }
+
+  if (viewportWidth <= 0) {
+    const winW =
+      typeof window !== 'undefined' && typeof window.innerWidth === 'number' && window.innerWidth > 0
+        ? window.innerWidth
+        : 1280;
+    const paneW = winW >= 768 ? winW * 0.5 : winW;
+    viewportWidth = Math.max(cardWidth, paneW - 3 * remPx);
+  }
+
+  const startCard = Math.max(0, Math.floor(Math.max(0, scrollLeft) / stride));
+  const visibleCards = Math.max(1, Math.ceil(viewportWidth / stride));
+  return { startCard, endCard: startCard + visibleCards };
+}
+
+function areCardEpgSnapshotsEquivalent(
+  prev: LiveEpgSnapshot | null,
+  next: LiveEpgSnapshot | null
+): boolean {
+  if (prev === next) return true;
+  const prevTitle = prev?.currentProgram?.title?.trim() || '';
+  const nextTitle = next?.currentProgram?.title?.trim() || '';
+  if (!prevTitle && !nextTitle) {
+    // Both render the exact same fallback string ("Programação indisponível")
+    return true;
+  }
+  if (prevTitle !== nextTitle) return false;
+  const prevStart = prev?.currentProgram?.startMs ?? 0;
+  const nextStart = next?.currentProgram?.startMs ?? 0;
+  const prevEnd = prev?.currentProgram?.endMs ?? 0;
+  const nextEnd = next?.currentProgram?.endMs ?? 0;
+  return prevStart === nextStart && prevEnd === nextEnd;
+}
+
+function areRightPaneEpgSnapshotsEquivalent(
+  prev: LiveEpgSnapshot | null,
+  next: LiveEpgSnapshot | null
+): boolean {
+  if (prev === next) return true;
+  if (!prev || !next) return false;
+  if (prev.status !== next.status || prev.streamId !== next.streamId) return false;
+
+  const pCur = prev.currentProgram;
+  const nCur = next.currentProgram;
+  if (Boolean(pCur) !== Boolean(nCur)) return false;
+  if (pCur && nCur) {
+    if (
+      pCur.id !== nCur.id ||
+      pCur.title !== nCur.title ||
+      pCur.description !== nCur.description ||
+      pCur.startMs !== nCur.startMs ||
+      pCur.endMs !== nCur.endMs ||
+      pCur.startLabel !== nCur.startLabel ||
+      pCur.endLabel !== nCur.endLabel
+    ) {
+      return false;
+    }
+  }
+
+  if (prev.timeline.length !== next.timeline.length) return false;
+  for (let i = 0; i < prev.timeline.length; i++) {
+    const a = prev.timeline[i];
+    const b = next.timeline[i];
+    if (
+      a.id !== b.id ||
+      a.title !== b.title ||
+      a.description !== b.description ||
+      a.startMs !== b.startMs ||
+      a.endMs !== b.endMs ||
+      a.startLabel !== b.startLabel ||
+      a.endLabel !== b.endLabel ||
+      a.isCurrent !== b.isCurrent
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+interface LitePendingEpgEntry {
+  entryId: number;
+  credentials: XtreamCredentials;
+  streamId: number;
+  onUpdate: (snapshot: LiveEpgSnapshot) => void;
+  readyAtMs: number;
+  isFocused: boolean;
+}
+
+/**
+ * Centralized coordinator for secondary (priority: 'normal') card EPG subscriptions in Lite mode.
+ * Uses at most ONE shared timeout across the entire LiveTvView (zero per-card timers, zero polling),
+ * prioritizes focused cards immediately (with micro-stabilization only during rapid held-key bursts),
+ * and cancels transient entries before subscribing when cards scroll away or unmount.
+ * Never affects right-pane EPG subscriptions (priority: 'high').
+ */
+class LiteEpgCoordinator {
+  private pending = new Map<number, LitePendingEpgEntry>();
+  private activeSubs = new Map<number, () => void>();
+  private timerId: ReturnType<typeof setTimeout> | null = null;
+  private lastFocusMoveMs = 0;
+  private focusedEntryId: number | null = null;
+  private disposed = false;
+
+  private nowMs(): number {
+    return typeof Date !== 'undefined' ? Date.now() : 0;
+  }
+
+  private clearTimer(): void {
+    if (this.timerId !== null) {
+      clearTimeout(this.timerId);
+      this.timerId = null;
+    }
+  }
+
+  private armNextTimer(now: number): void {
+    this.clearTimer();
+    if (this.disposed || this.pending.size === 0) return;
+
+    let earliestReadyAt = Infinity;
+    this.pending.forEach((entry) => {
+      if (entry.readyAtMs < earliestReadyAt) {
+        earliestReadyAt = entry.readyAtMs;
+      }
+    });
+
+    if (!Number.isFinite(earliestReadyAt)) return;
+    const delay = Math.max(0, earliestReadyAt - now);
+    this.timerId = setTimeout(() => {
+      this.timerId = null;
+      this.flushDue();
+    }, delay);
+  }
+
+  private activateEntry(entry: LitePendingEpgEntry): void {
+    if (this.disposed) return;
+    const cached = getCachedLiveEpgSnapshot(entry.credentials, entry.streamId);
+    if (cached) {
+      entry.onUpdate(cached);
+      return;
+    }
+    const prevUnsub = this.activeSubs.get(entry.entryId);
+    if (prevUnsub) {
+      prevUnsub();
+      this.activeSubs.delete(entry.entryId);
+    }
+    const unsub = subscribeLiveChannelEpg({
+      credentials: entry.credentials,
+      streamId: entry.streamId,
+      priority: 'normal',
+      onUpdate: entry.onUpdate,
+    });
+    this.activeSubs.set(entry.entryId, unsub);
+  }
+
+  private flushDue(): void {
+    if (this.disposed) return;
+    const now = this.nowMs();
+    const due: LitePendingEpgEntry[] = [];
+
+    this.pending.forEach((entry) => {
+      if (entry.readyAtMs <= now + 4) {
+        due.push(entry);
+      }
+    });
+
+    // Always flush focused card first ahead of non-focused visible neighbors
+    due.sort((a, b) => Number(b.isFocused) - Number(a.isFocused));
+
+    for (let i = 0; i < due.length; i++) {
+      const entry = due[i];
+      if (!this.pending.has(entry.entryId)) continue;
+      this.pending.delete(entry.entryId);
+      this.activateEntry(entry);
+    }
+
+    if (this.pending.size > 0) {
+      this.armNextTimer(this.nowMs());
+    }
+  }
+
+  schedule(
+    entryId: number,
+    credentials: XtreamCredentials,
+    streamId: number,
+    onUpdate: (snapshot: LiveEpgSnapshot) => void,
+    options: { isFocused: boolean }
+  ): void {
+    if (this.disposed) return;
+    this.cancel(entryId);
+
+    const now = this.nowMs();
+    if (options.isFocused) {
+      this.focusedEntryId = entryId;
+      const isBurst = this.lastFocusMoveMs > 0 && now - this.lastFocusMoveMs < LITE_EPG_BURST_WINDOW_MS;
+      if (!isBurst) {
+        this.activateEntry({
+          entryId,
+          credentials,
+          streamId,
+          onUpdate,
+          readyAtMs: now,
+          isFocused: true,
+        });
+        return;
+      }
+      this.pending.set(entryId, {
+        entryId,
+        credentials,
+        streamId,
+        onUpdate,
+        readyAtMs: now + LITE_EPG_FOCUSED_BURST_MS,
+        isFocused: true,
+      });
+      this.armNextTimer(now);
+      return;
+    }
+
+    this.pending.set(entryId, {
+      entryId,
+      credentials,
+      streamId,
+      onUpdate,
+      readyAtMs: now + LITE_EPG_SECONDARY_DELAY_MS,
+      isFocused: false,
+    });
+    this.armNextTimer(now);
+  }
+
+  notifyFocus(
+    entryId: number,
+    credentials: XtreamCredentials,
+    streamId: number,
+    onUpdate: (snapshot: LiveEpgSnapshot) => void
+  ): void {
+    if (this.disposed) return;
+    const now = this.nowMs();
+    const isRapidBurst =
+      this.lastFocusMoveMs > 0 && now - this.lastFocusMoveMs < LITE_EPG_BURST_WINDOW_MS;
+    this.lastFocusMoveMs = now;
+
+    // Demote any previously focused pending entry that lost focus during a burst
+    if (this.focusedEntryId !== null && this.focusedEntryId !== entryId) {
+      const prevPending = this.pending.get(this.focusedEntryId);
+      if (prevPending && prevPending.isFocused) {
+        prevPending.isFocused = false;
+        prevPending.readyAtMs = Math.max(prevPending.readyAtMs, now + LITE_EPG_SECONDARY_DELAY_MS);
+      }
+    }
+    this.focusedEntryId = entryId;
+
+    // Already actively subscribed for this card
+    if (this.activeSubs.has(entryId)) {
+      return;
+    }
+
+    const cached = getCachedLiveEpgSnapshot(credentials, streamId);
+    if (cached) {
+      this.pending.delete(entryId);
+      onUpdate(cached);
+      if (this.pending.size === 0) this.clearTimer();
+      return;
+    }
+
+    if (!isRapidBurst) {
+      this.pending.delete(entryId);
+      this.activateEntry({
+        entryId,
+        credentials,
+        streamId,
+        onUpdate,
+        readyAtMs: now,
+        isFocused: true,
+      });
+      if (this.pending.size === 0) this.clearTimer();
+      return;
+    }
+
+    // Rapid D-Pad burst: push back non-focused neighbors and prioritize the resting focused card
+    this.pending.forEach((other) => {
+      if (other.entryId !== entryId && !other.isFocused) {
+        other.readyAtMs = Math.max(other.readyAtMs, now + LITE_EPG_SECONDARY_DELAY_MS);
+      }
+    });
+
+    this.pending.set(entryId, {
+      entryId,
+      credentials,
+      streamId,
+      onUpdate,
+      readyAtMs: now + LITE_EPG_FOCUSED_BURST_MS,
+      isFocused: true,
+    });
+    this.armNextTimer(now);
+  }
+
+  notifyBlur(entryId: number, isStillVisible: boolean): void {
+    if (this.focusedEntryId === entryId) {
+      this.focusedEntryId = null;
+    }
+    if (!isStillVisible) {
+      this.cancel(entryId);
+      return;
+    }
+    const existing = this.pending.get(entryId);
+    if (existing && existing.isFocused) {
+      const now = this.nowMs();
+      existing.isFocused = false;
+      existing.readyAtMs = Math.max(existing.readyAtMs, now + LITE_EPG_SECONDARY_DELAY_MS);
+      this.armNextTimer(now);
+    }
+  }
+
+  notifyScrollActivity(): void {
+    if (this.disposed || this.pending.size === 0) return;
+    const now = this.nowMs();
+    let changed = false;
+    this.pending.forEach((entry) => {
+      if (!entry.isFocused) {
+        const nextReady = now + LITE_EPG_SECONDARY_DELAY_MS;
+        if (nextReady > entry.readyAtMs) {
+          entry.readyAtMs = nextReady;
+          changed = true;
+        }
+      }
+    });
+    if (changed) {
+      this.armNextTimer(now);
+    }
+  }
+
+  cancel(entryId: number): void {
+    if (this.focusedEntryId === entryId) {
+      this.focusedEntryId = null;
+    }
+    this.pending.delete(entryId);
+    const unsub = this.activeSubs.get(entryId);
+    if (unsub) {
+      this.activeSubs.delete(entryId);
+      unsub();
+    }
+    if (this.pending.size === 0) {
+      this.clearTimer();
+    }
+  }
+
+  flushAllImmediate(): void {
+    if (this.disposed || this.pending.size === 0) return;
+    this.clearTimer();
+    const entries = Array.from(this.pending.values());
+    this.pending.clear();
+    entries.sort((a, b) => Number(b.isFocused) - Number(a.isFocused));
+    for (let i = 0; i < entries.length; i++) {
+      this.activateEntry(entries[i]);
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.clearTimer();
+    this.pending.clear();
+    this.activeSubs.forEach((unsub) => {
+      try {
+        unsub();
+      } catch {}
+    });
+    this.activeSubs.clear();
+    this.focusedEntryId = null;
+  }
+}
+
 export interface LiveFocusOriginSnapshot {
   groupId: string | null;
   categoryId: string | null;
@@ -370,10 +824,15 @@ interface LiveChannelCardProps {
   cardIndex: number;
   credentials: XtreamCredentials | null;
   isSelected: boolean;
+  isLitePerformanceMode: boolean;
+  displayScaleKey: string;
+  leftScrollEl: HTMLElement | null;
+  liteEpgCoordinator: LiteEpgCoordinator;
   getOriginSnapshot: () => LiveFocusOriginSnapshot;
   isFavorite: boolean;
   isRowVisible: boolean;
   rowScrollEl: HTMLElement | null;
+  onEnsureRowVisible: () => void;
   onSelectGroup: (
     group: LiveChannelGroup,
     categoryId: string,
@@ -400,10 +859,15 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
   cardIndex,
   credentials,
   isSelected,
+  isLitePerformanceMode,
+  displayScaleKey,
+  leftScrollEl,
+  liteEpgCoordinator,
   getOriginSnapshot,
   isFavorite,
   isRowVisible,
   rowScrollEl,
+  onEnsureRowVisible,
   onSelectGroup,
   onToggleFavorite,
   onFocusCard,
@@ -412,7 +876,20 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
 }: LiveChannelCardProps) {
   const cardWrapRef = useRef<HTMLDivElement | null>(null);
   const channelBtnRef = useRef<HTMLButtonElement | null>(null);
-  const [isHorizVisible, setIsHorizVisible] = useState<boolean>(cardIndex < 10);
+  const epgEntryIdRef = useRef<number>(0);
+  if (epgEntryIdRef.current === 0) {
+    epgEntryIdRef.current = nextLiteEpgEntryId++;
+  }
+
+  const [isHorizVisible, setIsHorizVisible] = useState<boolean>(() => {
+    if (!isLitePerformanceMode) {
+      return cardIndex < 10;
+    }
+    const range = computeLiteInitialVisibleCardRange(rowScrollEl, leftScrollEl, displayScaleKey);
+    return cardIndex >= range.startCard && cardIndex < range.endCard;
+  });
+  const isHorizVisibleRef = useRef<boolean>(isHorizVisible);
+  isHorizVisibleRef.current = isHorizVisible;
 
   const setCardWrapCallbackRef = useCallback(
     (node: HTMLDivElement | null) => {
@@ -460,18 +937,53 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
     [group, primaryStream]
   );
 
+  const [focusActivatedLogoKey, setFocusActivatedLogoKey] = useState<string | null>(null);
+
   const [epgSnapshot, setEpgSnapshot] = useState<LiveEpgSnapshot | null>(() => {
     if (!credentials || !preferredEpgStreamId) return null;
     return getCachedLiveEpgSnapshot(credentials, preferredEpgStreamId);
   });
 
+  const applyCardEpgSnapshot = useCallback(
+    (snap: LiveEpgSnapshot | null, expectedStreamId: number) => {
+      if (snap && snap.streamId && expectedStreamId > 0 && snap.streamId !== expectedStreamId) {
+        return;
+      }
+      setEpgSnapshot((prev) => (areCardEpgSnapshotsEquivalent(prev, snap) ? prev : snap));
+    },
+    []
+  );
+
+  const prevEpgIdentityRef = useRef<{ creds: XtreamCredentials | null; streamId: number }>({
+    creds: credentials,
+    streamId: preferredEpgStreamId,
+  });
+
+  useEffect(() => {
+    if (
+      prevEpgIdentityRef.current.creds !== credentials ||
+      prevEpgIdentityRef.current.streamId !== preferredEpgStreamId
+    ) {
+      prevEpgIdentityRef.current = { creds: credentials, streamId: preferredEpgStreamId };
+      const cached =
+        credentials && preferredEpgStreamId
+          ? getCachedLiveEpgSnapshot(credentials, preferredEpgStreamId)
+          : null;
+      applyCardEpgSnapshot(cached, preferredEpgStreamId);
+    }
+  }, [credentials, preferredEpgStreamId, applyCardEpgSnapshot]);
+
+  const horizRootMargin = isLitePerformanceMode
+    ? LITE_HORIZ_VISIBILITY_MARGIN
+    : FULL_HORIZ_VISIBILITY_MARGIN;
+
   useEffect(() => {
     const el = cardWrapRef.current;
-    if (!el) return;
+    if (!el || !rowScrollEl) return;
     return observeContainerVisibility({
       target: el,
       root: rowScrollEl,
-      rootMargin: '0px 280px',
+      rootMargin: horizRootMargin,
       axis: 'horizontal',
       index: cardIndex,
       onIntersectChange: (intersecting) => {
@@ -486,36 +998,83 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
             return;
           }
         }
+        if (isHorizVisibleRef.current === intersecting) return;
+        isHorizVisibleRef.current = intersecting;
         setIsHorizVisible(intersecting);
       },
     });
-  }, [rowScrollEl, cardIndex]);
+  }, [rowScrollEl, cardIndex, horizRootMargin]);
 
   const isCardActiveForAssets = isRowVisible && isHorizVisible;
+  const isCardActiveForAssetsRef = useRef<boolean>(isCardActiveForAssets);
+  isCardActiveForAssetsRef.current = isCardActiveForAssets;
+
+  const isLogoActive = isCardActiveForAssets || focusActivatedLogoKey === primaryStreamId;
+
+  // Always cancel any coordinator subscription on unmount (including focus-initiated subscriptions)
+  useEffect(() => {
+    const entryId = epgEntryIdRef.current;
+    return () => {
+      liteEpgCoordinator.cancel(entryId);
+    };
+  }, [liteEpgCoordinator]);
 
   useEffect(() => {
-    if (!credentials || !preferredEpgStreamId || !isCardActiveForAssets) {
+    const entryId = epgEntryIdRef.current;
+    const wrap = cardWrapRef.current;
+    const isFocusedNow = Boolean(
+      typeof document !== 'undefined' && wrap && document.activeElement && wrap.contains(document.activeElement)
+    );
+
+    if (!credentials || !preferredEpgStreamId || (!isCardActiveForAssets && !isFocusedNow)) {
+      if (isLitePerformanceMode) {
+        liteEpgCoordinator.cancel(entryId);
+      }
       return;
     }
 
     const cached = getCachedLiveEpgSnapshot(credentials, preferredEpgStreamId);
     if (cached) {
-      setEpgSnapshot(cached);
+      applyCardEpgSnapshot(cached, preferredEpgStreamId);
+      return;
+    }
+
+    let cancelled = false;
+    const expectedStreamId = preferredEpgStreamId;
+    const handleUpdate = (snap: LiveEpgSnapshot) => {
+      if (cancelled) return;
+      applyCardEpgSnapshot(snap, expectedStreamId);
+    };
+
+    if (isLitePerformanceMode) {
+      liteEpgCoordinator.schedule(entryId, credentials, expectedStreamId, handleUpdate, {
+        isFocused: isFocusedNow,
+      });
+      return () => {
+        cancelled = true;
+        liteEpgCoordinator.cancel(entryId);
+      };
     }
 
     const unsubscribe = subscribeLiveChannelEpg({
       credentials,
-      streamId: preferredEpgStreamId,
+      streamId: expectedStreamId,
       priority: 'normal',
-      onUpdate: (snap) => {
-        setEpgSnapshot(snap);
-      },
+      onUpdate: handleUpdate,
     });
 
     return () => {
+      cancelled = true;
       unsubscribe();
     };
-  }, [credentials, preferredEpgStreamId, isCardActiveForAssets]);
+  }, [
+    credentials,
+    preferredEpgStreamId,
+    isCardActiveForAssets,
+    isLitePerformanceMode,
+    liteEpgCoordinator,
+    applyCardEpgSnapshot,
+  ]);
 
   const epgTitle =
     epgSnapshot?.currentProgram?.title && epgSnapshot.currentProgram.title.trim().length > 0
@@ -523,6 +1082,8 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
       : 'Programação indisponível';
 
   const logoSrc = group.stream_icon || primaryStream?.stream_icon;
+  const logoSrcRef = useRef<unknown>(logoSrc);
+  logoSrcRef.current = logoSrc;
   const enterHoldStartRef = useRef<number | null>(null);
   const longPressConsumedRef = useRef<boolean>(false);
 
@@ -591,7 +1152,36 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
       wrap.setAttribute('data-card-focused', 'true');
     }
     onFocusCard(group.groupId, categoryId, rowIndex, cardIndex, channelBtnRef.current);
-  }, [group.groupId, categoryId, rowIndex, cardIndex, onFocusCard]);
+
+    if (isLitePerformanceMode) {
+      if (credentials && preferredEpgStreamId) {
+        const expectedStreamId = preferredEpgStreamId;
+        liteEpgCoordinator.notifyFocus(
+          epgEntryIdRef.current,
+          credentials,
+          expectedStreamId,
+          (snap) => applyCardEpgSnapshot(snap, expectedStreamId)
+        );
+      }
+      if (!isCardActiveForAssetsRef.current && Boolean(logoSrcRef.current)) {
+        onEnsureRowVisible();
+        setFocusActivatedLogoKey((prev) => (prev === primaryStreamId ? prev : primaryStreamId));
+      }
+    }
+  }, [
+    group.groupId,
+    categoryId,
+    rowIndex,
+    cardIndex,
+    onFocusCard,
+    isLitePerformanceMode,
+    credentials,
+    preferredEpgStreamId,
+    liteEpgCoordinator,
+    applyCardEpgSnapshot,
+    onEnsureRowVisible,
+    primaryStreamId,
+  ]);
 
   const handleCardElementBlur = useCallback(
     (e: React.FocusEvent<HTMLButtonElement>, resetLongPress: boolean) => {
@@ -608,8 +1198,11 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
       if (wrap.hasAttribute('data-card-focused')) {
         wrap.removeAttribute('data-card-focused');
       }
+      if (isLitePerformanceMode) {
+        liteEpgCoordinator.notifyBlur(epgEntryIdRef.current, isCardActiveForAssetsRef.current);
+      }
     },
-    []
+    [isLitePerformanceMode, liteEpgCoordinator]
   );
 
   return (
@@ -662,7 +1255,7 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
                 alt={group.displayName}
                 itemId={primaryStreamId}
                 itemName={group.displayName}
-                active={isCardActiveForAssets}
+                active={isLogoActive}
                 className="relative z-10 w-full h-full object-contain"
               />
             )}
@@ -890,6 +1483,7 @@ interface LiveCategoryRowProps {
   selectedGroupId: string | null;
   isLitePerformanceMode: boolean;
   displayScaleKey: string;
+  liteEpgCoordinator: LiteEpgCoordinator;
   getOriginSnapshot: () => LiveFocusOriginSnapshot;
   isGroupFavorite: (group: LiveChannelGroup) => boolean;
   onSelectGroup: (
@@ -925,6 +1519,7 @@ function areLiveCategoryRowPropsEqual(
     prev.leftScrollEl !== next.leftScrollEl ||
     prev.isLitePerformanceMode !== next.isLitePerformanceMode ||
     prev.displayScaleKey !== next.displayScaleKey ||
+    prev.liteEpgCoordinator !== next.liteEpgCoordinator ||
     prev.getOriginSnapshot !== next.getOriginSnapshot ||
     prev.isGroupFavorite !== next.isGroupFavorite ||
     prev.onSelectGroup !== next.onSelectGroup ||
@@ -958,6 +1553,7 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
   selectedGroupId,
   isLitePerformanceMode,
   displayScaleKey,
+  liteEpgCoordinator,
   getOriginSnapshot,
   isGroupFavorite,
   onSelectGroup,
@@ -983,7 +1579,21 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
     metrics: LiveHorizRowMetrics;
   } | null>(null);
   const [rowElState, setRowElState] = useState<HTMLDivElement | null>(null);
-  const [isRowVisible, setIsRowVisible] = useState<boolean>(rowIndex < 6);
+  const [isRowVisible, setIsRowVisible] = useState<boolean>(() => {
+    if (!isLitePerformanceMode) {
+      return rowIndex < 6;
+    }
+    const range = computeLiteInitialVisibleRowRange(leftScrollEl, displayScaleKey);
+    return rowIndex >= range.startRow && rowIndex < range.endRow;
+  });
+  const isRowVisibleRef = useRef<boolean>(isRowVisible);
+  isRowVisibleRef.current = isRowVisible;
+
+  const ensureRowVisible = useCallback(() => {
+    if (isRowVisibleRef.current) return;
+    isRowVisibleRef.current = true;
+    setIsRowVisible(true);
+  }, []);
 
   useEffect(() => {
     isRowMountedRef.current = true;
@@ -1169,14 +1779,18 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
     };
   }, [rowElState, totalCount, horizConfig, getRowMetrics, getFocusedCardIndexInRow]);
 
+  const verticalRootMargin = isLitePerformanceMode
+    ? LITE_VERTICAL_VISIBILITY_MARGIN
+    : FULL_VERTICAL_VISIBILITY_MARGIN;
+
   // Vertical visibility observation against left pane scroll container
   useEffect(() => {
     const target = sectionRef.current;
-    if (!target) return;
+    if (!target || !leftScrollEl) return;
     return observeContainerVisibility({
       target,
       root: leftScrollEl,
-      rootMargin: '240px 0px',
+      rootMargin: verticalRootMargin,
       axis: 'vertical',
       index: rowIndex,
       onIntersectChange: (intersecting) => {
@@ -1191,10 +1805,12 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
             return;
           }
         }
+        if (isRowVisibleRef.current === intersecting) return;
+        isRowVisibleRef.current = intersecting;
         setIsRowVisible(intersecting);
       },
     });
-  }, [leftScrollEl, rowIndex]);
+  }, [leftScrollEl, rowIndex, verticalRootMargin]);
 
   const setRowCallbackRef = useCallback((node: HTMLDivElement | null) => {
     rowElRef.current = node;
@@ -1410,6 +2026,9 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
   const handleRowScroll = useCallback(() => {
     const el = rowElRef.current;
     if (!el) return;
+    if (isLitePerformanceMode) {
+      liteEpgCoordinator.notifyScrollActivity();
+    }
     notifyContainerScrollForFallback(el);
     if (!shouldVirtualizeHoriz) {
       syncScrollEdges(el, horizWindowRef.current);
@@ -1434,7 +2053,15 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       setHorizWindow(next);
     }
     syncScrollEdges(el, next);
-  }, [shouldVirtualizeHoriz, totalCount, horizConfig, getRowMetrics, syncScrollEdges]);
+  }, [
+    isLitePerformanceMode,
+    liteEpgCoordinator,
+    shouldVirtualizeHoriz,
+    totalCount,
+    horizConfig,
+    getRowMetrics,
+    syncScrollEdges,
+  ]);
 
   const scrollRowBy = useCallback(
     (dir: -1 | 1) => {
@@ -1523,10 +2150,15 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
                 cardIndex={cardIdx}
                 credentials={credentials}
                 isSelected={selectedGroupId === group.groupId}
+                isLitePerformanceMode={isLitePerformanceMode}
+                displayScaleKey={displayScaleKey}
+                leftScrollEl={leftScrollEl}
+                liteEpgCoordinator={liteEpgCoordinator}
                 getOriginSnapshot={getOriginSnapshot}
                 isFavorite={isGroupFavorite(group)}
                 isRowVisible={isRowVisible}
                 rowScrollEl={rowElState}
+                onEnsureRowVisible={ensureRowVisible}
                 onSelectGroup={onSelectGroup}
                 onToggleFavorite={onToggleFavorite}
                 onFocusCard={onFocusCard}
@@ -2077,13 +2709,27 @@ export const LiveTvView = React.memo(function LiveTvView({
     }
   }, []);
 
+  const liteEpgCoordinatorRef = useRef<LiteEpgCoordinator | null>(null);
+  if (!liteEpgCoordinatorRef.current) {
+    liteEpgCoordinatorRef.current = new LiteEpgCoordinator();
+  }
+  const liteEpgCoordinator = liteEpgCoordinatorRef.current;
+
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       clearFallbackTimer();
+      liteEpgCoordinator.dispose();
     };
-  }, [clearFallbackTimer]);
+  }, [clearFallbackTimer, liteEpgCoordinator]);
+
+  // If user toggles from Lite -> Full, flush any pending deferred secondary EPG subscriptions immediately
+  useEffect(() => {
+    if (!isLiteActive) {
+      liteEpgCoordinator.flushAllImmediate();
+    }
+  }, [isLiteActive, liteEpgCoordinator]);
 
   const isGroupFavorite = useCallback(
     (group: LiveChannelGroup): boolean => {
@@ -2653,31 +3299,37 @@ export const LiveTvView = React.memo(function LiveTvView({
 
   useEffect(() => {
     if (!credentials || !rightPaneEpgStreamId) {
-      setRightPaneEpg(null);
-      setRightPaneEpgLoading(false);
+      setRightPaneEpg((prev) => (prev === null ? prev : null));
+      setRightPaneEpgLoading((prev) => (prev ? false : prev));
       return;
     }
 
-    const cached = getCachedLiveEpgSnapshot(credentials, rightPaneEpgStreamId);
+    const expectedStreamId = rightPaneEpgStreamId;
+    const cached = getCachedLiveEpgSnapshot(credentials, expectedStreamId);
     if (cached) {
-      setRightPaneEpg(cached);
-      setRightPaneEpgLoading(false);
-    } else {
-      setRightPaneEpg(null);
-      setRightPaneEpgLoading(true);
+      setRightPaneEpg((prev) => (areRightPaneEpgSnapshotsEquivalent(prev, cached) ? prev : cached));
+      setRightPaneEpgLoading((prev) => (prev ? false : prev));
+      return;
     }
 
+    setRightPaneEpg((prev) => (prev === null ? prev : null));
+    setRightPaneEpgLoading((prev) => (prev ? prev : true));
+
+    let cancelled = false;
     const unsubscribe = subscribeLiveChannelEpg({
       credentials,
-      streamId: rightPaneEpgStreamId,
+      streamId: expectedStreamId,
       priority: 'high',
       onUpdate: (snap) => {
-        setRightPaneEpg(snap);
-        setRightPaneEpgLoading(false);
+        if (cancelled) return;
+        if (snap && snap.streamId && snap.streamId !== expectedStreamId) return;
+        setRightPaneEpg((prev) => (areRightPaneEpgSnapshotsEquivalent(prev, snap) ? prev : snap));
+        setRightPaneEpgLoading((prev) => (prev ? false : prev));
       },
     });
 
     return () => {
+      cancelled = true;
       unsubscribe();
     };
   }, [credentials, rightPaneEpgStreamId]);
@@ -2990,7 +3642,12 @@ export const LiveTvView = React.memo(function LiveTvView({
           data-showcase-total-rows={categoryRows.length}
           data-live-origin-row-index={effectiveOriginRowIndex >= 0 ? effectiveOriginRowIndex : undefined}
           data-live-origin-card-index={originRef.current.cardIndex >= 0 ? originRef.current.cardIndex : undefined}
-          onScroll={() => notifyContainerScrollForFallback(leftScrollRef.current)}
+          onScroll={() => {
+            if (isLiteActive) {
+              liteEpgCoordinator.notifyScrollActivity();
+            }
+            notifyContainerScrollForFallback(leftScrollRef.current);
+          }}
           style={{ overflowAnchor: 'none' }}
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar touch-pan-y px-4 sm:px-6 py-4"
         >
@@ -3045,6 +3702,7 @@ export const LiveTvView = React.memo(function LiveTvView({
                       selectedGroupId={selectedGroup?.groupId ?? null}
                       isLitePerformanceMode={isLiteActive}
                       displayScaleKey={displayScaleKey}
+                      liteEpgCoordinator={liteEpgCoordinator}
                       getOriginSnapshot={getOriginSnapshot}
                       isGroupFavorite={isGroupFavorite}
                       onSelectGroup={handleSelectGroup}
