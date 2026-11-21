@@ -18,6 +18,7 @@
     "test:login-config": "tsx scripts/test-login-config.ts",
     "test:fullscreen-exit": "tsx scripts/test-fullscreen-exit.ts",
     "test:performance-profile": "tsx scripts/test-performance-profile.ts",
+    "test:live-tv-nav": "tsx scripts/test-live-tv-nav.ts",
     "cap:sync": "node tooling/android/prepare-android.mjs --skip-web-build",
     "android:sync": "npm run build && node tooling/android/prepare-android.mjs --skip-web-build",
     "android:prepare": "npm run build && node tooling/android/prepare-android.mjs --skip-web-build",

@@ -36,6 +36,8 @@ import {
   subscribeLiveChannelEpg,
 } from '../utils/liveEpgManager';
 import { useVirtualWindow } from '../hooks/useVirtualWindow';
+import { usePerformanceProfile } from '../platform/performanceProfile';
+import { useDisplayPreferences } from '../platform/tvEnvironment';
 import {
   useBackHandler,
   BACK_PRIORITY,
@@ -372,9 +374,23 @@ interface LiveChannelCardProps {
   isFavorite: boolean;
   isRowVisible: boolean;
   rowScrollEl: HTMLElement | null;
-  onSelectGroup: (group: LiveChannelGroup, categoryId: string, rowIndex: number, cardIndex: number) => void;
+  onSelectGroup: (
+    group: LiveChannelGroup,
+    categoryId: string,
+    rowIndex: number,
+    cardIndex: number,
+    buttonEl?: HTMLButtonElement | null
+  ) => void;
   onToggleFavorite: (group: LiveChannelGroup) => void;
-  onFocusCard: (groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => void;
+  onFocusCard: (
+    groupId: string,
+    categoryId: string,
+    rowIndex: number,
+    cardIndex: number,
+    buttonEl?: HTMLButtonElement | null
+  ) => void;
+  onRegisterOriginButton: (btn: HTMLButtonElement) => void;
+  onCardElementRef?: (cardIndex: number, el: HTMLDivElement | null) => void;
 }
 
 const LiveChannelCard = React.memo(function LiveChannelCard({
@@ -391,30 +407,51 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
   onSelectGroup,
   onToggleFavorite,
   onFocusCard,
+  onRegisterOriginButton,
+  onCardElementRef,
 }: LiveChannelCardProps) {
   const cardWrapRef = useRef<HTMLDivElement | null>(null);
   const channelBtnRef = useRef<HTMLButtonElement | null>(null);
   const [isHorizVisible, setIsHorizVisible] = useState<boolean>(cardIndex < 10);
-  const [isFocused, setIsFocused] = useState<boolean>(false);
 
-  const originSnap = getOriginSnapshot();
-  const isOrigin =
-    originSnap.groupId === group.groupId && originSnap.categoryId === categoryId;
+  const setCardWrapCallbackRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      cardWrapRef.current = node;
+      onCardElementRef?.(cardIndex, node);
+    },
+    [cardIndex, onCardElementRef]
+  );
 
+  // Sync imperative focus & origin attributes only on mount / identity change (never on EPG re-renders)
   useLayoutEffect(() => {
     const btn = channelBtnRef.current;
-    if (!btn) return;
-    const snap = getOriginSnapshot();
-    const matchesOrigin =
-      snap.groupId === group.groupId && snap.categoryId === categoryId;
-    if (matchesOrigin) {
-      if (btn.getAttribute('data-live-channel-origin') !== 'true') {
-        btn.setAttribute('data-live-channel-origin', 'true');
+    if (btn) {
+      const snap = getOriginSnapshot();
+      const matchesOrigin =
+        snap.groupId === group.groupId && snap.categoryId === categoryId;
+      if (matchesOrigin) {
+        if (btn.getAttribute('data-live-channel-origin') !== 'true') {
+          btn.setAttribute('data-live-channel-origin', 'true');
+        }
+        onRegisterOriginButton(btn);
+      } else if (btn.hasAttribute('data-live-channel-origin')) {
+        btn.removeAttribute('data-live-channel-origin');
       }
-    } else if (btn.hasAttribute('data-live-channel-origin')) {
-      btn.removeAttribute('data-live-channel-origin');
     }
-  });
+
+    const wrap = cardWrapRef.current;
+    if (wrap && typeof document !== 'undefined') {
+      const activeEl = document.activeElement;
+      const isFocusedNow = Boolean(activeEl && wrap.contains(activeEl));
+      if (isFocusedNow) {
+        if (wrap.getAttribute('data-card-focused') !== 'true') {
+          wrap.setAttribute('data-card-focused', 'true');
+        }
+      } else if (wrap.hasAttribute('data-card-focused')) {
+        wrap.removeAttribute('data-card-focused');
+      }
+    }
+  }, [group.groupId, categoryId, getOriginSnapshot, onRegisterOriginButton]);
 
   const primaryStream = getGroupPrimaryStream(group);
   const primaryStreamId = getStreamIdString(primaryStream) || group.groupId;
@@ -548,12 +585,38 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
     }
   }, []);
 
+  const handleCardElementFocus = useCallback(() => {
+    const wrap = cardWrapRef.current;
+    if (wrap && wrap.getAttribute('data-card-focused') !== 'true') {
+      wrap.setAttribute('data-card-focused', 'true');
+    }
+    onFocusCard(group.groupId, categoryId, rowIndex, cardIndex, channelBtnRef.current);
+  }, [group.groupId, categoryId, rowIndex, cardIndex, onFocusCard]);
+
+  const handleCardElementBlur = useCallback(
+    (e: React.FocusEvent<HTMLButtonElement>, resetLongPress: boolean) => {
+      if (resetLongPress) {
+        enterHoldStartRef.current = null;
+        longPressConsumedRef.current = false;
+      }
+      const wrap = cardWrapRef.current;
+      if (!wrap) return;
+      const related = e.relatedTarget;
+      if (related && typeof Node !== 'undefined' && related instanceof Node && wrap.contains(related)) {
+        return;
+      }
+      if (wrap.hasAttribute('data-card-focused')) {
+        wrap.removeAttribute('data-card-focused');
+      }
+    },
+    []
+  );
+
   return (
     <div
-      ref={cardWrapRef}
+      ref={setCardWrapCallbackRef}
       data-live-channel-card="true"
       data-virtual-index={cardIndex}
-      data-card-focused={isFocused ? 'true' : undefined}
       className="nc-live-horizontal-card relative w-[15.75rem] sm:w-[16.75rem] shrink-0 h-[5.15rem]"
     >
       <div
@@ -575,7 +638,6 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
           data-live-channel-category-id={categoryId}
           data-live-category-id={cardIndex === 0 ? categoryId : undefined}
           data-live-channel-selected={isSelected ? 'true' : 'false'}
-          data-live-channel-origin={isOrigin ? 'true' : undefined}
           onClick={(e) => {
             if (longPressConsumedRef.current) {
               longPressConsumedRef.current = false;
@@ -583,19 +645,12 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
               e.stopPropagation();
               return;
             }
-            onSelectGroup(group, categoryId, rowIndex, cardIndex);
+            onSelectGroup(group, categoryId, rowIndex, cardIndex, channelBtnRef.current);
           }}
           onKeyDown={handleCardShortcutKeyDown}
           onKeyUp={handleCardKeyUp}
-          onFocus={() => {
-            onFocusCard(group.groupId, categoryId, rowIndex, cardIndex);
-            setIsFocused(true);
-          }}
-          onBlur={() => {
-            enterHoldStartRef.current = null;
-            longPressConsumedRef.current = false;
-            setIsFocused(false);
-          }}
+          onFocus={handleCardElementFocus}
+          onBlur={(e) => handleCardElementBlur(e, true)}
           className="flex-1 min-w-0 h-full flex items-center gap-3 pl-2.5 pr-1 py-2 text-left rounded-l-xl focus:outline-none"
         >
           <div className="nc-tv-channel-logo relative w-12 h-12 shrink-0 rounded-lg bg-black/60 border border-white/10 flex items-center justify-center overflow-hidden p-1">
@@ -645,11 +700,8 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
             onToggleFavorite(group);
           }}
           onKeyDown={handleCardShortcutKeyDown}
-          onFocus={() => {
-            onFocusCard(group.groupId, categoryId, rowIndex, cardIndex);
-            setIsFocused(true);
-          }}
-          onBlur={() => setIsFocused(false)}
+          onFocus={handleCardElementFocus}
+          onBlur={(e) => handleCardElementBlur(e, false)}
           className="nc-tv-channel-fav shrink-0 p-2 mr-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors focus:outline-none"
         >
           <Heart
@@ -669,9 +721,35 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
 const HORIZ_CARD_WIDTH_PX = 268;
 const HORIZ_CARD_GAP_PX = 12;
 const HORIZ_CARD_STRIDE_PX = HORIZ_CARD_WIDTH_PX + HORIZ_CARD_GAP_PX;
-const HORIZ_VIRTUAL_THRESHOLD = 24;
-const HORIZ_VIRTUAL_OVERSCAN = 4;
-const HORIZ_WINDOW_MIN_ITEMS = 18;
+
+const HORIZ_VIRTUAL_THRESHOLD_FULL = 24;
+const HORIZ_VIRTUAL_OVERSCAN_FULL = 4;
+const HORIZ_WINDOW_MIN_ITEMS_FULL = 18;
+
+const HORIZ_VIRTUAL_THRESHOLD_LITE = 14;
+const HORIZ_VIRTUAL_OVERSCAN_LITE = 3;
+const HORIZ_WINDOW_MIN_ITEMS_LITE = 10;
+
+const LIVE_VERTICAL_WINDOW_FULL = 24;
+const LIVE_VERTICAL_WINDOW_LITE = 12;
+
+interface LiveHorizWindowConfig {
+  threshold: number;
+  overscan: number;
+  minItems: number;
+}
+
+const LIVE_HORIZ_CONFIG_FULL: LiveHorizWindowConfig = {
+  threshold: HORIZ_VIRTUAL_THRESHOLD_FULL,
+  overscan: HORIZ_VIRTUAL_OVERSCAN_FULL,
+  minItems: HORIZ_WINDOW_MIN_ITEMS_FULL,
+};
+
+const LIVE_HORIZ_CONFIG_LITE: LiveHorizWindowConfig = {
+  threshold: HORIZ_VIRTUAL_THRESHOLD_LITE,
+  overscan: HORIZ_VIRTUAL_OVERSCAN_LITE,
+  minItems: HORIZ_WINDOW_MIN_ITEMS_LITE,
+};
 
 interface LiveHorizRowMetrics {
   rowWidth: number;
@@ -746,9 +824,10 @@ function computeHorizWindow(
   scrollLeft: number,
   rowWidth: number,
   metrics?: Partial<LiveHorizRowMetrics>,
-  pinnedRange?: { minIndex: number; maxIndex: number } | null
+  pinnedRange?: { minIndex: number; maxIndex: number } | null,
+  config: LiveHorizWindowConfig = LIVE_HORIZ_CONFIG_FULL
 ): { startIndex: number; endIndex: number; leftSpacerPx: number; rightSpacerPx: number } {
-  if (totalCount <= HORIZ_VIRTUAL_THRESHOLD) {
+  if (totalCount <= config.threshold) {
     return {
       startIndex: 0,
       endIndex: totalCount,
@@ -764,11 +843,11 @@ function computeHorizWindow(
   const visibleSlots = Math.max(4, Math.ceil(effectiveWidth / stride));
   const windowSize = Math.min(
     totalCount,
-    Math.max(HORIZ_WINDOW_MIN_ITEMS, visibleSlots + HORIZ_VIRTUAL_OVERSCAN * 2)
+    Math.max(config.minItems, visibleSlots + config.overscan * 2)
   );
   const rawFirst = Math.floor(Math.max(0, scrollLeft) / stride);
   const maxStart = Math.max(0, totalCount - windowSize);
-  let startIndex = Math.max(0, Math.min(maxStart, rawFirst - HORIZ_VIRTUAL_OVERSCAN));
+  let startIndex = Math.max(0, Math.min(maxStart, rawFirst - config.overscan));
   let endIndex = Math.min(totalCount, startIndex + windowSize);
 
   if (pinnedRange) {
@@ -809,11 +888,30 @@ interface LiveCategoryRowProps {
   credentials: XtreamCredentials | null;
   leftScrollEl: HTMLElement | null;
   selectedGroupId: string | null;
+  isLitePerformanceMode: boolean;
+  displayScaleKey: string;
   getOriginSnapshot: () => LiveFocusOriginSnapshot;
   isGroupFavorite: (group: LiveChannelGroup) => boolean;
-  onSelectGroup: (group: LiveChannelGroup, categoryId: string, rowIndex: number, cardIndex: number) => void;
+  onSelectGroup: (
+    group: LiveChannelGroup,
+    categoryId: string,
+    rowIndex: number,
+    cardIndex: number,
+    buttonEl?: HTMLButtonElement | null
+  ) => void;
   onToggleFavorite: (group: LiveChannelGroup) => void;
-  onFocusCard: (groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => void;
+  onFocusCard: (
+    groupId: string,
+    categoryId: string,
+    rowIndex: number,
+    cardIndex: number,
+    buttonEl?: HTMLButtonElement | null
+  ) => void;
+  onRegisterOriginButton: (btn: HTMLButtonElement) => void;
+  onRegisterRowEnsureCard: (
+    categoryId: string,
+    fn: ((targetIndex: number, preserveIndex?: number) => boolean) | null
+  ) => void;
 }
 
 function areLiveCategoryRowPropsEqual(
@@ -825,11 +923,15 @@ function areLiveCategoryRowPropsEqual(
     prev.rowIndex !== next.rowIndex ||
     prev.credentials !== next.credentials ||
     prev.leftScrollEl !== next.leftScrollEl ||
+    prev.isLitePerformanceMode !== next.isLitePerformanceMode ||
+    prev.displayScaleKey !== next.displayScaleKey ||
     prev.getOriginSnapshot !== next.getOriginSnapshot ||
     prev.isGroupFavorite !== next.isGroupFavorite ||
     prev.onSelectGroup !== next.onSelectGroup ||
     prev.onToggleFavorite !== next.onToggleFavorite ||
-    prev.onFocusCard !== next.onFocusCard
+    prev.onFocusCard !== next.onFocusCard ||
+    prev.onRegisterOriginButton !== next.onRegisterOriginButton ||
+    prev.onRegisterRowEnsureCard !== next.onRegisterRowEnsureCard
   ) {
     return false;
   }
@@ -854,40 +956,218 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
   credentials,
   leftScrollEl,
   selectedGroupId,
+  isLitePerformanceMode,
+  displayScaleKey,
   getOriginSnapshot,
   isGroupFavorite,
   onSelectGroup,
   onToggleFavorite,
   onFocusCard,
+  onRegisterOriginButton,
+  onRegisterRowEnsureCard,
 }: LiveCategoryRowProps) {
   const sectionRef = useRef<HTMLElement | null>(null);
   const rowElRef = useRef<HTMLDivElement | null>(null);
+  const cardElementsRef = useRef<Map<number, HTMLDivElement>>(new Map());
+  const isRowMountedRef = useRef<boolean>(true);
+  const pendingAsyncWindowRef = useRef<{
+    startIndex: number;
+    endIndex: number;
+    leftSpacerPx: number;
+    rightSpacerPx: number;
+  } | null>(null);
+  const asyncWindowQueuedRef = useRef<boolean>(false);
+  const metricsCacheRef = useRef<{
+    scaleKey: string;
+    measuredWithDom: boolean;
+    metrics: LiveHorizRowMetrics;
+  } | null>(null);
   const [rowElState, setRowElState] = useState<HTMLDivElement | null>(null);
   const [isRowVisible, setIsRowVisible] = useState<boolean>(rowIndex < 6);
 
+  useEffect(() => {
+    isRowMountedRef.current = true;
+    return () => {
+      isRowMountedRef.current = false;
+      pendingAsyncWindowRef.current = null;
+    };
+  }, []);
+
+  const horizConfig = isLitePerformanceMode ? LIVE_HORIZ_CONFIG_LITE : LIVE_HORIZ_CONFIG_FULL;
   const totalCount = row.channels.length;
-  const shouldVirtualizeHoriz = totalCount > HORIZ_VIRTUAL_THRESHOLD;
+  const shouldVirtualizeHoriz = totalCount > horizConfig.threshold;
 
   const [horizWindow, setHorizWindow] = useState(() =>
-    computeHorizWindow(totalCount, 0, 640)
+    computeHorizWindow(totalCount, 0, 640, undefined, null, horizConfig)
   );
   const horizWindowRef = useRef(horizWindow);
   horizWindowRef.current = horizWindow;
+
+  const scheduleAsyncHorizWindow = useCallback(
+    (nextWindow: {
+      startIndex: number;
+      endIndex: number;
+      leftSpacerPx: number;
+      rightSpacerPx: number;
+    }) => {
+      pendingAsyncWindowRef.current = nextWindow;
+      if (asyncWindowQueuedRef.current) return;
+      asyncWindowQueuedRef.current = true;
+      queueMicrotask(() => {
+        asyncWindowQueuedRef.current = false;
+        if (!isRowMountedRef.current) return;
+        const pending = pendingAsyncWindowRef.current;
+        pendingAsyncWindowRef.current = null;
+        if (!pending) return;
+        const cur = horizWindowRef.current;
+        if (
+          pending.startIndex === cur.startIndex &&
+          pending.endIndex === cur.endIndex &&
+          Math.abs(pending.leftSpacerPx - cur.leftSpacerPx) <= 1 &&
+          Math.abs(pending.rightSpacerPx - cur.rightSpacerPx) <= 1
+        ) {
+          return;
+        }
+        horizWindowRef.current = pending;
+        setHorizWindow(pending);
+      });
+    },
+    []
+  );
+
+  // Keep spatialNav candidate cache fresh after async horizontal window shifts commit
+  useLayoutEffect(() => {
+    invalidateCandidateCache();
+  }, [horizWindow.startIndex, horizWindow.endIndex]);
 
   const formattedTitle = useMemo(
     () => formatLiveTvCategoryTitle(row.rawTitle),
     [row.rawTitle]
   );
 
-  // Reset horizontal window if channel count drops or category changes
+  const setCardElementRef = useCallback((idx: number, el: HTMLDivElement | null) => {
+    if (el) {
+      cardElementsRef.current.set(idx, el);
+    } else {
+      cardElementsRef.current.delete(idx);
+    }
+  }, []);
+
+  const getRowMetrics = useCallback(
+    (forceMeasure = false): LiveHorizRowMetrics => {
+      const el = rowElRef.current;
+      const cache = metricsCacheRef.current;
+      if (
+        !forceMeasure &&
+        cache &&
+        cache.scaleKey === displayScaleKey &&
+        (cache.measuredWithDom || !el)
+      ) {
+        return cache.metrics;
+      }
+      const measured = resolveLiveHorizRowMetrics(el);
+      metricsCacheRef.current = {
+        scaleKey: displayScaleKey,
+        measuredWithDom: Boolean(el),
+        metrics: measured,
+      };
+      return measured;
+    },
+    [displayScaleKey]
+  );
+
+  const getFocusedCardIndexInRow = useCallback((): number | null => {
+    if (typeof document === 'undefined') return null;
+    const el = rowElRef.current;
+    const activeEl = document.activeElement;
+    if (!el || !(activeEl instanceof HTMLElement) || !el.contains(activeEl)) {
+      return null;
+    }
+    const cardEl = activeEl.closest<HTMLElement>('[data-live-channel-card="true"]');
+    if (!cardEl) return null;
+    const idx = Number(cardEl.getAttribute('data-virtual-index'));
+    return Number.isFinite(idx) && idx >= 0 && idx < totalCount ? idx : null;
+  }, [totalCount]);
+
+  // Measure and synchronize horizontal window when row, channel count, TV scale, or Lite mode changes
+  useLayoutEffect(() => {
+    const el = rowElRef.current;
+    const metrics = getRowMetrics(true);
+    const scrollLeft = el?.scrollLeft || 0;
+    const focusedIdx = getFocusedCardIndexInRow();
+    const pinnedRange =
+      focusedIdx !== null ? { minIndex: focusedIdx, maxIndex: focusedIdx } : null;
+    const next = computeHorizWindow(
+      totalCount,
+      scrollLeft,
+      metrics.rowWidth,
+      metrics,
+      pinnedRange,
+      horizConfig
+    );
+    const cur = horizWindowRef.current;
+    if (
+      next.startIndex !== cur.startIndex ||
+      next.endIndex !== cur.endIndex ||
+      Math.abs(next.leftSpacerPx - cur.leftSpacerPx) > 1 ||
+      Math.abs(next.rightSpacerPx - cur.rightSpacerPx) > 1
+    ) {
+      horizWindowRef.current = next;
+      setHorizWindow(next);
+    }
+  }, [row.id, totalCount, rowElState, displayScaleKey, horizConfig, getRowMetrics, getFocusedCardIndexInRow]);
+
+  // Observe row container width changes to invalidate cached geometry without per-scroll reads
   useEffect(() => {
     const el = rowElRef.current;
-    const metrics = resolveLiveHorizRowMetrics(el);
-    const scrollLeft = el?.scrollLeft || 0;
-    const next = computeHorizWindow(totalCount, scrollLeft, metrics.rowWidth, metrics);
-    horizWindowRef.current = next;
-    setHorizWindow(next);
-  }, [row.id, totalCount]);
+    if (!el) return;
+    const ResizeObs =
+      typeof ResizeObserver !== 'undefined'
+        ? ResizeObserver
+        : typeof window !== 'undefined' && typeof (window as any).ResizeObserver === 'function'
+          ? (window as any).ResizeObserver
+          : null;
+    if (!ResizeObs) return;
+
+    let lastWidth = el.clientWidth || 0;
+    let observer: ResizeObserver | null = null;
+    try {
+      observer = new ResizeObs(() => {
+        const nextWidth = el.clientWidth || 0;
+        if (nextWidth <= 0 || Math.abs(nextWidth - lastWidth) < 1) return;
+        lastWidth = nextWidth;
+        const metrics = getRowMetrics(true);
+        const focusedIdx = getFocusedCardIndexInRow();
+        const pinnedRange =
+          focusedIdx !== null ? { minIndex: focusedIdx, maxIndex: focusedIdx } : null;
+        const next = computeHorizWindow(
+          totalCount,
+          el.scrollLeft || 0,
+          metrics.rowWidth,
+          metrics,
+          pinnedRange,
+          horizConfig
+        );
+        const cur = horizWindowRef.current;
+        if (
+          next.startIndex !== cur.startIndex ||
+          next.endIndex !== cur.endIndex ||
+          Math.abs(next.leftSpacerPx - cur.leftSpacerPx) > 1 ||
+          Math.abs(next.rightSpacerPx - cur.rightSpacerPx) > 1
+        ) {
+          horizWindowRef.current = next;
+          setHorizWindow(next);
+        }
+      });
+      observer.observe(el);
+    } catch {}
+
+    return () => {
+      try {
+        observer?.disconnect();
+      } catch {}
+    };
+  }, [rowElState, totalCount, horizConfig, getRowMetrics, getFocusedCardIndexInRow]);
 
   // Vertical visibility observation against left pane scroll container
   useEffect(() => {
@@ -918,6 +1198,9 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
 
   const setRowCallbackRef = useCallback((node: HTMLDivElement | null) => {
     rowElRef.current = node;
+    if (!node) {
+      metricsCacheRef.current = null;
+    }
     setRowElState((prev) => (prev !== node ? node : prev));
   }, []);
 
@@ -926,14 +1209,15 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       if (totalCount <= 0) return false;
       const clamped = Math.max(0, Math.min(totalCount - 1, Math.floor(targetIndex)));
       const el = rowElRef.current;
-      const metrics = resolveLiveHorizRowMetrics(el);
+      const metrics = getRowMetrics(false);
       const { rowWidth, cardWidth, gap, stride } = metrics;
       const totalContentWidth =
         totalCount * cardWidth + Math.max(0, totalCount - 1) * gap;
       const maxScrollLeft = Math.max(0, totalContentWidth - rowWidth);
       const padX = Math.min(8, Math.max(0, Math.floor((rowWidth - cardWidth) / 2)));
 
-      let desiredScrollLeft = el ? el.scrollLeft || 0 : 0;
+      const prevScrollLeft = el ? el.scrollLeft || 0 : 0;
+      let desiredScrollLeft = prevScrollLeft;
       const cardLeft = clamped * stride;
       const cardRight = cardLeft + cardWidth;
 
@@ -947,14 +1231,15 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
         desiredScrollLeft = Math.min(maxScrollLeft, cardRight - rowWidth + padX);
       }
 
-      if (el && Math.abs((el.scrollLeft || 0) - desiredScrollLeft) > 0.5) {
+      const didScroll = Boolean(el && Math.abs(prevScrollLeft - desiredScrollLeft) > 0.5);
+      if (el && didScroll) {
         const prevBehavior = el.style.scrollBehavior;
         el.style.scrollBehavior = 'auto';
         el.scrollLeft = desiredScrollLeft;
         el.style.scrollBehavior = prevBehavior;
       }
 
-      let windowChanged = false;
+      let didSyncFlush = false;
       if (shouldVirtualizeHoriz) {
         const pinnedRange =
           typeof preserveIndex === 'number' && preserveIndex >= 0 && preserveIndex < totalCount
@@ -972,38 +1257,61 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
           desiredScrollLeft,
           rowWidth,
           metrics,
-          pinnedRange
+          pinnedRange,
+          horizConfig
         );
         const cur = horizWindowRef.current;
-        windowChanged =
+        const windowChanged =
           nextWindow.startIndex !== cur.startIndex ||
           nextWindow.endIndex !== cur.endIndex ||
           Math.abs(nextWindow.leftSpacerPx - cur.leftSpacerPx) > 1 ||
           Math.abs(nextWindow.rightSpacerPx - cur.rightSpacerPx) > 1;
 
         if (windowChanged) {
-          horizWindowRef.current = nextWindow;
-          try {
-            flushSync(() => {
+          const targetCardEl = cardElementsRef.current.get(clamped);
+          const targetAlreadyMounted = Boolean(
+            clamped >= cur.startIndex &&
+              clamped < cur.endIndex &&
+              targetCardEl &&
+              targetCardEl.isConnected
+          );
+          const preserveAlreadyMounted =
+            typeof preserveIndex !== 'number' ||
+            (preserveIndex >= cur.startIndex &&
+              preserveIndex < cur.endIndex &&
+              Boolean(cardElementsRef.current.get(preserveIndex)?.isConnected));
+
+          if (targetAlreadyMounted && preserveAlreadyMounted) {
+            // Target card is already mounted and focusable in DOM: defer window shift outside keydown critical path
+            scheduleAsyncHorizWindow(nextWindow);
+          } else {
+            pendingAsyncWindowRef.current = null;
+            horizWindowRef.current = nextWindow;
+            didSyncFlush = true;
+            try {
+              flushSync(() => {
+                setHorizWindow(nextWindow);
+              });
+            } catch {
               setHorizWindow(nextWindow);
-            });
-          } catch {
-            setHorizWindow(nextWindow);
+            }
           }
         }
       }
 
-      if (el) {
+      if (el && (didScroll || didSyncFlush)) {
         if (Math.abs((el.scrollLeft || 0) - desiredScrollLeft) > 0.5) {
           const prevBehavior = el.style.scrollBehavior;
           el.style.scrollBehavior = 'auto';
           el.scrollLeft = desiredScrollLeft;
           el.style.scrollBehavior = prevBehavior;
         }
-        const cardEl = el.querySelector<HTMLElement>(
-          `[data-live-channel-card="true"][data-virtual-index="${clamped}"]`
-        );
-        if (cardEl) {
+        const cardEl =
+          cardElementsRef.current.get(clamped) ||
+          el.querySelector<HTMLElement>(
+            `[data-live-channel-card="true"][data-virtual-index="${clamped}"]`
+          );
+        if (cardEl && cardEl.isConnected) {
           const rowRect = el.getBoundingClientRect();
           const cardRect = cardEl.getBoundingClientRect();
           if (rowRect.width > 0 && cardRect.width > 0) {
@@ -1029,12 +1337,12 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
         }
       }
 
-      return windowChanged;
+      return didSyncFlush;
     },
-    [shouldVirtualizeHoriz, totalCount]
+    [shouldVirtualizeHoriz, totalCount, horizConfig, getRowMetrics, scheduleAsyncHorizWindow]
   );
 
-  // Register horizontal row with spatialNav
+  // Register horizontal row with spatialNav and parent row map
   useLayoutEffect(() => {
     const el = rowElRef.current;
     if (!el) return;
@@ -1043,11 +1351,13 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       getColumns: () => totalCount,
       ensureIndexMounted,
     });
+    onRegisterRowEnsureCard(row.categoryId, ensureIndexMounted);
     return () => {
+      onRegisterRowEnsureCard(row.categoryId, null);
       unregisterVirtualContainer(el);
       invalidateCandidateCache();
     };
-  }, [rowElState, totalCount, ensureIndexMounted]);
+  }, [rowElState, row.categoryId, totalCount, ensureIndexMounted, onRegisterRowEnsureCard]);
 
   const computeScrollEdgeAvailability = useCallback(
     (
@@ -1062,7 +1372,7 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       if (el && el.clientWidth > 0 && el.scrollWidth > 0) {
         maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
       } else {
-        const m = resolveLiveHorizRowMetrics(el);
+        const m = getRowMetrics(false);
         const totalW = totalCount * m.cardWidth + Math.max(0, totalCount - 1) * m.gap;
         maxScroll = Math.max(0, totalW - m.rowWidth);
       }
@@ -1071,7 +1381,7 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
         scrollLeft < maxScroll - 2 || (shouldVirtualizeHoriz && win.endIndex < totalCount);
       return { canPrev, canNext };
     },
-    [totalCount, shouldVirtualizeHoriz]
+    [totalCount, shouldVirtualizeHoriz, getRowMetrics]
   );
 
   const [scrollEdges, setScrollEdges] = useState<{ canPrev: boolean; canNext: boolean }>(() =>
@@ -1105,12 +1415,14 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       syncScrollEdges(el, horizWindowRef.current);
       return;
     }
-    const metrics = resolveLiveHorizRowMetrics(el);
+    const metrics = getRowMetrics(false);
     const next = computeHorizWindow(
       totalCount,
       el.scrollLeft || 0,
       metrics.rowWidth,
-      metrics
+      metrics,
+      null,
+      horizConfig
     );
     if (
       next.startIndex !== horizWindowRef.current.startIndex ||
@@ -1122,7 +1434,7 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
       setHorizWindow(next);
     }
     syncScrollEdges(el, next);
-  }, [shouldVirtualizeHoriz, totalCount, syncScrollEdges]);
+  }, [shouldVirtualizeHoriz, totalCount, horizConfig, getRowMetrics, syncScrollEdges]);
 
   const scrollRowBy = useCallback(
     (dir: -1 | 1) => {
@@ -1218,6 +1530,8 @@ const LiveCategoryRow = React.memo(function LiveCategoryRow({
                 onSelectGroup={onSelectGroup}
                 onToggleFavorite={onToggleFavorite}
                 onFocusCard={onFocusCard}
+                onRegisterOriginButton={onRegisterOriginButton}
+                onCardElementRef={setCardElementRef}
               />
             );
           })}
@@ -1674,6 +1988,9 @@ export const LiveTvView = React.memo(function LiveTvView({
 
   const { favorites, isFavorite, toggleGroupFavorites } = useFavorites(credentials);
   const historyRecords = useAccountPlaybackHistory(credentials);
+  const { isLiteActive } = usePerformanceProfile();
+  const { effectiveMode: displayMode, effectiveTvScale: tvScale } = useDisplayPreferences();
+  const displayScaleKey = `${displayMode}:${tvScale}`;
 
   const effectiveLiveStreams = useMemo(
     () => (liveStreams.length > 0 ? liveStreams : allLiveStreams),
@@ -1968,81 +2285,85 @@ export const LiveTvView = React.memo(function LiveTvView({
     []
   );
 
+  const registerOriginButton = useCallback((btn: HTMLButtonElement) => {
+    const prevBtn = activeOriginBtnRef.current;
+    if (prevBtn && prevBtn !== btn && prevBtn.hasAttribute('data-live-channel-origin')) {
+      prevBtn.removeAttribute('data-live-channel-origin');
+    }
+    activeOriginBtnRef.current = btn;
+  }, []);
+
   const syncOriginDomAttributes = useCallback(
-    (snap: LiveFocusOriginSnapshot = originRef.current) => {
+    (snap: LiveFocusOriginSnapshot = originRef.current, hintedBtn?: HTMLButtonElement | null) => {
       const containerEl = leftScrollRef.current;
       if (!containerEl) return;
 
       const effectiveRowIdx = resolveEffectiveOriginRowIndex(snap);
       if (effectiveRowIdx >= 0) {
-        containerEl.setAttribute('data-live-origin-row-index', String(effectiveRowIdx));
-      } else {
+        const nextRowStr = String(effectiveRowIdx);
+        if (containerEl.getAttribute('data-live-origin-row-index') !== nextRowStr) {
+          containerEl.setAttribute('data-live-origin-row-index', nextRowStr);
+        }
+      } else if (containerEl.hasAttribute('data-live-origin-row-index')) {
         containerEl.removeAttribute('data-live-origin-row-index');
       }
 
       if (snap.cardIndex >= 0) {
-        containerEl.setAttribute('data-live-origin-card-index', String(snap.cardIndex));
-      } else {
+        const nextCardStr = String(snap.cardIndex);
+        if (containerEl.getAttribute('data-live-origin-card-index') !== nextCardStr) {
+          containerEl.setAttribute('data-live-origin-card-index', nextCardStr);
+        }
+      } else if (containerEl.hasAttribute('data-live-origin-card-index')) {
         containerEl.removeAttribute('data-live-origin-card-index');
       }
 
       const prevBtn = activeOriginBtnRef.current;
-      if (prevBtn) {
-        const stillMatches =
-          snap.groupId !== null &&
-          snap.categoryId !== null &&
-          prevBtn.getAttribute('data-live-channel-group-id') === snap.groupId &&
-          prevBtn.getAttribute('data-live-channel-category-id') === snap.categoryId;
-        if (!stillMatches) {
-          prevBtn.removeAttribute('data-live-channel-origin');
-          activeOriginBtnRef.current = null;
-        }
+      const matchesSnap = (btn: HTMLButtonElement | null | undefined): btn is HTMLButtonElement =>
+        Boolean(
+          btn &&
+            btn.isConnected &&
+            snap.groupId !== null &&
+            snap.categoryId !== null &&
+            btn.getAttribute('data-live-channel-group-id') === snap.groupId &&
+            btn.getAttribute('data-live-channel-category-id') === snap.categoryId
+        );
+
+      let targetBtn: HTMLButtonElement | null = null;
+      if (matchesSnap(hintedBtn)) {
+        targetBtn = hintedBtn;
+      } else if (matchesSnap(prevBtn)) {
+        targetBtn = prevBtn;
       }
 
-      const markedBtns = containerEl.querySelectorAll<HTMLButtonElement>(
-        'button[data-live-channel-origin="true"]'
-      );
-      for (let i = 0; i < markedBtns.length; i++) {
-        const btn = markedBtns[i];
-        const matches =
-          snap.groupId !== null &&
-          snap.categoryId !== null &&
-          btn.getAttribute('data-live-channel-group-id') === snap.groupId &&
-          btn.getAttribute('data-live-channel-category-id') === snap.categoryId;
-        if (!matches) {
-          btn.removeAttribute('data-live-channel-origin');
-        } else {
-          activeOriginBtnRef.current = btn;
+      if (prevBtn && prevBtn !== targetBtn) {
+        if (prevBtn.hasAttribute('data-live-channel-origin')) {
+          prevBtn.removeAttribute('data-live-channel-origin');
         }
+        activeOriginBtnRef.current = null;
       }
 
       if (snap.groupId !== null && snap.categoryId !== null) {
-        let targetBtn: HTMLButtonElement | null = null;
-        if (effectiveRowIdx >= 0 && snap.cardIndex >= 0) {
-          const candidate = containerEl.querySelector<HTMLButtonElement>(
-            `[data-home-row-index="${effectiveRowIdx}"] button[data-live-channel-btn="true"][data-row-card-index="${snap.cardIndex}"]`
-          );
-          if (
-            candidate &&
-            candidate.getAttribute('data-live-channel-group-id') === snap.groupId &&
-            candidate.getAttribute('data-live-channel-category-id') === snap.categoryId
-          ) {
-            targetBtn = candidate;
-          }
-        }
-
+        // Fallback DOM lookup ONLY when hinted/cached button is unavailable (e.g. after remount or row shift)
         if (!targetBtn) {
-          const allBtns = containerEl.querySelectorAll<HTMLButtonElement>(
-            'button[data-live-channel-btn="true"]'
-          );
-          for (let i = 0; i < allBtns.length; i++) {
-            const btn = allBtns[i];
-            if (
-              btn.getAttribute('data-live-channel-group-id') === snap.groupId &&
-              btn.getAttribute('data-live-channel-category-id') === snap.categoryId
-            ) {
-              targetBtn = btn;
-              break;
+          if (effectiveRowIdx >= 0 && snap.cardIndex >= 0) {
+            const candidate = containerEl.querySelector<HTMLButtonElement>(
+              `[data-home-row-index="${effectiveRowIdx}"] button[data-live-channel-btn="true"][data-row-card-index="${snap.cardIndex}"]`
+            );
+            if (matchesSnap(candidate)) {
+              targetBtn = candidate;
+            }
+          }
+
+          if (!targetBtn) {
+            const allBtns = containerEl.querySelectorAll<HTMLButtonElement>(
+              'button[data-live-channel-btn="true"]'
+            );
+            for (let i = 0; i < allBtns.length; i++) {
+              const btn = allBtns[i];
+              if (matchesSnap(btn)) {
+                targetBtn = btn;
+                break;
+              }
             }
           }
         }
@@ -2059,7 +2380,13 @@ export const LiveTvView = React.memo(function LiveTvView({
   );
 
   const updateOriginSnapshot = useCallback(
-    (groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => {
+    (
+      groupId: string,
+      categoryId: string,
+      rowIndex: number,
+      cardIndex: number,
+      buttonEl?: HTMLButtonElement | null
+    ) => {
       const nextSnap: LiveFocusOriginSnapshot = {
         groupId,
         categoryId,
@@ -2067,7 +2394,7 @@ export const LiveTvView = React.memo(function LiveTvView({
         cardIndex,
       };
       originRef.current = nextSnap;
-      syncOriginDomAttributes(nextSnap);
+      syncOriginDomAttributes(nextSnap, buttonEl);
     },
     [syncOriginDomAttributes]
   );
@@ -2112,9 +2439,15 @@ export const LiveTvView = React.memo(function LiveTvView({
 
   // Select a channel group from left pane (or enter fullscreen immediately on 2nd OK)
   const handleSelectGroup = useCallback(
-    (group: LiveChannelGroup, categoryId?: string, rowIndex?: number, cardIndex?: number) => {
+    (
+      group: LiveChannelGroup,
+      categoryId?: string,
+      rowIndex?: number,
+      cardIndex?: number,
+      buttonEl?: HTMLButtonElement | null
+    ) => {
       if (typeof categoryId === 'string' && typeof rowIndex === 'number' && typeof cardIndex === 'number') {
-        updateOriginSnapshot(group.groupId, categoryId, rowIndex, cardIndex);
+        updateOriginSnapshot(group.groupId, categoryId, rowIndex, cardIndex, buttonEl);
       }
 
       const currentSelectedGroup = selectedGroupRef.current;
@@ -2349,6 +2682,65 @@ export const LiveTvView = React.memo(function LiveTvView({
     };
   }, [credentials, rightPaneEpgStreamId]);
 
+  const rowEnsureCardMapRef = useRef<
+    Map<string, (targetIndex: number, preserveIndex?: number) => boolean>
+  >(new Map());
+
+  const registerRowEnsureCard = useCallback(
+    (
+      categoryId: string,
+      fn: ((targetIndex: number, preserveIndex?: number) => boolean) | null
+    ) => {
+      if (fn) {
+        rowEnsureCardMapRef.current.set(categoryId, fn);
+      } else {
+        rowEnsureCardMapRef.current.delete(categoryId);
+      }
+    },
+    []
+  );
+
+  const prevLiteActiveRef = useRef<boolean>(isLiteActive);
+  const pendingLiteFocusRestoreRef = useRef<{
+    rowIndex: number;
+    cardIndex: number;
+    categoryId: string | null;
+    groupId: string | null;
+    isFav: boolean;
+  } | null>(null);
+
+  if (prevLiteActiveRef.current !== isLiteActive) {
+    prevLiteActiveRef.current = isLiteActive;
+    if (
+      typeof document !== 'undefined' &&
+      document.activeElement instanceof HTMLElement &&
+      leftScrollRef.current?.contains(document.activeElement)
+    ) {
+      const activeEl = document.activeElement;
+      const isFav = activeEl.getAttribute('data-live-channel-fav') === 'true';
+      const cardEl = activeEl.closest<HTMLElement>('[data-live-channel-card="true"]');
+      const channelBtn = cardEl?.querySelector<HTMLButtonElement>(
+        'button[data-live-channel-btn="true"]'
+      );
+      const sectionEl = activeEl.closest<HTMLElement>('[data-home-row-index]');
+      const rowIdx = Number(sectionEl?.getAttribute('data-home-row-index'));
+      const cardIdx = Number(cardEl?.getAttribute('data-virtual-index'));
+      if (Number.isFinite(rowIdx) && rowIdx >= 0 && Number.isFinite(cardIdx) && cardIdx >= 0) {
+        pendingLiteFocusRestoreRef.current = {
+          rowIndex: rowIdx,
+          cardIndex: cardIdx,
+          categoryId: channelBtn?.getAttribute('data-live-channel-category-id') ?? originRef.current.categoryId,
+          groupId: channelBtn?.getAttribute('data-live-channel-group-id') ?? originRef.current.groupId,
+          isFav,
+        };
+      }
+    }
+  }
+
+  const verticalMaxWindowItems = isLiteActive
+    ? LIVE_VERTICAL_WINDOW_LITE
+    : LIVE_VERTICAL_WINDOW_FULL;
+
   const {
     startIndex: rowStartIndex,
     endIndex: rowEndIndex,
@@ -2362,11 +2754,54 @@ export const LiveTvView = React.memo(function LiveTvView({
     mode: 'list',
     scrollContainerRef: leftScrollRef,
     virtualContainerRef: leftVirtualRef,
-    maxWindowItems: 24,
+    maxWindowItems: verticalMaxWindowItems,
     fallbackOffsetTopPx: 16,
     fallbackItemHeightPx: 148,
     resetKey: `live_rows_${normalizedSearch}`,
   });
+
+  // Preserve active focus when toggling Lite <-> Full changes the vertical or horizontal window size
+  useLayoutEffect(() => {
+    const pending = pendingLiteFocusRestoreRef.current;
+    if (!pending) return;
+    pendingLiteFocusRestoreRef.current = null;
+    if (typeof document === 'undefined') return;
+    const containerEl = leftScrollRef.current;
+    if (!containerEl) return;
+
+    const activeEl = document.activeElement;
+    if (activeEl instanceof HTMLElement && containerEl.contains(activeEl)) {
+      const wrap = activeEl.closest<HTMLElement>('[data-live-channel-card="true"]');
+      if (wrap && wrap.getAttribute('data-card-focused') !== 'true') {
+        wrap.setAttribute('data-card-focused', 'true');
+      }
+      return;
+    }
+
+    // Run outside React's commit lifecycle so ensureRowMounted / ensureCardMounted can safely flushSync
+    queueMicrotask(() => {
+      if (!isMountedRef.current) return;
+      const liveContainer = leftScrollRef.current;
+      if (!liveContainer) return;
+
+      ensureRowMounted(pending.rowIndex);
+      if (pending.categoryId) {
+        rowEnsureCardMapRef.current.get(pending.categoryId)?.(pending.cardIndex);
+      }
+
+      const selector = pending.isFav
+        ? `[data-home-row-index="${pending.rowIndex}"] button[data-live-channel-fav="true"][data-row-fav-index="${pending.cardIndex}"]`
+        : `[data-home-row-index="${pending.rowIndex}"] button[data-live-channel-btn="true"][data-row-card-index="${pending.cardIndex}"]`;
+      const target = liveContainer.querySelector<HTMLElement>(selector);
+      if (target && target.isConnected) {
+        focusElementSafely(target);
+        const wrap = target.closest<HTMLElement>('[data-live-channel-card="true"]');
+        if (wrap && wrap.getAttribute('data-card-focused') !== 'true') {
+          wrap.setAttribute('data-card-focused', 'true');
+        }
+      }
+    });
+  }, [isLiteActive, ensureRowMounted]);
 
   // Close preview and restore focus to the previously selected channel button in left pane
   const closePreviewAndRestoreFocus = useCallback(() => {
@@ -2376,6 +2811,7 @@ export const LiveTvView = React.memo(function LiveTvView({
       getStreamIdString(currentChannel) || getStreamIdString(getGroupPrimaryStream(currentGroup));
     const prevGroupId = currentGroup?.groupId ?? originRef.current.groupId;
     const originCategoryId = originRef.current.categoryId;
+    const originCardIndex = originRef.current.cardIndex;
 
     clearFallbackTimer();
     activeAttemptIdRef.current += 1;
@@ -2392,30 +2828,42 @@ export const LiveTvView = React.memo(function LiveTvView({
       if (effectiveRowIdx >= 0) {
         ensureRowMounted(effectiveRowIdx);
       }
+      if (originCategoryId && originCardIndex >= 0) {
+        rowEnsureCardMapRef.current.get(originCategoryId)?.(originCardIndex);
+      }
 
-      const allChannelBtns = Array.from(
-        document.querySelectorAll<HTMLButtonElement>('button[data-live-channel-btn="true"]')
-      );
-      const targetBtn =
-        document.querySelector<HTMLButtonElement>('button[data-live-channel-origin="true"]') ||
-        (prevGroupId && originCategoryId
-          ? allChannelBtns.find(
-              (btn) =>
-                btn.getAttribute('data-live-channel-group-id') === prevGroupId &&
-                btn.getAttribute('data-live-channel-category-id') === originCategoryId
-            ) || null
-          : null) ||
-        (prevGroupId
-          ? allChannelBtns.find(
-              (btn) => btn.getAttribute('data-live-channel-group-id') === prevGroupId
-            ) || null
-          : null) ||
-        (prevPrimaryId
-          ? allChannelBtns.find(
-              (btn) => btn.getAttribute('data-live-channel-id') === prevPrimaryId
-            ) || null
-          : null) ||
-        document.querySelector<HTMLButtonElement>('button[data-live-channel-selected="true"]');
+      const cachedOrigin = activeOriginBtnRef.current;
+      let targetBtn: HTMLButtonElement | null =
+        cachedOrigin &&
+        cachedOrigin.isConnected &&
+        cachedOrigin.getAttribute('data-live-channel-origin') === 'true'
+          ? cachedOrigin
+          : document.querySelector<HTMLButtonElement>('button[data-live-channel-origin="true"]');
+
+      if (!targetBtn) {
+        const allChannelBtns = Array.from(
+          document.querySelectorAll<HTMLButtonElement>('button[data-live-channel-btn="true"]')
+        );
+        targetBtn =
+          (prevGroupId && originCategoryId
+            ? allChannelBtns.find(
+                (btn) =>
+                  btn.getAttribute('data-live-channel-group-id') === prevGroupId &&
+                  btn.getAttribute('data-live-channel-category-id') === originCategoryId
+              ) || null
+            : null) ||
+          (prevGroupId
+            ? allChannelBtns.find(
+                (btn) => btn.getAttribute('data-live-channel-group-id') === prevGroupId
+              ) || null
+            : null) ||
+          (prevPrimaryId
+            ? allChannelBtns.find(
+                (btn) => btn.getAttribute('data-live-channel-id') === prevPrimaryId
+              ) || null
+            : null) ||
+          document.querySelector<HTMLButtonElement>('button[data-live-channel-selected="true"]');
+      }
 
       if (targetBtn && targetBtn.isConnected) {
         focusElementSafely(targetBtn);
@@ -2497,8 +2945,14 @@ export const LiveTvView = React.memo(function LiveTvView({
   }, [categoryRows, rowStartIndex, rowEndIndex, resolveEffectiveOriginRowIndex, syncOriginDomAttributes]);
 
   const handleFocusCard = useCallback(
-    (groupId: string, categoryId: string, rowIndex: number, cardIndex: number) => {
-      updateOriginSnapshot(groupId, categoryId, rowIndex, cardIndex);
+    (
+      groupId: string,
+      categoryId: string,
+      rowIndex: number,
+      cardIndex: number,
+      buttonEl?: HTMLButtonElement | null
+    ) => {
+      updateOriginSnapshot(groupId, categoryId, rowIndex, cardIndex, buttonEl);
     },
     [updateOriginSnapshot]
   );
@@ -2589,11 +3043,15 @@ export const LiveTvView = React.memo(function LiveTvView({
                       credentials={credentials}
                       leftScrollEl={leftScrollNode}
                       selectedGroupId={selectedGroup?.groupId ?? null}
+                      isLitePerformanceMode={isLiteActive}
+                      displayScaleKey={displayScaleKey}
                       getOriginSnapshot={getOriginSnapshot}
                       isGroupFavorite={isGroupFavorite}
                       onSelectGroup={handleSelectGroup}
                       onToggleFavorite={handleToggleFavorite}
                       onFocusCard={handleFocusCard}
+                      onRegisterOriginButton={registerOriginButton}
+                      onRegisterRowEnsureCard={registerRowEnsureCard}
                     />
                   );
                 })}
