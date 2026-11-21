@@ -10,16 +10,44 @@ import {
   CheckCircle2,
   AlertCircle,
   Users,
+  Gauge,
+  Check,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useXtreamCredentials } from '../context/XtreamContext';
 import { XtreamService } from '../services/xtreamService';
 import { useDisplayPreferences } from '../platform/tvEnvironment';
+import {
+  usePerformanceProfile,
+  PerformanceProfilePreference,
+} from '../platform/performanceProfile';
 import { DisplaySetupModal } from '../components/DisplaySetupModal';
 import {
   getNavMode,
   focusElementSafely,
 } from '../navigation';
+
+const PERFORMANCE_OPTIONS: ReadonlyArray<{
+  id: PerformanceProfilePreference;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'auto',
+    label: 'Automático',
+    description: 'Adapta os efeitos visuais à apresentação TV dentro do aplicativo Android.',
+  },
+  {
+    id: 'lite',
+    label: 'Lite',
+    description: 'Reduz animações e efeitos gráficos.',
+  },
+  {
+    id: 'full',
+    label: 'Completo',
+    description: 'Mantém todos os efeitos atuais.',
+  },
+];
 
 export interface ConfigViewProps {
   focusTarget?: 'presentation' | 'account';
@@ -47,6 +75,13 @@ export const ConfigView = React.memo(function ConfigView({
     effectiveMode,
     effectiveTvScale,
   } = useDisplayPreferences();
+
+  const {
+    preference: performancePreference,
+    effectiveMode: effectivePerformanceMode,
+    isAndroidApk,
+    setPreference: setPerformancePreference,
+  } = usePerformanceProfile();
 
   // Posiciona a abertura de Configurações/Conta a partir do topo da página, sem rolar para seções inferiores
   // e sem aplicar foco automático agressivo quando o usuário está navegando com mouse/ponteiro.
@@ -355,6 +390,81 @@ export const ConfigView = React.memo(function ConfigView({
               </div>
             </div>
           </section>
+
+          {/* 4. Desempenho visual (visível apenas no APK Android) */}
+          {isAndroidApk && (
+            <section
+              aria-label="Desempenho visual"
+              data-scroll-block="true"
+              data-config-section="performance"
+              className="bg-nc-bg-card border border-white/10 rounded-2xl p-5 sm:p-6 md:p-7 space-y-5"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <Gauge className="w-5 h-5 text-white/80 shrink-0" aria-hidden="true" />
+                  <h2 className="nc-heading-section font-semibold text-white">
+                    Desempenho visual
+                  </h2>
+                </div>
+                <p
+                  data-performance-active-label="true"
+                  className="nc-text-meta text-nc-text-secondary"
+                >
+                  Ativo agora:{' '}
+                  <span className="text-white font-semibold">
+                    {effectivePerformanceMode === 'lite' ? 'Lite' : 'Completo'}
+                  </span>
+                </p>
+              </div>
+
+              <div
+                role="radiogroup"
+                aria-label="Opções de desempenho visual"
+                data-nav-row="config-performance-options"
+                className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-3.5"
+              >
+                {PERFORMANCE_OPTIONS.map((option) => {
+                  const isSelected = performancePreference === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={isSelected}
+                      data-nav-item="true"
+                      data-performance-option={option.id}
+                      data-selected={isSelected ? 'true' : 'false'}
+                      onClick={() => setPerformancePreference(option.id)}
+                      className={`text-left rounded-xl p-4 border cursor-pointer flex flex-col justify-between gap-2.5 min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/90 ${
+                        isSelected
+                          ? 'bg-white/[0.12] border-white/65 text-white'
+                          : 'bg-nc-bg-input/90 border-white/[0.07] text-nc-text-secondary hover:bg-white/[0.06] hover:border-white/20 hover:text-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-sm sm:text-base text-white">
+                          {option.label}
+                        </span>
+                        <span
+                          aria-hidden="true"
+                          className={`w-5 h-5 rounded-full border flex items-center justify-center shrink-0 ${
+                            isSelected
+                              ? 'bg-white border-white text-black'
+                              : 'border-white/25 bg-transparent text-transparent'
+                          }`}
+                        >
+                          <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                        </span>
+                      </div>
+                      <p className="nc-text-meta text-nc-text-secondary leading-relaxed">
+                        {option.description}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
         </motion.div>
       </div>
 

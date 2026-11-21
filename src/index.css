@@ -1236,3 +1236,137 @@ html[data-display-mode="tv"] .nc-tv-episode-icon {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================================
+ * Visual Performance Profile: Lite Mode (html[data-performance-mode="lite"])
+ * Activated exclusively on Android APK (auto in TV mode, or explicit lite).
+ * Web always uses data-performance-mode="full" and is completely unaffected.
+ * Strictly scoped rules — never uses wildcard * overrides so loading spinners,
+ * player feedback, modals, and MediaImage opacity state logic stay intact.
+ * ============================================================================ */
+
+/* 1. Catalog & Live TV cards: remove focus scale, large shadows, transform/shadow
+ *    transitions, and unused will-change while preserving dimensions, borders,
+ *    structural position, and unmistakable high-contrast white focus outline. */
+html[data-performance-mode="lite"] .nc-card-visual-layer {
+  transition: none !important;
+  will-change: auto !important;
+}
+
+html[data-performance-mode="lite"] .nc-card-visual-layer::after {
+  transition: none !important;
+}
+
+html[data-performance-mode="lite"] .nc-showcase-card:hover .nc-card-visual-layer,
+html[data-performance-mode="lite"] .nc-showcase-card:focus .nc-card-visual-layer,
+html[data-performance-mode="lite"] .nc-showcase-card:focus-visible .nc-card-visual-layer,
+html[data-performance-mode="lite"] .nc-showcase-card[data-card-focused="true"] .nc-card-visual-layer,
+html[data-performance-mode="lite"] [data-showcase-rows-container="true"] [data-row-card-index]:hover .nc-card-visual-layer,
+html[data-performance-mode="lite"] [data-showcase-rows-container="true"] [data-row-card-index]:focus .nc-card-visual-layer,
+html[data-performance-mode="lite"] [data-showcase-rows-container="true"] [data-row-card-index]:focus-visible .nc-card-visual-layer,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer {
+  transform: none !important;
+  will-change: auto !important;
+  box-shadow: none !important;
+}
+
+/* Preserve unmistakable crisp white focus ring on cards even without scale */
+html[data-performance-mode="lite"] .nc-showcase-card:focus .nc-card-visual-layer::after,
+html[data-performance-mode="lite"] .nc-showcase-card:focus-visible .nc-card-visual-layer::after,
+html[data-performance-mode="lite"] .nc-showcase-card[data-card-focused="true"] .nc-card-visual-layer::after,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-showcase-card:focus .nc-card-visual-layer::after,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-showcase-card:focus-visible .nc-card-visual-layer::after,
+html[data-performance-mode="lite"] [data-showcase-rows-container="true"] [data-row-card-index]:focus .nc-card-visual-layer::after,
+html[data-performance-mode="lite"] [data-showcase-rows-container="true"] [data-row-card-index]:focus-visible .nc-card-visual-layer::after,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-showcase-rows-container="true"] [data-row-card-index]:focus .nc-card-visual-layer::after,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-showcase-rows-container="true"] [data-row-card-index]:focus-visible .nc-card-visual-layer::after {
+  opacity: 1;
+  border: 2px solid #ffffff;
+  box-shadow: inset 0 0 0 2px #ffffff, inset 0 0 0 4px rgba(0, 0, 0, 0.9);
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] .nc-card-visual-layer::after {
+  opacity: 1;
+  border: 2px solid #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.78);
+}
+
+/* 2. Remote D-Pad focus: drop transition and soft glow shadow while preserving
+ *    bright 2px white outline and crisp dark contrast ring (excluding cards and
+ *    top header pills that render their own dedicated focus rings). */
+html[data-performance-mode="lite"][data-nav-mode="remote"] button,
+html[data-performance-mode="lite"][data-nav-mode="remote"] input,
+html[data-performance-mode="lite"][data-nav-mode="remote"] select,
+html[data-performance-mode="lite"][data-nav-mode="remote"] textarea,
+html[data-performance-mode="lite"][data-nav-mode="remote"] a,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]),
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-item="true"] {
+  transition: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] button:not(.nc-showcase-card):not(.nc-top-header-pill):focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] input:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] select:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] textarea:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] a:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [tabindex]:not([tabindex="-1"]):not(.nc-showcase-card):not(.nc-top-header-pill):focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-item="true"]:not(.nc-showcase-card):not(.nc-top-header-pill):focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-card:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-card:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-state:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-epg-state:focus-visible {
+  outline: 2px solid #ffffff !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.9) !important;
+  transform: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-pill:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-pill:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-header-nav-strip="true"] [data-nav-item="true"]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-header-nav-strip="true"] [data-nav-item="true"]:focus-visible {
+  outline: 2px solid #ffffff !important;
+  outline-offset: -2px !important;
+  box-shadow: inset 0 0 0 2px #ffffff, inset 0 0 0 3px rgba(0, 0, 0, 0.85) !important;
+}
+
+/* 3. Remote scroll containers: disable smooth scroll interpolation in Lite mode
+ *    without altering native scroll, scrollTop, anchor math, or web gestures. */
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-scroll-container="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-row="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-synopsis-focus="true"] {
+  scroll-behavior: auto !important;
+}
+
+/* 4. Card images & cosmetic hover/focus overlays: eliminate fade transition duration
+ *    without altering opacity-0 / opacity-100 loaded-state logic. */
+html[data-performance-mode="lite"] .nc-card-visual-layer img,
+html[data-performance-mode="lite"] .nc-card-visual-layer .transition-opacity {
+  transition-duration: 0ms !important;
+}
+
+/* 5. Targeted non-essential backdrop-blur and heavy shadows on static chrome/overlays */
+html[data-performance-mode="lite"] .nc-top-header {
+  background-color: #000000 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-performance-mode="lite"] .nc-top-header-account-menu {
+  background-color: #181818 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.7) !important;
+}
+
+html[data-performance-mode="lite"] .nc-calibration-modal,
+html[data-performance-mode="lite"] [data-details-modal],
+html[data-performance-mode="lite"] .nc-showcase-card .backdrop-blur-sm {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-performance-mode="lite"] [data-hero-stage="true"] {
+  box-shadow: none !important;
+}
+
