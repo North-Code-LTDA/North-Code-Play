@@ -35,17 +35,17 @@ const PERFORMANCE_OPTIONS: ReadonlyArray<{
   {
     id: 'auto',
     label: 'Automático',
-    description: 'Adapta os efeitos visuais à apresentação TV dentro do aplicativo Android.',
+    description: 'Ativa o modo Lite na apresentação TV ao navegar com controle remoto.',
   },
   {
     id: 'lite',
     label: 'Lite',
-    description: 'Reduz animações e efeitos gráficos.',
+    description: 'Reduz animações e efeitos gráficos na apresentação TV com controle remoto.',
   },
   {
     id: 'full',
     label: 'Completo',
-    description: 'Mantém todos os efeitos atuais.',
+    description: 'Mantém todos os efeitos visuais atuais.',
   },
 ];
 

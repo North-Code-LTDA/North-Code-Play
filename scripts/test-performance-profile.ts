@@ -131,9 +131,13 @@ const {
   getPerformanceProfileSnapshot,
   setPerformanceProfilePreference,
   syncDocumentPerformanceAttributes,
+  subscribePerformanceProfile,
   resetPerformanceProfileCacheForTest,
+  getPerformanceProfileSubscriptionCountsForTest,
 } = await import('../src/platform/performanceProfile');
-const { NavigationProvider, setNavMode, executeBackAction } = await import('../src/navigation');
+const { NavigationProvider, setNavMode, getNavMode, executeBackAction } = await import(
+  '../src/navigation'
+);
 const { XtreamProvider } = await import('../src/context/XtreamContext');
 const { ConfigView } = await import('../src/views/ConfigView');
 const { HorizontalRow } = await import('../src/components/HorizontalRow');
@@ -157,7 +161,7 @@ function resetAllState() {
   document.documentElement.style.removeProperty('--nc-rem-compensation');
   setAndroidPlatformOverrideForDpadTest(null);
   resetPerformanceProfileCacheForTest();
-  setNavMode('remote');
+  setNavMode('pointer');
 }
 
 async function mountConfigView(): Promise<{
@@ -199,7 +203,7 @@ async function mountConfigView(): Promise<{
 }
 
 // ============================================================================
-// 3. Execução dos 10 cenários direcionados do Perfil Lite
+// 3. Execução dos cenários direcionados do Perfil Lite (Fase 1/5)
 // ============================================================================
 async function runTests() {
   let passed = 0;
@@ -212,9 +216,9 @@ async function runTests() {
 
   console.log('Executando suite direcionada do Perfil Lite (test-performance-profile)...');
 
-  // 1. Ambiente web sempre utiliza modo Completo
+  // 1. Web + qualquer navMode (pointer e remote) -> sempre full
   await runCase(
-    '1. Ambiente Web sempre resolve para Completo (full) e não exibe seção Desempenho visual',
+    '1. Web + qualquer navMode (pointer e remote) resolve sempre para full e oculta seção Desempenho visual',
     async () => {
       setAndroidPlatformOverrideForDpadTest(false);
       confirmDisplayPreferences('tv', 80);
@@ -224,13 +228,18 @@ async function runTests() {
       );
       resetPerformanceProfileCacheForTest();
 
-      const snap = initPerformanceProfile();
-      assert.strictEqual(snap.isAndroidApk, false);
-      assert.strictEqual(snap.effectiveMode, 'full', 'Web deve resolver sempre para full');
-      assert.strictEqual(
-        document.documentElement.getAttribute('data-performance-mode'),
-        'full'
-      );
+      setNavMode('pointer');
+      const snapPointer = initPerformanceProfile();
+      assert.strictEqual(snapPointer.isAndroidApk, false);
+      assert.strictEqual(snapPointer.navMode, 'pointer');
+      assert.strictEqual(snapPointer.effectiveMode, 'full', 'Web + pointer deve ser full');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+
+      setNavMode('remote');
+      const snapRemote = getPerformanceProfileSnapshot();
+      assert.strictEqual(snapRemote.navMode, 'remote');
+      assert.strictEqual(snapRemote.effectiveMode, 'full', 'Web + remote deve continuar full');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
 
       const mounted = await mountConfigView();
       try {
@@ -253,68 +262,119 @@ async function runTests() {
     }
   );
 
-  // 2. APK Android + apresentação TV + preferência Automático resolve para Lite
+  // 2. Android + default + pointer -> full
   await runCase(
-    '2. APK Android + apresentação TV + Automático resolve para Lite',
+    '2. APK Android + apresentação default + pointer resolve para full (auto, lite e full)',
+    async () => {
+      setAndroidPlatformOverrideForDpadTest(true);
+      confirmDisplayPreferences('default', 85);
+      syncDocumentDisplayAttributes();
+      setNavMode('pointer');
+
+      const snapAuto = initPerformanceProfile();
+      assert.strictEqual(snapAuto.displayEffectiveMode, 'default');
+      assert.strictEqual(snapAuto.navMode, 'pointer');
+      assert.strictEqual(snapAuto.effectiveMode, 'full');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+
+      setPerformanceProfilePreference('lite');
+      const snapLite = getPerformanceProfileSnapshot();
+      assert.strictEqual(snapLite.preference, 'lite', 'Preferência manual lite deve ser mantida');
+      assert.strictEqual(snapLite.effectiveMode, 'full', 'Android + default + pointer deve permanecer full');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+
+      setPerformanceProfilePreference('full');
+      assert.strictEqual(getPerformanceProfileSnapshot().effectiveMode, 'full');
+    }
+  );
+
+  // 3. Android + default + remote -> full (inclusive com auto ou lite manual)
+  await runCase(
+    '3. APK Android + apresentação default + remote resolve para full mesmo com auto ou lite manual',
+    async () => {
+      setAndroidPlatformOverrideForDpadTest(true);
+      confirmDisplayPreferences('default', 85);
+      syncDocumentDisplayAttributes();
+      setNavMode('remote');
+
+      const snapAuto = initPerformanceProfile();
+      assert.strictEqual(snapAuto.displayEffectiveMode, 'default');
+      assert.strictEqual(snapAuto.navMode, 'remote');
+      assert.strictEqual(snapAuto.effectiveMode, 'full');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+
+      setPerformanceProfilePreference('lite');
+      const snapManualLite = getPerformanceProfileSnapshot();
+      assert.strictEqual(snapManualLite.preference, 'lite');
+      assert.strictEqual(
+        snapManualLite.effectiveMode,
+        'full',
+        'Sem apresentação TV ativa, lite manual não pode ativar modo lite'
+      );
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+
+      // Ao confirmar apresentação TV estando em remote, ativa lite automaticamente
+      confirmDisplayPreferences('tv', 90);
+      assert.strictEqual(getPerformanceProfileSnapshot().effectiveMode, 'lite');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
+
+      // Ao voltar para apresentação default, retorna para full preservando a preferência salva
+      confirmDisplayPreferences('default', 90);
+      const snapBack = getPerformanceProfileSnapshot();
+      assert.strictEqual(snapBack.preference, 'lite');
+      assert.strictEqual(snapBack.effectiveMode, 'full');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+    }
+  );
+
+  // 4. Android + tv + pointer + auto -> full
+  await runCase(
+    '4. APK Android + apresentação tv + pointer + auto resolve para full',
     async () => {
       setAndroidPlatformOverrideForDpadTest(true);
       confirmDisplayPreferences('tv', 85);
       syncDocumentDisplayAttributes();
+      setNavMode('pointer');
 
       const snap = initPerformanceProfile();
       assert.strictEqual(snap.isAndroidApk, true);
-      assert.strictEqual(snap.preference, 'auto');
       assert.strictEqual(snap.displayEffectiveMode, 'tv');
+      assert.strictEqual(snap.navMode, 'pointer');
+      assert.strictEqual(snap.preference, 'auto');
+      assert.strictEqual(snap.effectiveMode, 'full');
+      assert.strictEqual(snap.isLiteActive, false);
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+    }
+  );
+
+  // 5. Android + tv + remote + auto -> lite
+  await runCase(
+    '5. APK Android + apresentação tv + remote + auto resolve para lite',
+    async () => {
+      setAndroidPlatformOverrideForDpadTest(true);
+      confirmDisplayPreferences('tv', 85);
+      syncDocumentDisplayAttributes();
+      setNavMode('remote');
+
+      const snap = initPerformanceProfile();
+      assert.strictEqual(snap.isAndroidApk, true);
+      assert.strictEqual(snap.displayEffectiveMode, 'tv');
+      assert.strictEqual(snap.navMode, 'remote');
+      assert.strictEqual(snap.preference, 'auto');
       assert.strictEqual(snap.effectiveMode, 'lite');
       assert.strictEqual(snap.isLiteActive, true);
-      assert.strictEqual(
-        document.documentElement.getAttribute('data-performance-mode'),
-        'lite'
-      );
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
     }
   );
 
-  // 3. APK Android + apresentação padrão + Automático resolve para Completo (e reage à troca de apresentação)
+  // 6 e 7. Android + tv + remote + full -> full e Android + tv + remote + lite -> lite (via ConfigView)
   await runCase(
-    '3. APK Android + apresentação padrão + Automático resolve para Completo e atualiza ao confirmar modo TV',
+    '6/7. APK Android + apresentação tv + remote respeita escolha manual full e lite no ConfigView',
     async () => {
       setAndroidPlatformOverrideForDpadTest(true);
-      confirmDisplayPreferences('default', 85);
+      confirmDisplayPreferences('tv', 85);
       syncDocumentDisplayAttributes();
-
-      const snapDefault = initPerformanceProfile();
-      assert.strictEqual(snapDefault.preference, 'auto');
-      assert.strictEqual(snapDefault.displayEffectiveMode, 'default');
-      assert.strictEqual(snapDefault.effectiveMode, 'full');
-      assert.strictEqual(
-        document.documentElement.getAttribute('data-performance-mode'),
-        'full'
-      );
-
-      // Ao confirmar mudança para apresentação TV, o atributo deve atualizar para lite automaticamente
-      confirmDisplayPreferences('tv', 90);
-      assert.strictEqual(getPerformanceProfileSnapshot().effectiveMode, 'lite');
-      assert.strictEqual(
-        document.documentElement.getAttribute('data-performance-mode'),
-        'lite'
-      );
-
-      // Ao voltar para apresentação padrão, retorna para full
-      confirmDisplayPreferences('default', 90);
-      assert.strictEqual(getPerformanceProfileSnapshot().effectiveMode, 'full');
-      assert.strictEqual(
-        document.documentElement.getAttribute('data-performance-mode'),
-        'full'
-      );
-    }
-  );
-
-  // 4 e 5. Escolha manual de Lite e Completo no APK via ConfigView (reversível sem reiniciar)
-  await runCase(
-    '4/5. Escolha manual de Lite e Completo no APK via ConfigView aplica imediatamente sem reiniciar',
-    async () => {
-      setAndroidPlatformOverrideForDpadTest(true);
-      confirmDisplayPreferences('default', 85);
+      setNavMode('remote');
       initPerformanceProfile();
 
       const mounted = await mountConfigView();
@@ -327,9 +387,23 @@ async function runTests() {
         const fullBtn = perfSection.querySelector<HTMLButtonElement>('[data-performance-option="full"]');
         assert.ok(autoBtn && liteBtn && fullBtn, 'Todas as 3 opções devem existir');
         assert.strictEqual(autoBtn.getAttribute('aria-checked'), 'true');
-        assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+        assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
+        assert.ok(
+          perfSection.querySelector('[data-performance-active-label="true"]')?.textContent?.includes('Lite')
+        );
 
-        // 4. Escolha manual de Lite mesmo com apresentação padrão
+        // 6. Escolha manual de Completo em TV + remote -> full
+        act(() => {
+          fullBtn.click();
+        });
+        await flush();
+        assert.strictEqual(fullBtn.getAttribute('aria-checked'), 'true');
+        assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+        assert.ok(
+          perfSection.querySelector('[data-performance-active-label="true"]')?.textContent?.includes('Completo')
+        );
+
+        // 7. Escolha manual de Lite em TV + remote -> lite
         act(() => {
           liteBtn.click();
         });
@@ -341,19 +415,7 @@ async function runTests() {
           perfSection.querySelector('[data-performance-active-label="true"]')?.textContent?.includes('Lite')
         );
 
-        // 5. Mesmo em apresentação TV, escolha manual de Completo mantém modo full
-        act(() => {
-          confirmDisplayPreferences('tv', 85);
-          fullBtn.click();
-        });
-        await flush();
-        assert.strictEqual(fullBtn.getAttribute('aria-checked'), 'true');
-        assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
-        assert.ok(
-          perfSection.querySelector('[data-performance-active-label="true"]')?.textContent?.includes('Completo')
-        );
-
-        // Reversível imediatamente de volta para Automático (em TV -> lite)
+        // Volta reversível para Automático (em TV + remote -> lite)
         act(() => {
           autoBtn.click();
         });
@@ -366,12 +428,136 @@ async function runTests() {
     }
   );
 
-  // 6. Preferência persiste após remontagem e nova inicialização simulada + fallback sem localStorage
+  // 8. Android + tv + pointer + lite -> full, preservando preferência manual e restaurando ao voltar para remote
   await runCase(
-    '6. Preferência persiste após remontagem e reinicialização fria simulada, e funciona sem localStorage',
+    '8. APK Android + tv + pointer + lite resolve para full preservando preferência manual e restaura lite ao voltar para remote',
     async () => {
       setAndroidPlatformOverrideForDpadTest(true);
-      confirmDisplayPreferences('default', 85);
+      confirmDisplayPreferences('tv', 85);
+      syncDocumentDisplayAttributes();
+      setNavMode('pointer');
+      initPerformanceProfile();
+
+      const mounted = await mountConfigView();
+      try {
+        const perfSection = mounted.host.querySelector('[data-config-section="performance"]')!;
+        const liteBtn = perfSection.querySelector<HTMLButtonElement>('[data-performance-option="lite"]')!;
+
+        act(() => {
+          liteBtn.click();
+        });
+        await flush();
+
+        const storedRaw = window.localStorage.getItem(STORAGE_KEY_PERFORMANCE_PROFILE);
+        assert.ok(storedRaw && storedRaw.includes('"lite"'), 'Preferência manual lite deve ficar salva');
+        assert.strictEqual(liteBtn.getAttribute('aria-checked'), 'true', 'Seleção visual deve refletir lite');
+        assert.strictEqual(getPerformanceProfileSnapshot().effectiveMode, 'full');
+        assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+        assert.ok(
+          perfSection.querySelector('[data-performance-active-label="true"]')?.textContent?.includes('Completo'),
+          'Indicador Ativo agora deve exibir Completo enquanto em pointer'
+        );
+
+        // Ao retornar para navegação por controle remoto, lite ativa automaticamente
+        act(() => {
+          setNavMode('remote');
+        });
+        await flush();
+        assert.strictEqual(getPerformanceProfileSnapshot().preference, 'lite');
+        assert.strictEqual(getPerformanceProfileSnapshot().effectiveMode, 'lite');
+        assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
+        assert.ok(
+          perfSection.querySelector('[data-performance-active-label="true"]')?.textContent?.includes('Lite'),
+          'Indicador Ativo agora deve restaurar para Lite ao voltar para remote'
+        );
+      } finally {
+        await mounted.unmount();
+      }
+    }
+  );
+
+  // 9. Alternar pointer -> remote -> pointer atualiza atributo raiz corretamente
+  await runCase(
+    '9. Alternar pointer -> remote -> pointer atualiza data-performance-mode corretamente (full -> lite -> full)',
+    async () => {
+      setAndroidPlatformOverrideForDpadTest(true);
+      confirmDisplayPreferences('tv', 85);
+      syncDocumentDisplayAttributes();
+      setNavMode('pointer');
+      initPerformanceProfile();
+
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+
+      setNavMode('remote');
+      assert.strictEqual(getNavMode(), 'remote');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
+
+      setNavMode('pointer');
+      assert.strictEqual(getNavMode(), 'pointer');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'full');
+
+      setNavMode('remote');
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
+    }
+  );
+
+  // 10. Repetir remote -> remote não gera mutação no DOM nem notificação redundante
+  await runCase(
+    '10. Repetir remote -> remote não gera mutação em data-performance-mode nem notificação redundante de listeners',
+    async () => {
+      setAndroidPlatformOverrideForDpadTest(true);
+      confirmDisplayPreferences('tv', 85);
+      syncDocumentDisplayAttributes();
+      setNavMode('remote');
+      initPerformanceProfile();
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
+
+      let listenerCalls = 0;
+      const unsubscribe = subscribePerformanceProfile(() => {
+        listenerCalls += 1;
+      });
+
+      let domAttributeWrites = 0;
+      const docEl = document.documentElement;
+      const originalSetAttribute = docEl.setAttribute.bind(docEl);
+      docEl.setAttribute = ((name: string, value: string) => {
+        if (name === 'data-performance-mode') {
+          domAttributeWrites += 1;
+        }
+        return originalSetAttribute(name, value);
+      }) as typeof docEl.setAttribute;
+
+      try {
+        for (let i = 0; i < 20; i++) {
+          setNavMode('remote');
+          const changed = syncDocumentPerformanceAttributes();
+          assert.strictEqual(changed, false);
+        }
+
+        assert.strictEqual(
+          domAttributeWrites,
+          0,
+          'Repetir remote -> remote não pode escrever no atributo DOM data-performance-mode'
+        );
+        assert.strictEqual(
+          listenerCalls,
+          0,
+          'Repetir remote -> remote não pode disparar listeners do perfil de desempenho'
+        );
+      } finally {
+        docEl.setAttribute = originalSetAttribute;
+        unsubscribe();
+      }
+    }
+  );
+
+  // 11. Preferência persiste após remontagem e reinicialização fria simulada + fallback sem localStorage
+  await runCase(
+    '11. Preferência persiste após remontagem e reinicialização fria simulada, e funciona sem localStorage',
+    async () => {
+      setAndroidPlatformOverrideForDpadTest(true);
+      confirmDisplayPreferences('tv', 85);
+      setNavMode('remote');
       initPerformanceProfile();
 
       setPerformanceProfilePreference('lite');
@@ -417,13 +603,14 @@ async function runTests() {
     }
   );
 
-  // 7. Alternar Lite/Completo não altera escala da TV nem chave de preferências de apresentação
+  // 12. Alternar Lite/Completo e pointer/remote não altera escala da TV nem chave de preferências de apresentação
   await runCase(
-    '7. Alternar Lite/Completo não altera escala da TV, tokens --nc-ui-scale nem localStorage de apresentação',
+    '12. Alternar Lite/Completo e pointer/remote não altera escala da TV, tokens --nc-ui-scale nem localStorage de apresentação',
     async () => {
       setAndroidPlatformOverrideForDpadTest(true);
       confirmDisplayPreferences('tv', 75);
       syncDocumentDisplayAttributes();
+      setNavMode('remote');
       initPerformanceProfile();
 
       const beforeDisplayRaw = window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS);
@@ -434,6 +621,8 @@ async function runTests() {
 
       setPerformanceProfilePreference('full');
       setPerformanceProfilePreference('lite');
+      setNavMode('pointer');
+      setNavMode('remote');
       setPerformanceProfilePreference('auto');
 
       const afterDisplayRaw = window.localStorage.getItem(STORAGE_KEY_DISPLAY_PREFS);
@@ -450,9 +639,9 @@ async function runTests() {
     }
   );
 
-  // 8. Foco D-Pad continua visível e regras CSS são estritamente condicionadas sem seletores genéricos abrangentes
+  // 13. Foco D-Pad continua visível e regras CSS permanecem estritamente condicionadas
   await runCase(
-    '8. Regras CSS do modo Lite mantêm foco branco visível, restringem escopo sem seletores genéricos globais e preservam controles funcionais',
+    '13. Regras CSS do modo Lite mantêm foco branco visível, restringem escopo sem seletores genéricos globais e preservam controles funcionais',
     async () => {
       const cssPath = path.resolve(process.cwd(), 'src/index.css');
       const cssContent = fs.readFileSync(cssPath, 'utf8');
@@ -460,13 +649,10 @@ async function runTests() {
       assert.ok(liteBlockIndex !== -1, 'Bloco CSS do modo Lite deve existir em src/index.css');
       const liteBlock = cssContent.slice(liteBlockIndex);
 
-      // Garantir ausência de regra global indiscriminada * { animation: none ... }
       assert.ok(
         !/\*\s*\{[^}]*(animation|transition)\s*:\s*none/i.test(cssContent),
         'CSS não deve conter regra global indiscriminada * { animation/transition: none }'
       );
-
-      // Garantir que o bloco Lite não utilize seletores genéricos globais que atinjam controles do player ou formulários
       assert.ok(
         !/html\[data-performance-mode="lite"\](?:\[data-nav-mode="remote"\])?\s+(?:button|input|select|textarea|a|\[tabindex\]|\[data-nav-item="true"\])(?:\s|,|:)/i.test(
           liteBlock
@@ -477,8 +663,6 @@ async function runTests() {
         !liteBlock.includes('.nc-player-ctrl-btn'),
         'Bloco Lite não deve alterar seletores dos botões do player'
       );
-
-      // Regras de modo Lite estritamente condicionadas ao atributo raiz e a componentes específicos
       assert.ok(
         liteBlock.includes('html[data-performance-mode="lite"] .nc-card-visual-layer'),
         'Deve conter otimização condicional para .nc-card-visual-layer'
@@ -516,13 +700,14 @@ async function runTests() {
     }
   );
 
-  // 9. Cards conservam dimensões, atributos de navegação e virtualização entre Full e Lite
+  // 14. Cards conservam dimensões, atributos de navegação e virtualização entre Full e Lite
   await runCase(
-    '9. Cards em HorizontalRow conservam dimensões, atributos de navegação e contagem virtualizada em Lite e Completo',
+    '14. Cards em HorizontalRow conservam dimensões, atributos de navegação e contagem virtualizada em Lite e Completo',
     async () => {
       setAndroidPlatformOverrideForDpadTest(true);
       confirmDisplayPreferences('tv', 85);
       syncDocumentDisplayAttributes();
+      setNavMode('remote');
       initPerformanceProfile();
 
       const items = Array.from({ length: 60 }, (_, idx) => ({
@@ -532,7 +717,7 @@ async function runTests() {
         rating: '8.5',
       }));
 
-      let clickedNames: string[] = [];
+      const clickedNames: string[] = [];
       const host = document.createElement('div');
       document.body.appendChild(host);
       const root: Root = createRoot(host);
@@ -590,7 +775,6 @@ async function runTests() {
         assert.ok(snapLite.firstClass.includes('nc-showcase-card'));
         assert.ok(snapLite.firstVisualClass.includes('nc-card-visual-layer'));
 
-        // Handler de clique dos cards continua íntegro em modo Lite
         const firstCard = host.querySelector<HTMLElement>('[data-showcase-card="true"]')!;
         act(() => {
           firstCard.click();
@@ -605,13 +789,14 @@ async function runTests() {
     }
   );
 
-  // 10. O novo perfil não altera handlers de player (Back / fullscreen) nem do fluxo de navegação
+  // 15. Controles do player e fluxo de navegação continuam intactos
   await runCase(
-    '10. Perfil Lite não interfere nos handlers de Back ou controle do VideoPlayer',
+    '15. Perfil Lite não interfere nos handlers de Back ou controle do VideoPlayer',
     async () => {
       setAndroidPlatformOverrideForDpadTest(true);
       confirmDisplayPreferences('tv', 85);
       syncDocumentDisplayAttributes();
+      setNavMode('remote');
       initPerformanceProfile();
       setPerformanceProfilePreference('lite');
       syncDocumentPerformanceAttributes();
@@ -667,8 +852,50 @@ async function runTests() {
     }
   );
 
+  // 16. Sem duplicação de assinaturas em múltiplas inicializações/montagens/remontagens e sem polling
+  await runCase(
+    '16. Sem duplicação de assinaturas globais após múltiplas inicializações e remontagens, e sem polling',
+    async () => {
+      setAndroidPlatformOverrideForDpadTest(true);
+      confirmDisplayPreferences('tv', 85);
+      setNavMode('remote');
+
+      // Chamar initPerformanceProfile repetidas vezes
+      initPerformanceProfile();
+      initPerformanceProfile();
+      initPerformanceProfile();
+
+      // Montar e desmontar ConfigView várias vezes
+      for (let i = 0; i < 3; i++) {
+        const mounted = await mountConfigView();
+        assert.strictEqual(
+          getPerformanceProfileSubscriptionCountsForTest().listeners,
+          1,
+          'Cada montagem ativa de ConfigView deve manter exatamente 1 listener'
+        );
+        await mounted.unmount();
+      }
+
+      const counts = getPerformanceProfileSubscriptionCountsForTest();
+      assert.strictEqual(counts.display, 1, 'Deve existir no máximo 1 assinatura global de display preferences');
+      assert.strictEqual(counts.navMode, 1, 'Deve existir no máximo 1 assinatura global de navMode');
+      assert.strictEqual(counts.listeners, 0, 'Todos os listeners de componentes desmontados devem ser removidos');
+
+      // Garante ausência de polling (setInterval) ou listeners de tecla/ponteiro próprios em performanceProfile.ts
+      const profileSource = fs.readFileSync(
+        path.resolve(process.cwd(), 'src/platform/performanceProfile.ts'),
+        'utf8'
+      );
+      assert.ok(!profileSource.includes('setInterval'), 'performanceProfile.ts não deve usar polling com setInterval');
+      assert.ok(
+        !profileSource.includes('addEventListener'),
+        'performanceProfile.ts não deve registrar novos listeners de teclado/ponteiro no window/document'
+      );
+    }
+  );
+
   clearTimeout(watchdog);
-  console.log(`\nSucesso: ${passed} blocos de cenários (10 cenários obrigatórios) passaram em test-performance-profile.`);
+  console.log(`\nSucesso: ${passed} blocos de cenários passaram em test-performance-profile.`);
   process.exit(0);
 }
 

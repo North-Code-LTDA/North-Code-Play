@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { isAndroidCapacitorPlatform } from '../navigation/navigationPlatformPolicy';
+import { NavMode, getNavMode, subscribeNavMode } from '../navigation/spatialNav';
 import {
   DisplayMode,
   getDisplayPreferencesSnapshot,
@@ -22,6 +23,7 @@ export interface PerformanceProfileSnapshot {
   effectiveMode: EffectivePerformanceMode;
   isAndroidApk: boolean;
   displayEffectiveMode: DisplayMode;
+  navMode: NavMode;
   isLiteActive: boolean;
 }
 
@@ -29,11 +31,30 @@ let currentPreference: PerformanceProfilePreference = PERFORMANCE_PROFILE_DEFAUL
 let initializedFromStorage = false;
 let lastLoadedRawPref: string | null = null;
 let displaySubscriptionAttached = false;
+let navModeSubscriptionAttached = false;
+let displaySubscriptionAttachCount = 0;
+let navModeSubscriptionAttachCount = 0;
+let lastNotifiedSnapshot: PerformanceProfileSnapshot | null = null;
 
 const listeners = new Set<() => void>();
 
 function isValidPreference(value: unknown): value is PerformanceProfilePreference {
   return value === 'auto' || value === 'lite' || value === 'full';
+}
+
+function areSnapshotsEqual(
+  a: PerformanceProfileSnapshot | null,
+  b: PerformanceProfileSnapshot
+): boolean {
+  if (!a) return false;
+  return (
+    a.preference === b.preference &&
+    a.effectiveMode === b.effectiveMode &&
+    a.isAndroidApk === b.isAndroidApk &&
+    a.displayEffectiveMode === b.displayEffectiveMode &&
+    a.navMode === b.navMode &&
+    a.isLiteActive === b.isLiteActive
+  );
 }
 
 function parseStoredPreference(raw: string | null): PerformanceProfilePreference {
@@ -83,36 +104,44 @@ function loadFromStorageIfNeeded(): void {
 /**
  * Resolves the effective visual performance mode:
  * - Web: always 'full'
- * - Android APK:
- *   - 'auto': 'lite' when effective display presentation mode is 'tv', otherwise 'full'
+ * - Android APK + display presentation 'default': always 'full'
+ * - Android APK + display presentation 'tv' + navMode 'pointer': always 'full'
+ * - Android APK + display presentation 'tv' + navMode 'remote':
+ *   - 'auto': 'lite'
  *   - 'lite': 'lite'
  *   - 'full': 'full'
  */
 export function resolveEffectivePerformanceMode(
   preference: PerformanceProfilePreference,
   isAndroidApk: boolean,
-  displayEffectiveMode: DisplayMode
+  displayEffectiveMode: DisplayMode,
+  navMode: NavMode = getNavMode()
 ): EffectivePerformanceMode {
   if (!isAndroidApk) {
     return 'full';
   }
-  if (preference === 'lite') {
-    return 'lite';
+  if (displayEffectiveMode !== 'tv') {
+    return 'full';
+  }
+  if (navMode !== 'remote') {
+    return 'full';
   }
   if (preference === 'full') {
     return 'full';
   }
-  return displayEffectiveMode === 'tv' ? 'lite' : 'full';
+  return 'lite';
 }
 
 export function getPerformanceProfileSnapshot(): PerformanceProfileSnapshot {
   loadFromStorageIfNeeded();
   const isAndroidApk = isAndroidCapacitorPlatform();
   const displaySnap = getDisplayPreferencesSnapshot();
+  const navMode = getNavMode();
   const effectiveMode = resolveEffectivePerformanceMode(
     currentPreference,
     isAndroidApk,
-    displaySnap.effectiveMode
+    displaySnap.effectiveMode,
+    navMode
   );
 
   return {
@@ -120,13 +149,16 @@ export function getPerformanceProfileSnapshot(): PerformanceProfileSnapshot {
     effectiveMode,
     isAndroidApk,
     displayEffectiveMode: displaySnap.effectiveMode,
+    navMode,
     isLiteActive: effectiveMode === 'lite',
   };
 }
 
-export function syncDocumentPerformanceAttributes(): boolean {
+export function syncDocumentPerformanceAttributes(
+  precomputedSnapshot?: PerformanceProfileSnapshot
+): boolean {
   if (typeof document === 'undefined' || !document.documentElement) return false;
-  const snap = getPerformanceProfileSnapshot();
+  const snap = precomputedSnapshot ?? getPerformanceProfileSnapshot();
   const docEl = document.documentElement;
   if (docEl.getAttribute('data-performance-mode') !== snap.effectiveMode) {
     docEl.setAttribute('data-performance-mode', snap.effectiveMode);
@@ -135,8 +167,20 @@ export function syncDocumentPerformanceAttributes(): boolean {
   return false;
 }
 
-function notifyListeners(): void {
-  syncDocumentPerformanceAttributes();
+function notifyListenersIfChanged(): boolean {
+  const snap = getPerformanceProfileSnapshot();
+  const domChanged = syncDocumentPerformanceAttributes(snap);
+  const snapshotChanged = !areSnapshotsEqual(lastNotifiedSnapshot, snap);
+
+  if (!domChanged && !snapshotChanged) {
+    return false;
+  }
+
+  lastNotifiedSnapshot = snap;
+  if (!snapshotChanged) {
+    return false;
+  }
+
   listeners.forEach((fn) => {
     try {
       fn();
@@ -144,24 +188,36 @@ function notifyListeners(): void {
       // Ignore subscriber errors
     }
   });
+  return true;
 }
 
-function ensureDisplaySubscription(): void {
-  if (displaySubscriptionAttached) return;
-  displaySubscriptionAttached = true;
-  subscribeDisplayPreferences(() => {
-    notifyListeners();
-  });
+function ensureSubscriptions(): void {
+  if (!displaySubscriptionAttached) {
+    displaySubscriptionAttached = true;
+    displaySubscriptionAttachCount += 1;
+    subscribeDisplayPreferences(() => {
+      notifyListenersIfChanged();
+    });
+  }
+  if (!navModeSubscriptionAttached) {
+    navModeSubscriptionAttached = true;
+    navModeSubscriptionAttachCount += 1;
+    subscribeNavMode(() => {
+      notifyListenersIfChanged();
+    });
+  }
 }
 
 /**
  * Initializes the performance profile attribute on documentElement before React mounts
- * and keeps it synchronized with TV presentation mode confirmations.
+ * and keeps it synchronized with TV presentation mode and remote/pointer nav mode.
  */
 export function initPerformanceProfile(): PerformanceProfileSnapshot {
-  ensureDisplaySubscription();
-  syncDocumentPerformanceAttributes();
-  return getPerformanceProfileSnapshot();
+  ensureSubscriptions();
+  const snap = getPerformanceProfileSnapshot();
+  syncDocumentPerformanceAttributes(snap);
+  lastNotifiedSnapshot = snap;
+  return snap;
 }
 
 export function setPerformanceProfilePreference(
@@ -170,7 +226,7 @@ export function setPerformanceProfilePreference(
   if (!isValidPreference(nextPreference)) {
     return false;
   }
-  ensureDisplaySubscription();
+  ensureSubscriptions();
   loadFromStorageIfNeeded();
   currentPreference = nextPreference;
 
@@ -198,12 +254,12 @@ export function setPerformanceProfilePreference(
     }
   }
 
-  notifyListeners();
+  notifyListenersIfChanged();
   return persisted;
 }
 
 export function subscribePerformanceProfile(listener: () => void): () => void {
-  ensureDisplaySubscription();
+  ensureSubscriptions();
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
@@ -218,6 +274,23 @@ export function resetPerformanceProfileCacheForTest(): void {
   currentPreference = PERFORMANCE_PROFILE_DEFAULT;
   initializedFromStorage = false;
   lastLoadedRawPref = null;
+  lastNotifiedSnapshot = null;
+}
+
+/**
+ * Exposes internal global subscription counters for automated verification that
+ * mounts/remounts never register duplicate subscriptions.
+ */
+export function getPerformanceProfileSubscriptionCountsForTest(): {
+  display: number;
+  navMode: number;
+  listeners: number;
+} {
+  return {
+    display: displaySubscriptionAttachCount,
+    navMode: navModeSubscriptionAttachCount,
+    listeners: listeners.size,
+  };
 }
 
 export interface UsePerformanceProfileResult extends PerformanceProfileSnapshot {
@@ -232,13 +305,7 @@ export function usePerformanceProfile(): UsePerformanceProfileResult {
   const refreshState = useCallback(() => {
     const next = getPerformanceProfileSnapshot();
     setState((prev) => {
-      if (
-        prev.preference === next.preference &&
-        prev.effectiveMode === next.effectiveMode &&
-        prev.isAndroidApk === next.isAndroidApk &&
-        prev.displayEffectiveMode === next.displayEffectiveMode &&
-        prev.isLiteActive === next.isLiteActive
-      ) {
+      if (areSnapshotsEqual(prev, next)) {
         return prev;
       }
       return next;
@@ -246,8 +313,10 @@ export function usePerformanceProfile(): UsePerformanceProfileResult {
   }, []);
 
   useEffect(() => {
-    ensureDisplaySubscription();
-    syncDocumentPerformanceAttributes();
+    ensureSubscriptions();
+    const snap = getPerformanceProfileSnapshot();
+    syncDocumentPerformanceAttributes(snap);
+    lastNotifiedSnapshot = snap;
     refreshState();
     return subscribePerformanceProfile(refreshState);
   }, [refreshState]);
