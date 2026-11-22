@@ -928,15 +928,47 @@ async function runTests() {
         assert.ok(rightDesc?.textContent?.includes('Destaque 1001'), 'Painel direito deve preservar descrição');
         assert.strictEqual(timelineItems.length, 2, 'Painel direito deve preservar lista cronológica');
 
-        // Troca de variante de resolução (HD) mantém EPG intacto
+        // Troca de variante de resolução (HD) via seletor compacto mantém EPG intacto
+        const qualityTrigger = mounted.host.querySelector<HTMLButtonElement>(
+          '[data-live-quality-trigger="true"]'
+        );
+        assert.ok(qualityTrigger, 'Canal agrupado deve exibir botão compacto de qualidade');
+        assert.strictEqual(
+          mounted.host.querySelector('[data-live-quality-menu="true"]'),
+          null,
+          'Menu de qualidade deve iniciar fechado'
+        );
+        assert.ok(
+          qualityTrigger!.textContent?.includes('Automático'),
+          'Trigger compacto deve iniciar em Qualidade: Automático'
+        );
+        act(() => {
+          qualityTrigger!.click();
+        });
+        await flush(4);
+        const qualityMenu = mounted.host.querySelector<HTMLElement>(
+          '[data-live-quality-menu="true"]'
+        );
+        assert.ok(qualityMenu, 'Menu compacto de qualidade deve abrir ao acionar o trigger');
         const hdBtn = Array.from(
-          mounted.host.querySelectorAll<HTMLButtonElement>('[data-live-variants-row="true"] button')
+          qualityMenu!.querySelectorAll<HTMLButtonElement>('[data-live-quality-option]')
         ).find((b) => b.textContent?.trim() === 'HD');
-        assert.ok(hdBtn, 'Canal agrupado deve exibir seletor de variante HD');
+        assert.ok(hdBtn, 'Menu de qualidade deve listar variante HD');
         act(() => {
           hdBtn!.click();
         });
         await flush(4);
+        assert.strictEqual(
+          mounted.host.querySelector('[data-live-quality-menu="true"]'),
+          null,
+          'Menu compacto de qualidade deve fechar após selecionar variante HD'
+        );
+        assert.ok(
+          mounted.host
+            .querySelector<HTMLButtonElement>('[data-live-quality-trigger="true"]')
+            ?.textContent?.includes('HD'),
+          'Trigger compacto deve refletir Qualidade: HD após seleção manual'
+        );
         assert.strictEqual(
           mounted.host.querySelector('[data-live-now-playing-title="true"]')?.textContent?.trim(),
           'Destaque 1001',

@@ -5,6 +5,8 @@ import {
   Heart,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Check,
   Clock,
   Radio,
   AlertCircle,
@@ -721,29 +723,44 @@ export function computeLiveTvLayoutMetrics(input: LiveTvLayoutMetricsInput): Liv
   } = input;
 
   const isMobile = viewportWidth < 768;
+  const isTvDesktop = !isMobile && displayMode === 'tv';
   const scale = Math.max(0.5, Math.min(1.25, uiScale || 1));
   const topHeaderHeight = isMobile ? Math.round(92 * scale) : Math.round(68 * scale);
   const availableHeight = Math.max(320, viewportHeight - topHeaderHeight);
   const rightPaneWidth = isMobile ? viewportWidth : Math.round(viewportWidth * 0.5);
-  const topSectionDirection: 'row' | 'column' = isMobile ? 'column' : 'row';
+  const topSectionDirection: 'row' | 'column' = isMobile || isTvDesktop ? 'column' : 'row';
+
+  const tvInnerWidth = Math.max(240, rightPaneWidth - Math.round(28 * scale));
+  const tvMaxPreviewHeight = Math.max(140, Math.round(viewportHeight * 0.42));
 
   const previewWidth = isMobile
     ? Math.max(240, rightPaneWidth - 32)
-    : Math.max(176, Math.min(Math.round(viewportWidth * 0.22), Math.round(336 * scale)));
-  const previewHeight = Math.round((previewWidth * 9) / 16);
+    : isTvDesktop
+      ? tvInnerWidth
+      : Math.max(176, Math.min(Math.round(viewportWidth * 0.22), Math.round(336 * scale)));
+  const rawPreviewHeight = Math.round((previewWidth * 9) / 16);
+  const previewHeight = isTvDesktop
+    ? Math.min(rawPreviewHeight, tvMaxPreviewHeight)
+    : rawPreviewHeight;
   const previewAspectRatio = previewHeight > 0 ? previewWidth / previewHeight : 16 / 9;
 
   const extraTopPadding =
     (isGrouped ? Math.round(28 * scale) : 0) + (hasNowPlaying ? Math.round(36 * scale) : 0);
+  const tvInfoBlockHeight =
+    Math.round(58 * scale) +
+    (hasNowPlaying ? Math.round(54 * scale) : 0) +
+    (isGrouped ? Math.round(36 * scale) : 0);
   const topSectionHeight = isMobile
     ? previewHeight + Math.round(130 * scale) + extraTopPadding
-    : Math.max(
-        previewHeight + Math.round(28 * scale),
-        Math.min(
-          Math.round(availableHeight * 0.42),
-          Math.round((displayMode === 'tv' ? 148 : 164) * scale + extraTopPadding * 0.35)
-        )
-      );
+    : isTvDesktop
+      ? previewHeight + tvInfoBlockHeight + Math.round(28 * scale)
+      : Math.max(
+          previewHeight + Math.round(28 * scale),
+          Math.min(
+            Math.round(availableHeight * 0.42),
+            Math.round(164 * scale + extraTopPadding * 0.35)
+          )
+        );
 
   const epgHeaderHeight = Math.max(30, Math.round(38 * scale));
   const epgSectionHeight = Math.max(260, availableHeight - topSectionHeight);
@@ -2426,6 +2443,140 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
 
   const currentEpgProgram = rightPaneEpg?.currentProgram ?? null;
 
+  const qualityOptions = useMemo(() => {
+    if (
+      !selectedGroup?.isGrouped ||
+      !Array.isArray(selectedGroup.variants) ||
+      selectedGroup.variants.length <= 1
+    ) {
+      return [] as Array<{ id: string; label: string }>;
+    }
+    return [
+      { id: 'auto', label: 'Automático' },
+      ...selectedGroup.variants.map((variant) => ({
+        id: String(variant.streamId),
+        label: variant.label,
+      })),
+    ];
+  }, [selectedGroup]);
+
+  const hasQualitySelector = qualityOptions.length > 1;
+
+  const activeQualityLabel = useMemo(() => {
+    if (selectedVariantIdOrAuto === 'auto') return 'Automático';
+    const matched = qualityOptions.find((option) => option.id === selectedVariantIdOrAuto);
+    return matched ? matched.label : 'Automático';
+  }, [qualityOptions, selectedVariantIdOrAuto]);
+
+  const [isQualityMenuOpen, setIsQualityMenuOpen] = useState(false);
+  const qualitySelectorWrapRef = useRef<HTMLDivElement | null>(null);
+  const qualityTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const qualityMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const selectedGroupId = selectedGroup?.groupId ?? null;
+  useEffect(() => {
+    setIsQualityMenuOpen(false);
+  }, [selectedGroupId, hasQualitySelector]);
+
+  const closeQualityMenuAndRestoreFocus = useCallback(() => {
+    setIsQualityMenuOpen(false);
+    const restoreFocus = () => {
+      if (qualityTriggerRef.current && qualityTriggerRef.current.isConnected) {
+        focusElementSafely(qualityTriggerRef.current);
+      }
+    };
+    restoreFocus();
+    window.setTimeout(restoreFocus, 0);
+  }, []);
+
+  useBackHandler(
+    'live-quality-menu',
+    BACK_PRIORITY.CATEGORY_MENU,
+    () => {
+      closeQualityMenuAndRestoreFocus();
+      return true;
+    },
+    isQualityMenuOpen
+  );
+
+  useEffect(() => {
+    invalidateCandidateCache();
+    if (!isQualityMenuOpen) return;
+
+    const focusActiveOption = () => {
+      const menu = qualityMenuRef.current;
+      if (!menu) return;
+      const activeBtn =
+        menu.querySelector<HTMLButtonElement>('button[data-variant-active="true"]') ||
+        menu.querySelector<HTMLButtonElement>('button[data-live-quality-option]');
+      if (activeBtn) {
+        focusElementSafely(activeBtn);
+      }
+    };
+
+    focusActiveOption();
+    const timer = window.setTimeout(focusActiveOption, 0);
+    return () => window.clearTimeout(timer);
+  }, [isQualityMenuOpen]);
+
+  useEffect(() => {
+    if (!isQualityMenuOpen) return;
+    const handleOutsidePointerDown = (event: MouseEvent | PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (qualitySelectorWrapRef.current?.contains(target)) return;
+      setIsQualityMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', handleOutsidePointerDown, true);
+    document.addEventListener('mousedown', handleOutsidePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsidePointerDown, true);
+      document.removeEventListener('mousedown', handleOutsidePointerDown, true);
+    };
+  }, [isQualityMenuOpen]);
+
+  const handleSelectQualityOption = useCallback(
+    (variantIdOrAuto: string) => {
+      onSelectVariant(variantIdOrAuto);
+      closeQualityMenuAndRestoreFocus();
+    },
+    [onSelectVariant, closeQualityMenuAndRestoreFocus]
+  );
+
+  const handleQualityMenuKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!isQualityMenuOpen) return;
+      const menu = qualityMenuRef.current;
+      if (!menu) return;
+      const optionButtons: HTMLButtonElement[] = Array.from(
+        menu.querySelectorAll<HTMLButtonElement>('button[data-live-quality-option]')
+      );
+      if (optionButtons.length === 0) return;
+
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        event.stopPropagation();
+        const currentIdx = optionButtons.findIndex((btn) => btn === document.activeElement);
+        const nextIdx =
+          event.key === 'ArrowDown'
+            ? currentIdx < 0
+              ? 0
+              : Math.min(optionButtons.length - 1, currentIdx + 1)
+            : currentIdx < 0
+              ? 0
+              : Math.max(0, currentIdx - 1);
+        focusElementSafely(optionButtons[nextIdx], event.key === 'ArrowDown' ? 'down' : 'up');
+        return;
+      }
+
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [isQualityMenuOpen]
+  );
+
   return (
     <main
       data-nav-zone="content"
@@ -2462,12 +2613,12 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
             </button>
           </div>
 
-          {/* Top Section: Channel Info + Variants + Now Playing (Left) | Video Preview (Right) */}
+          {/* Top Section: Channel Info + Now Playing + Compact Quality Selector | Video Preview (stacked above in TV & mobile) */}
           <div
             data-live-top-section="true"
             className="nc-live-top-section shrink-0 p-4 sm:p-5 border-b border-white/10 flex flex-col-reverse md:flex-row gap-4 items-start min-w-0"
           >
-            {/* Channel Metadata + Variant Selector + Now Playing Summary */}
+            {/* Channel Metadata + Now Playing Summary + Compact Quality Selector */}
             <div
               data-live-info-column="true"
               className="flex-1 min-w-0 flex flex-col gap-3 w-full"
@@ -2510,57 +2661,6 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
                 </div>
               </div>
 
-              {/* Variant Selector Row (only rendered when multiple resolutions exist) */}
-              {selectedGroup.isGrouped && Array.isArray(selectedGroup.variants) && selectedGroup.variants.length > 1 && (
-                <div className="space-y-1.5 min-w-0">
-                  <span
-                    data-live-variant-label="true"
-                    className="nc-live-variant-label text-sm font-medium text-white/65 block"
-                  >
-                    Versão do canal
-                  </span>
-                  <div
-                    data-nav-row="true"
-                    data-live-variants-row="true"
-                    className="flex items-center gap-2 overflow-x-auto scrollbar-hide touch-pan-x py-1 max-w-full"
-                  >
-                    <button
-                      type="button"
-                      data-nav-item="true"
-                      data-variant-active={selectedVariantIdOrAuto === 'auto' ? 'true' : 'false'}
-                      onClick={() => onSelectVariant('auto')}
-                      className={`shrink-0 px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
-                        selectedVariantIdOrAuto === 'auto'
-                          ? 'bg-white text-black'
-                          : 'bg-white/10 text-white/80 hover:bg-white/20 hover:text-white'
-                      }`}
-                    >
-                      Automático
-                    </button>
-                    {selectedGroup.variants.map((variant) => {
-                      const vIdStr = String(variant.streamId);
-                      const isActive = selectedVariantIdOrAuto === vIdStr;
-                      return (
-                        <button
-                          key={vIdStr}
-                          type="button"
-                          data-nav-item="true"
-                          data-variant-active={isActive ? 'true' : 'false'}
-                          onClick={() => onSelectVariant(vIdStr)}
-                          className={`shrink-0 px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
-                            isActive
-                              ? 'bg-white text-black'
-                              : 'bg-white/10 text-white/80 hover:bg-white/20 hover:text-white'
-                          }`}
-                        >
-                          {variant.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
               {/* Now Playing Summary Card */}
               {currentEpgProgram && (
                 <div className="nc-live-now-playing rounded-lg bg-white/[0.04] border border-white/10 p-3 min-w-0">
@@ -2587,6 +2687,73 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
                     >
                       {currentEpgProgram.description}
                     </p>
+                  )}
+                </div>
+              )}
+
+              {/* Compact Quality Selector (only rendered when multiple resolutions exist) */}
+              {hasQualitySelector && (
+                <div
+                  ref={qualitySelectorWrapRef}
+                  data-live-quality-selector="true"
+                  className="relative inline-flex flex-col items-start max-w-full"
+                >
+                  <button
+                    ref={qualityTriggerRef}
+                    type="button"
+                    data-nav-item="true"
+                    data-live-quality-trigger="true"
+                    aria-haspopup="listbox"
+                    aria-expanded={isQualityMenuOpen}
+                    onClick={() => setIsQualityMenuOpen((prev) => !prev)}
+                    className="nc-live-quality-trigger inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/15 text-sm font-semibold text-white/90 transition-colors"
+                  >
+                    <span>Qualidade: {activeQualityLabel}</span>
+                    <ChevronDown
+                      className={`w-4 h-4 text-white/70 shrink-0 transition-transform ${
+                        isQualityMenuOpen ? 'rotate-180' : ''
+                      }`}
+                      aria-hidden="true"
+                    />
+                  </button>
+
+                  {isQualityMenuOpen && (
+                    <div
+                      ref={qualityMenuRef}
+                      role="listbox"
+                      aria-label="Selecionar qualidade do canal"
+                      data-live-quality-menu="true"
+                      data-focus-scope="modal"
+                      data-nav-zone="modal"
+                      onKeyDown={handleQualityMenuKeyDown}
+                      className="nc-live-quality-menu absolute left-0 top-full mt-1.5 z-40 min-w-[11rem] max-w-[16rem] rounded-xl bg-[#12131a]/95 backdrop-blur-md border border-white/15 shadow-2xl p-1.5 flex flex-col gap-1"
+                    >
+                      {qualityOptions.map((option) => {
+                        const isActive = selectedVariantIdOrAuto === option.id;
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            role="option"
+                            aria-selected={isActive}
+                            data-nav-item="true"
+                            data-live-quality-option={option.id}
+                            data-variant-active={isActive ? 'true' : 'false'}
+                            onClick={() => handleSelectQualityOption(option.id)}
+                            className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold text-left transition-colors ${
+                              isActive
+                                ? 'bg-white text-black'
+                                : 'text-white/85 hover:bg-white/15 hover:text-white'
+                            }`}
+                          >
+                            <span className="truncate">{option.label}</span>
+                            {isActive && (
+                              <Check className="w-4 h-4 shrink-0" aria-hidden="true" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               )}

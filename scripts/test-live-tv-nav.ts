@@ -1,4 +1,6 @@
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Window } from 'happy-dom';
 import React, { act, Profiler } from 'react';
 import { createRoot, Root } from 'react-dom/client';
@@ -289,6 +291,89 @@ htmlProto.getBoundingClientRect = function (this: HTMLElement) {
     };
   }
 
+  if (this.getAttribute?.('data-live-quality-trigger') === 'true') {
+    return {
+      left: 660,
+      top: 432,
+      right: 850,
+      bottom: 468,
+      width: 190,
+      height: 36,
+      x: 660,
+      y: 432,
+      toJSON: () => ({}),
+    };
+  }
+
+  if (this.getAttribute?.('data-live-quality-menu') === 'true') {
+    return {
+      left: 660,
+      top: 474,
+      right: 850,
+      bottom: 630,
+      width: 190,
+      height: 156,
+      x: 660,
+      y: 474,
+      toJSON: () => ({}),
+    };
+  }
+
+  if (this.hasAttribute?.('data-live-quality-option') && this.tagName === 'BUTTON') {
+    const siblings = Array.from(
+      this.parentElement?.querySelectorAll('button[data-live-quality-option]') ?? []
+    );
+    const idx = Math.max(0, siblings.indexOf(this as HTMLButtonElement));
+    const top = 480 + idx * 36;
+    return {
+      left: 666,
+      top,
+      right: 844,
+      bottom: top + 32,
+      width: 178,
+      height: 32,
+      x: 666,
+      y: top,
+      toJSON: () => ({}),
+    };
+  }
+
+  if (
+    this.getAttribute?.('data-epg-item') === 'true' ||
+    this.getAttribute?.('data-epg-primary') === 'true'
+  ) {
+    const siblings = Array.from(
+      this.parentElement?.querySelectorAll('[data-epg-item="true"], [data-epg-primary="true"]') ?? []
+    );
+    const idx = Math.max(0, siblings.indexOf(this));
+    const top = 524 + idx * 72;
+    return {
+      left: 660,
+      top,
+      right: 1240,
+      bottom: top + 64,
+      width: 580,
+      height: 64,
+      x: 660,
+      y: top,
+      toJSON: () => ({}),
+    };
+  }
+
+  if (this.getAttribute?.('data-mobile-back') === 'true') {
+    return {
+      left: 16,
+      top: 72,
+      right: 156,
+      bottom: 104,
+      width: 140,
+      height: 32,
+      x: 16,
+      y: 72,
+      toJSON: () => ({}),
+    };
+  }
+
   if (this.hasAttribute?.('data-test-rect-top')) {
     const left = Number(this.getAttribute('data-test-rect-left') || 40);
     const top = Number(this.getAttribute('data-test-rect-top') || 120);
@@ -361,7 +446,7 @@ const {
 const { XtreamCredentialsContext, XtreamLiveContext } = await import(
   '../src/context/XtreamContext'
 );
-const { LiveTvView } = await import('../src/views/LiveTvView');
+const { LiveTvView, computeLiveTvLayoutMetrics } = await import('../src/views/LiveTvView');
 const { VideoPlayer } = await import('../src/components/VideoPlayer');
 const { usePlaybackSession } = await import('../src/components/player/usePlaybackSession');
 
@@ -1241,16 +1326,25 @@ async function runTests() {
         });
         await flush(6);
 
-        const variantsRow = host.querySelector<HTMLElement>('[data-live-variants-row="true"]');
-        const variantButtons = variantsRow
-          ? Array.from(variantsRow.querySelectorAll<HTMLButtonElement>('button'))
-          : [];
+        const qualityTrigger = host.querySelector<HTMLButtonElement>(
+          '[data-live-quality-trigger="true"]'
+        );
         assert.ok(
-          variantsRow && variantButtons.length >= 4,
-          `Variantes Automático/SD/HD/FHD devem estar visíveis no painel direito (encontrados: ${variantButtons.length})`
+          qualityTrigger,
+          'Canal agrupado SD/HD/FHD deve exibir o controle compacto [data-live-quality-trigger="true"] no painel direito'
+        );
+        assert.strictEqual(
+          host.querySelector('[data-live-variants-row="true"]'),
+          null,
+          'Fileira fixa [data-live-variants-row="true"] não deve mais ser exibida no painel direito'
+        );
+        assert.strictEqual(
+          host.querySelector('[data-live-quality-menu="true"]'),
+          null,
+          'Menu compacto de qualidade deve iniciar fechado'
         );
 
-        // Voltar ao cabeçalho TV ao Vivo e pressionar ArrowDown: NÃO pode desviar para SD/HD/FHD
+        // Voltar ao cabeçalho TV ao Vivo e pressionar ArrowDown: NÃO pode desviar para o controle de qualidade
         act(() => {
           focusElementSafely(liveHeaderBtn);
         });
@@ -1258,8 +1352,8 @@ async function runTests() {
         await dispatchArrow('ArrowDown');
         const activeWithVariants = document.activeElement as HTMLElement | null;
         assert.ok(
-          activeWithVariants && !variantsRow.contains(activeWithVariants),
-          'Presença de SD/HD/FHD não pode interceptar ArrowDown a partir do cabeçalho TV ao Vivo'
+          activeWithVariants && activeWithVariants !== qualityTrigger,
+          'Presença do controle compacto de qualidade não pode interceptar ArrowDown a partir do cabeçalho TV ao Vivo'
         );
         assert.ok(
           activeWithVariants && leftPane.contains(activeWithVariants),
@@ -1271,16 +1365,42 @@ async function runTests() {
           'Foco deve retornar ao canal de origem/selecionado'
         );
 
-        // Acesso horizontal às resoluções continua preservado
+        // Acesso ao seletor de qualidade e navegação D-pad dentro do menu continuam funcionais
         act(() => {
-          focusElementSafely(variantButtons[0]);
+          focusElementSafely(qualityTrigger);
+          qualityTrigger.click();
         });
-        await flush();
-        await dispatchArrow('ArrowRight');
+        await flush(4);
+        const openedMenu = host.querySelector<HTMLElement>('[data-live-quality-menu="true"]');
+        assert.ok(openedMenu, 'Menu compacto de qualidade deve abrir ao acionar o trigger');
+        const optionButtons = Array.from(
+          openedMenu!.querySelectorAll<HTMLButtonElement>('button[data-live-quality-option]')
+        );
+        assert.ok(optionButtons.length >= 4, 'Menu compacto deve listar Automático + SD/HD/FHD');
         assert.strictEqual(
           document.activeElement,
-          variantButtons[1],
-          'Navegação horizontal entre resoluções (Automático -> SD/HD/FHD) deve permanecer funcional'
+          optionButtons[0],
+          'Ao abrir o menu, foco deve mover para a opção ativa (Automático)'
+        );
+        await dispatchArrow('ArrowDown');
+        assert.strictEqual(
+          document.activeElement,
+          optionButtons[1],
+          'ArrowDown dentro do menu compacto deve avançar para a próxima resolução'
+        );
+        act(() => {
+          executeBackAction();
+        });
+        await flush(4);
+        assert.strictEqual(
+          host.querySelector('[data-live-quality-menu="true"]'),
+          null,
+          'Back deve fechar o menu compacto de qualidade'
+        );
+        assert.strictEqual(
+          document.activeElement,
+          qualityTrigger,
+          'Back deve restaurar o foco ao botão compacto de qualidade'
         );
 
         // 5. Restauração de foco com virtualização a partir do cabeçalho TV ao Vivo
@@ -1931,6 +2051,485 @@ async function runTests() {
 
       await runVideoPlayerIntegration(true);
       await runVideoPlayerIntegration(false);
+    }
+  );
+
+  // --------------------------------------------------------------------------
+  // Cenário I: Preview TV ampliado (100%, limite ~42dvh, EPG visível/rolável),
+  // seletor compacto de qualidade, preservação do <video> e layout mobile
+  // --------------------------------------------------------------------------
+  await runCase(
+    '9. Preview TV ampliado acima das informações com limite ~42dvh, seletor compacto de qualidade (D-pad/Back/troca de canal/preservação de <video>) e mobile preservado',
+    async () => {
+      // 1-4 & 13. Métricas de layout em TV (720p, 1080p, viewport baixa), desktop padrão e mobile
+      const tv720 = computeLiveTvLayoutMetrics({
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        uiScale: 1,
+        displayMode: 'tv',
+        isGrouped: true,
+        hasNowPlaying: true,
+        epgCount: 12,
+      });
+      const default720 = computeLiveTvLayoutMetrics({
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        uiScale: 1,
+        displayMode: 'default',
+        isGrouped: true,
+        hasNowPlaying: true,
+        epgCount: 12,
+      });
+      const tvShortViewport = computeLiveTvLayoutMetrics({
+        viewportWidth: 1280,
+        viewportHeight: 540,
+        uiScale: 1,
+        displayMode: 'tv',
+        isGrouped: true,
+        hasNowPlaying: true,
+        epgCount: 12,
+      });
+      const mobileMetrics = computeLiveTvLayoutMetrics({
+        viewportWidth: 390,
+        viewportHeight: 844,
+        uiScale: 1,
+        displayMode: 'default',
+        isGrouped: true,
+        hasNowPlaying: true,
+        epgCount: 12,
+      });
+
+      // TV: direção vertical na seção superior e preview ampliado usando largura interna da coluna direita
+      assert.strictEqual(
+        tv720.topSectionDirection,
+        'column',
+        'Apresentação TV deve usar direção vertical (column) na seção superior'
+      );
+      assert.strictEqual(
+        default720.topSectionDirection,
+        'row',
+        'Apresentação desktop não-TV deve preservar direção horizontal (row)'
+      );
+      assert.ok(
+        tv720.previewWidth > default720.previewWidth * 1.8,
+        `Preview TV deve ter largura ampliada no painel direito (TV=${tv720.previewWidth}px vs Default=${default720.previewWidth}px)`
+      );
+      assert.ok(
+        tv720.previewWidth >= tv720.rightPaneWidth - 40,
+        `Preview TV deve ocupar praticamente toda a largura interna da coluna direita (${tv720.previewWidth}/${tv720.rightPaneWidth})`
+      );
+      // Limite proporcional ~42dvh em telas de altura padrão e baixa
+      assert.ok(
+        tv720.previewHeight <= Math.round(720 * 0.42),
+        `Altura do preview em 720p deve respeitar limite de ~42% (${tv720.previewHeight}px)`
+      );
+      assert.ok(
+        tvShortViewport.previewHeight <= Math.round(540 * 0.42),
+        `Altura do preview em viewport baixa (540px) deve ser limitada a ~42% (${tvShortViewport.previewHeight}px)`
+      );
+      assert.ok(
+        tvShortViewport.previewHeight < tv720.previewHeight,
+        'Viewport mais baixa deve reduzir proporcionalmente a altura do preview'
+      );
+      // EPG continua visível e rolável em TV (inclusive viewport baixa)
+      assert.ok(
+        tv720.epgSectionHeight >= 260 && tv720.epgScrollViewportHeight >= 220 && tv720.epgMaxScrollTop > 0,
+        'EPG em TV 720p deve manter altura utilizável e rolagem independente'
+      );
+      assert.ok(
+        tvShortViewport.epgSectionHeight >= 260 &&
+          tvShortViewport.epgScrollViewportHeight >= 220 &&
+          tvShortViewport.epgMaxScrollTop > 0,
+        'EPG em TV com pouca altura deve continuar visível e rolável'
+      );
+      // Mobile preservado
+      assert.strictEqual(mobileMetrics.isMobile, true, 'Layout mobile deve continuar detectado abaixo de 768px');
+      assert.strictEqual(mobileMetrics.topSectionDirection, 'column', 'Layout mobile deve continuar em coluna');
+      assert.strictEqual(mobileMetrics.rightPaneWidth, 390, 'Painel mobile deve ocupar 100% da viewport');
+      assert.ok(mobileMetrics.epgScrollViewportHeight >= 220, 'EPG mobile deve continuar rolável');
+
+      // Verificar regras CSS críticas de apresentação TV em src/index.css
+      const indexCss = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8');
+      const tvTopSectionBlock = indexCss.match(
+        /html\[data-display-mode="tv"\]\s+\.nc-live-top-section\s*\{[^}]*\}/
+      )?.[0];
+      const tvPreviewBoxBlock = indexCss.match(
+        /html\[data-display-mode="tv"\]\s+\.nc-live-preview-box\s*\{[^}]*\}/
+      )?.[0];
+      const tvRightPaneBlock = indexCss.match(
+        /html\[data-display-mode="tv"\]\s+\.nc-live-right-pane\s*\{[^}]*\}/
+      )?.[0];
+      assert.ok(
+        tvTopSectionBlock?.includes('flex-direction: column-reverse !important'),
+        'CSS TV deve inverter .nc-live-top-section para exibir preview acima das informações'
+      );
+      assert.ok(
+        tvPreviewBoxBlock?.includes('width: 100% !important') &&
+          tvPreviewBoxBlock?.includes('42dvh') &&
+          !tvPreviewBoxBlock?.includes('clamp('),
+        'CSS TV deve substituir clamp estreito por width: 100% e limite em torno de 42dvh'
+      );
+      assert.ok(
+        tvRightPaneBlock?.includes('overflow-y: auto !important'),
+        'CSS TV deve permitir rolagem vertical do painel direito em telas baixas ou escala elevada'
+      );
+
+      // 5-12. Fluxo completo no DOM de LiveTvView em modo TV + Lite
+      const catalog = buildLargeLiveCatalog();
+      // Canal agrupado no índice 0 (SD/HD/FHD) e canal único (sem variantes extras) no índice 1
+      catalog.liveStreams.unshift(
+        {
+          num: 951,
+          name: 'Canal Premium SD',
+          stream_type: 'live',
+          stream_id: 951,
+          stream_icon: '',
+          epg_channel_id: '',
+          added: '1700000000',
+          category_id: '1',
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        },
+        {
+          num: 952,
+          name: 'Canal Premium HD',
+          stream_type: 'live',
+          stream_id: 952,
+          stream_icon: '',
+          epg_channel_id: '',
+          added: '1700000000',
+          category_id: '1',
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        },
+        {
+          num: 953,
+          name: 'Canal Premium FHD',
+          stream_type: 'live',
+          stream_id: 953,
+          stream_icon: '',
+          epg_channel_id: '',
+          added: '1700000000',
+          category_id: '1',
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        },
+        {
+          num: 954,
+          name: 'Canal Unico HD',
+          stream_type: 'live',
+          stream_id: 954,
+          stream_icon: '',
+          epg_channel_id: '',
+          added: '1700000000',
+          category_id: '1',
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        }
+      );
+
+      resetEnv(true, 'tv', 'remote', 'lite');
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const root: Root = createRoot(host);
+
+      const credentials = {
+        serverUrl: 'http://example.test:8080',
+        username: 'demo',
+        password: 'secret',
+      };
+      const liveContextValue = {
+        liveCategories: catalog.liveCategories,
+        liveStreams: catalog.liveStreams,
+        allLiveStreams: catalog.liveStreams,
+        liveCategoriesStatus: 'ready' as const,
+        liveCatalogStatus: 'ready' as const,
+        liveCategoriesError: null,
+        liveError: null,
+        loadingLive: false,
+        loadedLiveCatalog: true,
+        fetchLiveCategories: async () => {},
+        fetchLiveStreams: async () => {},
+      };
+
+      try {
+        await act(async () => {
+          root.render(
+            React.createElement(
+              XtreamCredentialsContext.Provider,
+              { value: { credentials } },
+              React.createElement(
+                XtreamLiveContext.Provider,
+                { value: liveContextValue },
+                React.createElement(
+                  NavigationProvider,
+                  null,
+                  React.createElement(
+                    'div',
+                    null,
+                    React.createElement(
+                      'header',
+                      { 'data-nav-zone': 'header' },
+                      React.createElement(
+                        'button',
+                        {
+                          type: 'button',
+                          'data-nav-item': 'true',
+                          'data-header-nav-id': 'live',
+                          'data-header-nav-active': 'true',
+                        },
+                        'TV ao Vivo'
+                      )
+                    ),
+                    React.createElement(LiveTvView)
+                  )
+                )
+              )
+            )
+          );
+        });
+        await flush(6);
+
+        const ch0Btn = host.querySelector<HTMLButtonElement>(
+          '[data-home-row-index="0"] button[data-live-channel-btn="true"][data-row-card-index="0"]'
+        )!;
+        const ch1Btn = host.querySelector<HTMLButtonElement>(
+          '[data-home-row-index="0"] button[data-live-channel-btn="true"][data-row-card-index="1"]'
+        )!;
+        const liveHeaderBtn = host.querySelector<HTMLButtonElement>(
+          'button[data-header-nav-id="live"]'
+        )!;
+        const leftPane = host.querySelector<HTMLElement>(
+          '.nc-live-left-pane[data-nav-zone="categories"]'
+        )!;
+        assert.ok(ch0Btn && ch1Btn, 'Canais agrupado e único devem estar montados na linha 0');
+
+        // Seleciona canal agrupado (SD/HD/FHD)
+        act(() => {
+          focusElementSafely(ch0Btn);
+          ch0Btn.click();
+        });
+        await flush(6);
+
+        // Verifica estrutura DOM: apenas 1 <video>, preview dentro de top-section, EPG presente, mobile back preservado
+        const allVideos = host.querySelectorAll('video');
+        assert.strictEqual(allVideos.length, 1, 'Deve existir exatamente um elemento <video> no preview');
+        const initialVideoEl = allVideos[0];
+        assert.ok(
+          host.querySelector('[data-live-top-section="true"] [data-live-preview-column="true"] video') ===
+            initialVideoEl,
+          'Preview existente deve permanecer dentro de data-live-preview-column'
+        );
+        assert.ok(
+          host.querySelector('[data-live-epg-section="true"] [data-epg-scroll="true"]'),
+          'Grade de Programação com container rolável deve permanecer montada'
+        );
+        assert.ok(
+          host.querySelector('[data-mobile-back="true"]'),
+          'Controle de retorno mobile deve permanecer preservado'
+        );
+
+        // 5. Seletor compacto inicia fechado e sem elementos ocultos na navegação
+        const trigger = host.querySelector<HTMLButtonElement>('[data-live-quality-trigger="true"]')!;
+        assert.ok(trigger, 'Botão compacto de qualidade deve existir para canal com múltiplas variantes');
+        assert.strictEqual(trigger.getAttribute('aria-expanded'), 'false');
+        assert.ok(
+          trigger.textContent?.includes('Qualidade: Automático'),
+          `Trigger inicial deve exibir Qualidade: Automático (atual: ${trigger.textContent})`
+        );
+        assert.strictEqual(
+          host.querySelector('[data-live-quality-menu="true"]'),
+          null,
+          'Menu de qualidade não deve existir no DOM enquanto fechado'
+        );
+        assert.strictEqual(
+          host.querySelectorAll('[data-live-quality-option]').length,
+          0,
+          'Nenhuma opção oculta deve participar da navegação D-pad enquanto o menu estiver fechado'
+        );
+
+        // 6. Abrir menu mostra Automático + variantes e move foco para opção ativa
+        act(() => {
+          focusElementSafely(trigger);
+          trigger.click();
+        });
+        await flush(6);
+        const menu = host.querySelector<HTMLElement>('[data-live-quality-menu="true"]')!;
+        assert.ok(menu, 'Menu de qualidade deve abrir ao acionar o trigger');
+        assert.strictEqual(trigger.getAttribute('aria-expanded'), 'true');
+        const options = Array.from(
+          menu.querySelectorAll<HTMLButtonElement>('button[data-live-quality-option]')
+        );
+        const optionLabels = options.map((o) => o.textContent?.trim());
+        assert.deepStrictEqual(
+          optionLabels,
+          ['Automático', 'FHD', 'HD', 'SD'],
+          `Menu deve listar Automático e variantes do canal (atual: ${JSON.stringify(optionLabels)})`
+        );
+        assert.strictEqual(
+          options[0].getAttribute('data-variant-active'),
+          'true',
+          'Automático deve estar marcado como opção ativa'
+        );
+        assert.strictEqual(
+          document.activeElement,
+          options[0],
+          'Ao abrir o menu, o foco deve ir para a opção ativa'
+        );
+        assert.strictEqual(
+          host.querySelector('video'),
+          initialVideoEl,
+          'Abrir o menu de qualidade não pode recriar o elemento <video>'
+        );
+
+        // 7. Navegação D-pad (ArrowDown / ArrowUp / ArrowLeft / ArrowRight) sem vazar foco
+        await dispatchArrow('ArrowDown');
+        assert.strictEqual(document.activeElement, options[1], 'ArrowDown deve mover para FHD');
+        await dispatchArrow('ArrowDown');
+        assert.strictEqual(document.activeElement, options[2], 'ArrowDown deve mover para HD');
+        await dispatchArrow('ArrowLeft');
+        assert.ok(
+          menu.contains(document.activeElement),
+          'ArrowLeft no menu aberto não pode vazar foco para canais ou EPG'
+        );
+        await dispatchArrow('ArrowRight');
+        assert.ok(
+          menu.contains(document.activeElement),
+          'ArrowRight no menu aberto não pode vazar foco para fora do menu'
+        );
+        await dispatchArrow('ArrowUp');
+        assert.strictEqual(document.activeElement, options[1], 'ArrowUp deve retornar para FHD');
+
+        // 9. Back fecha sem alterar resolução e restaura foco ao botão compacto
+        act(() => {
+          executeBackAction();
+        });
+        await flush(6);
+        assert.strictEqual(
+          host.querySelector('[data-live-quality-menu="true"]'),
+          null,
+          'Back deve fechar o menu de qualidade'
+        );
+        assert.strictEqual(
+          document.activeElement,
+          trigger,
+          'Back deve restaurar foco ao botão compacto de qualidade'
+        );
+        assert.ok(
+          trigger.textContent?.includes('Qualidade: Automático'),
+          'Back não deve alterar a resolução ativa'
+        );
+        assert.strictEqual(
+          host.querySelector('video'),
+          initialVideoEl,
+          'Fechar menu via Back deve manter exatamente o mesmo elemento <video>'
+        );
+
+        // 8 & 11. Seleção manual de HD aplica variante, fecha menu, restaura foco e preserva o mesmo <video>
+        act(() => {
+          trigger.click();
+        });
+        await flush(6);
+        const menuForSelect = host.querySelector<HTMLElement>('[data-live-quality-menu="true"]')!;
+        const hdOption = Array.from(
+          menuForSelect.querySelectorAll<HTMLButtonElement>('button[data-live-quality-option]')
+        ).find((btn) => btn.textContent?.trim() === 'HD')!;
+        assert.ok(hdOption, 'Opção HD deve existir no menu');
+        act(() => {
+          hdOption.click();
+        });
+        await flush(6);
+        assert.strictEqual(
+          host.querySelector('[data-live-quality-menu="true"]'),
+          null,
+          'Selecionar HD deve fechar o menu'
+        );
+        assert.ok(
+          trigger.textContent?.includes('Qualidade: HD'),
+          `Trigger deve exibir Qualidade: HD após seleção manual (atual: ${trigger.textContent})`
+        );
+        assert.strictEqual(
+          document.activeElement,
+          trigger,
+          'Selecionar opção deve restaurar foco ao botão compacto'
+        );
+        assert.strictEqual(
+          host.querySelector('video'),
+          initialVideoEl,
+          'Selecionar variante pelo seletor compacto deve preservar exatamente o mesmo <video>'
+        );
+
+        // Clique fora fecha o menu
+        act(() => {
+          trigger.click();
+        });
+        await flush(4);
+        assert.ok(host.querySelector('[data-live-quality-menu="true"]'), 'Menu deve reabrir');
+        const epgHeader = host.querySelector<HTMLElement>('[data-live-epg-header="true"]')!;
+        act(() => {
+          epgHeader.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        });
+        await flush(4);
+        assert.strictEqual(
+          host.querySelector('[data-live-quality-menu="true"]'),
+          null,
+          'Clique fora deve fechar o menu compacto de qualidade'
+        );
+
+        // 12. Cabeçalho TV ao Vivo + ArrowDown continua retornando às categorias mesmo após seleção manual
+        act(() => {
+          focusElementSafely(liveHeaderBtn);
+        });
+        await flush();
+        await dispatchArrow('ArrowDown');
+        assert.ok(
+          document.activeElement && leftPane.contains(document.activeElement),
+          'Cabeçalho TV ao Vivo + ArrowDown deve continuar retornando às categorias'
+        );
+
+        // 10. Trocar de canal fecha o menu aberto (e canal sem múltiplas variantes oculta o controle)
+        act(() => {
+          focusElementSafely(trigger);
+          trigger.click();
+        });
+        await flush(4);
+        assert.ok(
+          host.querySelector('[data-live-quality-menu="true"]'),
+          'Menu deve estar aberto antes da troca de canal'
+        );
+        act(() => {
+          ch1Btn.click();
+        });
+        await flush(6);
+        assert.strictEqual(
+          host.querySelector('[data-live-quality-menu="true"]'),
+          null,
+          'Trocar de canal deve fechar qualquer menu de qualidade aberto'
+        );
+        assert.strictEqual(
+          host.querySelector('[data-live-quality-trigger="true"]'),
+          null,
+          'Canal com apenas uma variante não deve exibir o controle compacto de qualidade'
+        );
+        assert.strictEqual(
+          host.querySelector('video'),
+          initialVideoEl,
+          'Troca de canal no preview deve manter o mesmo elemento <video> sem recriar player'
+        );
+      } finally {
+        await act(async () => {
+          root.unmount();
+        });
+        host.remove();
+      }
     }
   );
 

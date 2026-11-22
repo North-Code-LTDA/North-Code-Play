@@ -972,27 +972,53 @@ html[data-nav-mode="remote"] .nc-live-horizontal-card[data-card-focused="true"] 
   }
 }
 
+html[data-display-mode="tv"] .nc-live-right-pane {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+
+html[data-display-mode="tv"] [data-live-content-stack="true"] {
+  flex: 1 0 100% !important;
+  min-height: min-content !important;
+  overflow: visible !important;
+}
+
 html[data-display-mode="tv"] .nc-live-top-section {
-  padding: calc(0.55 * var(--nc-rem)) calc(0.85 * var(--nc-rem)) !important;
+  flex-direction: column-reverse !important;
+  align-items: stretch !important;
+  padding: calc(0.65 * var(--nc-rem)) calc(0.85 * var(--nc-rem)) !important;
   gap: calc(0.65 * var(--nc-rem)) !important;
 }
 
 html[data-display-mode="tv"] .nc-live-preview-box {
-  width: clamp(calc(11 * var(--nc-rem)), 23vw, calc(15 * var(--nc-rem))) !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  aspect-ratio: 16 / 9 !important;
+  max-height: 42vh !important;
+  max-height: 42dvh !important;
+}
+
+html[data-display-mode="tv"] .nc-live-preview-box [data-player-presentation="compact-preview"] {
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  aspect-ratio: auto !important;
 }
 
 html[data-display-mode="tv"] .nc-live-channel-logo {
-  width: calc(3.5 * var(--nc-rem)) !important;
-  height: calc(3.5 * var(--nc-rem)) !important;
+  width: calc(2.75 * var(--nc-rem)) !important;
+  height: calc(2.75 * var(--nc-rem)) !important;
 }
 
 html[data-display-mode="tv"] .nc-live-channel-title {
-  font-size: calc(1.375 * var(--nc-rem)) !important;
+  font-size: calc(1.25 * var(--nc-rem)) !important;
   line-height: 1.25 !important;
 }
 
 html[data-display-mode="tv"] .nc-live-variant-label,
-html[data-display-mode="tv"] [data-live-variants-row="true"] button {
+html[data-display-mode="tv"] [data-live-variants-row="true"] button,
+html[data-display-mode="tv"] .nc-live-quality-trigger,
+html[data-display-mode="tv"] .nc-live-quality-menu [data-live-quality-option] {
   font-size: calc(0.875 * var(--nc-rem)) !important;
 }
 
@@ -1017,11 +1043,18 @@ html[data-display-mode="tv"] .nc-live-now-playing-desc {
   overflow: hidden !important;
 }
 
+html[data-display-mode="tv"] [data-live-epg-section="true"] {
+  flex: 1 1 0% !important;
+  min-height: calc(14 * var(--nc-rem)) !important;
+  overflow: hidden !important;
+}
+
 html[data-display-mode="tv"] .nc-live-epg-header {
   padding: calc(0.45 * var(--nc-rem)) calc(0.85 * var(--nc-rem)) !important;
 }
 
 html[data-display-mode="tv"] .nc-live-epg-scroll {
+  overflow-y: auto !important;
   padding: calc(0.55 * var(--nc-rem)) calc(0.85 * var(--nc-rem)) !important;
 }
 
@@ -1372,8 +1405,18 @@ html[data-performance-mode="lite"] [data-hero-stage="true"] {
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-channel-fav,
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-row-scroll-prev="true"],
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-row-scroll-next="true"],
-html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-variants-row="true"] button {
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-variants-row="true"] button,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-quality-trigger="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-quality-trigger="true"] svg,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-quality-menu="true"] [data-live-quality-option] {
   transition: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-quality-menu="true"] {
+  background-color: #12131a !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.7) !important;
 }
 
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-row-scroll-prev="true"] svg,
@@ -1613,6 +1656,10 @@ html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-channel-fav:fo
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-channel-fav:focus-visible,
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-variants-row="true"] button:focus,
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-variants-row="true"] button:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-quality-trigger="true"]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-quality-trigger="true"]:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-quality-menu="true"] [data-live-quality-option]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-quality-menu="true"] [data-live-quality-option]:focus-visible,
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-logo-btn:focus,
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-logo-btn:focus-visible,
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-icon-btn:focus,
