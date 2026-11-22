@@ -2363,6 +2363,7 @@ interface LiveTvRightPaneProps {
   fullscreenRequestTrigger: number;
   playbackError: string | null;
   isMobilePlayerOpen: boolean;
+  isLiteActive: boolean;
   rightPaneEpg: LiveEpgSnapshot | null;
   rightPaneEpgLoading: boolean;
   videoPlayerRef: React.RefObject<VideoPlayerHandle | null>;
@@ -2383,6 +2384,7 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
   fullscreenRequestTrigger,
   playbackError,
   isMobilePlayerOpen,
+  isLiteActive,
   rightPaneEpg,
   rightPaneEpgLoading,
   videoPlayerRef,
@@ -2613,6 +2615,7 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
                 attemptTrigger={attemptTrigger}
                 fullscreenRequestTrigger={fullscreenRequestTrigger}
                 embedded={true}
+                liteLivePreview={isLiteActive}
                 disableEmbeddedControlsFocus={true}
                 onBack={onClosePreviewAndRestoreFocus}
                 onRetry={onManualRetry}
@@ -3786,6 +3789,7 @@ export const LiveTvView = React.memo(function LiveTvView({
         fullscreenRequestTrigger={fullscreenRequestTrigger}
         playbackError={playbackError}
         isMobilePlayerOpen={isMobilePlayerOpen}
+        isLiteActive={isLiteActive}
         rightPaneEpg={rightPaneEpg}
         rightPaneEpgLoading={rightPaneEpgLoading}
         videoPlayerRef={videoPlayerRef}

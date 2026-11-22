@@ -2867,6 +2867,19 @@ function moveSpatialFocusFallback(
       }
 
       if (currentZone === 'header') {
+        const isLiveHeaderNav = activeEl.getAttribute('data-header-nav-id') === 'live';
+        const isLiveTvMounted =
+          typeof document !== 'undefined' &&
+          Boolean(document.querySelector('.nc-live-left-pane[data-nav-zone="categories"]'));
+
+        if (isLiveHeaderNav && isLiveTvMounted) {
+          const liveCategoriesTarget = pickPreferredZoneEntry(candidates, 'categories', ctx);
+          if (liveCategoriesTarget && isElementFocusable(liveCategoriesTarget)) {
+            focusElementSafely(liveCategoriesTarget, 'down');
+            return liveCategoriesTarget;
+          }
+        }
+
         const contentCandidates = candidates.filter((c) => getLogicalZone(c, ctx) === 'content');
         const contentBlocks = buildZoneBlocks(contentCandidates, ctx);
         if (

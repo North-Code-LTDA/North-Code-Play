@@ -71,6 +71,7 @@ interface UsePlaybackSessionOptions {
   onPlaybackSuccess?: (attemptId?: number) => void;
   onPlaybackFinalError?: (errorMessage: string, attemptId?: number) => void;
   isControlsVisible?: boolean;
+  suppressLivePreviewVisualMetrics?: boolean;
   externalSubtitles?: ExternalSubtitleTrackInput[];
 }
 
@@ -488,6 +489,7 @@ export function usePlaybackSession({
   onPlaybackSuccess,
   onPlaybackFinalError,
   isControlsVisible = true,
+  suppressLivePreviewVisualMetrics = false,
   externalSubtitles,
 }: UsePlaybackSessionOptions) {
   const activeAccountRef = useRef<AccountIdentity | null>(credentials || null);
@@ -539,8 +541,12 @@ export function usePlaybackSession({
   const currentTimeRef = useRef(0);
   const durationRef = useRef(0);
 
+  const suppressLivePreviewVisualMetricsRef = useRef(suppressLivePreviewVisualMetrics);
+  suppressLivePreviewVisualMetricsRef.current = suppressLivePreviewVisualMetrics;
+
   const shouldPublishControls =
-    isControlsVisible || (!isPlaying && !isLoading && !isBuffering);
+    !suppressLivePreviewVisualMetrics &&
+    (isControlsVisible || (!isPlaying && !isLoading && !isBuffering));
   const shouldPublishControlsRef = useRef(shouldPublishControls);
   shouldPublishControlsRef.current = shouldPublishControls;
 
@@ -755,6 +761,23 @@ export function usePlaybackSession({
     const dur = isFinite(rawDur) && !isNaN(rawDur) && rawDur > 0 ? rawDur : 0;
     currentTimeRef.current = cur;
     durationRef.current = dur;
+
+    let liveSyncPos: number | null = null;
+    let liveDist = 0;
+    if (isLive && hlsRef.current) {
+      const syncPos = hlsRef.current.liveSyncPosition;
+      if (syncPos !== null && syncPos !== undefined && syncPos > 0) {
+        liveSyncPos = syncPos;
+        liveDist = Math.max(0, syncPos - cur);
+        liveSyncPositionRef.current = syncPos;
+        liveEdgeDistanceRef.current = liveDist;
+      }
+    }
+
+    if (suppressLivePreviewVisualMetricsRef.current) {
+      return;
+    }
+
     setCurrentTime(cur);
     setDuration(dur);
 
@@ -762,15 +785,9 @@ export function usePlaybackSession({
     setBufferedRanges(ranges);
     setBufferedAhead(ahead);
 
-    if (isLive && hlsRef.current) {
-      const syncPos = hlsRef.current.liveSyncPosition;
-      if (syncPos !== null && syncPos !== undefined && syncPos > 0) {
-        const dist = Math.max(0, syncPos - cur);
-        liveSyncPositionRef.current = syncPos;
-        liveEdgeDistanceRef.current = dist;
-        setLiveSyncPosition(syncPos);
-        setLiveEdgeDistance(dist);
-      }
+    if (liveSyncPos !== null) {
+      setLiveSyncPosition(liveSyncPos);
+      setLiveEdgeDistance(liveDist);
     }
   }, [videoRef, streamUrl, calculateBufferStats, isLive]);
 
@@ -906,7 +923,7 @@ export function usePlaybackSession({
     const handlePause = () => {
       if (sessionIdRef.current !== currentSessionId) return;
       setIsPlaying(false);
-      if (!shouldPublishControlsRef.current) {
+      if (!shouldPublishControlsRef.current && !suppressLivePreviewVisualMetricsRef.current) {
         syncVisualControlsStateFromVideo();
       }
       // Save progress on pause for VOD/series
@@ -961,7 +978,7 @@ export function usePlaybackSession({
         }
       }
 
-      if (!shouldPublishControlsRef.current) {
+      if (suppressLivePreviewVisualMetricsRef.current || !shouldPublishControlsRef.current) {
         return;
       }
 
@@ -983,7 +1000,7 @@ export function usePlaybackSession({
       const dur = video.duration;
       const normalizedDur = isFinite(dur) && !isNaN(dur) && dur > 0 ? dur : 0;
       durationRef.current = normalizedDur;
-      if (shouldPublishControlsRef.current) {
+      if (!suppressLivePreviewVisualMetricsRef.current && shouldPublishControlsRef.current) {
         setDuration(normalizedDur);
       }
     };
@@ -1002,7 +1019,7 @@ export function usePlaybackSession({
 
     const handleProgress = () => {
       if (sessionIdRef.current !== currentSessionId) return;
-      if (!shouldPublishControlsRef.current) {
+      if (suppressLivePreviewVisualMetricsRef.current || !shouldPublishControlsRef.current) {
         return;
       }
       const { ranges, ahead } = calculateBufferStats(video);

@@ -238,6 +238,75 @@ htmlProto.getBoundingClientRect = function (this: HTMLElement) {
     };
   }
 
+  if (this.hasAttribute?.('data-header-nav-id')) {
+    const id = this.getAttribute('data-header-nav-id');
+    const order = ['home', 'live', 'movies', 'series', 'favorites'];
+    const idx = Math.max(0, order.indexOf(id || 'home'));
+    const left = 240 + idx * 110;
+    return {
+      left,
+      top: 12,
+      right: left + 96,
+      bottom: 48,
+      width: 96,
+      height: 36,
+      x: left,
+      y: 12,
+      toJSON: () => ({}),
+    };
+  }
+
+  if (this.getAttribute?.('data-live-variants-row') === 'true') {
+    return {
+      left: 660,
+      top: 140,
+      right: 980,
+      bottom: 180,
+      width: 320,
+      height: 40,
+      x: 660,
+      y: 140,
+      toJSON: () => ({}),
+    };
+  }
+
+  if (this.closest?.('[data-live-variants-row="true"]') && this.tagName === 'BUTTON') {
+    const siblings = Array.from(
+      this.parentElement?.querySelectorAll('button') ?? []
+    );
+    const idx = Math.max(0, siblings.indexOf(this as HTMLButtonElement));
+    const left = 660 + idx * 78;
+    return {
+      left,
+      top: 144,
+      right: left + 70,
+      bottom: 176,
+      width: 70,
+      height: 32,
+      x: left,
+      y: 144,
+      toJSON: () => ({}),
+    };
+  }
+
+  if (this.hasAttribute?.('data-test-rect-top')) {
+    const left = Number(this.getAttribute('data-test-rect-left') || 40);
+    const top = Number(this.getAttribute('data-test-rect-top') || 120);
+    const width = Number(this.getAttribute('data-test-rect-width') || 160);
+    const height = Number(this.getAttribute('data-test-rect-height') || 44);
+    return {
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    };
+  }
+
   return origGetBoundingClientRect.call(this);
 };
 
@@ -293,6 +362,8 @@ const { XtreamCredentialsContext, XtreamLiveContext } = await import(
   '../src/context/XtreamContext'
 );
 const { LiveTvView } = await import('../src/views/LiveTvView');
+const { VideoPlayer } = await import('../src/components/VideoPlayer');
+const { usePlaybackSession } = await import('../src/components/player/usePlaybackSession');
 
 // ============================================================================
 // 3. Fábrica de catálogo realista (30 categorias, cat 1 com 120 canais, demais 35 canais)
@@ -1003,6 +1074,863 @@ async function runTests() {
       } finally {
         await mounted.unmount();
       }
+    }
+  );
+
+  // --------------------------------------------------------------------------
+  // Cenário G: Regressão de foco Cabeçalho TV ao Vivo + ArrowDown (com/sem canal, variantes SD/HD/FHD, virtualização e outras seções)
+  // --------------------------------------------------------------------------
+  await runCase(
+    '7. Cabeçalho TV ao Vivo + ArrowDown retorna às categorias sem desvio para SD/HD/FHD (com/sem canal, virtualização e demais seções preservadas)',
+    async () => {
+      // Catálogo com canal agrupado (SD/HD/FHD) na primeira categoria e 30 categorias para virtualização
+      const variantCatalog = buildLargeLiveCatalog();
+      variantCatalog.liveStreams.unshift(
+        {
+          num: 901,
+          name: 'Canal Variantes SD',
+          stream_type: 'live',
+          stream_id: 901,
+          stream_icon: '',
+          epg_channel_id: '',
+          added: '1700000000',
+          category_id: '1',
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        },
+        {
+          num: 902,
+          name: 'Canal Variantes HD',
+          stream_type: 'live',
+          stream_id: 902,
+          stream_icon: '',
+          epg_channel_id: '',
+          added: '1700000000',
+          category_id: '1',
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        },
+        {
+          num: 903,
+          name: 'Canal Variantes FHD',
+          stream_type: 'live',
+          stream_id: 903,
+          stream_icon: '',
+          epg_channel_id: '',
+          added: '1700000000',
+          category_id: '1',
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: '',
+          tv_archive_duration: 0,
+        }
+      );
+
+      resetEnv(true, 'tv', 'remote', 'auto');
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const root: Root = createRoot(host);
+
+      const credentials = {
+        serverUrl: 'http://example.test:8080',
+        username: 'demo',
+        password: 'secret',
+      };
+
+      const liveContextValue = {
+        liveCategories: variantCatalog.liveCategories,
+        liveStreams: variantCatalog.liveStreams,
+        allLiveStreams: variantCatalog.liveStreams,
+        liveCategoriesStatus: 'ready' as const,
+        liveCatalogStatus: 'ready' as const,
+        liveCategoriesError: null,
+        liveError: null,
+        loadingLive: false,
+        loadedLiveCatalog: true,
+        fetchLiveCategories: async () => {},
+        fetchLiveStreams: async () => {},
+      };
+
+      try {
+        await act(async () => {
+          root.render(
+            React.createElement(
+              XtreamCredentialsContext.Provider,
+              { value: { credentials } },
+              React.createElement(
+                XtreamLiveContext.Provider,
+                { value: liveContextValue },
+                React.createElement(
+                  NavigationProvider,
+                  null,
+                  React.createElement(
+                    'div',
+                    null,
+                    React.createElement(
+                      'header',
+                      { 'data-nav-zone': 'header' },
+                      React.createElement(
+                        'button',
+                        { type: 'button', 'data-nav-item': 'true', 'data-header-nav-id': 'home' },
+                        'Início'
+                      ),
+                      React.createElement(
+                        'button',
+                        {
+                          type: 'button',
+                          'data-nav-item': 'true',
+                          'data-header-nav-id': 'live',
+                          'data-header-nav-active': 'true',
+                        },
+                        'TV ao Vivo'
+                      ),
+                      React.createElement(
+                        'button',
+                        { type: 'button', 'data-nav-item': 'true', 'data-header-nav-id': 'movies' },
+                        'Filmes'
+                      )
+                    ),
+                    React.createElement(LiveTvView)
+                  )
+                )
+              )
+            )
+          );
+        });
+        await flush(6);
+
+        const liveHeaderBtn = host.querySelector<HTMLButtonElement>(
+          'button[data-header-nav-id="live"]'
+        )!;
+        const leftPane = host.querySelector<HTMLElement>(
+          '.nc-live-left-pane[data-nav-zone="categories"]'
+        )!;
+        assert.ok(liveHeaderBtn, 'Botão TV ao Vivo do cabeçalho deve existir');
+        assert.ok(leftPane, 'Painel esquerdo .nc-live-left-pane[data-nav-zone="categories"] deve existir');
+
+        // 1 & 3a. Sem canal selecionado: Cabeçalho TV ao Vivo + ArrowDown entra na zona de categorias
+        act(() => {
+          focusElementSafely(liveHeaderBtn);
+        });
+        await flush();
+        await dispatchArrow('ArrowDown');
+        const activeNoChannel = document.activeElement as HTMLElement | null;
+        assert.ok(
+          activeNoChannel && leftPane.contains(activeNoChannel),
+          'ArrowDown no cabeçalho TV ao Vivo sem canal selecionado deve focar a zona de categorias'
+        );
+        assert.strictEqual(
+          activeNoChannel.getAttribute('data-live-channel-btn'),
+          'true',
+          'Destino na zona de categorias deve ser um canal elegível'
+        );
+
+        // 2 & 3b. Selecionar canal agrupado com variantes SD/HD/FHD
+        const groupedChannelBtn = host.querySelector<HTMLButtonElement>(
+          '[data-home-row-index="0"] button[data-live-channel-btn="true"][data-row-card-index="0"]'
+        )!;
+        assert.ok(groupedChannelBtn, 'Canal agrupado SD/HD/FHD deve estar no índice 0');
+        const groupedId = groupedChannelBtn.getAttribute('data-live-channel-group-id');
+        act(() => {
+          focusElementSafely(groupedChannelBtn);
+          groupedChannelBtn.click();
+        });
+        await flush(6);
+
+        const variantsRow = host.querySelector<HTMLElement>('[data-live-variants-row="true"]');
+        const variantButtons = variantsRow
+          ? Array.from(variantsRow.querySelectorAll<HTMLButtonElement>('button'))
+          : [];
+        assert.ok(
+          variantsRow && variantButtons.length >= 4,
+          `Variantes Automático/SD/HD/FHD devem estar visíveis no painel direito (encontrados: ${variantButtons.length})`
+        );
+
+        // Voltar ao cabeçalho TV ao Vivo e pressionar ArrowDown: NÃO pode desviar para SD/HD/FHD
+        act(() => {
+          focusElementSafely(liveHeaderBtn);
+        });
+        await flush();
+        await dispatchArrow('ArrowDown');
+        const activeWithVariants = document.activeElement as HTMLElement | null;
+        assert.ok(
+          activeWithVariants && !variantsRow.contains(activeWithVariants),
+          'Presença de SD/HD/FHD não pode interceptar ArrowDown a partir do cabeçalho TV ao Vivo'
+        );
+        assert.ok(
+          activeWithVariants && leftPane.contains(activeWithVariants),
+          'ArrowDown no cabeçalho TV ao Vivo com canal selecionado deve retornar à zona de categorias'
+        );
+        assert.strictEqual(
+          activeWithVariants.getAttribute('data-live-channel-group-id'),
+          groupedId,
+          'Foco deve retornar ao canal de origem/selecionado'
+        );
+
+        // Acesso horizontal às resoluções continua preservado
+        act(() => {
+          focusElementSafely(variantButtons[0]);
+        });
+        await flush();
+        await dispatchArrow('ArrowRight');
+        assert.strictEqual(
+          document.activeElement,
+          variantButtons[1],
+          'Navegação horizontal entre resoluções (Automático -> SD/HD/FHD) deve permanecer funcional'
+        );
+
+        // 5. Restauração de foco com virtualização a partir do cabeçalho TV ao Vivo
+        act(() => {
+          focusElementSafely(groupedChannelBtn);
+        });
+        await flush();
+        for (let i = 0; i < 18; i++) {
+          await dispatchArrow('ArrowDown', i > 0);
+        }
+        const deepOriginBtn = document.activeElement as HTMLElement | null;
+        const deepOriginRow = Number(
+          deepOriginBtn?.closest('[data-home-row-index]')?.getAttribute('data-home-row-index')
+        );
+        const deepOriginGroupId = deepOriginBtn?.getAttribute('data-live-channel-group-id');
+        assert.ok(deepOriginRow >= 15 && deepOriginGroupId, 'Deve ter navegado até uma categoria profunda');
+
+        // Focar cabeçalho TV ao Vivo e desmontar a linha profunda da janela virtual simulando rolagem para o topo
+        act(() => {
+          focusElementSafely(liveHeaderBtn);
+        });
+        await flush();
+        const leftScroll = host.querySelector<HTMLElement>('[data-showcase-rows-container="true"]')!;
+        act(() => {
+          leftScroll.scrollTop = 0;
+          leftScroll.dispatchEvent(new Event('scroll'));
+        });
+        await flush(4);
+        assert.strictEqual(
+          host.querySelector(`[data-home-row-index="${deepOriginRow}"]`),
+          null,
+          'Linha de origem profunda deve ter sido desmontada pela virtualização antes do retorno'
+        );
+
+        await dispatchArrow('ArrowDown');
+        const restoredDeep = document.activeElement as HTMLElement | null;
+        assert.ok(
+          restoredDeep && leftPane.contains(restoredDeep),
+          'ArrowDown no cabeçalho TV ao Vivo deve retornar à zona de categorias mesmo após virtualização'
+        );
+        assert.strictEqual(
+          restoredDeep.getAttribute('data-live-channel-group-id'),
+          deepOriginGroupId,
+          'pickPreferredZoneEntry deve remontar e restaurar exatamente o canal de origem virtualizado'
+        );
+      } finally {
+        await act(async () => {
+          root.unmount();
+        });
+        host.remove();
+      }
+
+      // 4. Navegação de outras seções (Início / Filmes) não é alterada
+      const otherHost = document.createElement('div');
+      document.body.appendChild(otherHost);
+      const otherRoot: Root = createRoot(otherHost);
+      try {
+        await act(async () => {
+          otherRoot.render(
+            React.createElement(
+              NavigationProvider,
+              null,
+              React.createElement(
+                'div',
+                null,
+                React.createElement(
+                  'header',
+                  { 'data-nav-zone': 'header' },
+                  React.createElement(
+                    'button',
+                    {
+                      type: 'button',
+                      'data-nav-item': 'true',
+                      'data-header-nav-id': 'home',
+                      'data-header-nav-active': 'true',
+                    },
+                    'Início'
+                  ),
+                  React.createElement(
+                    'button',
+                    { type: 'button', 'data-nav-item': 'true', 'data-header-nav-id': 'movies' },
+                    'Filmes'
+                  )
+                ),
+                React.createElement(
+                  'section',
+                  { 'data-nav-zone': 'content' },
+                  React.createElement(
+                    'button',
+                    {
+                      type: 'button',
+                      'data-nav-item': 'true',
+                      'data-test-content-primary': 'true',
+                      'data-test-rect-left': '40',
+                      'data-test-rect-top': '140',
+                      'data-test-rect-width': '200',
+                      'data-test-rect-height': '48',
+                    },
+                    'Destaque Início'
+                  )
+                )
+              )
+            )
+          );
+        });
+        await flush(4);
+
+        const homeHeaderBtn = otherHost.querySelector<HTMLButtonElement>(
+          'button[data-header-nav-id="home"]'
+        )!;
+        const homeContentBtn = otherHost.querySelector<HTMLButtonElement>(
+          'button[data-test-content-primary="true"]'
+        )!;
+        act(() => {
+          focusElementSafely(homeHeaderBtn);
+        });
+        await flush();
+        await dispatchArrow('ArrowDown');
+        assert.strictEqual(
+          document.activeElement,
+          homeContentBtn,
+          'Cabeçalho Início + ArrowDown deve continuar descendo normalmente para a zona content'
+        );
+
+        // Seção Filmes com barra de categorias de vitrine preservada
+        await act(async () => {
+          otherRoot.render(
+            React.createElement(
+              NavigationProvider,
+              null,
+              React.createElement(
+                'div',
+                null,
+                React.createElement(
+                  'header',
+                  { 'data-nav-zone': 'header' },
+                  React.createElement(
+                    'button',
+                    {
+                      type: 'button',
+                      'data-nav-item': 'true',
+                      'data-header-nav-id': 'movies',
+                      'data-header-nav-active': 'true',
+                    },
+                    'Filmes'
+                  )
+                ),
+                React.createElement(
+                  'div',
+                  { 'data-nav-zone': 'categories', 'data-showcase-categories-bar': 'true' },
+                  React.createElement(
+                    'button',
+                    {
+                      type: 'button',
+                      'data-nav-item': 'true',
+                      'data-category-selected': 'true',
+                      'data-test-rect-left': '40',
+                      'data-test-rect-top': '96',
+                      'data-test-rect-width': '160',
+                      'data-test-rect-height': '36',
+                    },
+                    'Categorias Filmes'
+                  )
+                ),
+                React.createElement(
+                  'main',
+                  { 'data-nav-zone': 'content' },
+                  React.createElement(
+                    'button',
+                    {
+                      type: 'button',
+                      'data-nav-item': 'true',
+                      'data-test-rect-left': '40',
+                      'data-test-rect-top': '180',
+                      'data-test-rect-width': '180',
+                      'data-test-rect-height': '48',
+                    },
+                    'Filme Destaque'
+                  )
+                )
+              )
+            )
+          );
+        });
+        await flush(4);
+
+        const moviesHeaderBtn = otherHost.querySelector<HTMLButtonElement>(
+          'button[data-header-nav-id="movies"]'
+        )!;
+        const moviesCatBtn = otherHost.querySelector<HTMLButtonElement>(
+          '[data-showcase-categories-bar="true"] button'
+        )!;
+        act(() => {
+          focusElementSafely(moviesHeaderBtn);
+        });
+        await flush();
+        await dispatchArrow('ArrowDown');
+        assert.strictEqual(
+          document.activeElement,
+          moviesCatBtn,
+          'Cabeçalho Filmes + ArrowDown deve preservar a entrada na barra de categorias da vitrine'
+        );
+      } finally {
+        await act(async () => {
+          otherRoot.unmount();
+        });
+        otherHost.remove();
+      }
+    }
+  );
+
+  // --------------------------------------------------------------------------
+  // Cenário H: Supressão de métricas visuais no preview Live Lite, restauração em fullscreen e preservação do motor
+  // --------------------------------------------------------------------------
+  await runCase(
+    '8. Preview Live Lite suprime atualizações de tempo/buffer, Full preserva, fullscreen restaura/re-suprime sem recriar vídeo e mantém loading/buffering/erros',
+    async () => {
+      resetEnv(true, 'tv', 'remote', 'auto');
+
+      const setupSyntheticVideoMetrics = (video: HTMLVideoElement) => {
+        const state = {
+          currentTime: 0,
+          duration: 0,
+          bufferedEnd: 0,
+          error: null as any,
+          loadCalls: 0,
+          playCalls: 0,
+        };
+
+        Object.defineProperty(video, 'currentTime', {
+          configurable: true,
+          get: () => state.currentTime,
+          set: (v: number) => {
+            state.currentTime = v;
+          },
+        });
+        Object.defineProperty(video, 'duration', {
+          configurable: true,
+          get: () => state.duration,
+        });
+        Object.defineProperty(video, 'buffered', {
+          configurable: true,
+          get: () => ({
+            length: state.bufferedEnd > 0 ? 1 : 0,
+            start: () => 0,
+            end: () => state.bufferedEnd,
+          }),
+        });
+        Object.defineProperty(video, 'error', {
+          configurable: true,
+          get: () => state.error,
+        });
+        video.load = () => {
+          state.loadCalls += 1;
+        };
+        video.play = () => {
+          state.playCalls += 1;
+          return Promise.resolve();
+        };
+
+        return state;
+      };
+
+      // Parte A: Verificação direta do hook usePlaybackSession (referência de bufferedRanges, supressão, restauração e pause)
+      const hookHost = document.createElement('div');
+      document.body.appendChild(hookHost);
+      const hookRoot: Root = createRoot(hookHost);
+      let latestSession: ReturnType<typeof usePlaybackSession> | null = null;
+      let hookCommits = 0;
+
+      function SessionProbe({ suppress }: { suppress: boolean }) {
+        const videoRef = React.useRef<HTMLVideoElement>(null);
+        const session = usePlaybackSession({
+          videoRef,
+          streamUrl: 'http://example.test:8080/live/demo/secret/5001.ts',
+          contentType: 'live',
+          isControlsVisible: true,
+          suppressLivePreviewVisualMetrics: suppress,
+        });
+        latestSession = session;
+        return React.createElement('video', { ref: videoRef });
+      }
+
+      try {
+        await act(async () => {
+          hookRoot.render(
+            React.createElement(
+              Profiler,
+              {
+                id: 'session-probe',
+                onRender: () => {
+                  hookCommits += 1;
+                },
+              },
+              React.createElement(SessionProbe, { suppress: true })
+            )
+          );
+        });
+        await flush(4);
+
+        const probeVideo = hookHost.querySelector('video') as HTMLVideoElement;
+        assert.ok(probeVideo, 'Elemento <video> do probe deve existir');
+        const vState = setupSyntheticVideoMetrics(probeVideo);
+
+        act(() => {
+          probeVideo.dispatchEvent(new Event('loadedmetadata'));
+          probeVideo.dispatchEvent(new Event('playing'));
+        });
+        await flush(4);
+        assert.strictEqual(latestSession!.isPlaying, true);
+        assert.strictEqual(latestSession!.isLoading, false);
+
+        const initialBufferedRef = latestSession!.bufferedRanges;
+        const commitsBeforeSuppressedBurst = hookCommits;
+
+        // 6. Em modo suprimido (Lite preview), eventos de tempo/duração/buffer não causam commits nem criam novo array bufferedRanges
+        act(() => {
+          vState.duration = 120;
+          probeVideo.dispatchEvent(new Event('durationchange'));
+          for (let i = 1; i <= 5; i++) {
+            vState.currentTime = i * 5;
+            vState.bufferedEnd = i * 5 + 15;
+            probeVideo.dispatchEvent(new Event('timeupdate'));
+            probeVideo.dispatchEvent(new Event('progress'));
+          }
+        });
+        await flush(4);
+
+        assert.strictEqual(
+          hookCommits - commitsBeforeSuppressedBurst,
+          0,
+          'Preview Live Lite deve gerar 0 commits React em rajadas de timeupdate/progress/durationchange'
+        );
+        assert.strictEqual(
+          latestSession!.bufferedRanges,
+          initialBufferedRef,
+          'bufferedRanges não deve alocar novos arrays enquanto métricas visuais estiverem suprimidas'
+        );
+        assert.strictEqual(latestSession!.currentTime, 0, 'currentTime React deve permanecer suprimido');
+        assert.strictEqual(latestSession!.duration, 0, 'duration React deve permanecer suprimida');
+
+        // handlePause não deve forçar publicação visual de métricas quando suprimido, mas deve atualizar isPlaying
+        act(() => {
+          probeVideo.dispatchEvent(new Event('pause'));
+        });
+        await flush(4);
+        assert.strictEqual(latestSession!.isPlaying, false, 'pause deve continuar atualizando isPlaying');
+        assert.strictEqual(
+          latestSession!.bufferedRanges,
+          initialBufferedRef,
+          'pause não deve forçar criação/publicação de bufferedRanges durante supressão'
+        );
+        assert.strictEqual(latestSession!.currentTime, 0, 'pause não deve forçar publicação de currentTime durante supressão');
+
+        // Retomar reprodução
+        act(() => {
+          probeVideo.dispatchEvent(new Event('playing'));
+        });
+        await flush(4);
+
+        const loadCallsBeforeToggle = vState.loadCalls;
+        const playCallsBeforeToggle = vState.playCalls;
+
+        // 8 & 10. Entrar em fullscreen (suppress -> false): sincroniza métricas do <video> existente sem recriar nem recarregar
+        await act(async () => {
+          hookRoot.render(
+            React.createElement(
+              Profiler,
+              {
+                id: 'session-probe',
+                onRender: () => {
+                  hookCommits += 1;
+                },
+              },
+              React.createElement(SessionProbe, { suppress: false })
+            )
+          );
+        });
+        await flush(4);
+
+        assert.strictEqual(hookHost.querySelector('video'), probeVideo, 'Elemento <video> não pode ser recriado ao sair da supressão');
+        assert.strictEqual(vState.loadCalls, loadCallsBeforeToggle, 'video.load() não pode ser chamado ao sair da supressão');
+        assert.strictEqual(vState.playCalls, playCallsBeforeToggle, 'video.play() não pode reiniciar sessão ao sair da supressão');
+        assert.strictEqual(latestSession!.currentTime, 25, 'currentTime deve sincronizar imediatamente a partir do <video>');
+        assert.strictEqual(latestSession!.duration, 120, 'duration deve sincronizar imediatamente a partir do <video>');
+        assert.strictEqual(latestSession!.bufferedRanges.length, 1, 'bufferedRanges deve sincronizar ao entrar em fullscreen');
+        assert.strictEqual(latestSession!.bufferedRanges[0].end, 40);
+
+        // Eventos em fullscreen (ou modo Full) voltam a publicar métricas normalmente
+        const commitsBeforeFsEvents = hookCommits;
+        act(() => {
+          vState.currentTime = 31;
+          vState.bufferedEnd = 48;
+          probeVideo.dispatchEvent(new Event('timeupdate'));
+          probeVideo.dispatchEvent(new Event('progress'));
+        });
+        await flush(4);
+        assert.ok(
+          hookCommits > commitsBeforeFsEvents,
+          'Publicação de métricas deve estar ativa com suppressLivePreviewVisualMetrics=false'
+        );
+        assert.strictEqual(latestSession!.currentTime, 31);
+        assert.strictEqual(latestSession!.bufferedRanges[0].end, 48);
+
+        // 9 & 10. Voltar ao preview Lite (suppress -> true): restaura supressão sem recriar <video> nem reiniciar
+        await act(async () => {
+          hookRoot.render(
+            React.createElement(
+              Profiler,
+              {
+                id: 'session-probe',
+                onRender: () => {
+                  hookCommits += 1;
+                },
+              },
+              React.createElement(SessionProbe, { suppress: true })
+            )
+          );
+        });
+        await flush(4);
+
+        assert.strictEqual(hookHost.querySelector('video'), probeVideo, 'Elemento <video> não pode ser recriado ao voltar ao preview Lite');
+        assert.strictEqual(vState.loadCalls, loadCallsBeforeToggle, 'video.load() não pode ser chamado ao voltar ao preview Lite');
+        assert.strictEqual(vState.playCalls, playCallsBeforeToggle, 'video.play() não pode reiniciar ao voltar ao preview Lite');
+
+        const bufferedRefBackInLite = latestSession!.bufferedRanges;
+        const commitsAfterReturnLite = hookCommits;
+        act(() => {
+          vState.currentTime = 50;
+          vState.bufferedEnd = 70;
+          probeVideo.dispatchEvent(new Event('timeupdate'));
+          probeVideo.dispatchEvent(new Event('progress'));
+        });
+        await flush(4);
+        assert.strictEqual(
+          hookCommits - commitsAfterReturnLite,
+          0,
+          'Retornar ao preview Lite deve voltar a suprimir commits de timeupdate/progress'
+        );
+        assert.strictEqual(
+          latestSession!.bufferedRanges,
+          bufferedRefBackInLite,
+          'Retornar ao preview Lite não deve alocar novos arrays de bufferedRanges'
+        );
+
+        // 11. Eventos de buffering, loading e erro continuam funcionais durante supressão
+        act(() => {
+          probeVideo.dispatchEvent(new Event('waiting'));
+        });
+        await flush(4);
+        assert.strictEqual(latestSession!.isBuffering, true, 'Evento waiting deve continuar atualizando isBuffering');
+
+        act(() => {
+          probeVideo.dispatchEvent(new Event('playing'));
+        });
+        await flush(4);
+        assert.strictEqual(latestSession!.isBuffering, false, 'Evento playing deve encerrar buffering');
+
+        act(() => {
+          vState.error = { code: 2 };
+          probeVideo.dispatchEvent(new Event('error'));
+        });
+        await flush(4);
+        assert.ok(
+          typeof latestSession!.error === 'string' && latestSession!.error.length > 0,
+          'Evento error deve continuar publicando erro mesmo em preview Lite'
+        );
+      } finally {
+        await act(async () => {
+          hookRoot.unmount();
+        });
+        hookHost.remove();
+      }
+
+      // Parte B: Integração real no componente VideoPlayer (Lite vs Full + requestFullscreenImmediate / exitFullscreenImmediate)
+      const runVideoPlayerIntegration = async (liteLivePreview: boolean) => {
+        const vpHost = document.createElement('div');
+        document.body.appendChild(vpHost);
+        const vpRoot: Root = createRoot(vpHost);
+        const playerRef = React.createRef<import('../src/components/VideoPlayer').VideoPlayerHandle>();
+        let vpCommits = 0;
+        let finalErrors: string[] = [];
+
+        try {
+          await act(async () => {
+            vpRoot.render(
+              React.createElement(
+                NavigationProvider,
+                null,
+                React.createElement(
+                  Profiler,
+                  {
+                    id: `vp-${liteLivePreview ? 'lite' : 'full'}`,
+                    onRender: () => {
+                      vpCommits += 1;
+                    },
+                  },
+                  React.createElement(VideoPlayer, {
+                    ref: playerRef,
+                    streamUrl: 'http://example.test:8080/live/demo/secret/6001.ts',
+                    title: 'Canal Teste Live',
+                    contentType: 'live',
+                    embedded: true,
+                    liteLivePreview,
+                    onBack: () => {},
+                    onPlaybackFinalError: (msg: string) => {
+                      finalErrors.push(msg);
+                    },
+                  })
+                )
+              )
+            );
+          });
+          await flush(4);
+
+          const videoEl = vpHost.querySelector('video') as HTMLVideoElement;
+          assert.ok(videoEl, 'VideoPlayer deve renderizar <video>');
+          const vState = setupSyntheticVideoMetrics(videoEl);
+          videoEl.volume = 0.65;
+          videoEl.muted = false;
+
+          act(() => {
+            videoEl.dispatchEvent(new Event('loadedmetadata'));
+            videoEl.dispatchEvent(new Event('playing'));
+          });
+          await flush(4);
+
+          const commitsBeforeBurst = vpCommits;
+          act(() => {
+            vState.duration = 90;
+            videoEl.dispatchEvent(new Event('durationchange'));
+            for (let i = 1; i <= 4; i++) {
+              vState.currentTime = i * 4;
+              vState.bufferedEnd = i * 4 + 10;
+              videoEl.dispatchEvent(new Event('timeupdate'));
+              videoEl.dispatchEvent(new Event('progress'));
+            }
+          });
+          await flush(4);
+          const previewBurstCommits = vpCommits - commitsBeforeBurst;
+
+          if (liteLivePreview) {
+            assert.strictEqual(
+              previewBurstCommits,
+              0,
+              `VideoPlayer em preview Live Lite deve ter 0 commits em rajada de tempo/buffer (atual: ${previewBurstCommits})`
+            );
+
+            // Entrar em fullscreen pelo handle real do VideoPlayer
+            const loadCountBeforeFs = vState.loadCalls;
+            const playCountBeforeFs = vState.playCalls;
+            await act(async () => {
+              const entered = await playerRef.current!.requestFullscreenImmediate();
+              assert.strictEqual(entered, true, 'requestFullscreenImmediate deve entrar em fullscreen');
+            });
+            await flush(6);
+
+            assert.strictEqual(
+              vpHost.querySelector('[data-player-container="true"]')?.getAttribute('data-player-presentation'),
+              'full-layer',
+              'Player deve entrar em apresentação full-layer'
+            );
+            assert.strictEqual(vpHost.querySelector('video'), videoEl, 'Mesmo elemento <video> deve ser preservado ao entrar em fullscreen');
+            assert.strictEqual(vState.loadCalls, loadCountBeforeFs, 'Fullscreen não pode disparar video.load()');
+            assert.strictEqual(vState.playCalls, playCountBeforeFs, 'Fullscreen não pode reiniciar video.play()');
+
+            // Em fullscreen, timeupdate/progress voltam a gerar atualizações React
+            const commitsInFsBefore = vpCommits;
+            act(() => {
+              vState.currentTime = 30;
+              vState.bufferedEnd = 45;
+              videoEl.dispatchEvent(new Event('timeupdate'));
+              videoEl.dispatchEvent(new Event('progress'));
+            });
+            await flush(4);
+            assert.ok(
+              vpCommits > commitsInFsBefore,
+              'Entrar em fullscreen deve restaurar publicação de métricas no VideoPlayer'
+            );
+
+            // Voltar ao preview Lite via exitFullscreenImmediate
+            await act(async () => {
+              const exited = await playerRef.current!.exitFullscreenImmediate();
+              assert.strictEqual(exited, true, 'exitFullscreenImmediate deve retornar ao preview');
+            });
+            await flush(6);
+
+            assert.strictEqual(
+              vpHost.querySelector('[data-player-container="true"]')?.getAttribute('data-player-presentation'),
+              'compact-preview',
+              'Player deve retornar para apresentação compact-preview'
+            );
+            assert.strictEqual(vpHost.querySelector('video'), videoEl, 'Mesmo elemento <video> deve ser preservado ao retornar ao preview');
+            assert.strictEqual(vState.loadCalls, loadCountBeforeFs, 'Retornar ao preview não pode disparar video.load()');
+            assert.strictEqual(vState.playCalls, playCountBeforeFs, 'Retornar ao preview não pode reiniciar video.play()');
+            assert.strictEqual(videoEl.volume, 0.65, 'Volume do vídeo deve ser preservado na transição');
+            assert.strictEqual(videoEl.muted, false, 'Estado muted deve ser preservado na transição');
+
+            // Supressão restaurada no preview Lite
+            const commitsBackInPreview = vpCommits;
+            act(() => {
+              vState.currentTime = 42;
+              vState.bufferedEnd = 60;
+              videoEl.dispatchEvent(new Event('timeupdate'));
+              videoEl.dispatchEvent(new Event('progress'));
+            });
+            await flush(4);
+            assert.strictEqual(
+              vpCommits - commitsBackInPreview,
+              0,
+              'Voltar ao preview Lite deve restaurar a supressão de métricas visuais no VideoPlayer'
+            );
+
+            // Buffering e Erro continuam exibidos no preview Lite
+            act(() => {
+              videoEl.dispatchEvent(new Event('waiting'));
+            });
+            await flush(4);
+            assert.ok(
+              vpHost.querySelector('.animate-spin'),
+              'Spinner de buffering deve continuar aparecendo no preview Lite'
+            );
+
+            act(() => {
+              vState.error = { code: 2 };
+              videoEl.dispatchEvent(new Event('error'));
+            });
+            await flush(4);
+            assert.ok(
+              vpHost.querySelector('[data-player-error-overlay="true"]'),
+              'Overlay de erro deve continuar funcionando no preview Lite'
+            );
+            assert.strictEqual(finalErrors.length, 1, 'onPlaybackFinalError deve continuar sendo disparado');
+          } else {
+            // 7. Modo Full preserva comportamento original (métricas publicadas normalmente no preview)
+            assert.ok(
+              previewBurstCommits > 0,
+              `VideoPlayer em modo Full deve preservar publicação original de métricas (atual: ${previewBurstCommits})`
+            );
+          }
+        } finally {
+          await act(async () => {
+            vpRoot.unmount();
+          });
+          vpHost.remove();
+        }
+      };
+
+      await runVideoPlayerIntegration(true);
+      await runVideoPlayerIntegration(false);
     }
   );
 

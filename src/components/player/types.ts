@@ -62,6 +62,7 @@ export interface VideoPlayerProps {
   programTitle?: string;
   onBack: () => void;
   embedded?: boolean;
+  liteLivePreview?: boolean;
   disableEmbeddedControlsFocus?: boolean;
   startAt?: number;
   streamId?: string | number;

@@ -29,6 +29,7 @@ export const VideoPlayer = React.memo(
       programTitle,
       onBack,
       embedded = false,
+      liteLivePreview = false,
       disableEmbeddedControlsFocus = false,
       startAt,
       streamId,
@@ -93,6 +94,15 @@ export const VideoPlayer = React.memo(
   // Track whether reproduction has ever started for current stream
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
 
+  const suppressLivePreviewVisualMetrics = Boolean(
+    liteLivePreview &&
+      embedded &&
+      contentType === 'live' &&
+      !isFullscreen &&
+      !isVisuallyExpanded &&
+      !isEnteringFullscreen
+  );
+
   // Playback session hook manages HLS.js vs native HTML5, tracks, audio, qualities, buffer
   const session = usePlaybackSession({
     videoRef,
@@ -107,6 +117,7 @@ export const VideoPlayer = React.memo(
     onPlaybackFinalError,
     isControlsVisible:
       isControlsVisible || !hasStartedPlaying || showSettings,
+    suppressLivePreviewVisualMetrics,
     externalSubtitles,
   });
 
