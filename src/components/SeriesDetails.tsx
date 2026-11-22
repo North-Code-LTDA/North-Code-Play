@@ -1080,9 +1080,18 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         )}
 
         {/* Cinematic gradients into #181818 */}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#181818] via-[#181818]/45 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#181818]/85 via-[#181818]/25 to-transparent" />
-        <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/50 to-transparent pointer-events-none" />
+        <div
+          data-details-scrim-primary="true"
+          className="absolute inset-0 bg-gradient-to-t from-[#181818] via-[#181818]/45 to-transparent"
+        />
+        <div
+          data-details-scrim-secondary="true"
+          className="absolute inset-0 bg-gradient-to-r from-[#181818]/85 via-[#181818]/25 to-transparent"
+        />
+        <div
+          data-details-scrim-secondary="true"
+          className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/50 to-transparent pointer-events-none"
+        />
 
         {/* Foreground Title, Progress Bar, and Primary Actions */}
         <div

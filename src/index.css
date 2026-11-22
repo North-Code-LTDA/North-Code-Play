@@ -1522,4 +1522,119 @@ html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-modal
   box-shadow: none !important;
 }
 
+/* ============================================================================
+ * Phase 5/5: Final Visual Optimization in Lite Mode
+ * Strictly scoped to html[data-performance-mode="lite"][data-nav-mode="remote"].
+ * Consolidates redundant stacked gradients, simplifies side arrow gradients,
+ * removes calibration sample interpolation transitions, and replaces blurred
+ * 20px focus glow shadows with crisp zero-blur white focus outlines on covered
+ * controls while preserving contrast, readability, spinners, and player UI.
+ * ============================================================================ */
+
+/* 11. Carousel & Live TV side scroll arrows: solid backdrop instead of linear-gradient */
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-row-scroll-prev="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-row-scroll-next="true"] {
+  background-image: none !important;
+  background-color: rgba(0, 0, 0, 0.55) !important;
+}
+
+/* 12. HeroBanner & Details modals: consolidate stacked multi-layer gradients into 1 scrim
+ *     with equivalent contrast and remove offscreen drop-shadow text filters */
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-hero-stage="true"] [data-hero-scrim-secondary="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-details-modal] [data-details-scrim-secondary="true"] {
+  display: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-hero-stage="true"] [data-hero-scrim-primary="true"] {
+  background-image: linear-gradient(
+    to top,
+    rgba(0, 0, 0, 0.96) 0%,
+    rgba(0, 0, 0, 0.72) 52%,
+    rgba(0, 0, 0, 0.28) 100%
+  ) !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-details-modal] [data-details-scrim-primary="true"] {
+  background-image: linear-gradient(
+    to top,
+    #181818 0%,
+    rgba(24, 24, 24, 0.76) 54%,
+    rgba(0, 0, 0, 0.45) 100%
+  ) !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-hero-stage="true"] .nc-tv-hero-title,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-hero-stage="true"] [data-hero-text-layer="true"] p,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-details-modal] .nc-tv-details-title,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-details-modal] .drop-shadow {
+  filter: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-hero-stage="true"] img {
+  box-shadow: none !important;
+}
+
+/* 13. TV scale calibration modal: immediate sample & slider fill updates without interpolation */
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-calibration-sample="true"] [data-sample-icon="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-calibration-sample="true"] [data-sample-text="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-calibration-sample="true"] [data-sample-subtext="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-calibration-slider="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-calibration-slider="true"] [data-calibration-slider-fill="true"] {
+  transition: none !important;
+}
+
+/* 14. Replace heavy blurred 20px outer focus glow on covered D-pad controls with a
+ *     crisp zero-blur high-contrast white outline + dark halo (player controls untouched) */
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-hero-stage="true"] [data-hero-action]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-hero-stage="true"] [data-hero-action]:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-close-btn:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-close-btn:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-action:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-action:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-action-icon:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-action-icon:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-season-btn:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-season-btn:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-season-dropdown-menu="true"] [data-season-option]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-season-dropdown-menu="true"] [data-season-option]:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-episode-card:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-episode-card:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-categories-trigger="true"]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-categories-trigger="true"]:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-categories-menu="true"] [data-category-id]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-categories-menu="true"] [data-category-id]:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-back-to-showcase="true"]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-back-to-showcase="true"]:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorites-filter]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorites-filter]:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorite-remove="true"]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorite-remove="true"]:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-channel-fav:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-channel-fav:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-variants-row="true"] button:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-variants-row="true"] button:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-logo-btn:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-logo-btn:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-icon-btn:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-icon-btn:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-account-btn:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-account-btn:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-account-menu-item:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-account-menu-item:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-row="config-presentation-actions"] button:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-row="config-presentation-actions"] button:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-device-choices="true"] [data-device-choice]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-device-choices="true"] [data-device-choice]:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-tv-quick-choices="true"] button:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-tv-quick-choices="true"] button:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-modal .nc-cal-btn:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-modal .nc-cal-btn:focus-visible,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-calibration-slider="true"]:focus,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-calibration-slider="true"]:focus-visible {
+  outline: 2px solid #ffffff !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.9) !important;
+}
+
+
 

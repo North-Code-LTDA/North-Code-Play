@@ -605,7 +605,7 @@ export const MovieDetails = React.memo(function MovieDetails({
       {playError && (
         <div
           role="alert"
-          className="absolute top-16 right-6 left-6 sm:left-auto sm:max-w-md z-[90] bg-red-500/15 border border-red-500/40 rounded-xl p-4 flex items-center gap-3 text-red-200 text-sm backdrop-blur-md shadow-xl"
+          className="nc-lite-instant-toast absolute top-16 right-6 left-6 sm:left-auto sm:max-w-md z-[90] bg-red-500/15 border border-red-500/40 rounded-xl p-4 flex items-center gap-3 text-red-200 text-sm backdrop-blur-md shadow-xl"
         >
           <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
           <span>{playError}</span>
@@ -692,9 +692,18 @@ export const MovieDetails = React.memo(function MovieDetails({
         )}
 
         {/* Cinematic gradients into #181818 */}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#181818] via-[#181818]/45 to-transparent" />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#181818]/85 via-[#181818]/25 to-transparent" />
-        <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/50 to-transparent pointer-events-none" />
+        <div
+          data-details-scrim-primary="true"
+          className="absolute inset-0 bg-gradient-to-t from-[#181818] via-[#181818]/45 to-transparent"
+        />
+        <div
+          data-details-scrim-secondary="true"
+          className="absolute inset-0 bg-gradient-to-r from-[#181818]/85 via-[#181818]/25 to-transparent"
+        />
+        <div
+          data-details-scrim-secondary="true"
+          className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/50 to-transparent pointer-events-none"
+        />
 
         {/* Foreground Title, Progress Bar, and Primary Actions */}
         <div

@@ -4,6 +4,7 @@ import { motion } from 'motion/react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useXtreamCredentials } from '../context/XtreamContext';
 import { useDisplayPreferences, DisplayMode } from '../platform/tvEnvironment';
+import { usePerformanceProfile } from '../platform/performanceProfile';
 import {
   registerVirtualContainer,
   unregisterVirtualContainer,
@@ -407,6 +408,7 @@ export const HorizontalRow = React.memo(function HorizontalRow({
 
   const { credentials } = useXtreamCredentials();
   const { effectiveMode: displayMode, effectiveTvScale: tvScale } = useDisplayPreferences();
+  const { isLiteActive } = usePerformanceProfile();
 
   // Initial authorization derives strictly from real observation/measurement or explicit focus
   const [isRowVerticallyVisible, setIsRowVerticallyVisible] = useState<boolean>(false);
@@ -1418,7 +1420,8 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                 }}
                 onFocus={() => handleCardFocus(idx)}
                 onBlur={(e) => handleCardBlur(idx, e.relatedTarget)}
-                whileTap={{ scale: 0.97 }}
+                data-tap-scale={isLiteActive ? 'off' : 'on'}
+                whileTap={isLiteActive ? undefined : { scale: 0.97 }}
                 className={`nc-showcase-card relative z-0 hover:z-20 focus:z-20 focus-visible:z-20 shrink-0 snap-start select-none group cursor-pointer overflow-visible rounded-xl ${
                   type === 'live'
                     ? 'nc-tv-row-card-live w-64 md:w-72 aspect-video'

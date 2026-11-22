@@ -240,14 +240,17 @@ export const HeroBanner = React.memo(function HeroBanner({
   }, [scrollContainerRef, heroItems.length]);
 
   const effectivelyPaused = Boolean(isPaused || !isInViewport || !isDocumentVisible);
+  const isAutoRotationSuspended = isLiteActive;
 
   useEffect(() => {
-    if (heroItems.length <= 1 || effectivelyPaused || isPlayPending) return;
+    if (heroItems.length <= 1 || effectivelyPaused || isPlayPending || isAutoRotationSuspended) {
+      return;
+    }
     const timer = setInterval(() => {
       setCurrentIndex((prev) => (prev + 1) % heroItems.length);
     }, 8000);
     return () => clearInterval(timer);
-  }, [heroItems, domain, effectivelyPaused, isPlayPending]);
+  }, [heroItems, domain, effectivelyPaused, isPlayPending, isAutoRotationSuspended]);
 
   const currentItem = heroItems[safeCurrentIndex];
 
@@ -300,6 +303,7 @@ export const HeroBanner = React.memo(function HeroBanner({
   useEffect(() => {
     if (
       effectivelyPaused ||
+      isAutoRotationSuspended ||
       heroItems.length <= 1 ||
       !credentials?.serverUrl ||
       !isAndroidPersistentImageCacheAvailable()
@@ -312,7 +316,7 @@ export const HeroBanner = React.memo(function HeroBanner({
     if (!nextItem) return;
 
     const timer = setTimeout(() => {
-      if (!isMountedRef.current || effectivelyPaused) return;
+      if (!isMountedRef.current || effectivelyPaused || isAutoRotationSuspended) return;
       const cachedNext = getCachedHeroDetails(credentials, nextItem);
       const rawNextImg =
         normalizeImageSource(cachedNext?.info?.backdrop_path) ||
@@ -328,7 +332,7 @@ export const HeroBanner = React.memo(function HeroBanner({
     return () => {
       clearTimeout(timer);
     };
-  }, [effectivelyPaused, safeCurrentIndex, heroItems, credentials]);
+  }, [effectivelyPaused, isAutoRotationSuspended, safeCurrentIndex, heroItems, credentials]);
 
   if (heroItems.length === 0 || !currentItem) return null;
 
@@ -387,8 +391,14 @@ export const HeroBanner = React.memo(function HeroBanner({
         active={!effectivelyPaused}
         className="w-full h-full object-cover object-center opacity-85"
       />
-      <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/55 to-black/15" />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/55 to-transparent" />
+      <div
+        data-hero-scrim-primary="true"
+        className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/55 to-black/15"
+      />
+      <div
+        data-hero-scrim-secondary="true"
+        className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/55 to-transparent"
+      />
     </>
   ) : hasVerticalCoverOnly ? (
     <div className="relative w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]">
@@ -404,8 +414,14 @@ export const HeroBanner = React.memo(function HeroBanner({
           className="h-full max-h-[260px] sm:max-h-[360px] md:max-h-[420px] w-auto aspect-[2/3] object-contain rounded-xl shadow-2xl border border-white/15"
         />
       </div>
-      <div className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/70 to-transparent" />
-      <div className="absolute inset-0 bg-gradient-to-r from-[#08090d] via-[#08090d]/90 to-transparent" />
+      <div
+        data-hero-scrim-primary="true"
+        className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/70 to-transparent"
+      />
+      <div
+        data-hero-scrim-secondary="true"
+        className="absolute inset-0 bg-gradient-to-r from-[#08090d] via-[#08090d]/90 to-transparent"
+      />
     </div>
   ) : (
     <div className="w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]" />
@@ -466,6 +482,7 @@ export const HeroBanner = React.memo(function HeroBanner({
         data-hero-paused={effectivelyPaused ? 'true' : 'false'}
         data-hero-index={String(safeCurrentIndex)}
         data-hero-lite-motion={isLiteActive ? 'true' : 'false'}
+        data-hero-autorotate={isAutoRotationSuspended ? 'paused-lite' : 'active'}
         className="relative w-full min-h-[320px] sm:min-h-[390px] md:min-h-[470px] lg:min-h-[530px] rounded-2xl md:rounded-3xl overflow-hidden border border-white/10 bg-[#0b0c10] shadow-[0_20px_50px_rgba(0,0,0,0.65)] flex flex-col justify-end p-5 sm:p-8 md:p-11 lg:p-14"
       >
         {isLiteActive ? (

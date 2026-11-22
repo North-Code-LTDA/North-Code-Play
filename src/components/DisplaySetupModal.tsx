@@ -773,6 +773,7 @@ export function DisplaySetupModal({
                 >
                   <div className="relative w-full h-3 bg-white/15 rounded-full overflow-hidden">
                     <div
+                      data-calibration-slider-fill="true"
                       className="absolute top-0 bottom-0 left-0 bg-nc-primary rounded-full transition-[width] duration-75"
                       style={{ width: `${scalePercentProgress}%` }}
                     />
