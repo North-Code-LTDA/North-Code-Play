@@ -573,7 +573,8 @@ const TEST_CREDENTIALS = {
 
 async function mountLiveTv(
   catalog: ReturnType<typeof buildSyntheticLiveCatalog>,
-  onCommit?: () => void
+  onCommit?: () => void,
+  options?: { strictMode?: boolean; onStrictProbe?: (event: 'setup' | 'cleanup') => void }
 ) {
   const host = document.createElement('div');
   document.body.appendChild(host);
@@ -593,31 +594,44 @@ async function mountLiveTv(
     fetchLiveStreams: async () => {},
   };
 
-  await act(async () => {
-    root.render(
+  const StrictProbe = options?.onStrictProbe
+    ? function StrictProbeComponent() {
+        React.useEffect(() => {
+          options.onStrictProbe?.('setup');
+          return () => {
+            options.onStrictProbe?.('cleanup');
+          };
+        }, []);
+        return null;
+      }
+    : null;
+
+  const tree = React.createElement(
+    XtreamCredentialsContext.Provider,
+    { value: { credentials: TEST_CREDENTIALS } },
+    React.createElement(
+      XtreamLiveContext.Provider,
+      { value: liveContextValue },
       React.createElement(
-        XtreamCredentialsContext.Provider,
-        { value: { credentials: TEST_CREDENTIALS } },
+        NavigationProvider,
+        null,
+        StrictProbe ? React.createElement(StrictProbe) : null,
         React.createElement(
-          XtreamLiveContext.Provider,
-          { value: liveContextValue },
-          React.createElement(
-            NavigationProvider,
-            null,
-            React.createElement(
-              Profiler,
-              {
-                id: 'live-tv-epg-test',
-                onRender: () => {
-                  onCommit?.();
-                },
-              },
-              React.createElement(LiveTvView)
-            )
-          )
+          Profiler,
+          {
+            id: 'live-tv-epg-test',
+            onRender: () => {
+              onCommit?.();
+            },
+          },
+          React.createElement(LiveTvView)
         )
       )
-    );
+    )
+  );
+
+  await act(async () => {
+    root.render(options?.strictMode ? React.createElement(React.StrictMode, null, tree) : tree);
   });
   const immediateEpgCallsAfterRender = epgCalls.length;
   await flush(6);
@@ -1368,6 +1382,212 @@ async function runTests() {
         );
       } finally {
         await mounted.unmount();
+      }
+    }
+  );
+
+  // --------------------------------------------------------------------------
+  // Bloco 6: Ciclo de vida sob React.StrictMode real (microcorreção Fase 3/5)
+  // --------------------------------------------------------------------------
+  await runCase(
+    'StrictMode. Coordenador EPG permanece funcional após setup/cleanup/setup, sem duplicatas, limpa ao desmontar e remonta normalmente',
+    async () => {
+      setSimulatedViewport(1280, 720);
+      const capturedConsoleErrors: string[] = [];
+      const origConsoleError = console.error;
+      const origConsoleWarn = console.warn;
+      console.error = (...args: any[]) => {
+        capturedConsoleErrors.push(args.map((a) => String(a)).join(' '));
+        origConsoleError(...args);
+      };
+      console.warn = (...args: any[]) => {
+        const msg = args.map((a) => String(a)).join(' ');
+        if (!msg.includes('Reduced Motion')) {
+          capturedConsoleErrors.push(msg);
+        }
+        origConsoleWarn(...args);
+      };
+
+      try {
+        // 6a) Montagem sob React.StrictMode real: confirma ciclo duplo de efeitos e funcionalidade completa
+        let strictSetups = 0;
+        let strictCleanups = 0;
+        customEpgHandler = async (streamId) => ({
+          epg_listings: [
+            makeProgramListing(streamId, `Strict Programa #${streamId}`),
+            makeProgramListing(
+              streamId,
+              `Strict Próximo #${streamId}`,
+              simulatedEpgNowMs + 45 * 60 * 1000,
+              simulatedEpgNowMs + 95 * 60 * 1000
+            ),
+          ],
+        });
+
+        resetEnv(true, 'tv', 'remote', 'auto', 85);
+        const mountedStrict1 = await mountLiveTv(catalog, undefined, {
+          strictMode: true,
+          onStrictProbe: (ev) => {
+            if (ev === 'setup') strictSetups += 1;
+            if (ev === 'cleanup') strictCleanups += 1;
+          },
+        });
+
+        try {
+          assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
+          assert.ok(
+            strictSetups >= 2 && strictCleanups >= 1,
+            `React.StrictMode deve executar ciclo duplo de efeitos (setups=${strictSetups}, cleanups=${strictCleanups})`
+          );
+
+          // 1) Foco em card fora da viewport inicial (card 4): deve receber EPG imediatamente sob StrictMode
+          const card4Btn = mountedStrict1.host.querySelector<HTMLButtonElement>(
+            '[data-home-row-index="0"] button[data-live-channel-btn="true"][data-row-card-index="4"]'
+          )!;
+          assert.ok(card4Btn, 'Card 4 deve existir montado sob StrictMode');
+          const card4StreamId = Number(card4Btn.getAttribute('data-live-channel-id'));
+          act(() => {
+            focusElementSafely(card4Btn);
+          });
+          await flush(6);
+
+          const card4EpgText = card4Btn
+            .closest('[data-live-channel-card="true"]')
+            ?.querySelector('[data-live-channel-epg="true"]')
+            ?.textContent?.trim();
+          assert.strictEqual(
+            card4EpgText,
+            `Strict Programa #${card4StreamId}`,
+            'Card focado deve receber EPG normalmente após ciclo extra do StrictMode'
+          );
+
+          // 2) Painel direito (priority: 'high') continua imediato mesmo antes do timer de 150ms dos cards visíveis
+          const card0Btn = mountedStrict1.host.querySelector<HTMLButtonElement>(
+            '[data-home-row-index="0"] button[data-live-channel-btn="true"][data-row-card-index="0"]'
+          )!;
+          const callsBeforeRightSelect = epgCalls.length;
+          act(() => {
+            card0Btn.click();
+          });
+          await flush(6);
+          assert.strictEqual(
+            mountedStrict1.host.querySelector('[data-live-now-playing-title="true"]')?.textContent?.trim(),
+            'Strict Programa #1001',
+            'EPG do painel direito (priority: high) deve continuar imediato sob StrictMode'
+          );
+          assert.ok(
+            epgCalls.slice(callsBeforeRightSelect).some((c) => c.streamId === 1001) ||
+              Boolean(getCachedLiveEpgSnapshot(TEST_CREDENTIALS, 1001)),
+            'Painel direito deve ter acionado EPG imediato'
+          );
+
+          // 3) Após estabilização (150ms), cards visíveis recebem EPG sem assinaturas duplicadas
+          await waitMs(220);
+          const card1EpgText = mountedStrict1.host
+            .querySelector(
+              '[data-home-row-index="0"] [data-live-channel-card="true"][data-virtual-index="1"] [data-live-channel-epg="true"]'
+            )
+            ?.textContent?.trim();
+          assert.strictEqual(
+            card1EpgText,
+            'Strict Programa #1002',
+            'Cards visíveis devem receber EPG após estabilização sob StrictMode'
+          );
+
+          // Verifica ausência de requisições duplicadas por streamId após StrictMode double-invoke
+          const seenStreamCounts = new Map<number, number>();
+          for (const rec of epgCalls) {
+            seenStreamCounts.set(rec.streamId, (seenStreamCounts.get(rec.streamId) ?? 0) + 1);
+          }
+          const duplicatedStreams = Array.from(seenStreamCounts.entries()).filter(([, count]) => count > 1);
+          assert.strictEqual(
+            duplicatedStreams.length,
+            0,
+            `Não devem surgir assinaturas EPG duplicadas sob StrictMode (duplicados=${JSON.stringify(duplicatedStreams)})`
+          );
+        } finally {
+          await mountedStrict1.unmount();
+        }
+
+        // 6b) Desmontagem definitiva com timer pendente E requisição in-flight atrasada:
+        // nenhum timer remanescente pode disparar e nenhuma resposta tardia pode gerar warning
+        const lateResolvers: Array<{ streamId: number; resolve: (p: { epg_listings: any[] }) => void }> = [];
+        customEpgHandler = (streamId) =>
+          new Promise((resolve) => {
+            lateResolvers.push({ streamId, resolve });
+          });
+
+        resetEnv(true, 'tv', 'remote', 'auto', 85);
+        const mountedStrictUnmount = await mountLiveTv(catalog, undefined, { strictMode: true });
+        // Foca card 4 para iniciar 1 requisição in-flight enquanto os vizinhos ainda estão no timer de 150ms
+        const card4UnmountBtn = mountedStrictUnmount.host.querySelector<HTMLButtonElement>(
+          '[data-home-row-index="0"] button[data-live-channel-btn="true"][data-row-card-index="4"]'
+        )!;
+        act(() => {
+          focusElementSafely(card4UnmountBtn);
+        });
+        await flush(4);
+        assert.ok(lateResolvers.length >= 1, 'Deve haver requisição in-flight antes da desmontagem definitiva');
+
+        const callsBeforeTrueUnmount = epgCalls.length;
+        await mountedStrictUnmount.unmount();
+
+        // Aguarda além dos 150ms do timer compartilhado — nenhum novo fetch pode ser disparado após desmontagem
+        await waitMs(230);
+        assert.strictEqual(
+          epgCalls.length,
+          callsBeforeTrueUnmount,
+          'Desmontagem definitiva sob StrictMode deve cancelar timer pendente e impedir novas assinaturas'
+        );
+
+        // Resolve a requisição in-flight atrasada após desmontagem — não pode gerar erro/warning React
+        await act(async () => {
+          while (lateResolvers.length > 0) {
+            const item = lateResolvers.shift()!;
+            item.resolve({
+              epg_listings: [makeProgramListing(item.streamId, `Tardio Pós-Unmount #${item.streamId}`)],
+            });
+          }
+          await Promise.resolve();
+        });
+        await flush(4);
+
+        // 6c) Nova montagem da TV ao Vivo sob StrictMode funciona normalmente do zero
+        customEpgHandler = async (streamId) => ({
+          epg_listings: [makeProgramListing(streamId, `Remontagem Strict #${streamId}`)],
+        });
+        resetEnv(true, 'tv', 'remote', 'auto', 85);
+        const mountedStrict2 = await mountLiveTv(catalog, undefined, { strictMode: true });
+        try {
+          await waitMs(220);
+          const remountCard0Epg = mountedStrict2.host
+            .querySelector(
+              '[data-home-row-index="0"] [data-live-channel-card="true"][data-virtual-index="0"] [data-live-channel-epg="true"]'
+            )
+            ?.textContent?.trim();
+          assert.strictEqual(
+            remountCard0Epg,
+            'Remontagem Strict #1001',
+            'Nova montagem da TV ao Vivo sob StrictMode deve funcionar normalmente'
+          );
+        } finally {
+          await mountedStrict2.unmount();
+        }
+
+        const unmountedStateWarnings = capturedConsoleErrors.filter(
+          (msg) =>
+            msg.toLowerCase().includes('unmounted') ||
+            msg.toLowerCase().includes('memory leak') ||
+            msg.toLowerCase().includes('cannot update a component')
+        );
+        assert.strictEqual(
+          unmountedStateWarnings.length,
+          0,
+          `Não devem ocorrer avisos de atualização de estado após desmontagem: ${unmountedStateWarnings.join(' | ')}`
+        );
+      } finally {
+        console.error = origConsoleError;
+        console.warn = origConsoleWarn;
       }
     }
   );

@@ -247,7 +247,8 @@ class LiteEpgCoordinator {
   private timerId: ReturnType<typeof setTimeout> | null = null;
   private lastFocusMoveMs = 0;
   private focusedEntryId: number | null = null;
-  private disposed = false;
+  private active = true;
+  private sessionEpoch = 1;
 
   private nowMs(): number {
     return typeof Date !== 'undefined' ? Date.now() : 0;
@@ -262,7 +263,7 @@ class LiteEpgCoordinator {
 
   private armNextTimer(now: number): void {
     this.clearTimer();
-    if (this.disposed || this.pending.size === 0) return;
+    if (!this.active || this.pending.size === 0) return;
 
     let earliestReadyAt = Infinity;
     this.pending.forEach((entry) => {
@@ -273,14 +274,16 @@ class LiteEpgCoordinator {
 
     if (!Number.isFinite(earliestReadyAt)) return;
     const delay = Math.max(0, earliestReadyAt - now);
+    const armedEpoch = this.sessionEpoch;
     this.timerId = setTimeout(() => {
       this.timerId = null;
+      if (!this.active || this.sessionEpoch !== armedEpoch) return;
       this.flushDue();
     }, delay);
   }
 
   private activateEntry(entry: LitePendingEpgEntry): void {
-    if (this.disposed) return;
+    if (!this.active) return;
     const cached = getCachedLiveEpgSnapshot(entry.credentials, entry.streamId);
     if (cached) {
       entry.onUpdate(cached);
@@ -291,17 +294,25 @@ class LiteEpgCoordinator {
       prevUnsub();
       this.activeSubs.delete(entry.entryId);
     }
+    const epoch = this.sessionEpoch;
     const unsub = subscribeLiveChannelEpg({
       credentials: entry.credentials,
       streamId: entry.streamId,
       priority: 'normal',
-      onUpdate: entry.onUpdate,
+      onUpdate: (snap) => {
+        if (!this.active || this.sessionEpoch !== epoch) return;
+        entry.onUpdate(snap);
+      },
     });
+    if (!this.active || this.sessionEpoch !== epoch) {
+      unsub();
+      return;
+    }
     this.activeSubs.set(entry.entryId, unsub);
   }
 
   private flushDue(): void {
-    if (this.disposed) return;
+    if (!this.active) return;
     const now = this.nowMs();
     const due: LitePendingEpgEntry[] = [];
 
@@ -315,13 +326,14 @@ class LiteEpgCoordinator {
     due.sort((a, b) => Number(b.isFocused) - Number(a.isFocused));
 
     for (let i = 0; i < due.length; i++) {
+      if (!this.active) return;
       const entry = due[i];
       if (!this.pending.has(entry.entryId)) continue;
       this.pending.delete(entry.entryId);
       this.activateEntry(entry);
     }
 
-    if (this.pending.size > 0) {
+    if (this.active && this.pending.size > 0) {
       this.armNextTimer(this.nowMs());
     }
   }
@@ -333,7 +345,7 @@ class LiteEpgCoordinator {
     onUpdate: (snapshot: LiveEpgSnapshot) => void,
     options: { isFocused: boolean }
   ): void {
-    if (this.disposed) return;
+    if (!this.active) return;
     this.cancel(entryId);
 
     const now = this.nowMs();
@@ -380,7 +392,7 @@ class LiteEpgCoordinator {
     streamId: number,
     onUpdate: (snapshot: LiveEpgSnapshot) => void
   ): void {
-    if (this.disposed) return;
+    if (!this.active) return;
     const now = this.nowMs();
     const isRapidBurst =
       this.lastFocusMoveMs > 0 && now - this.lastFocusMoveMs < LITE_EPG_BURST_WINDOW_MS;
@@ -449,6 +461,7 @@ class LiteEpgCoordinator {
       this.cancel(entryId);
       return;
     }
+    if (!this.active) return;
     const existing = this.pending.get(entryId);
     if (existing && existing.isFocused) {
       const now = this.nowMs();
@@ -459,7 +472,7 @@ class LiteEpgCoordinator {
   }
 
   notifyScrollActivity(): void {
-    if (this.disposed || this.pending.size === 0) return;
+    if (!this.active || this.pending.size === 0) return;
     const now = this.nowMs();
     let changed = false;
     this.pending.forEach((entry) => {
@@ -492,18 +505,23 @@ class LiteEpgCoordinator {
   }
 
   flushAllImmediate(): void {
-    if (this.disposed || this.pending.size === 0) return;
+    if (!this.active || this.pending.size === 0) return;
     this.clearTimer();
     const entries = Array.from(this.pending.values());
     this.pending.clear();
     entries.sort((a, b) => Number(b.isFocused) - Number(a.isFocused));
     for (let i = 0; i < entries.length; i++) {
+      if (!this.active) return;
       this.activateEntry(entries[i]);
     }
   }
 
-  dispose(): void {
-    this.disposed = true;
+  /**
+   * Cancels all pending timers and active subscriptions and advances sessionEpoch
+   * without permanently locking out the coordinator (used by passive effect cleanup).
+   */
+  clearAll(): void {
+    this.sessionEpoch += 1;
     this.clearTimer();
     this.pending.clear();
     this.activeSubs.forEach((unsub) => {
@@ -513,6 +531,28 @@ class LiteEpgCoordinator {
     });
     this.activeSubs.clear();
     this.focusedEntryId = null;
+    this.lastFocusMoveMs = 0;
+  }
+
+  /**
+   * Activates the coordinator for a committed mount (called exclusively by LiveTvView's useLayoutEffect).
+   */
+  activate(): void {
+    if (!this.active) {
+      this.active = true;
+      this.sessionEpoch += 1;
+    }
+  }
+
+  /**
+   * Deactivates the coordinator on layout unmount, cancelling all timers and active subscriptions.
+   * Because only LiveTvView's useLayoutEffect calls activate(), a truly unmounted instance remains
+   * permanently inactive while React.StrictMode's simulated unmount/remount cleanly reactivates it
+   * before child passive effects re-subscribe.
+   */
+  deactivate(): void {
+    this.active = false;
+    this.clearAll();
   }
 }
 
@@ -2715,12 +2755,19 @@ export const LiveTvView = React.memo(function LiveTvView({
   }
   const liteEpgCoordinator = liteEpgCoordinatorRef.current;
 
+  useLayoutEffect(() => {
+    liteEpgCoordinator.activate();
+    return () => {
+      liteEpgCoordinator.deactivate();
+    };
+  }, [liteEpgCoordinator]);
+
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       clearFallbackTimer();
-      liteEpgCoordinator.dispose();
+      liteEpgCoordinator.clearAll();
     };
   }, [clearFallbackTimer, liteEpgCoordinator]);
 
