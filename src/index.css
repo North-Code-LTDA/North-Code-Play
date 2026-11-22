@@ -1360,3 +1360,166 @@ html[data-performance-mode="lite"] [data-hero-stage="true"] {
   box-shadow: none !important;
 }
 
+/* ============================================================================
+ * Phase 4/5: Surgical Cosmetic Animation Deactivation in Lite Mode
+ * Strictly scoped to html[data-performance-mode="lite"][data-nav-mode="remote"]
+ * with explicit component classes/data attributes. Preserves D-Pad white focus
+ * rings, selection states, loading spinners (.animate-spin), contrast gradients
+ * over imagery, calibration scale preview transitions, and player controls.
+ * ============================================================================ */
+
+/* 6. Live TV (TV-01..TV-06) & Carousel Side Scroll Arrows */
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-channel-fav,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-row-scroll-prev="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-row-scroll-next="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-variants-row="true"] button {
+  transition: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-row-scroll-prev="true"] svg,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-row-scroll-next="true"] svg {
+  filter: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-live-badge="true"] .animate-pulse {
+  animation: none !important;
+}
+
+/* 7. Catalog Cards (CAT-09, CAT-10), Hero CTAs & Favorites */
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-card-title,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-card-play-overlay,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-episode-icon,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorite-remove="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorites-filter],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorites-reset-filter="true"] {
+  transition: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-card-play-badge,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-fav-card-img {
+  transform: none !important;
+  transition: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-card-play-badge,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorite-remove="true"]:not(:focus):not(:focus-visible),
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorites-filter]:not(:focus):not(:focus-visible) {
+  box-shadow: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-favorite-remove="true"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-hero-stage="true"] [data-hero-action] {
+  transition: none !important;
+  transform: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-hero-stage="true"] [data-hero-action]:not(:focus):not(:focus-visible) {
+  box-shadow: none !important;
+}
+
+/* 8. Top Header, Account Dropdown & Category Menu (preserves final chevron rotation) */
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-logo-btn,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-icon-btn,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-search-box,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-header-search-close="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-account-btn,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-account-btn svg,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-account-menu-item,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-categories-trigger="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-categories-trigger="true"] svg,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-categories-menu="true"] [data-category-id],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-back-to-showcase="true"] {
+  transition: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-top-header-pill-active:not(:focus):not(:focus-visible) {
+  box-shadow: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-categories-menu="true"] {
+  background-color: #12131a !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.7) !important;
+}
+
+/* 9. Movie & Series Details, Season Dropdown, Episodes & Sub-modals */
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-close-btn,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-action,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-action-icon,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-movie-synopsis,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-series-synopsis,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-about-movie-focus="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-about-series-focus="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-season-btn,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-season-btn svg,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-season-dropdown-menu="true"] [data-season-option],
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-episode-card,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-episode-card [data-episode-number="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-resume-modal="true"] button,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-play-error-modal="true"] button,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-fav-error-modal="true"] button {
+  transition: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-dialog,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-close-btn:not(:focus):not(:focus-visible),
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-details-action:not(:focus):not(:focus-visible),
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-tv-season-btn:not(:focus):not(:focus-visible) {
+  box-shadow: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-season-dropdown-menu="true"] {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.7) !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-resume-modal="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-play-error-modal="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-fav-error-modal="true"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-lite-instant-modal,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-lite-instant-toast {
+  animation: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-lite-instant-modal {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.75) !important;
+}
+
+/* 10. Config, Calibration Modal & Login (preserves calibration scale preview transitions) */
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-row="config-presentation-actions"] button,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-device-choices="true"] [data-device-choice],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-tv-quick-choices="true"] button,
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-modal .nc-cal-btn,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-login-screen="true"] [data-avatar-trigger="true"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-login-screen="true"] [data-avatar-option],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-login-screen="true"] form input,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-login-screen="true"] form button {
+  transition: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-row="config-presentation-actions"] button,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-login-screen="true"] button[type="submit"],
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-login-screen="true"] [data-avatar-option] {
+  transform: none !important;
+}
+
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-shell,
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-device-choices="true"] [data-device-choice]:not(:focus):not(:focus-visible),
+html[data-performance-mode="lite"][data-nav-mode="remote"] [data-tv-quick-choices="true"] button:not(:focus):not(:focus-visible),
+html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-modal .nc-cal-btn:not(:focus):not(:focus-visible) {
+  box-shadow: none !important;
+}
+
+

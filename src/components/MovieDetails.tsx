@@ -595,7 +595,7 @@ export const MovieDetails = React.memo(function MovieDetails({
       {favActionError && (
         <div
           role="alert"
-          className="absolute bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[90] bg-red-600/95 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2"
+          className="nc-lite-instant-toast absolute bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[90] bg-red-600/95 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2"
         >
           <AlertCircle className="w-5 h-5 text-white shrink-0" />
           <span>{favActionError}</span>
@@ -619,7 +619,7 @@ export const MovieDetails = React.memo(function MovieDetails({
           data-resume-modal="true"
           className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
         >
-          <div className="bg-[#181818] border border-white/15 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-200">
+          <div className="nc-lite-instant-modal bg-[#181818] border border-white/15 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-200">
             <div className="w-14 h-14 rounded-full bg-white/10 flex items-center justify-center mb-4">
               <Play className="w-7 h-7 text-white fill-current ml-1" />
             </div>
@@ -954,8 +954,8 @@ export const MovieDetails = React.memo(function MovieDetails({
                             className="w-full h-full object-cover object-center"
                           />
                           <div className="absolute inset-0 bg-gradient-to-t from-[#2f2f2f] via-transparent to-black/30" />
-                          <div className="absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center">
-                            <div className="w-10 h-10 rounded-full bg-white/90 text-black flex items-center justify-center shadow-lg">
+                          <div className="nc-card-play-overlay absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center">
+                            <div className="nc-card-play-badge w-10 h-10 rounded-full bg-white/90 text-black flex items-center justify-center shadow-lg">
                               <Play className="w-5 h-5 fill-current ml-0.5" />
                             </div>
                           </div>

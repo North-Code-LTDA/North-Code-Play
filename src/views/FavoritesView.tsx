@@ -690,10 +690,10 @@ export const FavoritesView = React.memo(function FavoritesView({
                 active={isAuthorized}
                 loading="lazy"
                 decoding="async"
-                className="max-h-full max-w-full object-contain transition-transform duration-200 group-hover:scale-105"
+                className="nc-fav-card-img max-h-full max-w-full object-contain transition-transform duration-200 group-hover:scale-105"
               />
-              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                <div className="w-10 h-10 rounded-full bg-nc-primary flex items-center justify-center text-black shadow-lg transform scale-90 group-hover:scale-100 group-focus:scale-100 transition-transform">
+              <div className="nc-card-play-overlay absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                <div className="nc-card-play-badge w-10 h-10 rounded-full bg-nc-primary flex items-center justify-center text-black shadow-lg transform scale-90 group-hover:scale-100 group-focus:scale-100 transition-transform">
                   <Play className="w-5 h-5 fill-current ml-0.5" />
                 </div>
               </div>
@@ -744,8 +744,8 @@ export const FavoritesView = React.memo(function FavoritesView({
               <Heart className="w-4 h-4 fill-current" />
             </button>
 
-            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-              <div className="w-12 h-12 rounded-full bg-nc-primary flex items-center justify-center text-black transform scale-75 group-hover:scale-100 group-focus:scale-100 transition-transform shadow-lg">
+            <div className="nc-card-play-overlay absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+              <div className="nc-card-play-badge w-12 h-12 rounded-full bg-nc-primary flex items-center justify-center text-black transform scale-75 group-hover:scale-100 group-focus:scale-100 transition-transform shadow-lg">
                 <Play className="w-6 h-6 fill-current ml-1" />
               </div>
             </div>
@@ -823,9 +823,10 @@ export const FavoritesView = React.memo(function FavoritesView({
       {favPlayError && (
         <div
           data-focus-scope="modal"
+          data-fav-error-modal="true"
           className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
         >
-          <div className="bg-nc-bg border border-red-500/40 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
+          <div className="nc-lite-instant-modal bg-nc-bg border border-red-500/40 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95 duration-300">
             <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
               <AlertCircle className="w-7 h-7 text-red-500" />
             </div>
@@ -1081,7 +1082,7 @@ export const FavoritesView = React.memo(function FavoritesView({
       {(favActionError || favoriteError) && (
         <div
           role="alert"
-          className="fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[110] bg-red-600/90 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2"
+          className="nc-lite-instant-toast fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[110] bg-red-600/90 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2"
         >
           <div className="flex items-center gap-2 min-w-0">
             <AlertCircle className="w-5 h-5 text-white shrink-0" />

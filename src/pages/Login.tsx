@@ -16,6 +16,7 @@ import {
   popFocusMemory,
   focusElementSafely,
 } from '../navigation';
+import { usePerformanceProfile } from '../platform/performanceProfile';
 
 const AVATAR_OPTIONS = [
   'https://api.dicebear.com/10.x/fun-emoji/svg?seed=Sophie',
@@ -43,6 +44,7 @@ export function Login() {
   const avatarTriggerRef = useRef<HTMLButtonElement | null>(null);
   const avatarPickerRef = useRef<HTMLDivElement | null>(null);
 
+  const { isLiteActive } = usePerformanceProfile();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -228,9 +230,10 @@ export function Login() {
       />
 
       <motion.div
-        initial={{ opacity: 0, y: 12 }}
+        data-login-lite-motion={isLiteActive ? 'true' : 'false'}
+        initial={isLiteActive ? false : { opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+        transition={isLiteActive ? { duration: 0 } : { duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
         className="w-full max-w-[460px] z-10 px-1 sm:px-0"
       >
         {/* Marca oficial em destaque equilibrado */}
@@ -315,10 +318,17 @@ export function Login() {
                     aria-label="Escolher avatar"
                     data-focus-scope="modal"
                     data-avatar-picker="true"
-                    initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                    data-avatar-picker-lite-motion={isLiteActive ? 'true' : 'false'}
+                    initial={isLiteActive ? false : { opacity: 0, y: -6, scale: 0.98 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -6, scale: 0.98 }}
-                    transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                    exit={
+                      isLiteActive
+                        ? { opacity: 1, y: 0, scale: 1, transition: { duration: 0 } }
+                        : { opacity: 0, y: -6, scale: 0.98 }
+                    }
+                    transition={
+                      isLiteActive ? { duration: 0 } : { duration: 0.16, ease: [0.16, 1, 0.3, 1] }
+                    }
                     className="absolute top-[86px] left-0 z-30 bg-[#101010] border border-white/15 rounded-2xl p-4 shadow-[0_24px_60px_rgba(0,0,0,0.9)] w-full"
                   >
                     <div className="flex items-center justify-between gap-2 mb-3.5">

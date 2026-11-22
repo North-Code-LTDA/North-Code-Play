@@ -142,6 +142,12 @@ const { XtreamProvider } = await import('../src/context/XtreamContext');
 const { ConfigView } = await import('../src/views/ConfigView');
 const { HorizontalRow } = await import('../src/components/HorizontalRow');
 const { VideoPlayer } = await import('../src/components/VideoPlayer');
+const { HeroBanner } = await import('../src/components/HeroBanner');
+const { DetailsModalShell } = await import('../src/components/DetailsModalShell');
+const { TopHeader } = await import('../src/components/TopHeader');
+const { FavoritesView } = await import('../src/views/FavoritesView');
+const { getFavoritesKey, setStoredFavorites } = await import('../src/utils/accountUtils');
+const { notifyAccountSubscribers } = await import('../src/hooks/useFavorites');
 
 async function flush(ticks = 4): Promise<void> {
   for (let i = 0; i < ticks; i++) {
@@ -891,6 +897,504 @@ async function runTests() {
         !profileSource.includes('addEventListener'),
         'performanceProfile.ts não deve registrar novos listeners de teclado/ponteiro no window/document'
       );
+    }
+  );
+
+  // 17. Fase 4: Regras CSS cirúrgicas cobrem itens selecionados, preservam spinners, gradientes, calibração e exclusões da Fase 5
+  await runCase(
+    '17. Fase 4: Regras CSS cirúrgicas cobrem Live TV, Catálogos, Favoritos, Header, Detalhes, Config e Login sem afetar spinners, player ou Fase 5',
+    async () => {
+      const cssContent = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf8');
+      const phase4Index = cssContent.indexOf('Phase 4/5: Surgical Cosmetic Animation Deactivation');
+      assert.ok(phase4Index !== -1, 'Bloco CSS da Fase 4 deve existir em src/index.css');
+      const phase4CommentStart = cssContent.lastIndexOf('/*', phase4Index);
+      const phase4Block = cssContent.slice(phase4CommentStart !== -1 ? phase4CommentStart : phase4Index);
+      const phase4RulesOnly = phase4Block.replace(/\/\*[\s\S]*?\*\//g, '');
+
+      // Todos os seletores da Fase 4 devem exigir Lite + remote simultaneamente
+      const selectorLines = phase4RulesOnly
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith('html['));
+      assert.ok(selectorLines.length >= 20, 'Deve conter regras cirúrgicas da Fase 4');
+      for (const line of selectorLines) {
+        assert.ok(
+          line.startsWith('html[data-performance-mode="lite"][data-nav-mode="remote"] '),
+          `Regra Fase 4 deve exigir Lite + remote: ${line}`
+        );
+      }
+
+      // Live TV (TV-01..TV-06)
+      assert.ok(phase4RulesOnly.includes('.nc-tv-channel-fav'), 'Deve cobrir TV-01 (.nc-tv-channel-fav)');
+      assert.ok(phase4RulesOnly.includes('[data-row-scroll-prev="true"]'), 'Deve cobrir TV-02 e setas de carrossel');
+      assert.ok(phase4RulesOnly.includes('[data-row-scroll-prev="true"] svg'), 'Deve cobrir TV-03 (drop-shadow das setas)');
+      assert.ok(phase4RulesOnly.includes('[data-live-variants-row="true"] button'), 'Deve cobrir TV-04 (SD/HD/FHD)');
+      assert.ok(phase4RulesOnly.includes('[data-live-badge="true"] .animate-pulse'), 'Deve cobrir TV-05 (ponto AO VIVO)');
+
+      // Catálogos (CAT-09, CAT-10), Favoritos, Header, Detalhes, Config/Calibração e Login
+      assert.ok(phase4RulesOnly.includes('.nc-card-title'), 'Deve cobrir CAT-09 (.nc-card-title)');
+      assert.ok(phase4RulesOnly.includes('.nc-card-play-overlay'), 'Deve cobrir CAT-10 (.nc-card-play-overlay)');
+      assert.ok(phase4RulesOnly.includes('.nc-card-play-badge'), 'Deve cobrir CAT-10 (.nc-card-play-badge)');
+      assert.ok(phase4RulesOnly.includes('.nc-fav-card-img'), 'Deve cobrir escala de imagem nos Favoritos');
+      assert.ok(phase4RulesOnly.includes('.nc-top-header-account-btn svg'), 'Deve cobrir chevron do menu de conta');
+      assert.ok(phase4RulesOnly.includes('[data-categories-trigger="true"] svg'), 'Deve cobrir chevron de categorias');
+      assert.ok(phase4RulesOnly.includes('.nc-tv-season-btn svg'), 'Deve cobrir chevron de temporadas');
+      assert.ok(phase4RulesOnly.includes('.nc-tv-episode-card'), 'Deve cobrir cards de episódio');
+      assert.ok(phase4RulesOnly.includes('.nc-lite-instant-modal'), 'Deve cobrir modais de confirmação/erro');
+      assert.ok(phase4RulesOnly.includes('[data-device-choices="true"] [data-device-choice]'), 'Deve cobrir escolhas de dispositivo');
+
+      // Exclusões obrigatórias preservadas (TV-07 spinners, player, calibração de amostra e itens da Fase 5)
+      assert.ok(!phase4RulesOnly.includes('animate-spin'), 'TV-07: não deve desativar spinners funcionais (.animate-spin)');
+      assert.ok(!phase4RulesOnly.includes('.nc-player-ctrl-btn'), 'Não deve alterar botões do player');
+      assert.ok(!phase4RulesOnly.includes('data-sample-icon'), 'Não deve alterar transição de movimento da amostra de calibração (Fase 5)');
+      assert.ok(!phase4RulesOnly.includes('data-sample-text'), 'Não deve alterar transição de fonte da amostra de calibração (Fase 5)');
+      assert.ok(!phase4RulesOnly.includes('bg-gradient-to-'), 'Não deve remover gradientes de contraste sobre imagens (Fase 5)');
+
+      // Verifica preservação de itens explícitos da Fase 5 no código-fonte
+      const horizontalRowSrc = fs.readFileSync(
+        path.resolve(process.cwd(), 'src/components/HorizontalRow.tsx'),
+        'utf8'
+      );
+      assert.ok(
+        horizontalRowSrc.includes('whileTap={{ scale: 0.97 }}'),
+        'HorizontalRow deve preservar whileTap para a Fase 5'
+      );
+      const heroBannerSrc = fs.readFileSync(
+        path.resolve(process.cwd(), 'src/components/HeroBanner.tsx'),
+        'utf8'
+      );
+      assert.ok(
+        heroBannerSrc.includes('8000'),
+        'HeroBanner deve preservar intervalo de auto-rotação de 8000ms (Fase 5)'
+      );
+      const loginSrc = fs.readFileSync(
+        path.resolve(process.cwd(), 'src/pages/Login.tsx'),
+        'utf8'
+      );
+      assert.ok(
+        loginSrc.includes('data-login-lite-motion={isLiteActive ? \'true\' : \'false\'}') &&
+          loginSrc.includes('data-avatar-picker-lite-motion={isLiteActive ? \'true\' : \'false\'}'),
+        'Login deve condicionar animações Motion exclusivamente ao isLiteActive'
+      );
+    }
+  );
+
+  // 18. Fase 4: Motion em HeroBanner, DetailsModalShell e ConfigView desativa somente no Lite efetivo e alterna Lite <-> Completo
+  await runCase(
+    '18. Fase 4: HeroBanner, DetailsModalShell e ConfigView desativam Motion só no Lite efetivo, preservam Web/Full/Celular/Pointer e alternam Lite <-> Completo',
+    async () => {
+      const heroItems = [
+        {
+          stream_id: 101,
+          name: 'Filme Destaque A',
+          stream_icon: 'https://cdn.example.com/poster-a.jpg',
+          cover: 'https://cdn.example.com/poster-a.jpg',
+          rating: '8.7',
+          plot: 'Sinopse A',
+        },
+        {
+          stream_id: 102,
+          name: 'Filme Destaque B',
+          stream_icon: 'https://cdn.example.com/poster-b.jpg',
+          cover: 'https://cdn.example.com/poster-b.jpg',
+          rating: '9.1',
+          plot: 'Sinopse B',
+        },
+      ];
+
+      let heroPlayCalls = 0;
+      let heroInfoCalls = 0;
+      let modalCloseCalls = 0;
+      let capturedHeroTick: (() => void) | null = null;
+      const origSetInterval = globalThis.setInterval;
+      const origWindowSetInterval = window.setInterval;
+      const interceptSetInterval = ((fn: TimerHandler, delay?: number, ...args: any[]) => {
+        if (delay === 8000 && typeof fn === 'function') {
+          capturedHeroTick = fn as () => void;
+        }
+        return origSetInterval(fn as any, delay, ...args);
+      }) as typeof setInterval;
+      (globalThis as any).setInterval = interceptSetInterval;
+      (window as any).setInterval = interceptSetInterval;
+
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      const root: Root = createRoot(host);
+
+      const renderShowcaseAndModal = async () => {
+        await act(async () => {
+          root.render(
+            React.createElement(
+              XtreamProvider,
+              { credentials: null },
+              React.createElement(
+                NavigationProvider,
+                null,
+                React.createElement(
+                  React.Fragment,
+                  null,
+                  React.createElement(HeroBanner, {
+                    items: heroItems,
+                    onPlay: () => {
+                      heroPlayCalls += 1;
+                    },
+                    onInfo: () => {
+                      heroInfoCalls += 1;
+                    },
+                    isPaused: false,
+                    domain: 'movies',
+                  }),
+                  React.createElement(
+                    DetailsModalShell,
+                    {
+                      titleId: 'test-details-title',
+                      modalType: 'movie',
+                      onClose: () => {
+                        modalCloseCalls += 1;
+                      },
+                    },
+                    React.createElement('h1', { id: 'test-details-title' }, 'Filme Teste')
+                  ),
+                  React.createElement(ConfigView)
+                )
+              )
+            )
+          );
+        });
+        await flush();
+      };
+
+      try {
+        // Cenário A: Web + TV + remote -> Full (animações preservadas)
+        setAndroidPlatformOverrideForDpadTest(false);
+        confirmDisplayPreferences('tv', 85);
+        setNavMode('remote');
+        initPerformanceProfile();
+        await renderShowcaseAndModal();
+
+        assert.strictEqual(
+          host.querySelector('[data-hero-stage="true"]')?.getAttribute('data-hero-lite-motion'),
+          'false',
+          'Web deve preservar animações Motion do HeroBanner'
+        );
+        assert.strictEqual(
+          host.querySelector('[data-details-modal="movie"]')?.getAttribute('data-details-lite-motion'),
+          'false',
+          'Web deve preservar animações Motion do DetailsModalShell'
+        );
+        assert.strictEqual(
+          host.querySelector('[data-config-lite-motion]')?.getAttribute('data-config-lite-motion'),
+          'false',
+          'Web deve preservar animações Motion do ConfigView'
+        );
+
+        // Cenário B: Android + celular/tablet (default) + remote -> Full (animações preservadas)
+        act(() => {
+          setAndroidPlatformOverrideForDpadTest(true);
+          confirmDisplayPreferences('default', 85);
+          setNavMode('remote');
+          resetPerformanceProfileCacheForTest();
+          initPerformanceProfile();
+        });
+        await renderShowcaseAndModal();
+
+        assert.strictEqual(
+          host.querySelector('[data-hero-stage="true"]')?.getAttribute('data-hero-lite-motion'),
+          'false',
+          'Android celular/tablet (default) deve preservar animações Motion'
+        );
+
+        // Cenário C: Android + TV + pointer -> Full (animações preservadas)
+        act(() => {
+          confirmDisplayPreferences('tv', 85);
+          setNavMode('pointer');
+        });
+        await flush();
+        assert.strictEqual(
+          host.querySelector('[data-hero-stage="true"]')?.getAttribute('data-hero-lite-motion'),
+          'false',
+          'Android TV em pointer deve preservar animações Motion'
+        );
+
+        // Cenário D: Android + TV + remote + auto -> Lite ativo (desativa animações Motion)
+        act(() => {
+          setNavMode('remote');
+        });
+        await flush();
+
+        assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
+        assert.strictEqual(
+          host.querySelector('[data-hero-stage="true"]')?.getAttribute('data-hero-lite-motion'),
+          'true',
+          'HeroBanner deve ativar modo Motion instantâneo no Lite efetivo'
+        );
+        assert.strictEqual(
+          host.querySelector('[data-details-modal="movie"]')?.getAttribute('data-details-lite-motion'),
+          'true',
+          'DetailsModalShell deve ativar modo Motion instantâneo no Lite efetivo'
+        );
+        assert.strictEqual(
+          host.querySelector('[data-config-lite-motion]')?.getAttribute('data-config-lite-motion'),
+          'true',
+          'ConfigView deve ativar modo Motion instantâneo no Lite efetivo'
+        );
+
+        // Testa troca de slide do HeroBanner no Lite (sem crossfade/slide travando troca)
+        assert.strictEqual(
+          host.querySelector('[data-hero-stage="true"]')?.getAttribute('data-hero-index'),
+          '0',
+          'HeroBanner deve iniciar no slide 0'
+        );
+        const firstSlideTitle = host.querySelector('.nc-tv-hero-title')?.textContent?.trim() || '';
+        assert.ok(
+          firstSlideTitle === 'Filme Destaque A' || firstSlideTitle === 'Filme Destaque B',
+          `Título inicial do HeroBanner inválido: "${firstSlideTitle}"`
+        );
+        assert.ok(capturedHeroTick, 'HeroBanner deve manter intervalo de auto-rotação de 8000ms');
+        act(() => {
+          capturedHeroTick!();
+        });
+        await flush();
+        assert.strictEqual(
+          host.querySelector('[data-hero-stage="true"]')?.getAttribute('data-hero-index'),
+          '1',
+          'HeroBanner deve avançar para o slide 1 normalmente no Lite'
+        );
+        const secondSlideTitle = host.querySelector('.nc-tv-hero-title')?.textContent?.trim() || '';
+        assert.ok(
+          secondSlideTitle !== firstSlideTitle &&
+            (secondSlideTitle === 'Filme Destaque A' || secondSlideTitle === 'Filme Destaque B'),
+          `HeroBanner deve exibir o título do próximo slide imediatamente no Lite (antes="${firstSlideTitle}", depois="${secondSlideTitle}")`
+        );
+
+        // Testa ações do HeroBanner e abertura/fechamento do DetailsModalShell no Lite
+        const playBtn = host.querySelector<HTMLButtonElement>('[data-hero-action="play"]')!;
+        const infoBtn = host.querySelector<HTMLButtonElement>('[data-hero-action="info"]')!;
+        const closeBtn = host.querySelector<HTMLButtonElement>('[data-details-close="true"]')!;
+        act(() => {
+          playBtn.click();
+          infoBtn.click();
+          closeBtn.click();
+        });
+        assert.strictEqual(heroPlayCalls, 1, 'Botão Assistir do HeroBanner deve funcionar no Lite');
+        assert.strictEqual(heroInfoCalls, 1, 'Botão Mais informações do HeroBanner deve funcionar no Lite');
+        assert.strictEqual(modalCloseCalls, 1, 'Botão fechar do DetailsModalShell deve funcionar no Lite');
+
+        // Alterna Lite -> Completo -> Lite mantendo interface íntegra
+        act(() => {
+          setPerformanceProfilePreference('full');
+        });
+        await flush();
+        assert.strictEqual(
+          host.querySelector('[data-hero-stage="true"]')?.getAttribute('data-hero-lite-motion'),
+          'false'
+        );
+        assert.strictEqual(
+          host.querySelector('[data-details-modal="movie"]')?.getAttribute('data-details-lite-motion'),
+          'false'
+        );
+        assert.strictEqual(
+          host.querySelector('[data-config-lite-motion]')?.getAttribute('data-config-lite-motion'),
+          'false'
+        );
+
+        act(() => {
+          setPerformanceProfilePreference('lite');
+        });
+        await flush();
+        assert.strictEqual(
+          host.querySelector('[data-hero-stage="true"]')?.getAttribute('data-hero-lite-motion'),
+          'true'
+        );
+
+        // Verifica que há exatamente 3 listeners (1 HeroBanner + 1 DetailsModalShell + 1 ConfigView)
+        assert.strictEqual(
+          getPerformanceProfileSubscriptionCountsForTest().listeners,
+          3,
+          'Apenas componentes de topo devem assinar performanceProfile (sem assinaturas duplicadas)'
+        );
+      } finally {
+        (globalThis as any).setInterval = origSetInterval;
+        (window as any).setInterval = origWindowSetInterval;
+        await act(async () => {
+          root.unmount();
+        });
+        host.remove();
+      }
+
+      assert.strictEqual(
+        getPerformanceProfileSubscriptionCountsForTest().listeners,
+        0,
+        'Todos os listeners devem ser limpos após desmontagem'
+      );
+    }
+  );
+
+  // 19. Fase 4: Header/menus, Favoritos, Calibração e zero assinaturas em cards individuais funcionam no Lite
+  await runCase(
+    '19. Fase 4: Menus do TopHeader (com orientação final do chevron), Favoritos e Calibração funcionam normalmente no Lite sem assinaturas em cards',
+    async () => {
+      setAndroidPlatformOverrideForDpadTest(true);
+      confirmDisplayPreferences('tv', 85);
+      syncDocumentDisplayAttributes();
+      setNavMode('remote');
+      initPerformanceProfile();
+      assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
+
+      // 19a. TopHeader: abre/fecha menu de conta preservando orientação rotate-180 no chevron
+      const headerHost = document.createElement('div');
+      document.body.appendChild(headerHost);
+      const headerRoot: Root = createRoot(headerHost);
+      let isAccountOpen = false;
+      const renderHeader = async () => {
+        await act(async () => {
+          headerRoot.render(
+            React.createElement(
+              NavigationProvider,
+              null,
+              React.createElement(TopHeader, {
+                currentView: 'inicio',
+                onSelectSection: () => {},
+                onSelectAccountAction: () => {},
+                searchQuery: '',
+                onSearchQueryChange: () => {},
+                isSearchOpen: false,
+                onOpenSearch: () => {},
+                onCloseSearch: () => {},
+                isAccountMenuOpen: isAccountOpen,
+                onToggleAccountMenu: () => {
+                  isAccountOpen = !isAccountOpen;
+                },
+                onCloseAccountMenu: () => {
+                  isAccountOpen = false;
+                },
+                username: 'Teste',
+              })
+            )
+          );
+        });
+        await flush();
+      };
+
+      try {
+        await renderHeader();
+        const trigger = headerHost.querySelector<HTMLButtonElement>('[data-header-account-trigger="true"]')!;
+        assert.strictEqual(trigger.getAttribute('aria-expanded'), 'false');
+        assert.ok(
+          !trigger.querySelector('svg')?.getAttribute('class')?.includes('rotate-180'),
+          'Chevron fechado não deve estar rotacionado'
+        );
+
+        act(() => {
+          trigger.click();
+        });
+        await renderHeader();
+
+        assert.strictEqual(trigger.getAttribute('aria-expanded'), 'true');
+        assert.ok(
+          headerHost.querySelector('[data-header-account-menu="true"]'),
+          'Menu de conta deve abrir normalmente no Lite'
+        );
+        assert.ok(
+          trigger.querySelector('svg')?.getAttribute('class')?.includes('rotate-180'),
+          'Chevron aberto deve preservar orientação final rotate-180 no Lite'
+        );
+      } finally {
+        await act(async () => {
+          headerRoot.unmount();
+        });
+        headerHost.remove();
+      }
+
+      // 19b. Favoritos: renderiza e remove favorito normalmente no Lite (zero assinaturas por card)
+      const favCreds = {
+        playlistName: 'Lista Teste',
+        serverUrl: 'http://demo.local:8080',
+        username: 'tester',
+        password: 'secret',
+      };
+      const favStorageKey = getFavoritesKey(favCreds.serverUrl, favCreds.username);
+      setStoredFavorites(favStorageKey, [
+        { id: 'fav-1', type: 'movie', name: 'Filme Favorito 1', cover: '' },
+        { id: 'fav-2', type: 'live', name: 'Canal Favorito 1', cover: '' },
+      ]);
+      notifyAccountSubscribers(favStorageKey);
+      const favHost = document.createElement('div');
+      document.body.appendChild(favHost);
+      const favRoot: Root = createRoot(favHost);
+      try {
+        await act(async () => {
+          favRoot.render(
+            React.createElement(
+              XtreamProvider,
+              { credentials: favCreds },
+              React.createElement(
+                NavigationProvider,
+                null,
+                React.createElement(FavoritesView, {
+                  onPlay: () => {},
+                })
+              )
+            )
+          );
+        });
+        await flush();
+
+        assert.strictEqual(
+          getPerformanceProfileSubscriptionCountsForTest().listeners,
+          0,
+          'FavoritesView e seus cards não devem criar assinaturas extras de performanceProfile'
+        );
+        const cardsBefore = favHost.querySelectorAll('[data-favorite-card="true"]').length;
+        assert.strictEqual(cardsBefore, 2, 'Favoritos devem renderizar normalmente no Lite');
+
+        const removeBtn = favHost.querySelector<HTMLButtonElement>('[data-favorite-remove="true"]')!;
+        act(() => {
+          removeBtn.click();
+        });
+        await flush();
+        const cardsAfter = favHost.querySelectorAll('[data-favorite-card="true"]').length;
+        assert.strictEqual(cardsAfter, 1, 'Remoção de favorito deve funcionar normalmente no Lite');
+      } finally {
+        await act(async () => {
+          favRoot.unmount();
+        });
+        favHost.remove();
+      }
+
+      // 19c. ConfigView + DisplaySetupModal: abre calibração, escolhe 90% e confirma no Lite
+      const cfgMounted = await mountConfigView();
+      try {
+        const calibrateBtn = Array.from(
+          cfgMounted.host.querySelectorAll<HTMLButtonElement>('button')
+        ).find((b) => b.textContent?.includes('Calibrar escala'));
+        assert.ok(calibrateBtn, 'Botão Calibrar escala deve estar disponível em modo TV');
+        act(() => {
+          calibrateBtn.click();
+        });
+        await flush();
+
+        const preset90 = cfgMounted.host.querySelector<HTMLButtonElement>('[data-calibration-preset-90="true"]');
+        const confirmBtn = cfgMounted.host.querySelector<HTMLButtonElement>('[data-calibration-confirm="true"]');
+        assert.ok(preset90 && confirmBtn, 'Modal de calibração deve abrir normalmente no Lite');
+
+        act(() => {
+          preset90.click();
+        });
+        await flush();
+        act(() => {
+          confirmBtn.click();
+        });
+        await flush();
+
+        assert.strictEqual(
+          getDisplayPreferencesSnapshot().tvScale,
+          90,
+          'Calibração de escala deve continuar salvando corretamente no Lite'
+        );
+      } finally {
+        await cfgMounted.unmount();
+      }
     }
   );
 

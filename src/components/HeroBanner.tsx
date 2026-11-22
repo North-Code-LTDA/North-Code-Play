@@ -21,6 +21,7 @@ import {
   isAndroidPersistentImageCacheAvailable,
   scheduleBackgroundLowPriorityPreload,
 } from '../services/androidImageCache';
+import { usePerformanceProfile } from '../platform/performanceProfile';
 
 export { fetchOrReuseHeroDetails };
 
@@ -85,6 +86,7 @@ export const HeroBanner = React.memo(function HeroBanner({
   scrollContainerRef,
 }: HeroBannerProps) {
   const { credentials } = useXtreamCredentials();
+  const { isLiteActive } = usePerformanceProfile();
   const heroRootRef = useRef<HTMLDivElement | null>(null);
   const [isPlayPending, setIsPlayPending] = useState(false);
   const playPendingRef = useRef(false);
@@ -373,6 +375,86 @@ export const HeroBanner = React.memo(function HeroBanner({
     currentItem.releaseDate ||
     (getValidYear(currentItem) > 0 ? getValidYear(currentItem) : '');
 
+  const imageLayerContent = hasHorizontalBackdrop ? (
+    <>
+      <MediaImage
+        src={activeImageSrc}
+        serverUrl={credentials?.serverUrl}
+        alt={currentItem.name}
+        itemId={itemKey}
+        itemName={currentItem.name}
+        priority={true}
+        active={!effectivelyPaused}
+        className="w-full h-full object-cover object-center opacity-85"
+      />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/55 to-black/15" />
+      <div className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/55 to-transparent" />
+    </>
+  ) : hasVerticalCoverOnly ? (
+    <div className="relative w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]">
+      <div className="absolute inset-y-0 right-0 w-full sm:w-3/5 flex items-center justify-center sm:justify-end pr-4 sm:pr-8 md:pr-14 py-5 sm:py-7 opacity-45 sm:opacity-90">
+        <MediaImage
+          src={activeImageSrc}
+          serverUrl={credentials?.serverUrl}
+          alt={currentItem.name}
+          itemId={itemKey}
+          itemName={currentItem.name}
+          priority={true}
+          active={!effectivelyPaused}
+          className="h-full max-h-[260px] sm:max-h-[360px] md:max-h-[420px] w-auto aspect-[2/3] object-contain rounded-xl shadow-2xl border border-white/15"
+        />
+      </div>
+      <div className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/70 to-transparent" />
+      <div className="absolute inset-0 bg-gradient-to-r from-[#08090d] via-[#08090d]/90 to-transparent" />
+    </div>
+  ) : (
+    <div className="w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]" />
+  );
+
+  const textLayerContent = (
+    <>
+      <h1 className="nc-heading-hero nc-tv-hero-title font-bold text-white tracking-tight drop-shadow-lg break-words whitespace-normal text-wrap">
+        {currentItem.name}
+      </h1>
+
+      <div className="flex flex-wrap items-center gap-2.5 nc-text-subtitle text-white/85 mb-3 mt-2.5">
+        <span className="text-white/95 font-semibold">
+          {isSeries ? 'Série' : 'Filme'}
+        </span>
+        {genreLabel && (
+          <>
+            <span className="text-white/40">•</span>
+            <span className="text-white/85 break-words">{genreLabel}</span>
+          </>
+        )}
+        {releaseLabel && (
+          <>
+            <span className="text-white/40">•</span>
+            <span className="text-white/90 font-medium">{releaseLabel}</span>
+          </>
+        )}
+        {currentItem.rating && currentItem.rating !== '0' && (
+          <>
+            <span className="text-white/40">•</span>
+            <span className="bg-white/15 px-2 py-0.5 rounded nc-text-meta text-amber-400 font-semibold">
+              ★ {currentItem.rating}
+            </span>
+          </>
+        )}
+      </div>
+
+      {synopsisText ? (
+        <p className="nc-text-reading text-white/85 line-clamp-2 sm:line-clamp-3 md:line-clamp-4 mb-5 max-w-xl drop-shadow">
+          {synopsisText}
+        </p>
+      ) : (
+        <p className="nc-text-reading text-white/70 line-clamp-2 mb-5 max-w-xl">
+          Explore os detalhes completos ou inicie a reprodução imediata no North Code Play.
+        </p>
+      )}
+    </>
+  );
+
   return (
     <div
       ref={heroRootRef}
@@ -383,106 +465,49 @@ export const HeroBanner = React.memo(function HeroBanner({
         data-hero-image-mode={imageMode}
         data-hero-paused={effectivelyPaused ? 'true' : 'false'}
         data-hero-index={String(safeCurrentIndex)}
+        data-hero-lite-motion={isLiteActive ? 'true' : 'false'}
         className="relative w-full min-h-[320px] sm:min-h-[390px] md:min-h-[470px] lg:min-h-[530px] rounded-2xl md:rounded-3xl overflow-hidden border border-white/10 bg-[#0b0c10] shadow-[0_20px_50px_rgba(0,0,0,0.65)] flex flex-col justify-end p-5 sm:p-8 md:p-11 lg:p-14"
       >
-        <AnimatePresence mode="popLayout">
-          <motion.div
-            key={itemKey}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.6 }}
-            className="absolute inset-0 z-0"
-          >
-            {hasHorizontalBackdrop ? (
-              <>
-                <MediaImage
-                  src={activeImageSrc}
-                  serverUrl={credentials?.serverUrl}
-                  alt={currentItem.name}
-                  itemId={itemKey}
-                  itemName={currentItem.name}
-                  priority={true}
-                  active={!effectivelyPaused}
-                  className="w-full h-full object-cover object-center opacity-85"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/55 to-black/15" />
-                <div className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/55 to-transparent" />
-              </>
-            ) : hasVerticalCoverOnly ? (
-              <div className="relative w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]">
-                <div className="absolute inset-y-0 right-0 w-full sm:w-3/5 flex items-center justify-center sm:justify-end pr-4 sm:pr-8 md:pr-14 py-5 sm:py-7 opacity-45 sm:opacity-90">
-                  <MediaImage
-                    src={activeImageSrc}
-                    serverUrl={credentials?.serverUrl}
-                    alt={currentItem.name}
-                    itemId={itemKey}
-                    itemName={currentItem.name}
-                    priority={true}
-                    active={!effectivelyPaused}
-                    className="h-full max-h-[260px] sm:max-h-[360px] md:max-h-[420px] w-auto aspect-[2/3] object-contain rounded-xl shadow-2xl border border-white/15"
-                  />
-                </div>
-                <div className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/70 to-transparent" />
-                <div className="absolute inset-0 bg-gradient-to-r from-[#08090d] via-[#08090d]/90 to-transparent" />
-              </div>
-            ) : (
-              <div className="w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]" />
-            )}
-          </motion.div>
-        </AnimatePresence>
-
-        <div className="relative z-10 max-w-2xl w-full flex flex-col items-start justify-end">
-          <AnimatePresence mode="wait">
+        {isLiteActive ? (
+          <div key={itemKey} data-hero-image-layer="true" className="absolute inset-0 z-0">
+            {imageLayerContent}
+          </div>
+        ) : (
+          <AnimatePresence mode="popLayout">
             <motion.div
               key={itemKey}
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -14 }}
-              transition={{ duration: 0.4 }}
-              className="w-full"
+              data-hero-image-layer="true"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.6 }}
+              className="absolute inset-0 z-0"
             >
-              <h1 className="nc-heading-hero nc-tv-hero-title font-bold text-white tracking-tight drop-shadow-lg break-words whitespace-normal text-wrap">
-                {currentItem.name}
-              </h1>
-
-              <div className="flex flex-wrap items-center gap-2.5 nc-text-subtitle text-white/85 mb-3 mt-2.5">
-                <span className="text-white/95 font-semibold">
-                  {isSeries ? 'Série' : 'Filme'}
-                </span>
-                {genreLabel && (
-                  <>
-                    <span className="text-white/40">•</span>
-                    <span className="text-white/85 break-words">{genreLabel}</span>
-                  </>
-                )}
-                {releaseLabel && (
-                  <>
-                    <span className="text-white/40">•</span>
-                    <span className="text-white/90 font-medium">{releaseLabel}</span>
-                  </>
-                )}
-                {currentItem.rating && currentItem.rating !== '0' && (
-                  <>
-                    <span className="text-white/40">•</span>
-                    <span className="bg-white/15 px-2 py-0.5 rounded nc-text-meta text-amber-400 font-semibold">
-                      ★ {currentItem.rating}
-                    </span>
-                  </>
-                )}
-              </div>
-
-              {synopsisText ? (
-                <p className="nc-text-reading text-white/85 line-clamp-2 sm:line-clamp-3 md:line-clamp-4 mb-5 max-w-xl drop-shadow">
-                  {synopsisText}
-                </p>
-              ) : (
-                <p className="nc-text-reading text-white/70 line-clamp-2 mb-5 max-w-xl">
-                  Explore os detalhes completos ou inicie a reprodução imediata no North Code Play.
-                </p>
-              )}
+              {imageLayerContent}
             </motion.div>
           </AnimatePresence>
+        )}
+
+        <div className="relative z-10 max-w-2xl w-full flex flex-col items-start justify-end">
+          {isLiteActive ? (
+            <div key={itemKey} data-hero-text-layer="true" className="w-full">
+              {textLayerContent}
+            </div>
+          ) : (
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={itemKey}
+                data-hero-text-layer="true"
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -14 }}
+                transition={{ duration: 0.4 }}
+                className="w-full"
+              >
+                {textLayerContent}
+              </motion.div>
+            </AnimatePresence>
+          )}
 
           <div data-nav-row="true" className="nc-action-group relative z-30 mt-1">
             <button

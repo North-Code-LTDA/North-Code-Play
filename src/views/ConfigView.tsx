@@ -80,6 +80,7 @@ export const ConfigView = React.memo(function ConfigView({
     preference: performancePreference,
     effectiveMode: effectivePerformanceMode,
     isAndroidApk,
+    isLiteActive,
     setPreference: setPerformancePreference,
   } = usePerformanceProfile();
 
@@ -204,9 +205,10 @@ export const ConfigView = React.memo(function ConfigView({
         className="nc-tv-content-pad nc-safe-screen w-full h-full min-w-0 min-h-0 flex flex-col items-center justify-start px-4 py-6 sm:px-6 sm:py-8 md:px-10 md:py-10 overflow-y-auto overflow-x-hidden custom-scrollbar bg-nc-bg"
       >
         <motion.div
-          initial={{ opacity: 0, y: 12 }}
+          data-config-lite-motion={isLiteActive ? 'true' : 'false'}
+          initial={isLiteActive ? false : { opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+          transition={isLiteActive ? { duration: 0 } : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
           className="w-full max-w-4xl space-y-6 sm:space-y-8 pb-10"
         >
           {/* 1. Cabeçalho Configurações */}

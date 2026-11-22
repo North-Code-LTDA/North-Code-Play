@@ -3177,7 +3177,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       {playError && (
         <div
           role="alert"
-          className="fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[100] bg-red-600/95 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2"
+          className="nc-lite-instant-toast fixed bottom-6 right-6 left-6 sm:left-auto sm:max-w-md z-[100] bg-red-600/95 text-white text-sm px-4 py-3 rounded-xl shadow-2xl border border-red-500/50 backdrop-blur-md flex items-center gap-3 animate-in fade-in slide-in-from-bottom-2"
         >
           <AlertCircle className="w-5 h-5 text-white shrink-0" />
           <span className="whitespace-normal break-words">{playError}</span>
@@ -3542,8 +3542,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                           />
                           <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
 
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center">
-                            <div className="w-12 h-12 rounded-full bg-nc-primary flex items-center justify-center text-black transform scale-75 group-hover:scale-100 group-focus:scale-100 transition-transform shadow-lg">
+                          <div className="nc-card-play-overlay absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center">
+                            <div className="nc-card-play-badge w-12 h-12 rounded-full bg-nc-primary flex items-center justify-center text-black transform scale-75 group-hover:scale-100 group-focus:scale-100 transition-transform shadow-lg">
                               <Play className="w-6 h-6 fill-current ml-1" />
                             </div>
                           </div>

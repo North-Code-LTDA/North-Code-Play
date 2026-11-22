@@ -1,6 +1,7 @@
 import React from 'react';
 import { X } from 'lucide-react';
 import { motion } from 'motion/react';
+import { usePerformanceProfile } from '../platform/performanceProfile';
 
 export interface DetailsModalShellProps {
   /** Unique ID for the dialog title element (aria-labelledby) */
@@ -37,6 +38,8 @@ export const DetailsModalShell = React.memo(function DetailsModalShell({
   overlaySlot,
   closeButtonLabel = 'Fechar',
 }: DetailsModalShellProps) {
+  const { isLiteActive } = usePerformanceProfile();
+
   const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) {
       onClose();
@@ -45,14 +48,15 @@ export const DetailsModalShell = React.memo(function DetailsModalShell({
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
+      initial={isLiteActive ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2, ease: 'easeOut' }}
+      exit={isLiteActive ? { opacity: 1, transition: { duration: 0 } } : { opacity: 0 }}
+      transition={isLiteActive ? { duration: 0 } : { duration: 0.2, ease: 'easeOut' }}
       data-focus-scope="modal"
       data-nav-zone="main"
       data-details-modal={modalType}
       data-details-backdrop="true"
+      data-details-lite-motion={isLiteActive ? 'true' : 'false'}
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
