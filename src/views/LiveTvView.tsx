@@ -28,6 +28,7 @@ import {
   groupLiveStreams,
   filterLiveChannelGroups,
   parseChannelVariantSuffix,
+  getAdjacentLiveChannelGroup,
 } from '../utils/liveChannelGroups';
 import { getOrCreateLiveIndex } from '../utils/catalogIndex';
 import { formatLiveTvCategoryTitle } from '../utils/categoryLabel';
@@ -2390,6 +2391,8 @@ interface LiveTvRightPaneProps {
   onManualRetry: () => void;
   onPlaybackSuccess: (attemptId?: number) => void;
   onPlaybackFinalError: (errMsg: string) => void;
+  onNextChannel: () => void;
+  onPreviousChannel: () => void;
 }
 
 const LiveTvRightPane = React.memo(function LiveTvRightPane({
@@ -2411,6 +2414,8 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
   onManualRetry,
   onPlaybackSuccess,
   onPlaybackFinalError,
+  onNextChannel,
+  onPreviousChannel,
 }: LiveTvRightPaneProps) {
   const activeStreamUrl = useMemo(() => {
     if (!credentials || !selectedChannel) return '';
@@ -2785,6 +2790,8 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
                 liteLivePreview={isLiteActive}
                 disableEmbeddedControlsFocus={true}
                 onBack={onClosePreviewAndRestoreFocus}
+                onNext={onNextChannel}
+                onPrevious={onPreviousChannel}
                 onRetry={onManualRetry}
                 onPlaybackSuccess={onPlaybackSuccess}
                 onPlaybackFinalError={onPlaybackFinalError}
@@ -3300,6 +3307,13 @@ export const LiveTvView = React.memo(function LiveTvView({
     [clearFallbackTimer]
   );
 
+  // Frozen category context for fullscreen channel zapping (independent of DOM virtualization)
+  const zapCategoryContextRef = useRef<{
+    categoryId: string;
+    rowIndex: number;
+    channels: readonly LiveChannelGroup[];
+  } | null>(null);
+
   // Select a channel group from left pane (or enter fullscreen immediately on 2nd OK)
   const handleSelectGroup = useCallback(
     (
@@ -3309,6 +3323,28 @@ export const LiveTvView = React.memo(function LiveTvView({
       cardIndex?: number,
       buttonEl?: HTMLButtonElement | null
     ) => {
+      if (typeof categoryId === 'string') {
+        const rows = categoryRowsRef.current;
+        const matchedRow =
+          typeof rowIndex === 'number' &&
+          rowIndex >= 0 &&
+          rowIndex < rows.length &&
+          rows[rowIndex]?.categoryId === categoryId
+            ? rows[rowIndex]
+            : rows.find((r) => r.categoryId === categoryId);
+        if (matchedRow && matchedRow.channels.length > 0) {
+          const resolvedRowIdx =
+            typeof rowIndex === 'number' && rowIndex >= 0
+              ? rowIndex
+              : rows.indexOf(matchedRow);
+          zapCategoryContextRef.current = {
+            categoryId: matchedRow.categoryId,
+            rowIndex: resolvedRowIdx,
+            channels: Object.freeze([...matchedRow.channels]),
+          };
+        }
+      }
+
       if (typeof categoryId === 'string' && typeof rowIndex === 'number' && typeof cardIndex === 'number') {
         updateOriginSnapshot(group.groupId, categoryId, rowIndex, cardIndex, buttonEl);
       }
@@ -3382,6 +3418,35 @@ export const LiveTvView = React.memo(function LiveTvView({
     }
 
     consumedIntentIdRef.current = initialChannelIntent.requestId;
+
+    const intentCatId = String(
+      matchedGroup.category_id ?? initialChannelIntent.categoryId ?? ''
+    );
+    const intentCatGroups = intentCatId
+      ? liveIndex.getGroupsByCategory(intentCatId)
+      : [];
+    const zapChannels =
+      intentCatGroups.length > 0 ? intentCatGroups : [matchedGroup];
+    const intentRowIndex = intentCatId
+      ? categoryRowsRef.current.findIndex((r) => r.categoryId === intentCatId)
+      : -1;
+    const intentCardIndex = zapChannels.findIndex(
+      (g) => g.groupId === matchedGroup.groupId
+    );
+    zapCategoryContextRef.current = {
+      categoryId: intentCatId,
+      rowIndex: intentRowIndex,
+      channels: Object.freeze([...zapChannels]),
+    };
+    if (intentCatId && intentCardIndex >= 0) {
+      updateOriginSnapshot(
+        matchedGroup.groupId,
+        intentCatId,
+        intentRowIndex,
+        intentCardIndex
+      );
+    }
+
     triedStreamIdsRef.current = new Set();
     selectedGroupRef.current = matchedGroup;
     setSelectedGroup(matchedGroup);
@@ -3410,7 +3475,9 @@ export const LiveTvView = React.memo(function LiveTvView({
     initialChannelIntent,
     effectiveLiveStreams.length,
     loadedLiveCatalog,
+    liveIndex,
     resolveGroupByStreamId,
+    updateOriginSnapshot,
     startPlaybackAttempt,
     onConsumeChannelIntent,
   ]);
@@ -3671,6 +3738,109 @@ export const LiveTvView = React.memo(function LiveTvView({
       }
     });
   }, [isLiteActive, ensureRowMounted]);
+
+  // Fullscreen channel zapping within the frozen origin category without calling handleSelectGroup or requestFullscreenImmediate
+  const handleZapStep = useCallback(
+    (step: 1 | -1) => {
+      const currentGroup = selectedGroupRef.current;
+      if (!currentGroup) return;
+
+      let ctx = zapCategoryContextRef.current;
+      if (!ctx || ctx.channels.length === 0) {
+        const fallbackCatId =
+          originRef.current.categoryId || String(currentGroup.category_id ?? '');
+        const rows = categoryRowsRef.current;
+        const matchedRow = fallbackCatId
+          ? rows.find((r) => r.categoryId === fallbackCatId)
+          : undefined;
+        const fallbackChannels = matchedRow?.channels?.length
+          ? matchedRow.channels
+          : fallbackCatId
+            ? liveIndex.getGroupsByCategory(fallbackCatId)
+            : [];
+        if (fallbackChannels.length > 0) {
+          ctx = {
+            categoryId: matchedRow?.categoryId ?? fallbackCatId,
+            rowIndex: matchedRow ? rows.indexOf(matchedRow) : originRef.current.rowIndex,
+            channels: Object.freeze([...fallbackChannels]),
+          };
+          zapCategoryContextRef.current = ctx;
+        }
+      }
+
+      if (!ctx || ctx.channels.length <= 1) return;
+
+      const nextGroup = getAdjacentLiveChannelGroup(
+        ctx.channels,
+        currentGroup.groupId,
+        step
+      );
+      if (!nextGroup || nextGroup.groupId === currentGroup.groupId) {
+        return;
+      }
+
+      selectedGroupRef.current = nextGroup;
+      setSelectedGroup(nextGroup);
+      setSelectedVariantIdOrAuto('auto');
+      triedStreamIdsRef.current = new Set();
+
+      const initialVariant = selectChannelVariantForAttempt(
+        nextGroup,
+        'auto',
+        triedStreamIdsRef.current
+      );
+      if (initialVariant) {
+        startPlaybackAttempt(nextGroup, initialVariant, 'auto');
+      } else {
+        const fallbackStream = getGroupPrimaryStream(nextGroup);
+        clearFallbackTimer();
+        selectedChannelRef.current = fallbackStream;
+        setSelectedChannel(fallbackStream);
+        setPlaybackError(fallbackStream ? null : 'Canal indisponível.');
+      }
+
+      const nextCardIndex = ctx.channels.findIndex((g) => g.groupId === nextGroup.groupId);
+      const effectiveRowIndex = resolveEffectiveOriginRowIndex({
+        groupId: nextGroup.groupId,
+        categoryId: ctx.categoryId,
+        rowIndex: ctx.rowIndex,
+        cardIndex: nextCardIndex,
+      });
+      const targetRowIndex = effectiveRowIndex >= 0 ? effectiveRowIndex : ctx.rowIndex;
+      updateOriginSnapshot(nextGroup.groupId, ctx.categoryId, targetRowIndex, nextCardIndex);
+
+      const zapCatId = ctx.categoryId;
+      const zapGroupId = nextGroup.groupId;
+      queueMicrotask(() => {
+        if (!isMountedRef.current) return;
+        if (originRef.current.groupId !== zapGroupId) return;
+        if (targetRowIndex >= 0) {
+          ensureRowMounted(targetRowIndex);
+        }
+        if (zapCatId && nextCardIndex >= 0) {
+          rowEnsureCardMapRef.current.get(zapCatId)?.(nextCardIndex);
+        }
+        syncOriginDomAttributes(originRef.current);
+      });
+    },
+    [
+      liveIndex,
+      startPlaybackAttempt,
+      clearFallbackTimer,
+      resolveEffectiveOriginRowIndex,
+      updateOriginSnapshot,
+      ensureRowMounted,
+      syncOriginDomAttributes,
+    ]
+  );
+
+  const handleZapNext = useCallback(() => {
+    handleZapStep(1);
+  }, [handleZapStep]);
+
+  const handleZapPrevious = useCallback(() => {
+    handleZapStep(-1);
+  }, [handleZapStep]);
 
   // Close preview and restore focus to the previously selected channel button in left pane
   const closePreviewAndRestoreFocus = useCallback(() => {
@@ -3966,6 +4136,8 @@ export const LiveTvView = React.memo(function LiveTvView({
         onManualRetry={handleManualRetry}
         onPlaybackSuccess={handlePlaybackSuccess}
         onPlaybackFinalError={handlePlaybackFinalError}
+        onNextChannel={handleZapNext}
+        onPreviousChannel={handleZapPrevious}
       />
     </div>
   );

@@ -298,13 +298,23 @@ export const VideoPlayer = React.memo(
     isLoading: isCurrentlyLoading,
   };
 
+  const isLiveContent = contentType === 'live';
+  const isLiveContentRef = useRef(isLiveContent);
+  isLiveContentRef.current = isLiveContent;
+
   const focusPlayerControl = useCallback((controlName: string) => {
     const root = containerRef.current;
     if (!root) return false;
+    const liveMode = isLiveContentRef.current;
+    const resolvedControlName =
+      liveMode && controlName === 'play-pause' ? 'back' : controlName;
     const target =
-      root.querySelector<HTMLElement>(`[data-player-control="${controlName}"]`) ||
-      root.querySelector<HTMLElement>('[data-player-control="play-pause"]') ||
-      root.querySelector<HTMLElement>('[data-player-control="back"]');
+      root.querySelector<HTMLElement>(`[data-player-control="${resolvedControlName}"]`) ||
+      (liveMode
+        ? root.querySelector<HTMLElement>('[data-player-control="back"]') ||
+          root.querySelector<HTMLElement>('[data-player-control="settings"]')
+        : root.querySelector<HTMLElement>('[data-player-control="play-pause"]') ||
+          root.querySelector<HTMLElement>('[data-player-control="back"]'));
     if (target) {
       focusElementSafely(target);
       return true;
@@ -1048,6 +1058,68 @@ export const VideoPlayer = React.memo(
     return () => clearTimeout(timer);
   }, [areBarsVisible, showSettings, focusPlayerControl]);
 
+  const zapContextRef = useRef({
+    onNext,
+    onPrevious,
+    resetInactivityTimer,
+  });
+  zapContextRef.current = {
+    onNext,
+    onPrevious,
+    resetInactivityTimer,
+  };
+  const lastRepeatZapTimestampRef = useRef(0);
+
+  // Capture-phase listener for Live TV fullscreen D-pad channel zapping (registered BEFORE handleWakeKeyCapture)
+  useEffect(() => {
+    if (contentType !== 'live' || !embedded || !isPlayerInFullLayer) {
+      return;
+    }
+
+    const handleLiveFullscreenZapCapture = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      if (isEnteringFullscreenRef.current || isExitingFullscreenRef.current) return;
+      if (openOverlayRef.current.showSettings) return;
+
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        activeEl?.getAttribute?.('data-slider-editing') === 'true' ||
+        Boolean(
+          containerRef.current?.querySelector(
+            '[data-player-control="volume-slider"][data-slider-editing="true"]'
+          )
+        )
+      ) {
+        return;
+      }
+
+      const { onNext: nextCb, onPrevious: prevCb, resetInactivityTimer: wakeControls } =
+        zapContextRef.current;
+      if (!nextCb || !prevCb) return;
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      const now = performance.now();
+      if (e.repeat && now - lastRepeatZapTimestampRef.current < 350) {
+        return;
+      }
+      lastRepeatZapTimestampRef.current = now;
+
+      wakeControls();
+      if (e.key === 'ArrowUp') {
+        nextCb();
+      } else {
+        prevCb();
+      }
+    };
+
+    window.addEventListener('keydown', handleLiveFullscreenZapCapture, true);
+    return () => {
+      window.removeEventListener('keydown', handleLiveFullscreenZapCapture, true);
+    };
+  }, [contentType, embedded, isPlayerInFullLayer]);
+
   // Capture-phase listener: when full-layer player controls are hidden, first remote/arrow/OK key reveals controls and focuses Play/Pause without firing other actions
   useEffect(() => {
     if (!isPlayerInFullLayer || areBarsVisible || showSettings || activeError) {
@@ -1087,6 +1159,8 @@ export const VideoPlayer = React.memo(
     closeSettingsMenu,
     isFullscreen,
     isVisuallyExpanded,
+    isPlayerInFullLayer,
+    isLive: isLiveContent,
     embedded,
     onBack,
   });
@@ -1099,6 +1173,8 @@ export const VideoPlayer = React.memo(
     closeSettingsMenu,
     isFullscreen,
     isVisuallyExpanded,
+    isPlayerInFullLayer,
+    isLive: isLiveContent,
     embedded,
     onBack,
   };
@@ -1146,6 +1222,9 @@ export const VideoPlayer = React.memo(
         case ' ':
         case 'k':
         case 'K':
+          if (ctx.isLive) {
+            break;
+          }
           e.preventDefault();
           if (isEnteringFullscreenRef.current || isExitingFullscreenRef.current) {
             break;
@@ -1163,18 +1242,30 @@ export const VideoPlayer = React.memo(
           ctx.session.toggleMute();
           break;
         case 'ArrowLeft':
+          if (ctx.isLive) {
+            break;
+          }
           e.preventDefault();
           ctx.session.seekBy(-10);
           break;
         case 'ArrowRight':
+          if (ctx.isLive) {
+            break;
+          }
           e.preventDefault();
           ctx.session.seekBy(10);
           break;
         case 'ArrowUp':
+          if (ctx.isLive && ctx.isPlayerInFullLayer) {
+            break;
+          }
           e.preventDefault();
           ctx.session.setVolume(ctx.session.volume + 0.1);
           break;
         case 'ArrowDown':
+          if (ctx.isLive && ctx.isPlayerInFullLayer) {
+            break;
+          }
           e.preventDefault();
           ctx.session.setVolume(ctx.session.volume - 0.1);
           break;
@@ -1224,6 +1315,10 @@ export const VideoPlayer = React.memo(
   }, [playerId]);
 
   const handleTogglePlayGuarded = useCallback(() => {
+    if (isLiveContentRef.current) {
+      resetInactivityTimer();
+      return;
+    }
     if (isEnteringFullscreenRef.current || isExitingFullscreenRef.current) {
       resetInactivityTimer();
       return;
@@ -1244,7 +1339,14 @@ export const VideoPlayer = React.memo(
       return;
     }
 
-    // Toggle play/pause or show controls
+    // Live TV: clicking video only reveals controls without pausing/resuming
+    if (isLiveContent) {
+      setIsControlsVisible(true);
+      resetInactivityTimer();
+      return;
+    }
+
+    // VOD: Toggle play/pause or show controls
     if (!isControlsVisible) {
       setIsControlsVisible(true);
       resetInactivityTimer();

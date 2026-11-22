@@ -2462,17 +2462,23 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
 
     // Disparar múltiplos comandos de OK enquanto a entrada em fullscreen ainda está pendente:
     // 1) OK repetido no botão do canal
-    // 2) OK / clique no botão play-pause do player
+    // 2) Controle play-pause NÃO deve existir no Live; interação inofensiva em controle existente (mute)
     // 3) Clique no próprio container do player
-    const playPauseBtn = doc.querySelector<HTMLButtonElement>(
-      'button[data-player-control="play-pause"]'
+    assert.strictEqual(
+      doc.querySelector('button[data-player-control="play-pause"]'),
+      null,
+      'Botão play-pause não deve existir na reprodução TV ao Vivo (Live)'
+    );
+    const muteBtn = doc.querySelector<HTMLButtonElement>(
+      'button[data-player-control="mute"]'
     )!;
-    assert(playPauseBtn, 'Botão play-pause em full-layer deve estar disponível');
+    assert(muteBtn, 'Controle de mudo em full-layer deve estar disponível');
 
     await act(async () => {
       ch1000Again.click();
       ch1000Again.click();
-      playPauseBtn.click();
+      muteBtn.click();
+      muteBtn.click();
       playerContainer.click();
     });
 
@@ -2508,11 +2514,12 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
       'full-layer',
       'Após resolução da Fullscreen API, o player deve permanecer em full-layer'
     );
-    const expectedPlayPauseBtn = doc.querySelector('button[data-player-control="play-pause"]');
+    const expectedBackBtn = doc.querySelector('button[data-player-control="back"]');
+    const expectedSettingsBtn = doc.querySelector('button[data-player-control="settings"]');
     assert.strictEqual(
-      doc.activeElement === expectedPlayPauseBtn,
+      doc.activeElement === expectedBackBtn || doc.activeElement === expectedSettingsBtn,
       true,
-      `Ao entrar em tela cheia no modo controle remoto, o foco deve estar no controle play-pause do player (active: ${(doc.activeElement as HTMLElement | null)?.tagName} control=${(doc.activeElement as HTMLElement | null)?.getAttribute?.('data-player-control')})`
+      `Ao entrar em tela cheia Live no modo controle remoto, o foco deve estar em back ou settings (active: ${(doc.activeElement as HTMLElement | null)?.tagName} control=${(doc.activeElement as HTMLElement | null)?.getAttribute?.('data-player-control')})`
     );
 
     // -------------------------------------------------------------------------

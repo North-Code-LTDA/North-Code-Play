@@ -258,3 +258,29 @@ export function filterLiveChannelGroups(groups: LiveChannelGroup[], searchQuery:
     );
   });
 }
+
+/**
+ * Selects the adjacent LiveChannelGroup inside the given ordered category list
+ * with circular wrap-around at both ends. Each LiveChannelGroup counts as one
+ * channel regardless of SD/HD/FHD/4K variants.
+ */
+export function getAdjacentLiveChannelGroup(
+  groups: readonly LiveChannelGroup[],
+  currentGroupId: string,
+  step: 1 | -1
+): LiveChannelGroup | null {
+  if (!Array.isArray(groups) || groups.length <= 1) {
+    return null;
+  }
+  const currentIndex = groups.findIndex((g) => g && g.groupId === currentGroupId);
+  if (currentIndex < 0) {
+    return null;
+  }
+  const nextIndex = (currentIndex + step + groups.length) % groups.length;
+  const target = groups[nextIndex] ?? null;
+  if (!target || target.groupId === currentGroupId) {
+    return null;
+  }
+  return target;
+}
+

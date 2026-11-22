@@ -511,8 +511,8 @@ export function PlayerControls({
           </div>
         )}
 
-        {/* Center Play Button on Pause */}
-        {!isPlaying && !isLoading && !isBuffering && (
+        {/* Center Play Button on Pause (VOD only) */}
+        {!isLive && !isPlaying && !isLoading && !isBuffering && (
           <div
             className={`absolute inset-0 z-10 flex items-center justify-center pointer-events-none transition-all duration-300 ${
               isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none invisible'
@@ -541,41 +541,45 @@ export function PlayerControls({
           onPointerDown={stopProp}
           aria-hidden={!isVisible}
         >
-          <PlayerTimeline
-            embedded={true}
-            currentTime={currentTime}
-            duration={effectiveDuration}
-            bufferedRanges={bufferedRanges}
-            isLive={isLive}
-            liveEdgeDistance={liveEdgeDistance}
-            isVisible={isControlFocusable}
-            onSeek={onSeek}
-            onUserInteraction={onUserInteraction}
-            formatTime={formatTime}
-          />
+          {!isLive && (
+            <PlayerTimeline
+              embedded={true}
+              currentTime={currentTime}
+              duration={effectiveDuration}
+              bufferedRanges={bufferedRanges}
+              isLive={isLive}
+              liveEdgeDistance={liveEdgeDistance}
+              isVisible={isControlFocusable}
+              onSeek={onSeek}
+              onUserInteraction={onUserInteraction}
+              formatTime={formatTime}
+            />
+          )}
 
           <div
             data-nav-row="player-bottom"
             className="flex items-center justify-between text-white text-xs select-none"
           >
             <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                data-player-control="play-pause"
-                data-player-primary="true"
-                data-autofocus={disableRemoteFocus ? undefined : 'true'}
-                onClick={(e) => handleControlClick(e, onTogglePlay)}
-                tabIndex={isControlFocusable ? 0 : -1}
-                className="p-1.5 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
-                title={isPlaying ? 'Pausar (Espaço/K)' : 'Reproduzir (Espaço/K)'}
-                aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
-              >
-                {isPlaying ? (
-                  <Pause className="w-4 h-4 fill-white" />
-                ) : (
-                  <Play className="w-4 h-4 fill-white translate-x-0.5" />
-                )}
-              </button>
+              {!isLive && (
+                <button
+                  type="button"
+                  data-player-control="play-pause"
+                  data-player-primary="true"
+                  data-autofocus={disableRemoteFocus ? undefined : 'true'}
+                  onClick={(e) => handleControlClick(e, onTogglePlay)}
+                  tabIndex={isControlFocusable ? 0 : -1}
+                  className="p-1.5 hover:bg-white/10 rounded-xl transition-colors cursor-pointer text-white"
+                  title={isPlaying ? 'Pausar (Espaço/K)' : 'Reproduzir (Espaço/K)'}
+                  aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
+                >
+                  {isPlaying ? (
+                    <Pause className="w-4 h-4 fill-white" />
+                  ) : (
+                    <Play className="w-4 h-4 fill-white translate-x-0.5" />
+                  )}
+                </button>
+              )}
 
               <div
                 className="relative flex items-center gap-1"
@@ -640,21 +644,13 @@ export function PlayerControls({
 
               {isLive && (
                 <div className="flex items-center gap-1.5 text-xs font-mono ml-1 text-gray-300">
-                  <button
-                    type="button"
-                    data-player-control="live-edge"
-                    onClick={(e) => handleControlClick(e, onSeekToLive)}
-                    disabled={isAtLiveEdge}
-                    tabIndex={isControlFocusable && !isAtLiveEdge ? 0 : -1}
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all ${
-                      isAtLiveEdge
-                        ? 'bg-nc-primary/20 text-nc-primary cursor-default'
-                        : 'bg-white/20 text-white hover:bg-white/30 cursor-pointer animate-pulse'
-                    }`}
+                  <span
+                    data-player-live-indicator="true"
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-nc-primary/20 text-nc-primary select-none pointer-events-none"
                   >
-                    <Radio className="w-3 h-3" />
-                    <span>{isAtLiveEdge ? 'DIRETO' : 'IR PARA AO VIVO'}</span>
-                  </button>
+                    <Radio className="w-3 h-3" aria-hidden="true" />
+                    <span>AO VIVO</span>
+                  </span>
                 </div>
               )}
             </div>
@@ -717,6 +713,7 @@ export function PlayerControls({
               type="button"
               data-player-control="back"
               data-player-primary="true"
+              data-autofocus={isLive && !disableRemoteFocus ? 'true' : undefined}
               onClick={(e) => handleControlClick(e, onBack)}
               tabIndex={isControlFocusable ? 0 : -1}
               className="nc-player-ctrl-btn text-white/95 hover:text-white"
@@ -766,48 +763,52 @@ export function PlayerControls({
         onPointerDown={stopProp}
         aria-hidden={!isVisible}
       >
-        {/* Reference Timeline immediately above the bottom button bar */}
-        <PlayerTimeline
-          embedded={false}
-          currentTime={currentTime}
-          duration={effectiveDuration}
-          bufferedRanges={bufferedRanges}
-          isLive={isLive}
-          liveEdgeDistance={liveEdgeDistance}
-          isVisible={isControlFocusable}
-          onSeek={onSeek}
-          onUserInteraction={onUserInteraction}
-          formatTime={formatTime}
-        />
+        {/* Reference Timeline immediately above the bottom button bar (VOD / Series only) */}
+        {!isLive && (
+          <PlayerTimeline
+            embedded={false}
+            currentTime={currentTime}
+            duration={effectiveDuration}
+            bufferedRanges={bufferedRanges}
+            isLive={isLive}
+            liveEdgeDistance={liveEdgeDistance}
+            isVisible={isControlFocusable}
+            onSeek={onSeek}
+            onUserInteraction={onUserInteraction}
+            formatTime={formatTime}
+          />
+        )}
 
         {/* Reference Bottom Row: 3-column grid on desktop/TV/landscape, stacked rows on mobile portrait */}
         <div
           data-nav-row="player-bottom"
           className="nc-player-bottom-layout text-white select-none"
         >
-          {/* Left Group: Play/Pause, Seek -10s, Seek +10s, Volume */}
+          {/* Left Group: Play/Pause (VOD), Seek -10s, Seek +10s, Volume, Live indicator */}
           <div
             data-player-group="left"
             className="nc-player-left-group"
           >
-            {/* 1. Play/Pause */}
-            <button
-              type="button"
-              data-player-control="play-pause"
-              data-player-primary="true"
-              data-autofocus={disableRemoteFocus ? undefined : 'true'}
-              onClick={(e) => handleControlClick(e, onTogglePlay)}
-              tabIndex={isControlFocusable ? 0 : -1}
-              className="nc-player-ctrl-btn"
-              title={isPlaying ? 'Pausar (Espaço/K)' : 'Reproduzir (Espaço/K)'}
-              aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
-            >
-              {isPlaying ? (
-                <Pause className="nc-player-icon fill-white stroke-[1.5]" />
-              ) : (
-                <Play className="nc-player-icon fill-white stroke-[1.5] translate-x-[1px]" />
-              )}
-            </button>
+            {/* 1. Play/Pause (VOD / Series only) */}
+            {!isLive && (
+              <button
+                type="button"
+                data-player-control="play-pause"
+                data-player-primary="true"
+                data-autofocus={disableRemoteFocus ? undefined : 'true'}
+                onClick={(e) => handleControlClick(e, onTogglePlay)}
+                tabIndex={isControlFocusable ? 0 : -1}
+                className="nc-player-ctrl-btn"
+                title={isPlaying ? 'Pausar (Espaço/K)' : 'Reproduzir (Espaço/K)'}
+                aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
+              >
+                {isPlaying ? (
+                  <Pause className="nc-player-icon fill-white stroke-[1.5]" />
+                ) : (
+                  <Play className="nc-player-icon fill-white stroke-[1.5] translate-x-[1px]" />
+                )}
+              </button>
+            )}
 
             {/* 2. Seek 10s Backward (VOD / Series only) */}
             {!isLive && (
@@ -901,29 +902,19 @@ export function PlayerControls({
               </div>
             </div>
 
-            {/* Live Edge Indicator / Action when Live */}
+            {/* Non-focusable Live Indicator when Live (no seek operation) */}
             {isLive && (
-              <button
-                type="button"
-                data-player-control="live-edge"
-                onClick={(e) => handleControlClick(e, onSeekToLive)}
-                disabled={isAtLiveEdge}
-                tabIndex={isControlFocusable && !isAtLiveEdge ? 0 : -1}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wider uppercase transition-all ml-1 shrink-0 ${
-                  isAtLiveEdge
-                    ? 'bg-nc-primary text-black cursor-default'
-                    : 'bg-white/20 text-white hover:bg-white/30 cursor-pointer animate-pulse'
-                }`}
-                title={isAtLiveEdge ? 'Sincronizado ao vivo' : 'Voltar ao vivo'}
+              <span
+                data-player-live-indicator="true"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wider uppercase ml-1 shrink-0 bg-nc-primary text-black select-none pointer-events-none"
               >
                 <span
                   data-player-live-dot="true"
-                  className={`w-2 h-2 rounded-full ${
-                    isAtLiveEdge ? 'bg-black animate-pulse' : 'bg-nc-primary'
-                  }`}
+                  className="w-2 h-2 rounded-full bg-black animate-pulse"
+                  aria-hidden="true"
                 />
-                <span>{isAtLiveEdge ? 'AO VIVO' : 'IR AO VIVO'}</span>
-              </button>
+                <span>AO VIVO</span>
+              </span>
             )}
           </div>
 
@@ -960,7 +951,7 @@ export function PlayerControls({
             data-player-group="right"
             className="nc-player-right-group"
           >
-            {/* Previous Episode (only when available) */}
+            {/* Previous Episode / Previous Channel (only when available) */}
             {onPrevious && (
               <button
                 type="button"
@@ -968,14 +959,14 @@ export function PlayerControls({
                 onClick={(e) => handleControlClick(e, onPrevious)}
                 tabIndex={isControlFocusable ? 0 : -1}
                 className="nc-player-ctrl-btn"
-                title="Episódio Anterior"
-                aria-label="Episódio Anterior"
+                title={isLive ? 'Canal anterior' : 'Episódio Anterior'}
+                aria-label={isLive ? 'Canal anterior' : 'Episódio Anterior'}
               >
                 <PrevEpisodeRefIcon />
               </button>
             )}
 
-            {/* Next Episode (only when available, matching Image 1) */}
+            {/* Next Episode / Next Channel (only when available) */}
             {onNext && (
               <button
                 type="button"
@@ -983,8 +974,8 @@ export function PlayerControls({
                 onClick={(e) => handleControlClick(e, onNext)}
                 tabIndex={isControlFocusable ? 0 : -1}
                 className="nc-player-ctrl-btn"
-                title="Próximo Episódio"
-                aria-label="Próximo Episódio"
+                title={isLive ? 'Próximo canal' : 'Próximo Episódio'}
+                aria-label={isLive ? 'Próximo canal' : 'Próximo Episódio'}
               >
                 <NextEpisodeRefIcon />
               </button>
