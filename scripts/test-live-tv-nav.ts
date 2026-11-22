@@ -5,11 +5,13 @@ import { Window } from 'happy-dom';
 import React, { act, Profiler } from 'react';
 import { createRoot, Root } from 'react-dom/client';
 
-// Watchdog de segurança para evitar travamentos em ambiente simulado
+// Watchdog global de segurança (180s) para toda a suíte; cada cenário possui watchdog independente de 25s
+const GLOBAL_WATCHDOG_MS = 180000;
+const CASE_WATCHDOG_MS = 25000;
 const watchdog = setTimeout(() => {
-  console.error('TIMEOUT: test-live-tv-nav excedeu 25s');
+  console.error(`TIMEOUT GLOBAL: test-live-tv-nav excedeu ${GLOBAL_WATCHDOG_MS / 1000}s`);
   process.exit(1);
-}, 25000);
+}, GLOBAL_WATCHDOG_MS);
 watchdog.unref();
 
 // ============================================================================
@@ -607,16 +609,71 @@ async function mountLiveTv(
 // 4. Execução dos cenários direcionados da TV ao Vivo (Fase 2/5)
 // ============================================================================
 async function runTests() {
+  const TOTAL_CASES = 9;
+  const rawCaseFilter = process.env.NC_LIVE_TV_NAV_CASE?.trim();
+  let targetCaseNumber: number | null = null;
+  if (rawCaseFilter !== undefined && rawCaseFilter !== '') {
+    if (!/^\d+$/.test(rawCaseFilter)) {
+      console.error(
+        `ERRO: NC_LIVE_TV_NAV_CASE inválido ("${rawCaseFilter}"). Informe um número inteiro entre 1 e ${TOTAL_CASES}.`
+      );
+      clearTimeout(watchdog);
+      process.exit(1);
+    }
+    const parsedCase = Number(rawCaseFilter);
+    if (!Number.isInteger(parsedCase) || parsedCase < 1 || parsedCase > TOTAL_CASES) {
+      console.error(
+        `ERRO: NC_LIVE_TV_NAV_CASE fora do intervalo ("${rawCaseFilter}"). Informe um número inteiro entre 1 e ${TOTAL_CASES}.`
+      );
+      clearTimeout(watchdog);
+      process.exit(1);
+    }
+    targetCaseNumber = parsedCase;
+  }
+
   const catalog = buildLargeLiveCatalog();
+  let caseCounter = 0;
+  let executed = 0;
   let passed = 0;
 
   const runCase = async (name: string, fn: () => Promise<void>) => {
-    await fn();
-    passed += 1;
-    console.log(`  [OK] ${name}`);
+    caseCounter += 1;
+    const currentCaseNumber = caseCounter;
+    if (targetCaseNumber !== null && currentCaseNumber !== targetCaseNumber) {
+      return;
+    }
+
+    executed += 1;
+    console.log(`  [INÍCIO] ${name}`);
+    const startedAt = Date.now();
+    const caseWatchdog = setTimeout(() => {
+      console.error(
+        `  [TIMEOUT] Cenário ${currentCaseNumber} excedeu ${CASE_WATCHDOG_MS / 1000}s: ${name}`
+      );
+      clearTimeout(watchdog);
+      process.exit(1);
+    }, CASE_WATCHDOG_MS);
+    caseWatchdog.unref();
+
+    try {
+      await fn();
+      const durationMs = Date.now() - startedAt;
+      passed += 1;
+      console.log(`  [OK] ${name} (duração: ${durationMs} ms)`);
+    } catch (err) {
+      const durationMs = Date.now() - startedAt;
+      console.error(`  [FALHA] ${name} (duração: ${durationMs} ms)`);
+      throw err;
+    } finally {
+      clearTimeout(caseWatchdog);
+    }
   };
 
-  console.log('Executando suite direcionada da TV ao Vivo (test-live-tv-nav)...');
+  console.log(
+    targetCaseNumber !== null
+      ? `Executando cenário direcionado #${targetCaseNumber} da TV ao Vivo (test-live-tv-nav)...`
+      : 'Executando suite direcionada da TV ao Vivo (test-live-tv-nav)...'
+  );
 
   // --------------------------------------------------------------------------
   // Cenário A: Comparação de cards/fileiras montados (Full vs Lite) + métricas de foco/scroll
@@ -1241,6 +1298,7 @@ async function runTests() {
       };
 
       try {
+        console.log('    [CHECKPOINT 7.1] Montagem inicial');
         await act(async () => {
           root.render(
             React.createElement(
@@ -1298,6 +1356,7 @@ async function runTests() {
         assert.ok(leftPane, 'Painel esquerdo .nc-live-left-pane[data-nav-zone="categories"] deve existir');
 
         // 1 & 3a. Sem canal selecionado: Cabeçalho TV ao Vivo + ArrowDown entra na zona de categorias
+        console.log('    [CHECKPOINT 7.2] Teste de ArrowDown sem canal');
         act(() => {
           focusElementSafely(liveHeaderBtn);
         });
@@ -1315,6 +1374,7 @@ async function runTests() {
         );
 
         // 2 & 3b. Selecionar canal agrupado com variantes SD/HD/FHD
+        console.log('    [CHECKPOINT 7.3] Seleção do canal');
         const groupedChannelBtn = host.querySelector<HTMLButtonElement>(
           '[data-home-row-index="0"] button[data-live-channel-btn="true"][data-row-card-index="0"]'
         )!;
@@ -1366,6 +1426,7 @@ async function runTests() {
         );
 
         // Acesso ao seletor de qualidade e navegação D-pad dentro do menu continuam funcionais
+        console.log('    [CHECKPOINT 7.4] Abertura do menu de qualidade');
         act(() => {
           focusElementSafely(qualityTrigger);
           qualityTrigger.click();
@@ -1382,12 +1443,14 @@ async function runTests() {
           optionButtons[0],
           'Ao abrir o menu, foco deve mover para a opção ativa (Automático)'
         );
+        console.log('    [CHECKPOINT 7.5] Teste de navegação dentro do menu');
         await dispatchArrow('ArrowDown');
         assert.strictEqual(
           document.activeElement,
           optionButtons[1],
           'ArrowDown dentro do menu compacto deve avançar para a próxima resolução'
         );
+        console.log('    [CHECKPOINT 7.6] Fechamento por Back');
         act(() => {
           executeBackAction();
         });
@@ -1404,6 +1467,7 @@ async function runTests() {
         );
 
         // 5. Restauração de foco com virtualização a partir do cabeçalho TV ao Vivo
+        console.log('    [CHECKPOINT 7.7] Navegação até categoria profunda');
         act(() => {
           focusElementSafely(groupedChannelBtn);
         });
@@ -1419,6 +1483,7 @@ async function runTests() {
         assert.ok(deepOriginRow >= 15 && deepOriginGroupId, 'Deve ter navegado até uma categoria profunda');
 
         // Focar cabeçalho TV ao Vivo e desmontar a linha profunda da janela virtual simulando rolagem para o topo
+        console.log('    [CHECKPOINT 7.8] Restauração após virtualização');
         act(() => {
           focusElementSafely(liveHeaderBtn);
         });
@@ -1454,6 +1519,7 @@ async function runTests() {
       }
 
       // 4. Navegação de outras seções (Início / Filmes) não é alterada
+      console.log('    [CHECKPOINT 7.9] Teste de navegação nas outras seções');
       const otherHost = document.createElement('div');
       document.body.appendChild(otherHost);
       const otherRoot: Root = createRoot(otherHost);
@@ -2534,7 +2600,15 @@ async function runTests() {
   );
 
   clearTimeout(watchdog);
-  console.log(`\nSucesso: ${passed} blocos de cenários passaram em test-live-tv-nav.`);
+  if (executed === 0) {
+    console.error('ERRO: Nenhum cenário foi executado em test-live-tv-nav.');
+    process.exit(1);
+  }
+  console.log(
+    `\nSucesso: ${passed}/${executed} cenário(s) executado(s) passaram em test-live-tv-nav${
+      targetCaseNumber !== null ? ` (filtro NC_LIVE_TV_NAV_CASE=${targetCaseNumber})` : ''
+    }.`
+  );
   process.exit(0);
 }
 
