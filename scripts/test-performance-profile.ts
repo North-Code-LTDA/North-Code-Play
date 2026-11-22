@@ -1563,7 +1563,7 @@ async function runTests() {
           );
         }
 
-        // Foca o primeiro card e simula manter OK/Enter e pointerdown pressionados sem alterar escala
+        // Foca o primeiro card e simula manter OK/Enter pressionado em modo remote (D-pad) sem alterar escala
         const firstCard = cards[0];
         act(() => {
           firstCard.focus();
@@ -1573,10 +1573,15 @@ async function runTests() {
 
         act(() => {
           firstCard.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-          firstCard.dispatchEvent(new Event('pointerdown', { bubbles: true }));
         });
         await flush();
 
+        assert.strictEqual(getNavMode(), 'remote', 'Tecla OK/Enter deve manter navMode em remote');
+        assert.strictEqual(
+          document.documentElement.getAttribute('data-performance-mode'),
+          'lite',
+          'Tecla OK/Enter deve manter Perfil Lite ativo'
+        );
         assert.strictEqual(
           parseElementScaleFactor(firstCard),
           1,
@@ -1624,26 +1629,15 @@ async function runTests() {
           firstCard,
           'Alternar de Completo para Lite não deve perder o foco atual do card'
         );
-        assert.strictEqual(firstCard.getAttribute('data-tap-scale'), 'off');
-
-        // Web e Android mobile preservam whileTap ativo
-        act(() => {
-          setAndroidPlatformOverrideForDpadTest(false);
-          resetPerformanceProfileCacheForTest();
-          initPerformanceProfile();
-        });
-        await flush();
         assert.strictEqual(
-          host.querySelector('[data-row-card-index]')?.getAttribute('data-tap-scale'),
-          'on',
-          'Web deve preservar whileTap nos cards'
+          firstCard.getAttribute('data-tap-scale'),
+          'off',
+          'Voltar para Lite em modo remote deve desativar whileTap novamente'
         );
 
+        // Android mobile (default) restaura whileTap dinamicamente via mudança de apresentação
         act(() => {
-          setAndroidPlatformOverrideForDpadTest(true);
           confirmDisplayPreferences('default', 85);
-          resetPerformanceProfileCacheForTest();
-          initPerformanceProfile();
         });
         await flush();
         assert.strictEqual(
@@ -1651,6 +1645,49 @@ async function runTests() {
           'on',
           'Android mobile (default) deve preservar whileTap nos cards'
         );
+
+        // Plataforma Web (sessão independente) preserva whileTap ativo mesmo em apresentação tv + remote
+        await act(async () => {
+          root.unmount();
+        });
+        const webRoot: Root = createRoot(host);
+        try {
+          setAndroidPlatformOverrideForDpadTest(false);
+          confirmDisplayPreferences('tv', 85);
+          setNavMode('remote');
+          resetPerformanceProfileCacheForTest();
+          initPerformanceProfile();
+
+          await act(async () => {
+            webRoot.render(
+              React.createElement(
+                XtreamProvider,
+                { credentials: null },
+                React.createElement(
+                  NavigationProvider,
+                  null,
+                  React.createElement(HorizontalRow, {
+                    title: 'Filmes em Destaque',
+                    items,
+                    type: 'vod',
+                    virtualize: true,
+                    onItemClick: () => {},
+                  })
+                )
+              )
+            );
+          });
+          await flush();
+          assert.strictEqual(
+            host.querySelector('[data-row-card-index]')?.getAttribute('data-tap-scale'),
+            'on',
+            'Web deve preservar whileTap nos cards'
+          );
+        } finally {
+          await act(async () => {
+            webRoot.unmount();
+          });
+        }
       } finally {
         await act(async () => {
           root.unmount();
