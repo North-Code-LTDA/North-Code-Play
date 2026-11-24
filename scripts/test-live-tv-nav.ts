@@ -2165,7 +2165,7 @@ async function runTests() {
         epgCount: 12,
       });
 
-      // TV: direção vertical na seção superior e preview ampliado usando largura interna da coluna direita
+      // TV e Computador (default): direção vertical universal na seção superior e preview ampliado ocupando largura interna da coluna direita
       assert.strictEqual(
         tv720.topSectionDirection,
         'column',
@@ -2173,21 +2173,25 @@ async function runTests() {
       );
       assert.strictEqual(
         default720.topSectionDirection,
-        'row',
-        'Apresentação desktop não-TV deve preservar direção horizontal (row)'
-      );
-      assert.ok(
-        tv720.previewWidth > default720.previewWidth * 1.8,
-        `Preview TV deve ter largura ampliada no painel direito (TV=${tv720.previewWidth}px vs Default=${default720.previewWidth}px)`
+        'column',
+        'Apresentação Computador (default) deve compartilhar direção vertical (column) na seção superior'
       );
       assert.ok(
         tv720.previewWidth >= tv720.rightPaneWidth - 40,
         `Preview TV deve ocupar praticamente toda a largura interna da coluna direita (${tv720.previewWidth}/${tv720.rightPaneWidth})`
       );
-      // Limite proporcional ~42dvh em telas de altura padrão e baixa
+      assert.ok(
+        default720.previewWidth >= default720.rightPaneWidth - 44,
+        `Preview Computador (default) deve ocupar praticamente toda a largura interna da coluna direita (${default720.previewWidth}/${default720.rightPaneWidth})`
+      );
+      // Limite proporcional ~42dvh em telas de altura padrão e baixa (TV e Computador)
       assert.ok(
         tv720.previewHeight <= Math.round(720 * 0.42),
-        `Altura do preview em 720p deve respeitar limite de ~42% (${tv720.previewHeight}px)`
+        `Altura do preview em TV 720p deve respeitar limite de ~42% (${tv720.previewHeight}px)`
+      );
+      assert.ok(
+        default720.previewHeight <= Math.round(720 * 0.42),
+        `Altura do preview em Computador 720p deve respeitar limite de ~42% (${default720.previewHeight}px)`
       );
       assert.ok(
         tvShortViewport.previewHeight <= Math.round(540 * 0.42),
@@ -2197,16 +2201,22 @@ async function runTests() {
         tvShortViewport.previewHeight < tv720.previewHeight,
         'Viewport mais baixa deve reduzir proporcionalmente a altura do preview'
       );
-      // EPG continua visível e rolável em TV (inclusive viewport baixa)
+      // EPG continua visível e rolável em TV e Computador (inclusive viewport baixa)
       assert.ok(
         tv720.epgSectionHeight >= 260 && tv720.epgScrollViewportHeight >= 220 && tv720.epgMaxScrollTop > 0,
         'EPG em TV 720p deve manter altura utilizável e rolagem independente'
       );
       assert.ok(
+        default720.epgSectionHeight >= 260 &&
+          default720.epgScrollViewportHeight >= 220 &&
+          default720.epgMaxScrollTop > 0,
+        'EPG em Computador 720p deve manter altura utilizável e rolagem independente'
+      );
+      assert.ok(
         tvShortViewport.epgSectionHeight >= 260 &&
           tvShortViewport.epgScrollViewportHeight >= 220 &&
           tvShortViewport.epgMaxScrollTop > 0,
-        'EPG em TV com pouca altura deve continuar visível e rolável'
+        'EPG em viewport com pouca altura deve continuar visível e rolável'
       );
       // Mobile preservado
       assert.strictEqual(mobileMetrics.isMobile, true, 'Layout mobile deve continuar detectado abaixo de 768px');
@@ -2214,30 +2224,37 @@ async function runTests() {
       assert.strictEqual(mobileMetrics.rightPaneWidth, 390, 'Painel mobile deve ocupar 100% da viewport');
       assert.ok(mobileMetrics.epgScrollViewportHeight >= 220, 'EPG mobile deve continuar rolável');
 
-      // Verificar regras CSS críticas de apresentação TV em src/index.css
+      // Verificar regras CSS universais do painel direito em src/index.css
       const indexCss = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8');
-      const tvTopSectionBlock = indexCss.match(
-        /html\[data-display-mode="tv"\]\s+\.nc-live-top-section\s*\{[^}]*\}/
+      const universalTopSectionBlock = indexCss.match(
+        /(?:^|\n)\.nc-live-top-section\s*\{[^}]*\}/
       )?.[0];
-      const tvPreviewBoxBlock = indexCss.match(
-        /html\[data-display-mode="tv"\]\s+\.nc-live-preview-box\s*\{[^}]*\}/
+      const universalPreviewBoxBlock = indexCss.match(
+        /(?:^|\n)\.nc-live-preview-box\s*\{[^}]*\}/
       )?.[0];
-      const tvRightPaneBlock = indexCss.match(
-        /html\[data-display-mode="tv"\]\s+\.nc-live-right-pane\s*\{[^}]*\}/
+      const universalRightPaneBlock = indexCss.match(
+        /(?:^|\n)\.nc-live-right-pane\s*\{[^}]*\}/
+      )?.[0];
+      const shortHeightMediaBlock = indexCss.match(
+        /@media\s*\(min-width:\s*768px\)\s*and\s*\(max-height:\s*640px\)\s*\{[\s\S]*?\n\}/
       )?.[0];
       assert.ok(
-        tvTopSectionBlock?.includes('flex-direction: column-reverse !important'),
-        'CSS TV deve inverter .nc-live-top-section para exibir preview acima das informações'
+        universalTopSectionBlock?.includes('flex-direction: column-reverse'),
+        'CSS universal deve inverter .nc-live-top-section para exibir preview acima das informações em todos os modos'
       );
       assert.ok(
-        tvPreviewBoxBlock?.includes('width: 100% !important') &&
-          tvPreviewBoxBlock?.includes('42dvh') &&
-          !tvPreviewBoxBlock?.includes('clamp('),
-        'CSS TV deve substituir clamp estreito por width: 100% e limite em torno de 42dvh'
+        universalPreviewBoxBlock?.includes('width: 100%') &&
+          universalPreviewBoxBlock?.includes('42dvh') &&
+          !universalPreviewBoxBlock?.includes('clamp('),
+        'CSS universal deve aplicar width: 100% e limite em torno de 42dvh em .nc-live-preview-box sem clamp estreito'
       );
       assert.ok(
-        tvRightPaneBlock?.includes('overflow-y: auto !important'),
-        'CSS TV deve permitir rolagem vertical do painel direito em telas baixas ou escala elevada'
+        universalRightPaneBlock?.includes('overflow-y: auto'),
+        'CSS universal deve permitir rolagem vertical do painel direito quando necessário'
+      );
+      assert.ok(
+        !shortHeightMediaBlock?.includes('.nc-live-preview-box'),
+        'Regra @media de altura reduzida não deve mais restringir a largura de .nc-live-preview-box'
       );
 
       // 5-12. Fluxo completo no DOM de LiveTvView em modo TV + Lite

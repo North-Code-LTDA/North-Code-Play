@@ -724,44 +724,33 @@ export function computeLiveTvLayoutMetrics(input: LiveTvLayoutMetricsInput): Liv
   } = input;
 
   const isMobile = viewportWidth < 768;
-  const isTvDesktop = !isMobile && displayMode === 'tv';
   const scale = Math.max(0.5, Math.min(1.25, uiScale || 1));
   const topHeaderHeight = isMobile ? Math.round(92 * scale) : Math.round(68 * scale);
   const availableHeight = Math.max(320, viewportHeight - topHeaderHeight);
   const rightPaneWidth = isMobile ? viewportWidth : Math.round(viewportWidth * 0.5);
-  const topSectionDirection: 'row' | 'column' = isMobile || isTvDesktop ? 'column' : 'row';
+  const topSectionDirection: 'row' | 'column' = 'column';
 
-  const tvInnerWidth = Math.max(240, rightPaneWidth - Math.round(28 * scale));
-  const tvMaxPreviewHeight = Math.max(140, Math.round(viewportHeight * 0.42));
+  const horizontalPadding = isMobile
+    ? 32
+    : displayMode === 'tv'
+      ? Math.round(28 * scale)
+      : 40;
+  const maxPreviewHeight = Math.max(140, Math.round(viewportHeight * 0.42));
 
-  const previewWidth = isMobile
-    ? Math.max(240, rightPaneWidth - 32)
-    : isTvDesktop
-      ? tvInnerWidth
-      : Math.max(176, Math.min(Math.round(viewportWidth * 0.22), Math.round(336 * scale)));
+  const previewWidth = Math.max(240, rightPaneWidth - horizontalPadding);
   const rawPreviewHeight = Math.round((previewWidth * 9) / 16);
-  const previewHeight = isTvDesktop
-    ? Math.min(rawPreviewHeight, tvMaxPreviewHeight)
-    : rawPreviewHeight;
+  const previewHeight = Math.min(rawPreviewHeight, maxPreviewHeight);
   const previewAspectRatio = previewHeight > 0 ? previewWidth / previewHeight : 16 / 9;
 
   const extraTopPadding =
     (isGrouped ? Math.round(28 * scale) : 0) + (hasNowPlaying ? Math.round(36 * scale) : 0);
-  const tvInfoBlockHeight =
+  const infoBlockHeight =
     Math.round(58 * scale) +
     (hasNowPlaying ? Math.round(54 * scale) : 0) +
     (isGrouped ? Math.round(36 * scale) : 0);
   const topSectionHeight = isMobile
     ? previewHeight + Math.round(130 * scale) + extraTopPadding
-    : isTvDesktop
-      ? previewHeight + tvInfoBlockHeight + Math.round(28 * scale)
-      : Math.max(
-          previewHeight + Math.round(28 * scale),
-          Math.min(
-            Math.round(availableHeight * 0.42),
-            Math.round(164 * scale + extraTopPadding * 0.35)
-          )
-        );
+    : previewHeight + infoBlockHeight + Math.round(28 * scale);
 
   const epgHeaderHeight = Math.max(30, Math.round(38 * scale));
   const epgSectionHeight = Math.max(260, availableHeight - topSectionHeight);
@@ -2585,7 +2574,7 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
   return (
     <main
       data-nav-zone="content"
-      className={`nc-live-right-pane w-full md:w-1/2 md:max-w-[50%] flex-1 md:flex-none flex-col min-w-0 min-h-0 bg-nc-bg overflow-y-auto md:overflow-hidden touch-pan-y ${
+      className={`nc-live-right-pane w-full md:w-1/2 md:max-w-[50%] flex-1 md:flex-none flex-col min-w-0 min-h-0 bg-nc-bg overflow-y-auto overflow-x-hidden custom-scrollbar touch-pan-y ${
         isMobilePlayerOpen ? 'flex' : 'hidden md:flex'
       }`}
     >
@@ -2602,7 +2591,7 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
       ) : (
         <div
           data-live-content-stack="true"
-          className="flex-1 flex flex-col min-w-0 min-h-0 md:overflow-hidden"
+          className="flex-1 flex flex-col min-w-0 min-h-min"
         >
           {/* Mobile Back Bar (always rendered for mobile & responsive tests) */}
           <div className="md:hidden shrink-0 px-4 pt-3 pb-2 border-b border-white/10 flex items-center justify-between gap-2">
@@ -2618,10 +2607,10 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
             </button>
           </div>
 
-          {/* Top Section: Channel Info + Now Playing + Compact Quality Selector | Video Preview (stacked above in TV & mobile) */}
+          {/* Top Section: Video Preview above Channel Info + Now Playing + Compact Quality Selector (all display modes) */}
           <div
             data-live-top-section="true"
-            className="nc-live-top-section shrink-0 p-4 sm:p-5 border-b border-white/10 flex flex-col-reverse md:flex-row gap-4 items-start min-w-0"
+            className="nc-live-top-section shrink-0 p-4 sm:p-5 border-b border-white/10 flex flex-col-reverse items-stretch gap-4 min-w-0"
           >
             {/* Channel Metadata + Now Playing Summary + Compact Quality Selector */}
             <div
@@ -2773,7 +2762,7 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
             {/* Video Preview */}
             <div
               data-live-preview-column="true"
-              className="nc-live-preview-box w-full md:w-[clamp(15rem,23.5vw,23.5rem)] shrink-0 aspect-video rounded-xl overflow-hidden bg-black border border-white/10 relative"
+              className="nc-live-preview-box w-full max-w-full shrink-0 aspect-video rounded-xl overflow-hidden bg-black border border-white/10 relative"
             >
               <VideoPlayer
                 ref={videoPlayerRef}
