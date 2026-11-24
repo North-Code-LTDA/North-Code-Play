@@ -366,7 +366,7 @@ html[data-nav-mode="remote"] [data-synopsis-focus="true"] {
  * tokens, spacing, typography, and component dimensions uniformly once.
  * ============================================================================ */
 html[data-display-mode="tv"] {
-  font-size: var(--nc-ui-scale-pct, 85%);
+  font-size: var(--nc-ui-scale-pct, 90%);
   font-size: calc(100% * var(--nc-ui-scale, 1));
   --nc-rem: calc(1rem * var(--nc-rem-compensation, 1));
   --spacing: calc(0.25 * var(--nc-rem));
@@ -1543,7 +1543,6 @@ html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-lite-instant-moda
 /* 10. Config, Calibration Modal & Login (preserves calibration scale preview transitions) */
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-row="config-presentation-actions"] button,
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-device-choices="true"] [data-device-choice],
-html[data-performance-mode="lite"][data-nav-mode="remote"] [data-tv-quick-choices="true"] button,
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-modal .nc-cal-btn,
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-login-screen="true"] [data-avatar-trigger="true"],
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-login-screen="true"] [data-avatar-option],
@@ -1560,7 +1559,6 @@ html[data-performance-mode="lite"][data-nav-mode="remote"] [data-login-screen="t
 
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-shell,
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-device-choices="true"] [data-device-choice]:not(:focus):not(:focus-visible),
-html[data-performance-mode="lite"][data-nav-mode="remote"] [data-tv-quick-choices="true"] button:not(:focus):not(:focus-visible),
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-modal .nc-cal-btn:not(:focus):not(:focus-visible) {
   box-shadow: none !important;
 }
@@ -1672,8 +1670,6 @@ html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-row="config
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-nav-row="config-presentation-actions"] button:focus-visible,
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-device-choices="true"] [data-device-choice]:focus,
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-device-choices="true"] [data-device-choice]:focus-visible,
-html[data-performance-mode="lite"][data-nav-mode="remote"] [data-tv-quick-choices="true"] button:focus,
-html[data-performance-mode="lite"][data-nav-mode="remote"] [data-tv-quick-choices="true"] button:focus-visible,
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-modal .nc-cal-btn:focus,
 html[data-performance-mode="lite"][data-nav-mode="remote"] .nc-calibration-modal .nc-cal-btn:focus-visible,
 html[data-performance-mode="lite"][data-nav-mode="remote"] [data-calibration-slider="true"]:focus,

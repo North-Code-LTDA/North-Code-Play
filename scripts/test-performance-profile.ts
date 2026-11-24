@@ -1463,12 +1463,12 @@ async function runTests() {
         });
         await flush();
 
-        const preset90 = cfgMounted.host.querySelector<HTMLButtonElement>('[data-calibration-preset-90="true"]');
+        const slider = cfgMounted.host.querySelector<HTMLElement>('[data-calibration-slider="true"]');
         const confirmBtn = cfgMounted.host.querySelector<HTMLButtonElement>('[data-calibration-confirm="true"]');
-        assert.ok(preset90 && confirmBtn, 'Modal de calibração deve abrir normalmente no Lite');
+        assert.ok(slider && confirmBtn, 'Modal de calibração deve abrir normalmente no Lite');
 
         act(() => {
-          preset90.click();
+          slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
         });
         await flush();
         act(() => {
@@ -1761,22 +1761,26 @@ async function runTests() {
         assert.strictEqual(sampleText.style.fontSize, '22.5px', 'Texto da amostra deve atualizar para 125% (22.5px)');
         assert.strictEqual(sliderFill.style.width, '100%', 'Preenchimento do slider deve ir a 100% em 125%');
 
-        // Presets 85% e 90% + confirmação
-        const preset85 = cfgMounted.host.querySelector<HTMLButtonElement>('[data-calibration-reset="true"]')!;
-        const preset90 = cfgMounted.host.querySelector<HTMLButtonElement>('[data-calibration-preset-90="true"]')!;
+        // Retorno via ArrowLeft até 90% + confirmação (sem presets redundantes)
+        assert.strictEqual(
+          cfgMounted.host.querySelector('[data-calibration-reset="true"]'),
+          null,
+          'Preset Sugerido (85%) não deve existir'
+        );
+        assert.strictEqual(
+          cfgMounted.host.querySelector('[data-calibration-preset-90="true"]'),
+          null,
+          'Preset Escolher 90% não deve existir'
+        );
         const confirmBtn = cfgMounted.host.querySelector<HTMLButtonElement>('[data-calibration-confirm="true"]')!;
 
-        act(() => {
-          preset85.click();
-        });
+        for (let i = 0; i < 7; i++) {
+          act(() => {
+            slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+          });
+        }
         await flush();
-        assert.strictEqual(slider.getAttribute('aria-valuenow'), '85', 'Preset 85% deve atualizar slider imediatamente');
-
-        act(() => {
-          preset90.click();
-        });
-        await flush();
-        assert.strictEqual(slider.getAttribute('aria-valuenow'), '90', 'Preset 90% deve atualizar slider imediatamente');
+        assert.strictEqual(slider.getAttribute('aria-valuenow'), '90', 'Slider deve ajustar para 90% via D-pad');
 
         act(() => {
           confirmBtn.click();

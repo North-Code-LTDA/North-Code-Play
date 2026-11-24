@@ -4754,17 +4754,9 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
       'DisplaySetupModal deve abrir a partir de ConfigView'
     );
 
-    // Selecionar TV -> Ajustar tamanho -> Escolher preset 90% -> Voltar e cancelar sem confirmar
+    // Selecionar TV -> abre calibração diretamente em 90% -> Voltar e cancelar sem confirmar
     await act(async () => {
       (document.querySelector('[data-device-choice="tv"]') as HTMLButtonElement).click();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    await act(async () => {
-      (document.querySelector('[data-tv-adjust-size="true"]') as HTMLButtonElement).click();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    await act(async () => {
-      (document.querySelector('[data-scale-preset="90"]') as HTMLButtonElement).click();
       await new Promise((r) => setTimeout(r, 20));
     });
     const sampleCardEl = document.querySelector('[data-calibration-sample="true"]') as HTMLElement | null;
@@ -4773,7 +4765,7 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     assert.strictEqual(
       sampleCardEl.getAttribute('data-sample-scale'),
       '90',
-      'Prévia visual de calibração deve refletir escala temporária de 90%'
+      'Prévia visual de calibração deve iniciar na escala padrão de 90%'
     );
     assert(
       draftBadgeEl && (draftBadgeEl.textContent || '').includes('90%'),
@@ -4809,14 +4801,6 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     });
     await act(async () => {
       (document.querySelector('[data-device-choice="tv"]') as HTMLButtonElement).click();
-      await new Promise((r) => setTimeout(r, 15));
-    });
-    await act(async () => {
-      (document.querySelector('[data-tv-adjust-size="true"]') as HTMLButtonElement).click();
-      await new Promise((r) => setTimeout(r, 15));
-    });
-    await act(async () => {
-      (document.querySelector('[data-scale-preset="90"]') as HTMLButtonElement).click();
       await new Promise((r) => setTimeout(r, 15));
     });
     await act(async () => {

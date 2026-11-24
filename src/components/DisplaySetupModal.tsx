@@ -2,10 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Tv,
   Smartphone,
-  Tablet,
   Monitor,
   Check,
-  RotateCcw,
   ArrowLeft,
   Sliders,
 } from 'lucide-react';
@@ -28,57 +26,39 @@ import {
   SpatialDirection,
 } from '../navigation';
 
-export type DeviceChoiceId = 'tv' | 'celular' | 'tablet' | 'computador';
+export type DeviceChoiceId = 'celular' | 'tv' | 'computador';
 
 interface DeviceOptionMeta {
   id: DeviceChoiceId;
   label: string;
   mode: DisplayMode;
-  badge: string;
   description: string;
   Icon: React.ComponentType<{ className?: string }>;
 }
 
 const DEVICE_OPTIONS: DeviceOptionMeta[] = [
   {
-    id: 'tv',
-    label: 'TV',
-    mode: 'tv',
-    badge: 'Modo TV',
-    description:
-      'Smart TV, Android TV ou TV Box. Permite calibrar o tamanho da interface para enxergar melhor à distância.',
-    Icon: Tv,
-  },
-  {
     id: 'celular',
     label: 'Celular',
     mode: 'default',
-    badge: 'Padrão 100%',
-    description:
-      'Tela vertical ou horizontal por toque. Mantém o layout responsivo padrão em 100%.',
+    description: 'Smartphones e tablets.',
     Icon: Smartphone,
   },
   {
-    id: 'tablet',
-    label: 'Tablet',
-    mode: 'default',
-    badge: 'Padrão 100%',
-    description:
-      'Tela média em retrato ou paisagem. Mantém o layout responsivo padrão em 100%.',
-    Icon: Tablet,
+    id: 'tv',
+    label: 'TV',
+    mode: 'tv',
+    description: 'Smart TV, Android TV e TV Box.',
+    Icon: Tv,
   },
   {
     id: 'computador',
     label: 'Computador',
     mode: 'default',
-    badge: 'Padrão 100%',
-    description:
-      'Notebook ou desktop com mouse e teclado. Mantém o layout responsivo padrão em 100%.',
+    description: 'Notebooks e desktops.',
     Icon: Monitor,
   },
 ];
-
-const TV_SCALE_QUICK_90 = 90;
 
 // In-memory last chosen responsive device label for the current session (does not alter stored preferences format)
 let lastSelectedResponsiveChoice: Exclude<DeviceChoiceId, 'tv'> = 'celular';
@@ -91,7 +71,7 @@ interface DisplaySetupModalProps {
   onCancel?: () => void;
 }
 
-type SetupStep = 'device' | 'tv-quick' | 'tv-calibrate' | 'default-confirm';
+type SetupStep = 'device' | 'tv-calibrate' | 'default-confirm';
 
 function resolveSavedOrDefaultTvScale(): number {
   const snap = getDisplayPreferencesSnapshot();
@@ -204,21 +184,13 @@ export function DisplaySetupModal({
     if (choice === 'tv') {
       const baseScale = resolveSavedOrDefaultTvScale();
       setDraftScale(baseScale);
-      pendingFocusSelectorRef.current = '[data-tv-use-suggested="true"]';
-      setStep('tv-quick');
+      pendingFocusSelectorRef.current = '[data-calibration-slider="true"]';
+      setStep('tv-calibrate');
       return;
     }
 
     pendingFocusSelectorRef.current = '[data-confirm-default="true"]';
     setStep('default-confirm');
-  }, []);
-
-  const handleOpenTvCalibration = useCallback(() => {
-    const baseScale = resolveSavedOrDefaultTvScale();
-    setSelectedChoice('tv');
-    setDraftScale(baseScale);
-    pendingFocusSelectorRef.current = '[data-calibration-slider="true"]';
-    setStep('tv-calibrate');
   }, []);
 
   const handleReturnToDeviceStep = useCallback(() => {
@@ -234,12 +206,6 @@ export function DisplaySetupModal({
     setDraftScale(resolveSavedOrDefaultTvScale());
     onCancel?.();
   }, [clearPendingFocusTimer, onCancel]);
-
-  const handleConfirmTvSuggested = useCallback(() => {
-    clearPendingFocusTimer();
-    confirmPreferences('tv', TV_SCALE_DEFAULT);
-    onComplete();
-  }, [confirmPreferences, clearPendingFocusTimer, onComplete]);
 
   const handleConfirmTv = useCallback(() => {
     clearPendingFocusTimer();
@@ -262,21 +228,13 @@ export function DisplaySetupModal({
     setDraftScale(next);
   }, []);
 
-  const handleResetScale = useCallback(() => {
-    setDraftScale(TV_SCALE_DEFAULT);
-  }, []);
-
-  const handleSelectQuick90 = useCallback(() => {
-    setDraftScale(TV_SCALE_QUICK_90);
-  }, []);
-
   // Back policy integration
   useBackHandler(
     'display-setup-modal',
     BACK_PRIORITY.SUB_MODAL + 10,
     () => {
       if (!isOpen) return false;
-      if (step === 'tv-quick' || step === 'tv-calibrate' || step === 'default-confirm') {
+      if (step === 'tv-calibrate' || step === 'default-confirm') {
         handleReturnToDeviceStep();
         return true;
       }
@@ -329,38 +287,9 @@ export function DisplaySetupModal({
 
       e.preventDefault();
       setNavMode('remote');
-
-      // In TV quick step, when options are stacked vertically (1 column) and focus is on Voltar,
-      // ArrowUp should move to the bottom option ("Ajustar tamanho") before "Usar tamanho sugerido".
-      if (
-        step === 'tv-quick' &&
-        direction === 'up' &&
-        activeEl &&
-        activeEl.getAttribute('data-tv-quick-back') === 'true' &&
-        modalRef.current
-      ) {
-        const useSuggestedBtn = modalRef.current.querySelector<HTMLElement>(
-          '[data-tv-use-suggested="true"]'
-        );
-        const adjustSizeBtn = modalRef.current.querySelector<HTMLElement>(
-          '[data-tv-adjust-size="true"]'
-        );
-        if (useSuggestedBtn && adjustSizeBtn) {
-          const r1 = useSuggestedBtn.getBoundingClientRect();
-          const r2 = adjustSizeBtn.getBoundingClientRect();
-          const isStacked =
-            (r1.width === 0 && r1.height === 0 && r2.width === 0 && r2.height === 0) ||
-            r2.top >= r1.top + Math.max(1, r1.height * 0.5);
-          if (isStacked) {
-            focusElementSafely(adjustSizeBtn, 'up');
-            return;
-          }
-        }
-      }
-
       moveSpatialFocus(direction);
     },
-    [step]
+    []
   );
 
   if (!isOpen) return null;
@@ -391,7 +320,7 @@ export function DisplaySetupModal({
       className="nc-calibration-modal nc-safe-modal fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex items-center justify-center sm:p-5 overflow-y-auto select-none"
     >
       <div className="nc-calibration-shell w-full max-w-[780px] bg-nc-bg-card border border-nc-border/70 rounded-2xl shadow-2xl overflow-hidden my-auto">
-        {/* Step 1: Four Explicit Device Options (TV, Celular, Tablet, Computador) */}
+        {/* Step 1: Three Device Options (Celular, TV, Computador) */}
         {step === 'device' && (
           <div className="nc-calibration-safe p-5 sm:p-7 space-y-6">
             <div className="flex flex-wrap items-start justify-between gap-4 border-b border-nc-border/50 pb-4">
@@ -404,7 +333,7 @@ export function DisplaySetupModal({
                     Como você está usando o North Code Play?
                   </h2>
                   <p className="nc-cal-subtitle text-nc-text-secondary mt-0.5 break-words">
-                    Escolha o tipo de dispositivo para ajustar a apresentação da interface.
+                    Escolha o dispositivo para ajustar a interface.
                   </p>
                 </div>
               </div>
@@ -425,7 +354,7 @@ export function DisplaySetupModal({
             <div
               data-nav-grid="true"
               data-device-choices="true"
-              className="grid grid-cols-1 sm:grid-cols-2 gap-3.5"
+              className="grid grid-cols-1 sm:grid-cols-3 gap-3.5"
             >
               {DEVICE_OPTIONS.map((opt) => {
                 const OptionIcon = opt.Icon;
@@ -439,19 +368,14 @@ export function DisplaySetupModal({
                     data-device-mode={opt.mode}
                     data-autofocus={isSelected ? 'true' : undefined}
                     onClick={() => handleSelectDeviceOption(opt.id)}
-                    className={`text-left p-4 sm:p-5 rounded-2xl border transition-all flex flex-col justify-between gap-3.5 focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2 ${
+                    className={`text-left p-4 sm:p-5 rounded-2xl border transition-all flex flex-col justify-between gap-4 focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2 ${
                       isSelected
                         ? 'bg-nc-primary/15 border-nc-primary text-white shadow-lg'
                         : 'bg-nc-bg-input/80 border-nc-border/50 text-gray-200 hover:bg-nc-bg-input hover:border-white/40'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-3 w-full">
-                      <div className="w-11 h-11 rounded-xl bg-white/10 flex items-center justify-center text-white shrink-0">
-                        <OptionIcon className="w-5 h-5" />
-                      </div>
-                      <span className="nc-cal-badge text-nc-text-secondary font-medium">
-                        {opt.badge}
-                      </span>
+                    <div className="w-11 h-11 rounded-xl bg-white/10 flex items-center justify-center text-white shrink-0">
+                      <OptionIcon className="w-5 h-5" />
                     </div>
                     <div>
                       <div className="nc-cal-card-title font-bold text-white">{opt.label}</div>
@@ -466,7 +390,7 @@ export function DisplaySetupModal({
           </div>
         )}
 
-        {/* Step 1B: Confirm Responsive Device (Celular, Tablet, or Computador -> mode="default" at 100%) */}
+        {/* Step 1B: Confirm Non-TV Device (Celular or Computador -> mode="default") */}
         {step === 'default-confirm' && (
           <div className="nc-calibration-safe p-5 sm:p-7 space-y-6">
             <div className="flex items-center gap-3.5 border-b border-nc-border/50 pb-4">
@@ -478,11 +402,10 @@ export function DisplaySetupModal({
                   data-default-confirm-title="true"
                   className="nc-cal-title font-bold text-white"
                 >
-                  {selectedOptionMeta.label} — Apresentação responsiva (100%)
+                  {selectedOptionMeta.label}
                 </h2>
                 <p className="nc-cal-subtitle text-nc-text-secondary mt-0.5">
-                  O modo responsivo padrão (100%) será utilizado para{' '}
-                  {selectedOptionMeta.label.toLowerCase()}, sem aplicar escala de TV.
+                  A interface será ajustada para uso em {selectedOptionMeta.label.toLowerCase()}.
                 </p>
               </div>
             </div>
@@ -522,101 +445,7 @@ export function DisplaySetupModal({
           </div>
         )}
 
-        {/* Step 2A: Quick TV Path (Usar tamanho sugerido 85% or Ajustar tamanho) */}
-        {step === 'tv-quick' && (
-          <div className="nc-calibration-safe p-5 sm:p-7 space-y-6">
-            <div className="flex items-center gap-3.5 border-b border-nc-border/50 pb-4">
-              <div className="w-11 h-11 rounded-xl bg-nc-primary/15 border border-nc-primary/30 flex items-center justify-center text-nc-primary shrink-0">
-                <Tv className="w-6 h-6" />
-              </div>
-              <div>
-                <h2 className="nc-cal-title font-bold text-white">
-                  TV — Tamanho da Interface
-                </h2>
-                <p className="nc-cal-subtitle text-nc-text-secondary mt-0.5">
-                  Use o tamanho sugerido para começar imediatamente ou abra o ajuste de escala.
-                </p>
-              </div>
-            </div>
-
-            <div
-              data-nav-grid="true"
-              data-tv-quick-choices="true"
-              className="grid grid-cols-1 sm:grid-cols-2 gap-3.5"
-            >
-              <button
-                type="button"
-                data-nav-item="true"
-                data-tv-use-suggested="true"
-                data-confirm-tv-suggested="true"
-                data-autofocus="true"
-                onClick={handleConfirmTvSuggested}
-                className="text-left p-5 rounded-2xl border bg-nc-primary/15 border-nc-primary text-white shadow-lg transition-all flex flex-col justify-between gap-3.5 focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2"
-              >
-                <div className="flex items-center justify-between gap-3 w-full">
-                  <div className="w-11 h-11 rounded-xl bg-white/15 flex items-center justify-center text-white shrink-0">
-                    <Check className="w-5 h-5" />
-                  </div>
-                  <span className="nc-cal-badge text-white/90 font-semibold">
-                    Recomendado
-                  </span>
-                </div>
-                <div>
-                  <div className="nc-cal-card-title font-bold text-white">
-                    Usar tamanho sugerido ({TV_SCALE_DEFAULT}%)
-                  </div>
-                  <p className="nc-cal-card-desc text-nc-text-secondary mt-1">
-                    Aplica o modo TV na proporção recomendada de {TV_SCALE_DEFAULT}% e abre a programação.
-                  </p>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                data-nav-item="true"
-                data-tv-adjust-size="true"
-                data-tv-open-calibrate="true"
-                onClick={handleOpenTvCalibration}
-                className="text-left p-5 rounded-2xl border bg-nc-bg-input/80 border-nc-border/50 text-gray-200 hover:bg-nc-bg-input hover:border-white/40 transition-all flex flex-col justify-between gap-3.5 focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2"
-              >
-                <div className="flex items-center justify-between gap-3 w-full">
-                  <div className="w-11 h-11 rounded-xl bg-white/10 flex items-center justify-center text-white shrink-0">
-                    <Sliders className="w-5 h-5" />
-                  </div>
-                  <span className="nc-cal-badge text-nc-text-secondary font-medium">
-                    50% a 125%
-                  </span>
-                </div>
-                <div>
-                  <div className="nc-cal-card-title font-bold text-white">
-                    Ajustar tamanho
-                  </div>
-                  <p className="nc-cal-card-desc text-nc-text-secondary mt-1">
-                    Personalize manualmente a escala em passos de 5 pontos ou escolha 90%.
-                  </p>
-                </div>
-              </button>
-            </div>
-
-            <div
-              data-nav-row="tv-quick-actions"
-              className="flex items-center justify-start pt-2 border-t border-nc-border/40"
-            >
-              <button
-                type="button"
-                data-nav-item="true"
-                data-tv-quick-back="true"
-                onClick={handleReturnToDeviceStep}
-                className="nc-cal-btn flex items-center gap-2 px-4 py-2.5 rounded-xl bg-nc-bg-input hover:bg-nc-border/60 text-gray-200 hover:text-white border border-nc-border/60 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>Voltar</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Step 2B: TV Scale Calibration with Local Lightweight Sample */}
+        {/* Step 2: TV Scale Calibration with Local Lightweight Sample */}
         {step === 'tv-calibrate' && (
           <div className="flex flex-col">
             {/* Header (fixed legible scale) */}
@@ -630,7 +459,7 @@ export function DisplaySetupModal({
                     Calibração de Tamanho para TV
                   </h2>
                   <p className="nc-cal-subtitle text-nc-text-secondary">
-                    Use as setas Esquerda/Direita para testar o tamanho na amostra e Confirmar para aplicar.
+                    Use as setas Esquerda/Direita para ajustar o tamanho e Confirmar para aplicar.
                   </p>
                 </div>
               </div>
@@ -647,15 +476,6 @@ export function DisplaySetupModal({
               <div className="nc-calibration-safe flex items-center justify-between mb-2.5">
                 <span className="nc-cal-badge text-nc-text-secondary font-semibold">
                   Amostra de leitura ({draftScale}%)
-                </span>
-                <span className="nc-cal-badge text-nc-text-secondary">
-                  {draftScale < TV_SCALE_DEFAULT
-                    ? 'Mais itens visíveis na tela'
-                    : draftScale === TV_SCALE_DEFAULT
-                    ? 'Tamanho sugerido para TV (85%)'
-                    : draftScale === TV_SCALE_QUICK_90
-                    ? 'Leitura intermediária para TV (90%)'
-                    : 'Elementos maiores na tela'}
                 </span>
               </div>
 
@@ -719,7 +539,7 @@ export function DisplaySetupModal({
                     Tamanho da interface
                   </label>
                   <span className="nc-cal-label font-mono font-bold text-nc-primary tabular-nums">
-                    {draftScale}% {draftScale === TV_SCALE_DEFAULT ? '(Sugerido)' : ''}
+                    {draftScale}%
                   </span>
                 </div>
 
@@ -788,11 +608,7 @@ export function DisplaySetupModal({
                       <span
                         key={tick}
                         className={`w-1 h-1.5 rounded-full ${
-                          tick === draftScale
-                            ? 'bg-white scale-125'
-                            : tick === TV_SCALE_DEFAULT
-                            ? 'bg-white/60'
-                            : 'bg-white/20'
+                          tick === draftScale ? 'bg-white scale-125' : 'bg-white/20'
                         }`}
                       />
                     ))}
@@ -801,12 +617,11 @@ export function DisplaySetupModal({
 
                 <div className="flex items-center justify-between text-nc-text-secondary nc-cal-badge">
                   <span>{TV_SCALE_MIN}% &mdash; Menor</span>
-                  <span>Sugerido: {TV_SCALE_DEFAULT}% &bull; Opção rápida: {TV_SCALE_QUICK_90}%</span>
                   <span>{TV_SCALE_MAX}% &mdash; Maior</span>
                 </div>
               </div>
 
-              {/* Action Buttons & Quick Scale Presets */}
+              {/* Action Buttons */}
               <div
                 data-nav-row="tv-calibration-actions"
                 className="flex flex-wrap items-center justify-between gap-2.5 pt-2 border-t border-nc-border/40"
@@ -822,50 +637,17 @@ export function DisplaySetupModal({
                   <span>Voltar</span>
                 </button>
 
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <button
-                    type="button"
-                    data-nav-item="true"
-                    data-scale-preset="85"
-                    data-calibration-reset="true"
-                    onClick={handleResetScale}
-                    className={`nc-cal-btn flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border font-medium transition-colors focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2 ${
-                      draftScale === TV_SCALE_DEFAULT
-                        ? 'bg-white/15 border-white/60 text-white'
-                        : 'bg-nc-bg-input hover:bg-nc-border/60 text-gray-200 hover:text-white border-nc-border/60'
-                    }`}
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Sugerido ({TV_SCALE_DEFAULT}%)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    data-nav-item="true"
-                    data-scale-preset="90"
-                    data-calibration-preset-90="true"
-                    onClick={handleSelectQuick90}
-                    className={`nc-cal-btn flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border font-medium transition-colors focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2 ${
-                      draftScale === TV_SCALE_QUICK_90
-                        ? 'bg-white/15 border-white/60 text-white'
-                        : 'bg-nc-bg-input hover:bg-nc-border/60 text-gray-200 hover:text-white border-nc-border/60'
-                    }`}
-                  >
-                    <span>Escolher {TV_SCALE_QUICK_90}%</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    data-nav-item="true"
-                    data-player-primary="true"
-                    data-calibration-confirm="true"
-                    onClick={handleConfirmTv}
-                    className="nc-cal-btn flex items-center gap-2 px-5 py-2.5 rounded-xl bg-nc-primary text-black font-semibold hover:bg-nc-primary-hover transition-colors shadow-lg focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>Confirmar</span>
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  data-nav-item="true"
+                  data-player-primary="true"
+                  data-calibration-confirm="true"
+                  onClick={handleConfirmTv}
+                  className="nc-cal-btn flex items-center gap-2 px-5 py-2.5 rounded-xl bg-nc-primary text-black font-semibold hover:bg-nc-primary-hover transition-colors shadow-lg focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>Confirmar</span>
+                </button>
               </div>
             </div>
           </div>

@@ -9,7 +9,7 @@ const LEGACY_KEY_TV_DENSITY = 'northcode_tv_density_pref';
 export const TV_SCALE_MIN = 50;
 export const TV_SCALE_MAX = 125;
 export const TV_SCALE_STEP = 5;
-export const TV_SCALE_DEFAULT = 85;
+export const TV_SCALE_DEFAULT = 90;
 
 export interface StoredDisplayPreferences {
   version: 1;

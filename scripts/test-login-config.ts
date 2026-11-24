@@ -368,17 +368,55 @@ try {
     const openBtn = container.querySelector<HTMLButtonElement>('button[data-config-primary="true"]')!;
     assert(openBtn, 'Botão Ajustar apresentação deve existir');
 
-    // Abrir -> TV -> 90% -> Voltar -> Cancelar sem salvar
+    // Abrir -> validar 3 opções (Celular, TV, Computador) -> TV abre calibração direta em 90% -> ajustar slider -> Voltar -> Cancelar sem salvar
     act(() => openBtn.click());
     await flush(30);
-    assert(document.querySelector('[data-display-setup-modal="true"]'), 'DisplaySetupModal deve abrir');
+    const modalEl = document.querySelector('[data-display-setup-modal="true"]');
+    assert(modalEl, 'DisplaySetupModal deve abrir');
+
+    const deviceChoiceIds = Array.from(
+      modalEl.querySelectorAll<HTMLButtonElement>('[data-device-choice]')
+    ).map((el) => el.getAttribute('data-device-choice'));
+    assert.deepStrictEqual(
+      deviceChoiceIds,
+      ['celular', 'tv', 'computador'],
+      'Seleção de dispositivos deve exibir exclusivamente Celular, TV e Computador nesta ordem'
+    );
+    const deviceModalText = modalEl.textContent || '';
+    assert(
+      !deviceModalText.includes('Modo TV') && !deviceModalText.includes('Padrão 100%'),
+      'Cartões de dispositivo não devem exibir etiquetas técnicas de modo'
+    );
 
     act(() => (document.querySelector('[data-device-choice="tv"]') as HTMLButtonElement).click());
     await flush(25);
-    act(() => (document.querySelector('[data-tv-adjust-size="true"]') as HTMLButtonElement).click());
+    const sliderBeforeCancel = document.querySelector<HTMLElement>('[data-calibration-slider="true"]');
+    assert(sliderBeforeCancel, 'Selecionar TV deve abrir diretamente a Calibração de Tamanho para TV');
+    assert.strictEqual(
+      sliderBeforeCancel.getAttribute('aria-valuenow'),
+      '90',
+      'Nova instalação sem preferência salva deve iniciar calibração em 90%'
+    );
+    assert.strictEqual(
+      document.querySelector('[data-tv-quick-choices="true"]'),
+      null,
+      'Etapa intermediária tv-quick não deve mais existir'
+    );
+    assert.strictEqual(
+      document.querySelector('[data-scale-preset]'),
+      null,
+      'Botões redundantes de escala (Sugerido 85% / Escolher 90%) não devem existir'
+    );
+
+    act(() => {
+      sliderBeforeCancel.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
     await flush(25);
-    act(() => (document.querySelector('[data-scale-preset="90"]') as HTMLButtonElement).click());
-    await flush(25);
+    assert.strictEqual(
+      sliderBeforeCancel.getAttribute('aria-valuenow'),
+      '95',
+      'Slider deve responder ao ArrowRight em passo de 5%'
+    );
     assert.strictEqual(tvEnvironmentModule.getDisplayPreferencesSnapshot().mode, 'default', 'Preview não deve persistir antes de confirmar');
 
     act(() => (document.querySelector('[data-calibration-back="true"]') as HTMLButtonElement).click());
@@ -389,22 +427,20 @@ try {
     assert.strictEqual(tvEnvironmentModule.getDisplayPreferencesSnapshot().mode, 'default', 'Cancelamento deve preservar modo default');
     assert.strictEqual(document.activeElement, openBtn, 'Fechar modal deve restaurar foco no botão de origem');
 
-    // Reabrir -> TV -> 85% -> Confirmar -> Persistir e exibir Calibrar escala (85%)
+    // Reabrir -> TV -> padrão 90% -> Confirmar -> Persistir e exibir Calibrar escala (90%)
     act(() => openBtn.click());
     await flush(30);
     act(() => (document.querySelector('[data-device-choice="tv"]') as HTMLButtonElement).click());
     await flush(25);
-    act(() => (document.querySelector('[data-tv-adjust-size="true"]') as HTMLButtonElement).click());
-    await flush(25);
-    act(() => (document.querySelector('[data-scale-preset="85"]') as HTMLButtonElement).click());
-    await flush(25);
+    const sliderForConfirm = document.querySelector<HTMLElement>('[data-calibration-slider="true"]')!;
+    assert.strictEqual(sliderForConfirm.getAttribute('aria-valuenow'), '90', 'Escala inicial deve permanecer 90%');
     act(() => (document.querySelector('[data-calibration-confirm="true"]') as HTMLButtonElement).click());
     await flush(30);
 
     const savedSnap = tvEnvironmentModule.getDisplayPreferencesSnapshot();
     assert.strictEqual(savedSnap.mode, 'tv', 'Confirmação deve persistir modo TV');
-    assert.strictEqual(savedSnap.tvScale, 85, 'Confirmação deve persistir escala 85%');
-    assert((container.textContent || '').includes('Calibrar escala (85%)'), 'Botão Calibrar escala deve refletir a escala salva (85%)');
+    assert.strictEqual(savedSnap.tvScale, 90, 'Confirmação deve persistir escala padrão 90%');
+    assert((container.textContent || '').includes('Calibrar escala (90%)'), 'Botão Calibrar escala deve refletir a escala salva (90%)');
     assert.strictEqual(document.activeElement, openBtn, 'Confirmar modal deve restaurar foco no botão Ajustar apresentação');
 
     unmount(root, container);
