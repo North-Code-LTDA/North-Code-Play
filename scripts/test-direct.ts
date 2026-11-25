@@ -1,99 +1,265 @@
 import assert from 'node:assert';
-import { Window } from 'happy-dom';
-import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import Hls from 'hls.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { XtreamCredentials } from '../src/types';
+import { createDomTestEnv } from './helpers/domEnv';
 
-// 1. Inicializar ambiente DOM enxuto
-const windowInstance = new Window({
+const TOTAL_BLOCKS = 13;
+
+const rawCaseFilter = process.env.NC_DIRECT_CASE?.trim();
+let selectedCaseNumber: number | null = null;
+if (rawCaseFilter) {
+  const parsed = Number.parseInt(rawCaseFilter, 10);
+  if (!/^\d+$/.test(rawCaseFilter) || parsed < 1 || parsed > TOTAL_BLOCKS) {
+    console.error(
+      `FALHA em test-direct: filtro inválido NC_DIRECT_CASE="${rawCaseFilter}". Informe um número inteiro entre 1 e ${TOTAL_BLOCKS}.`
+    );
+    process.exit(1);
+  }
+  selectedCaseNumber = parsed;
+}
+
+// Stub de fetch para arquivos de legenda externos (.srt / .vtt) e transporte sintético
+let customFetchResponder: ((url: string) => Promise<Response>) | null = null;
+
+// 1. Inicializar ambiente DOM compartilhado (happy-dom) antes de importar React/HLS/src
+const env = await createDomTestEnv({
   url: 'http://localhost:3000',
   width: 1280,
   height: 720,
+  watchdogMs: 120000,
+  watchdogLabel: 'test-direct',
+  rafIntervalMs: 0,
+  rafTimestampSource: 'date',
+  disableElementAnimate: true,
+  stubScrollIntoView: true,
+  stubMediaPlayback: true,
+  stubResizeObserver: true,
+  stubIntersectionObserver: false,
+  fetchImpl: (async (input: any) => {
+    const url = typeof input === 'string' ? input : input?.url || String(input);
+    if (customFetchResponder) {
+      return customFetchResponder(url);
+    }
+    return new Response('Not Found', { status: 404 });
+  }) as typeof fetch,
+  beforeReactImport: ({ window: win }) => {
+    const proto = win.HTMLElement.prototype as any;
+    proto.scrollIntoView = function () {};
+    proto.scrollTo = function (options?: any, y?: number) {
+      if (typeof options === 'object' && options !== null) {
+        if (typeof options.top === 'number') this.scrollTop = options.top;
+        if (typeof options.left === 'number') this.scrollLeft = options.left;
+      } else if (typeof options === 'number') {
+        this.scrollLeft = options;
+        if (typeof y === 'number') this.scrollTop = y;
+      }
+    };
+
+    const videoProto = win.HTMLVideoElement.prototype as any;
+    videoProto.play = function () {
+      return Promise.resolve();
+    };
+    videoProto.pause = function () {};
+    videoProto.load = function () {};
+  },
 });
 
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-(globalThis as any).window = windowInstance;
-(globalThis as any).document = windowInstance.document;
-Object.defineProperty(globalThis, 'navigator', {
-  value: windowInstance.navigator,
-  writable: true,
-  configurable: true,
-});
-(globalThis as any).HTMLElement = windowInstance.HTMLElement;
-(globalThis as any).HTMLButtonElement = windowInstance.HTMLButtonElement;
-(globalThis as any).HTMLInputElement = windowInstance.HTMLInputElement;
-(globalThis as any).HTMLVideoElement = windowInstance.HTMLVideoElement;
-(globalThis as any).HTMLTrackElement = windowInstance.HTMLTrackElement;
-(globalThis as any).Element = windowInstance.Element;
-(globalThis as any).Node = windowInstance.Node;
-(globalThis as any).SVGElement = windowInstance.SVGElement;
-(globalThis as any).Event = windowInstance.Event;
-(globalThis as any).CustomEvent = windowInstance.CustomEvent;
-(globalThis as any).KeyboardEvent = windowInstance.KeyboardEvent;
-(globalThis as any).MouseEvent = windowInstance.MouseEvent;
-(globalThis as any).MutationObserver = windowInstance.MutationObserver;
-(globalThis as any).ResizeObserver = class ResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-};
-(globalThis as any).localStorage = windowInstance.localStorage;
-(globalThis as any).sessionStorage = windowInstance.sessionStorage;
-(globalThis as any).URL = windowInstance.URL;
-(globalThis as any).Blob = windowInstance.Blob;
-(globalThis as any).getComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
+const windowInstance = env.window;
+const { React, act } = env;
 
-let rafIdCounter = 1;
-const rafTimers = new Map<number, NodeJS.Timeout>();
-const rafCallback = (cb: FrameRequestCallback) => {
-  const id = rafIdCounter++;
-  const timer = setTimeout(() => {
-    rafTimers.delete(id);
-    cb(Date.now());
-  }, 0);
-  rafTimers.set(id, timer);
-  return id;
-};
-const cancelRafCallback = (id: number) => {
-  const timer = rafTimers.get(id);
-  if (timer) {
-    clearTimeout(timer);
-    rafTimers.delete(id);
+// 2. Importações dinâmicas após bootstrap completo do DOM (evitando hoisting antes de window/document)
+let Hls!: (typeof import('hls.js'))['default'];
+let redactStreamUrlCredentials!: (typeof import('../src/components/player/trackUtils'))['redactStreamUrlCredentials'];
+let formatMediaTrackLabel!: (typeof import('../src/components/player/trackUtils'))['formatMediaTrackLabel'];
+let convertSrtToWebVtt!: (typeof import('../src/components/player/trackUtils'))['convertSrtToWebVtt'];
+let extractXtreamSubtitles!: (typeof import('../src/components/player/trackUtils'))['extractXtreamSubtitles'];
+let VideoPlayer!: (typeof import('../src/components/VideoPlayer'))['VideoPlayer'];
+let liveTvViewModule!: typeof import('../src/views/LiveTvView');
+let LiveTvView!: (typeof import('../src/views/LiveTvView'))['LiveTvView'];
+let XtreamProvider!: (typeof import('../src/context/XtreamContext'))['XtreamProvider'];
+let useXtreamSession!: (typeof import('../src/context/XtreamContext'))['useXtreamSession'];
+let useXtreamLive!: (typeof import('../src/context/XtreamContext'))['useXtreamLive'];
+let useXtreamVod!: (typeof import('../src/context/XtreamContext'))['useXtreamVod'];
+let useXtreamSeries!: (typeof import('../src/context/XtreamContext'))['useXtreamSeries'];
+let XtreamService!: (typeof import('../src/services/xtreamService'))['XtreamService'];
+let executeXtreamGetRequest!: (typeof import('../src/services/httpTransport'))['executeXtreamGetRequest'];
+let setTransportTestConfig!: (typeof import('../src/services/httpTransport'))['setTransportTestConfig'];
+let getAndroidCatalogAdapterLoadCountForTest!: (typeof import('../src/services/httpTransport'))['getAndroidCatalogAdapterLoadCountForTest'];
+let resetAndroidCatalogAdapterLoadCountForTest!: (typeof import('../src/services/httpTransport'))['resetAndroidCatalogAdapterLoadCountForTest'];
+let setAndroidCatalogFileAdapterTestOverride!: (typeof import('../src/services/androidCatalogFileAdapter'))['setAndroidCatalogFileAdapterTestOverride'];
+let navigationModule!: typeof import('../src/navigation');
+let executeBackAction!: (typeof import('../src/navigation'))['executeBackAction'];
+let clearAllBackHandlersForTest!: (typeof import('../src/navigation'))['clearAllBackHandlersForTest'];
+let setNavMode!: (typeof import('../src/navigation'))['setNavMode'];
+let getNavMode!: (typeof import('../src/navigation'))['getNavMode'];
+let moveSpatialFocus!: (typeof import('../src/navigation'))['moveSpatialFocus'];
+let focusElementSafely!: (typeof import('../src/navigation'))['focusElementSafely'];
+let pushFocusMemory!: (typeof import('../src/navigation'))['pushFocusMemory'];
+let popFocusMemory!: (typeof import('../src/navigation'))['popFocusMemory'];
+let clearFocusMemory!: (typeof import('../src/navigation'))['clearFocusMemory'];
+let setFastHorizontalRowNavEnabledForTest!: (typeof import('../src/navigation'))['setFastHorizontalRowNavEnabledForTest'];
+let setFastVerticalNavEnabledForTest!: (typeof import('../src/navigation'))['setFastVerticalNavEnabledForTest'];
+let registerShowcaseRowController!: (typeof import('../src/navigation'))['registerShowcaseRowController'];
+let unregisterShowcaseRowController!: (typeof import('../src/navigation'))['unregisterShowcaseRowController'];
+let registerVirtualContainer!: (typeof import('../src/navigation'))['registerVirtualContainer'];
+let unregisterVirtualContainer!: (typeof import('../src/navigation'))['unregisterVirtualContainer'];
+let invalidateCandidateCache!: (typeof import('../src/navigation'))['invalidateCandidateCache'];
+let NavigationProvider!: (typeof import('../src/navigation'))['NavigationProvider'];
+let isAndroidCapacitorPlatform!: (typeof import('../src/navigation'))['isAndroidCapacitorPlatform'];
+let setAndroidPlatformOverrideForDpadTest!: (typeof import('../src/navigation'))['setAndroidPlatformOverrideForDpadTest'];
+let getDpadNavigationBehaviorMode!: (typeof import('../src/navigation'))['getDpadNavigationBehaviorMode'];
+let isDpadOptimizedPathActive!: (typeof import('../src/navigation'))['isDpadOptimizedPathActive'];
+let HorizontalRow!: (typeof import('../src/components/HorizontalRow'))['HorizontalRow'];
+let mediaImageModule!: typeof import('../src/components/MediaImage');
+let MediaImage!: (typeof import('../src/components/MediaImage'))['MediaImage'];
+let setMediaImageRetryDelayMsForTest!: (typeof import('../src/components/MediaImage'))['setMediaImageRetryDelayMsForTest'];
+let CatalogShowcaseView!: (typeof import('../src/components/CatalogShowcaseView'))['CatalogShowcaseView'];
+let HeroBanner!: (typeof import('../src/components/HeroBanner'))['HeroBanner'];
+let MovieDetails!: (typeof import('../src/components/MovieDetails'))['MovieDetails'];
+let SeriesDetails!: (typeof import('../src/components/SeriesDetails'))['SeriesDetails'];
+let clearHeroSessionCache!: (typeof import('../src/services/heroSessionCache'))['clearHeroSessionCache'];
+let fetchOrReuseHeroDetails!: (typeof import('../src/services/heroSessionCache'))['fetchOrReuseHeroDetails'];
+let getCachedHeroDetails!: (typeof import('../src/services/heroSessionCache'))['getCachedHeroDetails'];
+let getHeroSessionCacheStatsForTest!: (typeof import('../src/services/heroSessionCache'))['getHeroSessionCacheStatsForTest'];
+let ConfigView!: (typeof import('../src/views/ConfigView'))['ConfigView'];
+let computeHeroItemsFromList!: (typeof import('../src/utils/catalogIndex'))['computeHeroItemsFromList'];
+let getHeroBannerItems!: (typeof import('../src/utils/catalogIndex'))['getHeroBannerItems'];
+let getOrCreateVodIndex!: (typeof import('../src/utils/catalogIndex'))['getOrCreateVodIndex'];
+let catalogIndexModule!: typeof import('../src/utils/catalogIndex');
+let androidImageCacheModule!: typeof import('../src/services/androidImageCache');
+let createSimulatedPersistentImageDiskHarness!: (typeof import('../src/services/androidImageCache'))['createSimulatedPersistentImageDiskHarness'];
+let createValidTestJpegBytes!: (typeof import('../src/services/androidImageCache'))['createValidTestJpegBytes'];
+let acquireCachedImage!: (typeof import('../src/services/androidImageCache'))['acquireCachedImage'];
+let getInstantCachedImageSrc!: (typeof import('../src/services/androidImageCache'))['getInstantCachedImageSrc'];
+let configureImageCacheStorageBudget!: (typeof import('../src/services/androidImageCache'))['configureImageCacheStorageBudget'];
+let clearImageCacheOnLogout!: (typeof import('../src/services/androidImageCache'))['clearImageCacheOnLogout'];
+let buildHomeStartupImagePlan!: (typeof import('../src/services/androidImageCache'))['buildHomeStartupImagePlan'];
+let executeHomeStartupImagePreparation!: (typeof import('../src/services/androidImageCache'))['executeHomeStartupImagePreparation'];
+let recordVisitedShowcaseCategory!: (typeof import('../src/services/androidImageCache'))['recordVisitedShowcaseCategory'];
+let getVisitedShowcaseCategories!: (typeof import('../src/services/androidImageCache'))['getVisitedShowcaseCategories'];
+let isAndroidPersistentImageCacheAvailable!: (typeof import('../src/services/androidImageCache'))['isAndroidPersistentImageCacheAvailable'];
+let extractCatalogItemRawImage!: (typeof import('../src/services/androidImageCache'))['extractCatalogItemRawImage'];
+let isVideoPlaybackThrottlingActiveForTest!: (typeof import('../src/services/androidImageCache'))['isVideoPlaybackThrottlingActiveForTest'];
+let setCatalogTransferPhaseActiveForImageCache!: (typeof import('../src/services/androidImageCache'))['setCatalogTransferPhaseActiveForImageCache'];
+let isCatalogTransferPhaseActiveForImageCache!: (typeof import('../src/services/androidImageCache'))['isCatalogTransferPhaseActiveForImageCache'];
+let scheduleBackgroundLowPriorityPreload!: (typeof import('../src/services/androidImageCache'))['scheduleBackgroundLowPriorityPreload'];
+let mediaUtilsModule!: typeof import('../src/utils/mediaUtils');
+let virtualWindowModule!: typeof import('../src/hooks/useVirtualWindow');
+let catalogRankingModule!: typeof import('../src/utils/catalogRanking');
+let playbackHistoryModule!: typeof import('../src/utils/playbackHistory');
+let liveEpgManagerModule!: typeof import('../src/utils/liveEpgManager');
+let tvEnvironmentModule!: typeof import('../src/platform/tvEnvironment');
+let APP_COMMIT!: (typeof import('../src/version'))['APP_COMMIT'];
+let APP_VERSION!: (typeof import('../src/version'))['APP_VERSION'];
+let formatCommitShort!: (typeof import('../src/version'))['formatCommitShort'];
+
+try {
+  ({ default: Hls } = await import('hls.js'));
+  ({
+    redactStreamUrlCredentials,
+    formatMediaTrackLabel,
+    convertSrtToWebVtt,
+    extractXtreamSubtitles,
+  } = await import('../src/components/player/trackUtils'));
+  ({ VideoPlayer } = await import('../src/components/VideoPlayer'));
+  liveTvViewModule = await import('../src/views/LiveTvView');
+  ({ LiveTvView } = liveTvViewModule);
+  ({
+    XtreamProvider,
+    useXtreamSession,
+    useXtreamLive,
+    useXtreamVod,
+    useXtreamSeries,
+  } = await import('../src/context/XtreamContext'));
+  ({ XtreamService } = await import('../src/services/xtreamService'));
+  ({
+    executeXtreamGetRequest,
+    setTransportTestConfig,
+    getAndroidCatalogAdapterLoadCountForTest,
+    resetAndroidCatalogAdapterLoadCountForTest,
+  } = await import('../src/services/httpTransport'));
+  ({ setAndroidCatalogFileAdapterTestOverride } = await import(
+    '../src/services/androidCatalogFileAdapter'
+  ));
+  navigationModule = await import('../src/navigation');
+  ({
+    executeBackAction,
+    clearAllBackHandlersForTest,
+    setNavMode,
+    getNavMode,
+    moveSpatialFocus,
+    focusElementSafely,
+    pushFocusMemory,
+    popFocusMemory,
+    clearFocusMemory,
+    setFastHorizontalRowNavEnabledForTest,
+    setFastVerticalNavEnabledForTest,
+    registerShowcaseRowController,
+    unregisterShowcaseRowController,
+    registerVirtualContainer,
+    unregisterVirtualContainer,
+    invalidateCandidateCache,
+    NavigationProvider,
+    isAndroidCapacitorPlatform,
+    setAndroidPlatformOverrideForDpadTest,
+    getDpadNavigationBehaviorMode,
+    isDpadOptimizedPathActive,
+  } = navigationModule);
+  ({ HorizontalRow } = await import('../src/components/HorizontalRow'));
+  mediaImageModule = await import('../src/components/MediaImage');
+  ({ MediaImage, setMediaImageRetryDelayMsForTest } = mediaImageModule);
+  ({ CatalogShowcaseView } = await import('../src/components/CatalogShowcaseView'));
+  ({ HeroBanner } = await import('../src/components/HeroBanner'));
+  ({ MovieDetails } = await import('../src/components/MovieDetails'));
+  ({ SeriesDetails } = await import('../src/components/SeriesDetails'));
+  ({
+    clearHeroSessionCache,
+    fetchOrReuseHeroDetails,
+    getCachedHeroDetails,
+    getHeroSessionCacheStatsForTest,
+  } = await import('../src/services/heroSessionCache'));
+  ({ ConfigView } = await import('../src/views/ConfigView'));
+  catalogIndexModule = await import('../src/utils/catalogIndex');
+  ({
+    computeHeroItemsFromList,
+    getHeroBannerItems,
+    getOrCreateVodIndex,
+  } = catalogIndexModule);
+  androidImageCacheModule = await import('../src/services/androidImageCache');
+  ({
+    createSimulatedPersistentImageDiskHarness,
+    createValidTestJpegBytes,
+    acquireCachedImage,
+    getInstantCachedImageSrc,
+    configureImageCacheStorageBudget,
+    clearImageCacheOnLogout,
+    buildHomeStartupImagePlan,
+    executeHomeStartupImagePreparation,
+    recordVisitedShowcaseCategory,
+    getVisitedShowcaseCategories,
+    isAndroidPersistentImageCacheAvailable,
+    extractCatalogItemRawImage,
+    isVideoPlaybackThrottlingActiveForTest,
+    setCatalogTransferPhaseActiveForImageCache,
+    isCatalogTransferPhaseActiveForImageCache,
+    scheduleBackgroundLowPriorityPreload,
+  } = androidImageCacheModule);
+  mediaUtilsModule = await import('../src/utils/mediaUtils');
+  virtualWindowModule = await import('../src/hooks/useVirtualWindow');
+  catalogRankingModule = await import('../src/utils/catalogRanking');
+  playbackHistoryModule = await import('../src/utils/playbackHistory');
+  liveEpgManagerModule = await import('../src/utils/liveEpgManager');
+  tvEnvironmentModule = await import('../src/platform/tvEnvironment');
+  ({ APP_COMMIT, APP_VERSION, formatCommitShort } = await import('../src/version'));
+} catch (importError) {
+  const cleanupErrors = await env.dispose();
+  if (cleanupErrors.length > 0) {
+    console.error('Erros adicionais ao limpar ambiente após falha de importação:', cleanupErrors);
   }
-};
-(globalThis as any).requestAnimationFrame = rafCallback;
-(globalThis as any).cancelAnimationFrame = cancelRafCallback;
-(windowInstance as any).requestAnimationFrame = rafCallback;
-(windowInstance as any).cancelAnimationFrame = cancelRafCallback;
-
-const proto = windowInstance.HTMLElement.prototype as any;
-proto.scrollIntoView = function () {};
-proto.scrollTo = function (options?: any, y?: number) {
-  if (typeof options === 'object' && options !== null) {
-    if (typeof options.top === 'number') this.scrollTop = options.top;
-    if (typeof options.left === 'number') this.scrollLeft = options.left;
-  } else if (typeof options === 'number') {
-    this.scrollLeft = options;
-    if (typeof y === 'number') this.scrollTop = y;
-  }
-};
-
-const videoProto = windowInstance.HTMLVideoElement.prototype as any;
-videoProto.play = function () {
-  return Promise.resolve();
-};
-videoProto.pause = function () {};
-videoProto.load = function () {};
-
-// Stub de fetch para arquivos de legenda externos (.srt / .vtt)
-let customFetchResponder: ((url: string) => Promise<Response>) | null = null;
-(globalThis as any).fetch = async (input: any) => {
-  const url = typeof input === 'string' ? input : input?.url || String(input);
-  if (customFetchResponder) {
-    return customFetchResponder(url);
-  }
-  return new Response('Not Found', { status: 404 });
-};
+  throw importError;
+}
 
 // Mock determinístico para HLS.js
 interface MockHlsController {
@@ -236,82 +402,18 @@ function restoreHlsMock() {
   nextHlsInitialTracks = {};
 }
 
-import {
-  redactStreamUrlCredentials,
-  formatMediaTrackLabel,
-  convertSrtToWebVtt,
-  extractXtreamSubtitles,
-} from '../src/components/player/trackUtils';
-import { VideoPlayer } from '../src/components/VideoPlayer';
-import * as liveTvViewModule from '../src/views/LiveTvView';
-import { LiveTvView } from '../src/views/LiveTvView';
-import {
-  XtreamProvider,
-  useXtreamSession,
-  useXtreamLive,
-  useXtreamVod,
-  useXtreamSeries,
-} from '../src/context/XtreamContext';
-import { XtreamService } from '../src/services/xtreamService';
-import {
-  executeXtreamGetRequest,
-  setTransportTestConfig,
-  getAndroidCatalogAdapterLoadCountForTest,
-  resetAndroidCatalogAdapterLoadCountForTest,
-} from '../src/services/httpTransport';
-import { setAndroidCatalogFileAdapterTestOverride } from '../src/services/androidCatalogFileAdapter';
-import type { XtreamCredentials } from '../src/types';
-import * as navigationModule from '../src/navigation';
-import {
-  executeBackAction,
-  clearAllBackHandlersForTest,
-  setNavMode,
-  getNavMode,
-  moveSpatialFocus,
-  focusElementSafely,
-  pushFocusMemory,
-  popFocusMemory,
-  clearFocusMemory,
-  setFastHorizontalRowNavEnabledForTest,
-  setFastVerticalNavEnabledForTest,
-  registerShowcaseRowController,
-  unregisterShowcaseRowController,
-  registerVirtualContainer,
-  unregisterVirtualContainer,
-  invalidateCandidateCache,
-  NavigationProvider,
-  isAndroidCapacitorPlatform,
-  setAndroidPlatformOverrideForDpadTest,
-  getDpadNavigationBehaviorMode,
-  isDpadOptimizedPathActive,
-} from '../src/navigation';
-import { HorizontalRow } from '../src/components/HorizontalRow';
-import * as mediaImageModule from '../src/components/MediaImage';
-import { MediaImage, setMediaImageRetryDelayMsForTest } from '../src/components/MediaImage';
-import { CatalogShowcaseView } from '../src/components/CatalogShowcaseView';
-import { HeroBanner } from '../src/components/HeroBanner';
-import { MovieDetails } from '../src/components/MovieDetails';
-import { SeriesDetails } from '../src/components/SeriesDetails';
-import {
-  clearHeroSessionCache,
-  fetchOrReuseHeroDetails,
-  getCachedHeroDetails,
-  getHeroSessionCacheStatsForTest,
-} from '../src/services/heroSessionCache';
-import { ConfigView } from '../src/views/ConfigView';
-import {
-  computeHeroItemsFromList,
-  getHeroBannerItems,
-  getOrCreateVodIndex,
-} from '../src/utils/catalogIndex';
-import * as androidImageCacheModule from '../src/services/androidImageCache';
-import * as mediaUtilsModule from '../src/utils/mediaUtils';
-import * as virtualWindowModule from '../src/hooks/useVirtualWindow';
-import * as catalogRankingModule from '../src/utils/catalogRanking';
-import * as playbackHistoryModule from '../src/utils/playbackHistory';
-import * as liveEpgManagerModule from '../src/utils/liveEpgManager';
-import * as tvEnvironmentModule from '../src/platform/tvEnvironment';
-import { APP_COMMIT, APP_VERSION, formatCommitShort } from '../src/version';
+env.registerCleanup(() => {
+  restoreHlsMock();
+  customFetchResponder = null;
+  clearAllBackHandlersForTest();
+  clearFocusMemory();
+  invalidateCandidateCache();
+  setAndroidPlatformOverrideForDpadTest(null);
+  setAndroidCatalogFileAdapterTestOverride({ plugin: null, convertFileSrc: null });
+  setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null, androidCatalogPluginAvailable: null });
+  setCatalogTransferPhaseActiveForImageCache(false);
+  clearHeroSessionCache();
+});
 
 interface TestDomCallMetrics {
   querySelectorCalls: number;
@@ -430,28 +532,7 @@ function measureDomCallsSync<T>(
     }
   }
 }
-import * as catalogIndexModule from '../src/utils/catalogIndex';
-import {
-  createSimulatedPersistentImageDiskHarness,
-  createValidTestJpegBytes,
-  acquireCachedImage,
-  getInstantCachedImageSrc,
-  configureImageCacheStorageBudget,
-  clearImageCacheOnLogout,
-  buildHomeStartupImagePlan,
-  executeHomeStartupImagePreparation,
-  recordVisitedShowcaseCategory,
-  getVisitedShowcaseCategories,
-  isAndroidPersistentImageCacheAvailable,
-  extractCatalogItemRawImage,
-  isVideoPlaybackThrottlingActiveForTest,
-  setCatalogTransferPhaseActiveForImageCache,
-  isCatalogTransferPhaseActiveForImageCache,
-  scheduleBackgroundLowPriorityPreload,
-} from '../src/services/androidImageCache';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+
 
 
 
@@ -515,9 +596,9 @@ async function runLiveTvFullscreenAndPreviewTransitionTests(): Promise<void> {
   setNavMode('remote');
   clearAllBackHandlersForTest();
 
-  const container = doc.createElement('div');
-  doc.body.appendChild(container);
-  const root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
 
   try {
     let previewBackCalled = 0;
@@ -689,10 +770,7 @@ async function runLiveTvFullscreenAndPreviewTransitionTests(): Promise<void> {
     delete (doc as any).fullscreenElement;
     delete (doc as any).exitFullscreen;
     clearAllBackHandlersForTest();
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await tracked.unmount();
     restoreHlsMock();
   }
 
@@ -722,9 +800,9 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
   setNavMode('remote');
   clearAllBackHandlersForTest();
 
-  const container = doc.createElement('div');
-  doc.body.appendChild(container);
-  const root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
 
   const origXtreamMethods = {
     authenticate: XtreamService.authenticate,
@@ -923,10 +1001,7 @@ async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
   } finally {
     Object.assign(XtreamService, origXtreamMethods);
     clearAllBackHandlersForTest();
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await tracked.unmount();
     restoreHlsMock();
   }
 
@@ -945,9 +1020,9 @@ async function runCycle1230bSpatialNavOptimizationTests(): Promise<void> {
   clearFocusMemory();
   setFastHorizontalRowNavEnabledForTest(true);
 
-  const container = doc.createElement('div');
-  doc.body.appendChild(container);
-  const root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
 
   const testCreds: XtreamCredentials = {
     serverUrl: 'http://provider.tv:8080',
@@ -1451,10 +1526,7 @@ async function runCycle1230bSpatialNavOptimizationTests(): Promise<void> {
     setFastHorizontalRowNavEnabledForTest(true);
     clearAllBackHandlersForTest();
     clearFocusMemory();
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await tracked.unmount();
   }
 
   console.log('✅ Ciclo 12.30-b (caminho rápido D-Pad, virtualização, HorizontalRow e regressão) validado!');
@@ -2010,9 +2082,9 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
     getShortEpg: XtreamService.getShortEpg,
   };
 
-  const container = doc.createElement('div');
-  doc.body.appendChild(container);
-  const root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
 
   const testCreds: XtreamCredentials = {
     serverUrl: 'http://provider.tv:8080',
@@ -2633,10 +2705,7 @@ async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
     Object.assign(XtreamService, origXtreamMethods);
     clearAllBackHandlersForTest();
     clearFocusMemory();
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await tracked.unmount();
     restoreHlsMock();
   }
 
@@ -2725,9 +2794,9 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
   });
 
   const doc = windowInstance.document;
-  const container = doc.createElement('div');
-  doc.body.appendChild(container);
-  let root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
 
   const origHeroMethods = {
     getVodInfo: XtreamService.getVodInfo,
@@ -3629,10 +3698,7 @@ async function runStep1PersistentImageCacheAndPreloadTests(): Promise<void> {
     setMediaImageRetryDelayMsForTest(2000);
     clearAllBackHandlersForTest();
     clearFocusMemory();
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await tracked.unmount();
   }
 
   console.log(
@@ -3671,9 +3737,9 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
   });
 
   const doc = windowInstance.document;
-  const container = doc.createElement('div');
-  doc.body.appendChild(container);
-  const root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
 
   try {
     harness.install();
@@ -4043,10 +4109,7 @@ async function runStep2StartupAndFluidityStabilizationTests(): Promise<void> {
     setMediaImageRetryDelayMsForTest(2000);
     clearAllBackHandlersForTest();
     clearFocusMemory();
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await tracked.unmount();
   }
 
   console.log(
@@ -4075,9 +4138,9 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
   harness.install();
   setMediaImageRetryDelayMsForTest(30);
 
-  const container = document.createElement('div');
-  document.body.appendChild(container);
-  const root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
 
   const mockCreds: XtreamCredentials = {
     serverUrl: 'http://provider.dpad-fluidity.tv:8080',
@@ -4862,10 +4925,7 @@ async function runStep3DpadFluidityAndDiagnosticsTests(): Promise<void> {
     setMediaImageRetryDelayMsForTest(2000);
     clearAllBackHandlersForTest();
     clearFocusMemory();
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await tracked.unmount();
   }
 
   console.log(
@@ -4884,9 +4944,9 @@ async function runDeliveryAHeroBannerConsolidationTests(): Promise<void> {
   clearHeroSessionCache();
 
   const doc = windowInstance.document;
-  const container = doc.createElement('div');
-  doc.body.appendChild(container);
-  const root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
 
   const origMethods = {
     getVodInfo: XtreamService.getVodInfo,
@@ -5895,10 +5955,7 @@ async function runDeliveryAHeroBannerConsolidationTests(): Promise<void> {
     clearHeroSessionCache();
     clearAllBackHandlersForTest();
     clearFocusMemory();
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await tracked.unmount();
   }
 
   console.log(
@@ -6050,9 +6107,9 @@ async function runDeliveryC21CatalogCleanupAndRegressionTests(): Promise<void> {
 
   // 3) Orquestração das 6 operações em XtreamContext (concorrência máx 2 e allSixFinished)
   const doc = windowInstance.document;
-  const container = doc.createElement('div');
-  doc.body.appendChild(container);
-  const root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
 
   const origMethods = {
     getLiveCategories: XtreamService.getLiveCategories,
@@ -6144,10 +6201,7 @@ async function runDeliveryC21CatalogCleanupAndRegressionTests(): Promise<void> {
     assert.deepStrictEqual(observedCounts, { live: 1, vod: 1, series: 1 });
   } finally {
     Object.assign(XtreamService, origMethods);
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await tracked.unmount();
   }
 
   console.log(
@@ -6476,9 +6530,9 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
 
   // 13.3. VideoPlayer sem botão/menu/overlay de diagnóstico, mantendo controles e overlay de erro reais
   const doc = document;
-  const container = doc.createElement('div');
-  doc.body.appendChild(container);
-  const root = createRoot(container);
+  const tracked = env.createTrackedRoot();
+  const container = tracked.host;
+  const root = tracked.root;
   enableDeterministicHlsMock();
   clearAllBackHandlersForTest();
   setNavMode('remote');
@@ -6578,12 +6632,9 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
       'Overlay de erro não deve mencionar diagnóstico técnico'
     );
   } finally {
-    await act(async () => {
-      root.unmount();
-    });
+    await tracked.unmount();
     restoreHlsMock();
     clearAllBackHandlersForTest();
-    container.remove();
   }
 
   // 13.4. Preservação funcional de mediaUtils.buildDirectImageUrl
@@ -6835,9 +6886,9 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
 
   // 13.9. Seleção real de faixas de áudio (HLS assíncrono, índice vs id, AUDIO_TRACKS_UPDATED intermediário, evento atrasado, falha honesta, feedback visível, troca de mídia, nativo e vazio)
   {
-    const audioContainer = doc.createElement('div');
-    doc.body.appendChild(audioContainer);
-    const audioRoot = createRoot(audioContainer);
+    const audioTracked = env.createTrackedRoot();
+    const audioContainer = audioTracked.host;
+    const audioRoot = audioTracked.root;
     enableDeterministicHlsMock();
     clearAllBackHandlersForTest();
     setNavMode('remote');
@@ -7244,18 +7295,15 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
         'Nova mídia não deve herdar estado pendente da mídia anterior'
       );
     } finally {
-      await act(async () => {
-        audioRoot.unmount();
-      });
+      await audioTracked.unmount();
       restoreHlsMock();
       clearAllBackHandlersForTest();
-      audioContainer.remove();
     }
 
     // 13.9b. Áudio nativo (HTMLMediaElement.audioTracks): leitura real de .enabled e recusa de falsa confirmação
-    const nativeContainer = doc.createElement('div');
-    doc.body.appendChild(nativeContainer);
-    const nativeRoot = createRoot(nativeContainer);
+    const nativeTracked = env.createTrackedRoot();
+    const nativeContainer = nativeTracked.host;
+    const nativeRoot = nativeTracked.root;
     clearAllBackHandlersForTest();
     setNavMode('remote');
 
@@ -7382,19 +7430,16 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
         'Deve informar feedback visível quando navegador impedir troca de faixa nativa'
       );
     } finally {
-      await act(async () => {
-        nativeRoot.unmount();
-      });
+      await nativeTracked.unmount();
       clearAllBackHandlersForTest();
-      nativeContainer.remove();
     }
   }
 
   // 13.10. Navegação D-Pad no controle de volume sem prisão de foco + edição explícita + preservação de mouse
   {
-    const volContainer = doc.createElement('div');
-    doc.body.appendChild(volContainer);
-    const volRoot = createRoot(volContainer);
+    const volTracked = env.createTrackedRoot();
+    const volContainer = volTracked.host;
+    const volRoot = volTracked.root;
     clearAllBackHandlersForTest();
     setNavMode('remote');
     window.localStorage.setItem('nc_player_volume', '0.5');
@@ -7579,20 +7624,17 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
         'Fora do modo remote, ajuste de teclado no slider deve continuar imediato sem exigir Enter'
       );
     } finally {
-      await act(async () => {
-        volRoot.unmount();
-      });
+      await volTracked.unmount();
       clearAllBackHandlersForTest();
       window.localStorage.removeItem('nc_player_volume');
-      volContainer.remove();
     }
   }
 
   // 13.11. Robustez e classificação de erros de reprodução (URL inválida, HLS HTTP 404 imediato, MKV nativo)
   {
-    const errContainer = doc.createElement('div');
-    doc.body.appendChild(errContainer);
-    const errRoot = createRoot(errContainer);
+    const errTracked = env.createTrackedRoot();
+    const errContainer = errTracked.host;
+    const errRoot = errTracked.root;
     enableDeterministicHlsMock();
     clearAllBackHandlersForTest();
 
@@ -7680,12 +7722,9 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
         'Erro nativo em arquivo .mkv deve mencionar limitação de formato MKV no navegador'
       );
     } finally {
-      await act(async () => {
-        errRoot.unmount();
-      });
+      await errTracked.unmount();
       restoreHlsMock();
       clearAllBackHandlersForTest();
-      errContainer.remove();
     }
   }
 
@@ -7694,32 +7733,120 @@ async function runDeliveryC3FinalCleanupAndRegressionTests(): Promise<void> {
   );
 }
 
-async function main(): Promise<void> {
-  console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — NORTH CODE PLAY\n');
-  runEssentialTrackAndSecurityTests();
-  await runLiveTvFullscreenAndPreviewTransitionTests();
-  await runWhitePaletteAndControlsIntegrationTests();
-  await runCycle1230bSpatialNavOptimizationTests();
-  await runCycle1230cVerticalNavOptimizationTests();
-  await runCycle1230dLiveTvLatencyAndFullscreenTests();
-  await runStep1PersistentImageCacheAndPreloadTests();
-  await runStep2StartupAndFluidityStabilizationTests();
-  await runStep3DpadFluidityAndDiagnosticsTests();
-  await runDeliveryAHeroBannerConsolidationTests();
-  await runDeliveryC21CatalogCleanupAndRegressionTests();
-  await runDeliveryC22NativeCleanupAndPreparationTests();
-  await runDeliveryC3FinalCleanupAndRegressionTests();
-  for (const timer of rafTimers.values()) {
-    clearTimeout(timer);
-  }
-  rafTimers.clear();
-  console.log('\n🎉 TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO!');
-  await windowInstance.close();
+interface DirectRunSummary {
+  executedBlocks: Array<{ index: number; name: string }>;
+  skippedBlocks: number[];
+  durationMs: number;
 }
 
-main().catch((err) => {
-  console.error('\n❌ ERRO NA EXECUÇÃO DOS TESTES:', err);
-  process.exit(1);
-});
+async function main(): Promise<DirectRunSummary> {
+  const startedAt = Date.now();
+  const executedBlocks: Array<{ index: number; name: string }> = [];
+  const skippedBlocks: number[] = [];
+
+  if (selectedCaseNumber !== null) {
+    console.log(
+      `🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — NORTH CODE PLAY (filtro PARCIAL NC_DIRECT_CASE=${selectedCaseNumber}/${TOTAL_BLOCKS})\n`
+    );
+  } else {
+    console.log('🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — NORTH CODE PLAY\n');
+  }
+
+  const blocks: Array<{ index: number; name: string; fn: () => Promise<void> | void }> = [
+    { index: 1, name: 'runEssentialTrackAndSecurityTests', fn: runEssentialTrackAndSecurityTests },
+    { index: 2, name: 'runLiveTvFullscreenAndPreviewTransitionTests', fn: runLiveTvFullscreenAndPreviewTransitionTests },
+    { index: 3, name: 'runWhitePaletteAndControlsIntegrationTests', fn: runWhitePaletteAndControlsIntegrationTests },
+    { index: 4, name: 'runCycle1230bSpatialNavOptimizationTests', fn: runCycle1230bSpatialNavOptimizationTests },
+    { index: 5, name: 'runCycle1230cVerticalNavOptimizationTests', fn: runCycle1230cVerticalNavOptimizationTests },
+    { index: 6, name: 'runCycle1230dLiveTvLatencyAndFullscreenTests', fn: runCycle1230dLiveTvLatencyAndFullscreenTests },
+    { index: 7, name: 'runStep1PersistentImageCacheAndPreloadTests', fn: runStep1PersistentImageCacheAndPreloadTests },
+    { index: 8, name: 'runStep2StartupAndFluidityStabilizationTests', fn: runStep2StartupAndFluidityStabilizationTests },
+    { index: 9, name: 'runStep3DpadFluidityAndDiagnosticsTests', fn: runStep3DpadFluidityAndDiagnosticsTests },
+    { index: 10, name: 'runDeliveryAHeroBannerConsolidationTests', fn: runDeliveryAHeroBannerConsolidationTests },
+    { index: 11, name: 'runDeliveryC21CatalogCleanupAndRegressionTests', fn: runDeliveryC21CatalogCleanupAndRegressionTests },
+    { index: 12, name: 'runDeliveryC22NativeCleanupAndPreparationTests', fn: runDeliveryC22NativeCleanupAndPreparationTests },
+    { index: 13, name: 'runDeliveryC3FinalCleanupAndRegressionTests', fn: runDeliveryC3FinalCleanupAndRegressionTests },
+  ];
+
+  if (blocks.length !== TOTAL_BLOCKS) {
+    throw new Error(
+      `Contagem esperada de blocos em test-direct (${TOTAL_BLOCKS}) diverge da registrada (${blocks.length}).`
+    );
+  }
+
+  for (const block of blocks) {
+    if (selectedCaseNumber !== null && block.index !== selectedCaseNumber) {
+      skippedBlocks.push(block.index);
+      continue;
+    }
+    let blockError: unknown = null;
+    try {
+      await block.fn();
+      executedBlocks.push({ index: block.index, name: block.name });
+    } catch (err) {
+      blockError = err;
+    } finally {
+      const unmountErrors = await env.unmountAllRoots();
+      restoreHlsMock();
+      customFetchResponder = null;
+      clearAllBackHandlersForTest();
+      clearFocusMemory();
+      invalidateCandidateCache();
+      setAndroidPlatformOverrideForDpadTest(null);
+      setAndroidCatalogFileAdapterTestOverride({ plugin: null, convertFileSrc: null });
+      setTransportTestConfig({
+        mode: 'auto',
+        capacitorHttpGet: null,
+        androidCatalogPluginAvailable: null,
+      });
+      setCatalogTransferPhaseActiveForImageCache(false);
+      if (!blockError && unmountErrors.length > 0) {
+        blockError = unmountErrors[0];
+      }
+    }
+    if (blockError) {
+      throw blockError;
+    }
+  }
+
+  return {
+    executedBlocks,
+    skippedBlocks,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+let runError: unknown = null;
+let summary: DirectRunSummary | null = null;
+
+try {
+  summary = await main();
+} catch (err) {
+  runError = err;
+}
+
+const teardownErrors = await env.dispose();
+
+if (runError) {
+  console.error('\n❌ ERRO NA EXECUÇÃO DOS TESTES (test-direct):', runError);
+  if (teardownErrors.length > 0) {
+    console.error('Erros adicionais durante teardown em test-direct:', teardownErrors);
+  }
+  process.exitCode = 1;
+} else if (teardownErrors.length > 0) {
+  console.error('\n❌ FALHA DURANTE TEARDOWN EM test-direct:', teardownErrors);
+  process.exitCode = 1;
+} else if (summary) {
+  if (selectedCaseNumber !== null) {
+    const execLabels = summary.executedBlocks.map((b) => `${b.index} (${b.name})`).join(', ');
+    console.log(
+      `\n🎉 Sucesso PARCIAL (filtro NC_DIRECT_CASE=${selectedCaseNumber}): bloco executado [${execLabels}] | ${summary.skippedBlocks.length} ignorados (${summary.skippedBlocks.join(', ')}) de ${TOTAL_BLOCKS} em ${summary.durationMs}ms — test-direct.`
+    );
+  } else {
+    console.log(
+      `\n🎉 TODOS OS ${summary.executedBlocks.length}/${TOTAL_BLOCKS} BLOCOS DE TESTES FORAM EXECUTADOS COM SUCESSO EM ${summary.durationMs}ms — test-direct!`
+    );
+  }
+}
 
 

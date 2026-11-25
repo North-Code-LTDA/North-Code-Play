@@ -20,6 +20,7 @@ export interface DomTestEnvOptions {
   watchdogMs?: number;
   watchdogLabel?: string;
   rafIntervalMs?: number;
+  rafTimestampSource?: 'performance' | 'date';
   disableElementAnimate?: boolean;
   stubScrollIntoView?: boolean;
   stubMediaPlayback?: boolean;
@@ -136,6 +137,7 @@ export async function createDomTestEnv(
     watchdogMs,
     watchdogLabel = 'dom-test',
     rafIntervalMs = 16,
+    rafTimestampSource = 'performance',
     disableElementAnimate = true,
     stubScrollIntoView = true,
     stubMediaPlayback = false,
@@ -327,11 +329,13 @@ export async function createDomTestEnv(
     (windowInstance as unknown as Record<string, unknown>).matchMedia = matchMedia;
 
     let rafIdCounter = 1;
+    const getRafTimestamp =
+      rafTimestampSource === 'date' ? () => Date.now() : () => performance.now();
     const rafCallback = (cb: FrameRequestCallback) => {
       const id = rafIdCounter++;
       const timer = setTimeout(() => {
         rafTimers.delete(id);
-        cb(performance.now());
+        cb(getRafTimestamp());
       }, rafIntervalMs);
       rafTimers.set(id, timer);
       return id;
