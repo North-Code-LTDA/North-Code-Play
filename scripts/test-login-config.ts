@@ -1,7 +1,6 @@
 import assert from 'node:assert';
-import { Window } from 'happy-dom';
 import type { ReactElement } from 'react';
-import type { Root } from 'react-dom/client';
+import { createDomTestEnv, type TrackedReactRoot } from './helpers/domEnv';
 
 const TOTAL_CASES = 5;
 
@@ -24,281 +23,195 @@ function parseCaseFilter(): number | null {
   return parsed;
 }
 
+function makeRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({ left, top, width, height }),
+  } as DOMRect;
+}
+
 async function run(): Promise<void> {
   const targetCaseNumber = parseCaseFilter();
 
-  // Watchdog de segurança para evitar travamentos em ambiente simulado
-  const watchdog = setTimeout(() => {
-    console.error('TIMEOUT: test-login-config excedeu 20s');
-    process.exit(1);
-  }, 20000);
-  watchdog.unref();
-
   // ============================================================================
-  // 1. Ambiente DOM enxuto e determinístico (criado ANTES de importar React DOM)
+  // 1. Ambiente DOM enxuto e determinístico via helper compartilhado
   // ============================================================================
-  const windowInstance = new Window({
+  const env = await createDomTestEnv({
     url: 'http://localhost:3000',
     width: 1280,
     height: 720,
+    watchdogMs: 20000,
+    watchdogLabel: 'test-login-config',
+    rafIntervalMs: 16,
+    disableElementAnimate: true,
+    stubScrollIntoView: true,
+    fetchImpl: async () =>
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    beforeReactImport: ({ window: win }) => {
+      const htmlProto = win.HTMLElement.prototype as any;
+      htmlProto.scrollIntoView = function () {};
+      htmlProto.scrollTo = function (options?: any, y?: number) {
+        if (typeof options === 'object' && options !== null) {
+          if (typeof options.top === 'number') this.scrollTop = options.top;
+          if (typeof options.left === 'number') this.scrollLeft = options.left;
+        } else if (typeof options === 'number') {
+          this.scrollLeft = options;
+          if (typeof y === 'number') this.scrollTop = y;
+        }
+      };
+      htmlProto.getBoundingClientRect = function (this: HTMLElement): DOMRect {
+        if (this.hasAttribute('hidden') || this.getAttribute('aria-hidden') === 'true') {
+          return makeRect(0, 0, 0, 0);
+        }
+        if (this.getAttribute('data-config-section') === 'account') {
+          return makeRect(80, 120, 900, 220);
+        }
+        if (this.getAttribute('data-config-section') === 'presentation') {
+          return makeRect(80, 380, 900, 160);
+        }
+        if (this.getAttribute('data-config-primary') === 'true') {
+          return makeRect(540, 440, 200, 46);
+        }
+        if (this.hasAttribute('data-nav-item') || this.tagName === 'BUTTON' || this.tagName === 'INPUT') {
+          return makeRect(100, 200, 200, 46);
+        }
+        return makeRect(0, 0, 1280, 720);
+      };
+    },
   });
 
-  const originalFetch = globalThis.fetch;
-
-  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-  (globalThis as any).window = windowInstance;
-  (globalThis as any).document = windowInstance.document;
-  Object.defineProperty(globalThis, 'navigator', {
-    value: windowInstance.navigator,
-    writable: true,
-    configurable: true,
-  });
-  (globalThis as any).HTMLElement = windowInstance.HTMLElement;
-  (globalThis as any).HTMLButtonElement = windowInstance.HTMLButtonElement;
-  (globalThis as any).HTMLInputElement = windowInstance.HTMLInputElement;
-  (globalThis as any).HTMLImageElement = windowInstance.HTMLImageElement;
-  (globalThis as any).Element = windowInstance.Element;
-  (globalThis as any).Node = windowInstance.Node;
-  (globalThis as any).SVGElement = windowInstance.SVGElement;
-  (globalThis as any).Event = windowInstance.Event;
-  if ((windowInstance as any).InputEvent) {
-    (globalThis as any).InputEvent = (windowInstance as any).InputEvent;
-  }
-  (globalThis as any).CustomEvent = windowInstance.CustomEvent;
-  (globalThis as any).KeyboardEvent = windowInstance.KeyboardEvent;
-  (globalThis as any).MouseEvent = windowInstance.MouseEvent;
-  (globalThis as any).MutationObserver = windowInstance.MutationObserver;
-  (globalThis as any).localStorage = windowInstance.localStorage;
-  (globalThis as any).sessionStorage = windowInstance.sessionStorage;
-  (globalThis as any).URL = windowInstance.URL;
-  (globalThis as any).Blob = windowInstance.Blob;
-  (globalThis as any).getComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
-
-  (globalThis as any).ResizeObserver = class ResizeObserver {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  };
-
-  (globalThis as any).IntersectionObserver = class IntersectionObserver {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-    takeRecords() {
-      return [];
-    }
-  };
-
-  const matchMediaStub = (query: string) => ({
-    matches: query.includes('prefers-reduced-motion'),
-    media: query,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => false,
-  });
-  (globalThis as any).matchMedia = matchMediaStub;
-  (windowInstance as any).matchMedia = matchMediaStub;
-
-  let rafIdCounter = 1;
-  const rafTimers = new Map<number, ReturnType<typeof setTimeout>>();
-  const rafCallback = (cb: FrameRequestCallback) => {
-    const id = rafIdCounter++;
-    const timer = setTimeout(() => {
-      rafTimers.delete(id);
-      cb(performance.now());
-    }, 16);
-    rafTimers.set(id, timer);
-    return id;
-  };
-  const cancelRafCallback = (id: number) => {
-    const timer = rafTimers.get(id);
-    if (timer) {
-      clearTimeout(timer);
-      rafTimers.delete(id);
-    }
-  };
-  (globalThis as any).requestAnimationFrame = rafCallback;
-  (globalThis as any).cancelAnimationFrame = cancelRafCallback;
-  (windowInstance as any).requestAnimationFrame = rafCallback;
-  (windowInstance as any).cancelAnimationFrame = cancelRafCallback;
-
-  (globalThis as any).fetch = async () =>
-    new Response(JSON.stringify({}), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-  const htmlProto = windowInstance.HTMLElement.prototype as any;
-  htmlProto.animate = undefined;
-  (windowInstance.Element.prototype as any).animate = undefined;
-  htmlProto.scrollIntoView = function () {};
-  htmlProto.scrollTo = function (options?: any, y?: number) {
-    if (typeof options === 'object' && options !== null) {
-      if (typeof options.top === 'number') this.scrollTop = options.top;
-      if (typeof options.left === 'number') this.scrollLeft = options.left;
-    } else if (typeof options === 'number') {
-      this.scrollLeft = options;
-      if (typeof y === 'number') this.scrollTop = y;
-    }
-  };
-
-  function makeRect(left: number, top: number, width: number, height: number): DOMRect {
-    return {
-      x: left,
-      y: top,
-      left,
-      top,
-      width,
-      height,
-      right: left + width,
-      bottom: top + height,
-      toJSON: () => ({ left, top, width, height }),
-    } as DOMRect;
-  }
-
-  htmlProto.getBoundingClientRect = function (this: HTMLElement): DOMRect {
-    if (this.hasAttribute('hidden') || this.getAttribute('aria-hidden') === 'true') {
-      return makeRect(0, 0, 0, 0);
-    }
-    if (this.getAttribute('data-config-section') === 'account') {
-      return makeRect(80, 120, 900, 220);
-    }
-    if (this.getAttribute('data-config-section') === 'presentation') {
-      return makeRect(80, 380, 900, 160);
-    }
-    if (this.getAttribute('data-config-primary') === 'true') {
-      return makeRect(540, 440, 200, 46);
-    }
-    if (this.hasAttribute('data-nav-item') || this.tagName === 'BUTTON' || this.tagName === 'INPUT') {
-      return makeRect(100, 200, 200, 46);
-    }
-    return makeRect(0, 0, 1280, 720);
-  };
-
-  // ============================================================================
-  // 2. Imports dinâmicos após o bootstrap completo do DOM (incl. react-dom/client)
-  // ============================================================================
-  const reactModule = await import('react');
-  const React = reactModule.default;
-  const { act } = reactModule;
-  const { createRoot } = await import('react-dom/client');
-  const { MemoryRouter, Routes, Route } = await import('react-router-dom');
-  const { MotionConfig } = await import('motion/react');
-  const { ConfigView } = await import('../src/views/ConfigView');
-  const { Login } = await import('../src/pages/Login');
-  const { XtreamCredentialsContext } = await import('../src/context/XtreamContext');
-  const { XtreamService } = await import('../src/services/xtreamService');
-  const tvEnvironmentModule = await import('../src/platform/tvEnvironment');
-  const { APP_VERSION, APP_COMMIT, formatCommitShort } = await import('../src/version');
-  const { CREDENTIALS_KEY } = await import('../src/utils/accountUtils');
-  const {
-    NavigationProvider,
-    moveSpatialFocus,
-    setNavMode,
-    invalidateCandidateCache,
-    clearAllBackHandlersForTest,
-  } = await import('../src/navigation');
-
-  const originalAuthenticate = XtreamService.authenticate;
-  const activeMounts = new Set<{ root: Root; container: HTMLElement }>();
-
-  async function flush(ms = 30) {
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, ms));
-    });
-  }
-
-  function mount(element: ReactElement): { container: HTMLElement; root: Root } {
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
-    const entry = { root, container };
-    activeMounts.add(entry);
-    act(() => {
-      root.render(
-        React.createElement(MotionConfig, { reducedMotion: 'always' }, element)
-      );
-    });
-    return entry;
-  }
-
-  function unmount(root: Root, container: HTMLElement) {
-    for (const entry of activeMounts) {
-      if (entry.root === root && entry.container === container) {
-        activeMounts.delete(entry);
-        break;
-      }
-    }
-    act(() => {
-      root.unmount();
-    });
-    container.remove();
-    invalidateCandidateCache();
-  }
-
-  function setNativeInputValue(input: HTMLInputElement, value: string) {
-    const prevValue = input.value;
-    const setter = Object.getOwnPropertyDescriptor(
-      windowInstance.HTMLInputElement.prototype,
-      'value'
-    )?.set;
-    if (setter) {
-      setter.call(input, value);
-    } else {
-      input.value = value;
-    }
-    const tracker = (input as any)._valueTracker;
-    if (tracker) {
-      tracker.setValue(prevValue);
-    }
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-
-  const SYNTHETIC_CREDS = {
-    playlistName: 'Sala Principal',
-    serverUrl: 'http://secret-provider.synthetic.local:8080',
-    username: 'demo_subscriber',
-    password: 'synthetic_password_123',
-    allowed_output_formats: ['m3u8', 'ts'],
-  };
+  const { React, act, window: windowInstance } = env;
 
   let executed = 0;
   let passed = 0;
   const executedCases: number[] = [];
-
-  function pass(msg: string) {
-    console.log(`  ✓ ${msg}`);
-  }
-
-  async function runCase(caseNumber: number, title: string, fn: () => Promise<void>) {
-    if (targetCaseNumber !== null && caseNumber !== targetCaseNumber) {
-      return;
-    }
-    executed += 1;
-    executedCases.push(caseNumber);
-    console.log(`\n[${caseNumber}/${TOTAL_CASES}] ${title}`);
-    try {
-      await fn();
-      passed += 1;
-    } finally {
-      for (const entry of Array.from(activeMounts)) {
-        unmount(entry.root, entry.container);
-      }
-      clearAllBackHandlersForTest();
-      (XtreamService as any).authenticate = originalAuthenticate;
-    }
-  }
-
-  console.log(
-    targetCaseNumber !== null
-      ? `=== North Code Play — Validação Direcionada de Login e Configurações (Cenário filtrado: ${targetCaseNumber}/${TOTAL_CASES}) ===`
-      : '=== North Code Play — Validação Direcionada de Login e Configurações (Suíte completa: 5/5) ==='
-  );
+  let runError: unknown = null;
 
   try {
+    // ============================================================================
+    // 2. Imports dinâmicos após o bootstrap completo do DOM e React DOM
+    // ============================================================================
+    const { MemoryRouter, Routes, Route } = await import('react-router-dom');
+    const { MotionConfig } = await import('motion/react');
+    const { ConfigView } = await import('../src/views/ConfigView');
+    const { Login } = await import('../src/pages/Login');
+    const { XtreamCredentialsContext } = await import('../src/context/XtreamContext');
+    const { XtreamService } = await import('../src/services/xtreamService');
+    const tvEnvironmentModule = await import('../src/platform/tvEnvironment');
+    const { APP_VERSION, APP_COMMIT, formatCommitShort } = await import('../src/version');
+    const { CREDENTIALS_KEY } = await import('../src/utils/accountUtils');
+    const {
+      NavigationProvider,
+      moveSpatialFocus,
+      setNavMode,
+      invalidateCandidateCache,
+      clearAllBackHandlersForTest,
+    } = await import('../src/navigation');
+
+    const originalAuthenticate = XtreamService.authenticate;
+    env.registerCleanup(() => {
+      clearAllBackHandlersForTest();
+      invalidateCandidateCache();
+      (XtreamService as any).authenticate = originalAuthenticate;
+    });
+
+    async function flush(ms = 30) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, ms));
+      });
+    }
+
+    function mount(element: ReactElement): { container: HTMLElement; tracked: TrackedReactRoot } {
+      const tracked = env.createTrackedRoot();
+      act(() => {
+        tracked.root.render(
+          React.createElement(MotionConfig, { reducedMotion: 'always' }, element)
+        );
+      });
+      return { container: tracked.host, tracked };
+    }
+
+    function unmount(tracked: TrackedReactRoot) {
+      tracked.unmountSync();
+      invalidateCandidateCache();
+    }
+
+    function setNativeInputValue(input: HTMLInputElement, value: string) {
+      const prevValue = input.value;
+      const setter = Object.getOwnPropertyDescriptor(
+        windowInstance.HTMLInputElement.prototype,
+        'value'
+      )?.set;
+      if (setter) {
+        setter.call(input, value);
+      } else {
+        input.value = value;
+      }
+      const tracker = (input as any)._valueTracker;
+      if (tracker) {
+        tracker.setValue(prevValue);
+      }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    const SYNTHETIC_CREDS = {
+      playlistName: 'Sala Principal',
+      serverUrl: 'http://secret-provider.synthetic.local:8080',
+      username: 'demo_subscriber',
+      password: 'synthetic_password_123',
+      allowed_output_formats: ['m3u8', 'ts'],
+    };
+
+    function pass(msg: string) {
+      console.log(`  ✓ ${msg}`);
+    }
+
+    async function runCase(caseNumber: number, title: string, fn: () => Promise<void>) {
+      if (targetCaseNumber !== null && caseNumber !== targetCaseNumber) {
+        return;
+      }
+      executed += 1;
+      executedCases.push(caseNumber);
+      console.log(`\n[${caseNumber}/${TOTAL_CASES}] ${title}`);
+      const startedAt = Date.now();
+      let caseError: unknown = null;
+      try {
+        await fn();
+        passed += 1;
+        console.log(`  [OK] Cenário ${caseNumber}/${TOTAL_CASES} concluído (duração: ${Date.now() - startedAt} ms)`);
+      } catch (err) {
+        caseError = err;
+        throw err;
+      } finally {
+        const unmountErrors = await env.unmountAllRoots();
+        clearAllBackHandlersForTest();
+        invalidateCandidateCache();
+        (XtreamService as any).authenticate = originalAuthenticate;
+        if (unmountErrors.length > 0) {
+          console.error(`  [CLEANUP] Erros ao desmontar roots do cenário ${caseNumber}:`, unmountErrors);
+          if (!caseError) {
+            throw unmountErrors[0];
+          }
+        }
+      }
+    }
+
+    console.log(
+      targetCaseNumber !== null
+        ? `=== North Code Play — Validação Direcionada de Login e Configurações (Cenário filtrado: ${targetCaseNumber}/${TOTAL_CASES}) ===`
+        : '=== North Code Play — Validação Direcionada de Login e Configurações (Suíte completa: 5/5) ==='
+    );
+
     // --------------------------------------------------------------------------
     // Cenário 1: ConfigView — Hierarquia comercial e ausência de dados técnicos/URL
     // --------------------------------------------------------------------------
@@ -322,7 +235,7 @@ async function run(): Promise<void> {
           server_info: { url: 'secret-provider.synthetic.local' },
         });
 
-        const { container, root } = mount(
+        const { container, tracked } = mount(
           React.createElement(
             XtreamCredentialsContext.Provider,
             { value: { credentials: SYNTHETIC_CREDS } },
@@ -374,7 +287,7 @@ async function run(): Promise<void> {
           'No modo mouse/ponteiro não deve forçar foco automático agressivo'
         );
 
-        unmount(root, container);
+        unmount(tracked);
         pass('ConfigView exibe apenas Cabeçalho -> Informações da Conta -> Apresentação, sem URL do Servidor ou dados técnicos');
       }
     );
@@ -394,7 +307,7 @@ async function run(): Promise<void> {
           throw new Error('Provedor temporariamente indisponível');
         };
 
-        const { container, root } = mount(
+        const { container, tracked } = mount(
           React.createElement(
             XtreamCredentialsContext.Provider,
             { value: { credentials: SYNTHETIC_CREDS } },
@@ -415,7 +328,7 @@ async function run(): Promise<void> {
         const adjustBtn = container.querySelector<HTMLButtonElement>('button[data-config-primary="true"]');
         assert(adjustBtn, 'Botão Ajustar apresentação deve permanecer acessível mesmo quando a consulta da conta falha');
 
-        unmount(root, container);
+        unmount(tracked);
         pass('Erro de consulta ao provedor mantém seção de Apresentação 100% acessível');
       }
     );
@@ -436,7 +349,7 @@ async function run(): Promise<void> {
           server_info: {},
         });
 
-        const { container, root } = mount(
+        const { container, tracked } = mount(
           React.createElement(
             XtreamCredentialsContext.Provider,
             { value: { credentials: SYNTHETIC_CREDS } },
@@ -527,7 +440,7 @@ async function run(): Promise<void> {
         assert((container.textContent || '').includes('Calibrar escala (90%)'), 'Botão Calibrar escala deve refletir a escala salva (90%)');
         assert.strictEqual(document.activeElement, openBtn, 'Confirmar modal deve restaurar foco no botão Ajustar apresentação');
 
-        unmount(root, container);
+        unmount(tracked);
         pass('DisplaySetupModal preserva prévia temporária, cancelamento, persistência e restauração de foco');
       }
     );
@@ -548,7 +461,7 @@ async function run(): Promise<void> {
           server_info: {},
         });
 
-        const { container, root } = mount(
+        const { container, tracked } = mount(
           React.createElement(
             XtreamCredentialsContext.Provider,
             { value: { credentials: SYNTHETIC_CREDS } },
@@ -576,7 +489,7 @@ async function run(): Promise<void> {
         });
         assert.strictEqual(document.activeElement, accountEl, 'Seta para cima retorna de Ajustar apresentação para Informações da Conta');
 
-        unmount(root, container);
+        unmount(tracked);
         pass('Navegação D-Pad percorre Conta -> Apresentação -> Conta mantendo foco visível e sem prisão');
       }
     );
@@ -609,7 +522,7 @@ async function run(): Promise<void> {
           };
         };
 
-        const { container, root } = mount(
+        const { container, tracked } = mount(
           React.createElement(
             MemoryRouter,
             { initialEntries: ['/'] },
@@ -717,7 +630,7 @@ async function run(): Promise<void> {
           'Sessão persistida deve manter serverUrl e allowed_output_formats intactos'
         );
 
-        unmount(root, container);
+        unmount(tracked);
         pass('Login preserva URL do Servidor, extração M3U, Avatar Picker acessível, mensagens de erro e fluxo de autenticação');
       }
     );
@@ -725,27 +638,28 @@ async function run(): Promise<void> {
     if (executed === 0) {
       throw new Error('Nenhum cenário foi executado em test-login-config.');
     }
-
-    if (targetCaseNumber !== null) {
-      console.log(
-        `\n✅ Execução parcial concluída (filtro NC_LOGIN_CONFIG_CASE=${targetCaseNumber}): ${passed}/${executed} cenário selecionado aprovado [${executedCases.join(', ')}] — suíte completa (5/5) não executada.`
-      );
-    } else {
-      console.log(
-        `\n✅ Todos os ${passed}/${TOTAL_CASES} blocos de validação de Login e Configurações passaram com sucesso!`
-      );
-    }
+  } catch (err) {
+    runError = err;
+    throw err;
   } finally {
-    for (const entry of Array.from(activeMounts)) {
-      unmount(entry.root, entry.container);
+    const cleanupErrors = await env.dispose();
+    if (cleanupErrors.length > 0) {
+      console.error('[test-login-config] Erros durante o encerramento do ambiente DOM:', cleanupErrors);
+      if (!runError) {
+        throw cleanupErrors[0];
+      }
     }
-    clearAllBackHandlersForTest();
-    clearTimeout(watchdog);
-    (XtreamService as any).authenticate = originalAuthenticate;
-    (globalThis as any).fetch = originalFetch;
-    rafTimers.forEach((t) => clearTimeout(t));
-    rafTimers.clear();
-    await windowInstance.close();
+  }
+
+  // Sucesso definitivo declarado somente após conclusão limpa do encerramento
+  if (targetCaseNumber !== null) {
+    console.log(
+      `\n✅ Execução parcial concluída (filtro NC_LOGIN_CONFIG_CASE=${targetCaseNumber}): ${passed}/${executed} cenário selecionado aprovado [${executedCases.join(', ')}] — suíte completa (5/5) não executada.`
+    );
+  } else {
+    console.log(
+      `\n✅ Todos os ${passed}/${TOTAL_CASES} blocos de validação de Login e Configurações passaram com sucesso!`
+    );
   }
 }
 

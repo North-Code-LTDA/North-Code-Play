@@ -1,134 +1,68 @@
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Window } from 'happy-dom';
-import React, { act, Profiler } from 'react';
-import { createRoot, Root } from 'react-dom/client';
+import { createDomTestEnv } from './helpers/domEnv';
 
 // Watchdog global de segurança (180s) para toda a suíte; cada cenário possui watchdog independente de 25s
 const GLOBAL_WATCHDOG_MS = 180000;
 const CASE_WATCHDOG_MS = 25000;
-const watchdog = setTimeout(() => {
-  console.error(`TIMEOUT GLOBAL: test-live-tv-nav excedeu ${GLOBAL_WATCHDOG_MS / 1000}s`);
+const TOTAL_CASES = 9;
+
+function parseTargetCase(): number | null {
+  const rawCaseFilter = process.env.NC_LIVE_TV_NAV_CASE?.trim();
+  if (rawCaseFilter === undefined || rawCaseFilter === '') {
+    return null;
+  }
+  if (!/^\d+$/.test(rawCaseFilter)) {
+    throw new Error(
+      `NC_LIVE_TV_NAV_CASE inválido ("${rawCaseFilter}"). Informe um número inteiro entre 1 e ${TOTAL_CASES}.`
+    );
+  }
+  const parsedCase = Number(rawCaseFilter);
+  if (!Number.isInteger(parsedCase) || parsedCase < 1 || parsedCase > TOTAL_CASES) {
+    throw new Error(
+      `NC_LIVE_TV_NAV_CASE fora do intervalo ("${rawCaseFilter}"). Informe um número inteiro entre 1 e ${TOTAL_CASES}.`
+    );
+  }
+  return parsedCase;
+}
+
+let targetCaseNumber: number | null = null;
+try {
+  targetCaseNumber = parseTargetCase();
+} catch (err) {
+  console.error(`ERRO: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
-}, GLOBAL_WATCHDOG_MS);
-watchdog.unref();
+}
 
 // ============================================================================
-// 1. Ambiente DOM determinístico (happy-dom) com geometria realista de TV 720p
+// 1. Ambiente DOM determinístico (happy-dom) via helper compartilhado (TV 720p)
 // ============================================================================
-const windowInstance = new Window({
+let gbrCounter = 0;
+
+const env = await createDomTestEnv({
   url: 'http://localhost:3000',
   width: 1280,
   height: 720,
-});
+  watchdogMs: GLOBAL_WATCHDOG_MS,
+  watchdogLabel: 'test-live-tv-nav',
+  rafIntervalMs: 16,
+  disableElementAnimate: true,
+  stubScrollIntoView: true,
+  stubMediaPlayback: true,
+  beforeReactImport: ({ window: windowInstance, document: doc }) => {
+    const htmlProto = windowInstance.HTMLElement.prototype as any;
 
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-(globalThis as any).window = windowInstance;
-(globalThis as any).document = windowInstance.document;
-Object.defineProperty(globalThis, 'navigator', {
-  value: windowInstance.navigator,
-  writable: true,
-  configurable: true,
-});
-(globalThis as any).HTMLElement = windowInstance.HTMLElement;
-(globalThis as any).HTMLButtonElement = windowInstance.HTMLButtonElement;
-(globalThis as any).HTMLVideoElement = windowInstance.HTMLVideoElement;
-(globalThis as any).HTMLImageElement = windowInstance.HTMLImageElement;
-(globalThis as any).Element = windowInstance.Element;
-(globalThis as any).Node = windowInstance.Node;
-(globalThis as any).SVGElement = windowInstance.SVGElement;
-(globalThis as any).Event = windowInstance.Event;
-(globalThis as any).CustomEvent = windowInstance.CustomEvent;
-(globalThis as any).KeyboardEvent = windowInstance.KeyboardEvent;
-(globalThis as any).MouseEvent = windowInstance.MouseEvent;
-(globalThis as any).FocusEvent = windowInstance.FocusEvent;
-(globalThis as any).MutationObserver = windowInstance.MutationObserver;
-(globalThis as any).localStorage = windowInstance.localStorage;
-(globalThis as any).sessionStorage = windowInstance.sessionStorage;
-(globalThis as any).URL = windowInstance.URL;
-(globalThis as any).Blob = windowInstance.Blob;
-(globalThis as any).getComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
+    // Geometria sintética consistente para navegação espacial 2D em painel esquerdo 640x640
+    const origGetBoundingClientRect = htmlProto.getBoundingClientRect;
 
-(globalThis as any).ResizeObserver = class ResizeObserver {
-  private cb: ResizeObserverCallback;
-  constructor(cb: ResizeObserverCallback) {
-    this.cb = cb;
-  }
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-};
+    function getUiScaleFactor(): number {
+      const raw = parseFloat(doc.documentElement.style.getPropertyValue('--nc-ui-scale') || '');
+      return Number.isFinite(raw) && raw > 0 ? raw : 1;
+    }
 
-(globalThis as any).IntersectionObserver = class IntersectionObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-  takeRecords() {
-    return [];
-  }
-};
-
-const matchMediaStub = (query: string) => ({
-  matches: query.includes('prefers-reduced-motion'),
-  media: query,
-  onchange: null,
-  addListener: () => {},
-  removeListener: () => {},
-  addEventListener: () => {},
-  removeEventListener: () => {},
-  dispatchEvent: () => false,
-});
-(globalThis as any).matchMedia = matchMediaStub;
-(windowInstance as any).matchMedia = matchMediaStub;
-
-let rafIdCounter = 1;
-const rafTimers = new Map<number, NodeJS.Timeout>();
-const rafCallback = (cb: FrameRequestCallback) => {
-  const id = rafIdCounter++;
-  const timer = setTimeout(() => {
-    rafTimers.delete(id);
-    cb(performance.now());
-  }, 16);
-  rafTimers.set(id, timer);
-  return id;
-};
-const cancelRafCallback = (id: number) => {
-  const timer = rafTimers.get(id);
-  if (timer) {
-    clearTimeout(timer);
-    rafTimers.delete(id);
-  }
-};
-(globalThis as any).requestAnimationFrame = rafCallback;
-(windowInstance as any).requestAnimationFrame = rafCallback;
-(globalThis as any).cancelAnimationFrame = cancelRafCallback;
-(windowInstance as any).cancelAnimationFrame = cancelRafCallback;
-
-const htmlProto = windowInstance.HTMLElement.prototype as any;
-htmlProto.animate = undefined;
-if (!htmlProto.scrollIntoView) {
-  htmlProto.scrollIntoView = () => {};
-}
-
-const videoProto = windowInstance.HTMLMediaElement?.prototype as any;
-if (videoProto) {
-  videoProto.play = () => Promise.resolve();
-  videoProto.pause = () => {};
-  videoProto.load = () => {};
-}
-
-// Geometria sintética consistente para navegação espacial 2D em painel esquerdo 640x640
-const origGetBoundingClientRect = htmlProto.getBoundingClientRect;
-let gbrCounter = 0;
-
-function getUiScaleFactor(): number {
-  const raw = parseFloat(document.documentElement.style.getPropertyValue('--nc-ui-scale') || '');
-  return Number.isFinite(raw) && raw > 0 ? raw : 1;
-}
-
-htmlProto.getBoundingClientRect = function (this: HTMLElement) {
-  gbrCounter += 1;
+    htmlProto.getBoundingClientRect = function (this: HTMLElement) {
+      gbrCounter += 1;
   const scale = getUiScaleFactor();
   const cardW = Math.round(268 * scale);
   const gap = Math.round(12 * scale);
@@ -414,43 +348,90 @@ Object.defineProperty(htmlProto, 'clientHeight', {
   },
 });
 
-Object.defineProperty(htmlProto, 'offsetWidth', {
-  configurable: true,
-  get(this: HTMLElement) {
-    if (this.getAttribute?.('data-live-channel-card') === 'true') {
-      return Math.round(268 * getUiScaleFactor());
-    }
-    return 0;
+    Object.defineProperty(htmlProto, 'offsetWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute?.('data-live-channel-card') === 'true') {
+          return Math.round(268 * getUiScaleFactor());
+        }
+        return 0;
+      },
+    });
   },
 });
 
+const { React, act, Profiler } = env;
+
 // ============================================================================
-// 2. Importações após bootstrap DOM
+// 2. Importações após bootstrap DOM e React DOM (com limpeza em falha de boot)
 // ============================================================================
-const { setAndroidPlatformOverrideForDpadTest } = await import(
-  '../src/navigation/navigationPlatformPolicy'
-);
+async function loadAppModules() {
+  try {
+    const [
+      navPolicyMod,
+      tvEnvMod,
+      perfMod,
+      navMod,
+      epgMod,
+      xtreamCtxMod,
+      liveTvMod,
+      videoPlayerMod,
+      playbackMod,
+    ] = await Promise.all([
+      import('../src/navigation/navigationPlatformPolicy'),
+      import('../src/platform/tvEnvironment'),
+      import('../src/platform/performanceProfile'),
+      import('../src/navigation'),
+      import('../src/utils/liveEpgManager'),
+      import('../src/context/XtreamContext'),
+      import('../src/views/LiveTvView'),
+      import('../src/components/VideoPlayer'),
+      import('../src/components/player/usePlaybackSession'),
+    ]);
+    return {
+      ...navPolicyMod,
+      ...tvEnvMod,
+      ...perfMod,
+      ...navMod,
+      ...epgMod,
+      ...xtreamCtxMod,
+      ...liveTvMod,
+      ...videoPlayerMod,
+      ...playbackMod,
+    };
+  } catch (initErr) {
+    const cleanupErrors = await env.dispose();
+    if (cleanupErrors.length > 0) {
+      console.error(
+        '[test-live-tv-nav] Erros adicionais ao limpar ambiente após falha de importação:',
+        cleanupErrors
+      );
+    }
+    throw initErr;
+  }
+}
+
 const {
+  setAndroidPlatformOverrideForDpadTest,
   confirmDisplayPreferences,
   syncDocumentDisplayAttributes,
-} = await import('../src/platform/tvEnvironment');
-const {
   initPerformanceProfile,
   setPerformanceProfilePreference,
   resetPerformanceProfileCacheForTest,
-} = await import('../src/platform/performanceProfile');
-const {
   NavigationProvider,
   setNavMode,
   executeBackAction,
   focusElementSafely,
-} = await import('../src/navigation');
-const { XtreamCredentialsContext, XtreamLiveContext } = await import(
-  '../src/context/XtreamContext'
-);
-const { LiveTvView, computeLiveTvLayoutMetrics } = await import('../src/views/LiveTvView');
-const { VideoPlayer } = await import('../src/components/VideoPlayer');
-const { usePlaybackSession } = await import('../src/components/player/usePlaybackSession');
+  invalidateCandidateCache,
+  clearAllBackHandlersForTest,
+  resetLiveEpgCacheForTest,
+  XtreamCredentialsContext,
+  XtreamLiveContext,
+  LiveTvView,
+  computeLiveTvLayoutMetrics,
+  VideoPlayer,
+  usePlaybackSession,
+} = await loadAppModules();
 
 // ============================================================================
 // 3. Fábrica de catálogo realista (30 categorias, cat 1 com 120 canais, demais 35 canais)
@@ -502,6 +483,15 @@ const origPerfNow = performance.now.bind(performance);
 let simulatedClockOffsetMs = 0;
 performance.now = () => origPerfNow() + simulatedClockOffsetMs;
 
+env.registerCleanup(() => {
+  performance.now = origPerfNow;
+  setAndroidPlatformOverrideForDpadTest(null);
+  clearAllBackHandlersForTest();
+  invalidateCandidateCache();
+  resetPerformanceProfileCacheForTest();
+  resetLiveEpgCacheForTest();
+});
+
 async function dispatchArrow(key: string, repeat = false): Promise<void> {
   if (repeat) {
     simulatedClockOffsetMs += 90;
@@ -542,9 +532,8 @@ async function mountLiveTv(
   host: HTMLDivElement;
   unmount: () => Promise<void>;
 }> {
-  const host = document.createElement('div');
-  document.body.appendChild(host);
-  const root: Root = createRoot(host);
+  const tracked = env.createTrackedRoot();
+  const { host, root } = tracked;
 
   const credentials = {
     serverUrl: 'http://example.test:8080',
@@ -597,10 +586,7 @@ async function mountLiveTv(
   return {
     host,
     unmount: async () => {
-      await act(async () => {
-        root.unmount();
-      });
-      host.remove();
+      await tracked.unmount();
     },
   };
 }
@@ -609,28 +595,6 @@ async function mountLiveTv(
 // 4. Execução dos cenários direcionados da TV ao Vivo (Fase 2/5)
 // ============================================================================
 async function runTests() {
-  const TOTAL_CASES = 9;
-  const rawCaseFilter = process.env.NC_LIVE_TV_NAV_CASE?.trim();
-  let targetCaseNumber: number | null = null;
-  if (rawCaseFilter !== undefined && rawCaseFilter !== '') {
-    if (!/^\d+$/.test(rawCaseFilter)) {
-      console.error(
-        `ERRO: NC_LIVE_TV_NAV_CASE inválido ("${rawCaseFilter}"). Informe um número inteiro entre 1 e ${TOTAL_CASES}.`
-      );
-      clearTimeout(watchdog);
-      process.exit(1);
-    }
-    const parsedCase = Number(rawCaseFilter);
-    if (!Number.isInteger(parsedCase) || parsedCase < 1 || parsedCase > TOTAL_CASES) {
-      console.error(
-        `ERRO: NC_LIVE_TV_NAV_CASE fora do intervalo ("${rawCaseFilter}"). Informe um número inteiro entre 1 e ${TOTAL_CASES}.`
-      );
-      clearTimeout(watchdog);
-      process.exit(1);
-    }
-    targetCaseNumber = parsedCase;
-  }
-
   const catalog = buildLargeLiveCatalog();
   let caseCounter = 0;
   let executed = 0;
@@ -650,22 +614,36 @@ async function runTests() {
       console.error(
         `  [TIMEOUT] Cenário ${currentCaseNumber} excedeu ${CASE_WATCHDOG_MS / 1000}s: ${name}`
       );
-      clearTimeout(watchdog);
+      env.clearWatchdog();
       process.exit(1);
     }, CASE_WATCHDOG_MS);
     caseWatchdog.unref();
 
+    let caseError: unknown = null;
     try {
       await fn();
       const durationMs = Date.now() - startedAt;
       passed += 1;
       console.log(`  [OK] ${name} (duração: ${durationMs} ms)`);
     } catch (err) {
+      caseError = err;
       const durationMs = Date.now() - startedAt;
       console.error(`  [FALHA] ${name} (duração: ${durationMs} ms)`);
       throw err;
     } finally {
       clearTimeout(caseWatchdog);
+      const unmountErrors = await env.unmountAllRoots();
+      clearAllBackHandlersForTest();
+      invalidateCandidateCache();
+      if (unmountErrors.length > 0) {
+        console.error(
+          `  [CLEANUP] Erros ao desmontar roots no cenário ${currentCaseNumber}:`,
+          unmountErrors
+        );
+        if (!caseError) {
+          throw unmountErrors[0];
+        }
+      }
     }
   };
 
@@ -1273,9 +1251,8 @@ async function runTests() {
       );
 
       resetEnv(true, 'tv', 'remote', 'auto');
-      const host = document.createElement('div');
-      document.body.appendChild(host);
-      const root: Root = createRoot(host);
+      const trackedMain = env.createTrackedRoot();
+      const { host, root } = trackedMain;
 
       const credentials = {
         serverUrl: 'http://example.test:8080',
@@ -1512,17 +1489,13 @@ async function runTests() {
           'pickPreferredZoneEntry deve remontar e restaurar exatamente o canal de origem virtualizado'
         );
       } finally {
-        await act(async () => {
-          root.unmount();
-        });
-        host.remove();
+        await trackedMain.unmount();
       }
 
       // 4. Navegação de outras seções (Início / Filmes) não é alterada
       console.log('    [CHECKPOINT 7.9] Teste de navegação nas outras seções');
-      const otherHost = document.createElement('div');
-      document.body.appendChild(otherHost);
-      const otherRoot: Root = createRoot(otherHost);
+      const trackedOther = env.createTrackedRoot();
+      const { host: otherHost, root: otherRoot } = trackedOther;
       try {
         await act(async () => {
           otherRoot.render(
@@ -1670,10 +1643,7 @@ async function runTests() {
           'Cabeçalho Filmes + ArrowDown deve preservar a entrada na barra de categorias da vitrine'
         );
       } finally {
-        await act(async () => {
-          otherRoot.unmount();
-        });
-        otherHost.remove();
+        await trackedOther.unmount();
       }
     }
   );
@@ -1731,9 +1701,8 @@ async function runTests() {
       };
 
       // Parte A: Verificação direta do hook usePlaybackSession (referência de bufferedRanges, supressão, restauração e pause)
-      const hookHost = document.createElement('div');
-      document.body.appendChild(hookHost);
-      const hookRoot: Root = createRoot(hookHost);
+      const trackedHook = env.createTrackedRoot();
+      const { host: hookHost, root: hookRoot } = trackedHook;
       let latestSession: ReturnType<typeof usePlaybackSession> | null = null;
       let hookCommits = 0;
 
@@ -1935,17 +1904,13 @@ async function runTests() {
           'Evento error deve continuar publicando erro mesmo em preview Lite'
         );
       } finally {
-        await act(async () => {
-          hookRoot.unmount();
-        });
-        hookHost.remove();
+        await trackedHook.unmount();
       }
 
       // Parte B: Integração real no componente VideoPlayer (Lite vs Full + requestFullscreenImmediate / exitFullscreenImmediate)
       const runVideoPlayerIntegration = async (liteLivePreview: boolean) => {
-        const vpHost = document.createElement('div');
-        document.body.appendChild(vpHost);
-        const vpRoot: Root = createRoot(vpHost);
+        const trackedVp = env.createTrackedRoot();
+        const { host: vpHost, root: vpRoot } = trackedVp;
         const playerRef = React.createRef<import('../src/components/VideoPlayer').VideoPlayerHandle>();
         let vpCommits = 0;
         let finalErrors: string[] = [];
@@ -2108,10 +2073,7 @@ async function runTests() {
             );
           }
         } finally {
-          await act(async () => {
-            vpRoot.unmount();
-          });
-          vpHost.remove();
+          await trackedVp.unmount();
         }
       };
 
@@ -2320,9 +2282,8 @@ async function runTests() {
       );
 
       resetEnv(true, 'tv', 'remote', 'lite');
-      const host = document.createElement('div');
-      document.body.appendChild(host);
-      const root: Root = createRoot(host);
+      const trackedCase9 = env.createTrackedRoot();
+      const { host, root } = trackedCase9;
 
       const credentials = {
         serverUrl: 'http://example.test:8080',
@@ -2608,29 +2569,42 @@ async function runTests() {
           'Troca de canal no preview deve manter o mesmo elemento <video> sem recriar player'
         );
       } finally {
-        await act(async () => {
-          root.unmount();
-        });
-        host.remove();
+        await trackedCase9.unmount();
       }
     }
   );
 
-  clearTimeout(watchdog);
   if (executed === 0) {
-    console.error('ERRO: Nenhum cenário foi executado em test-live-tv-nav.');
-    process.exit(1);
+    throw new Error('Nenhum cenário foi executado em test-live-tv-nav.');
   }
+
+  return { passed, executed };
+}
+
+let runResult: { passed: number; executed: number } | null = null;
+let runError: unknown = null;
+
+try {
+  runResult = await runTests();
+} catch (err) {
+  runError = err;
+  console.error('FALHA em test-live-tv-nav:', err);
+  process.exitCode = 1;
+} finally {
+  const cleanupErrors = await env.dispose();
+  if (cleanupErrors.length > 0) {
+    console.error('[test-live-tv-nav] Erros durante o encerramento do ambiente DOM:', cleanupErrors);
+    if (!runError) {
+      runError = cleanupErrors[0];
+      process.exitCode = 1;
+    }
+  }
+}
+
+if (!runError && runResult) {
   console.log(
-    `\nSucesso: ${passed}/${executed} cenário(s) executado(s) passaram em test-live-tv-nav${
+    `\nSucesso: ${runResult.passed}/${runResult.executed} cenário(s) executado(s) passaram em test-live-tv-nav${
       targetCaseNumber !== null ? ` (filtro NC_LIVE_TV_NAV_CASE=${targetCaseNumber})` : ''
     }.`
   );
-  process.exit(0);
 }
-
-runTests().catch((err) => {
-  clearTimeout(watchdog);
-  console.error('FALHA em test-live-tv-nav:', err);
-  process.exit(1);
-});
