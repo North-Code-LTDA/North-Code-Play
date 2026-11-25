@@ -11,7 +11,7 @@
     "build": "vite build",
     "start": "vite preview",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "lint": "tsc --noEmit",
     "test": "tsx scripts/test-direct.ts",
     "test:carousels": "tsx scripts/test-showcase-carousels.ts",
@@ -30,24 +30,22 @@
     "@capacitor/app": "^8.0.0",
     "@capacitor/core": "^8.0.0",
     "@fontsource/inter": "^5.1.0",
-    "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
-    "axios": "^1.16.1",
     "hls.js": "^1.6.16",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "react-router-dom": "^7.15.1",
-    "vite": "^6.2.3"
+    "react-router-dom": "^7.15.1"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.0.0",
     "@types/node": "^22.14.0",
-    "autoprefixer": "^10.4.21",
     "happy-dom": "^20.14.5",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
-    "typescript": "~5.8.2"
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3",
+    "@vitejs/plugin-react": "^5.0.4",
+    "@tailwindcss/vite": "^4.1.14"
   }
 }
