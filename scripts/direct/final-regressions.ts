@@ -28,6 +28,22 @@ export interface FinalRegressionsHlsMockControl {
   }) => void;
 }
 
+export const VALID_C3_SUBCASES = [
+  '13.1',
+  '13.2',
+  '13.3',
+  '13.4',
+  '13.5',
+  '13.6',
+  '13.7',
+  '13.8',
+  '13.9',
+  '13.10',
+  '13.11',
+] as const;
+
+export type DirectC3SubcaseId = (typeof VALID_C3_SUBCASES)[number];
+
 export interface DeliveryC3FinalCleanupAndRegressionDeps {
   env: DomTestEnv;
   Hls: (typeof import('hls.js'))['default'];
@@ -49,6 +65,35 @@ export interface DeliveryC3FinalCleanupAndRegressionDeps {
   liveTvViewModule: typeof import('../../src/views/LiveTvView');
   liveEpgManagerModule: typeof import('../../src/utils/liveEpgManager');
   tvEnvironmentModule: typeof import('../../src/platform/tvEnvironment');
+  subcaseFilter?: DirectC3SubcaseId | null;
+}
+
+function nowMonotonicMs(): number {
+  return Number(process.hrtime.bigint()) / 1_000_000;
+}
+
+function logC3Stage(subcaseId: string, stage: string): void {
+  console.log(`[C3][${subcaseId}] STAGE ${stage}`);
+}
+
+async function runC3Subcase(
+  id: DirectC3SubcaseId,
+  purpose: string,
+  fn: () => Promise<void> | void
+): Promise<number> {
+  const startedAt = nowMonotonicMs();
+  console.log(`[C3][${id}] START — ${purpose}`);
+  try {
+    await fn();
+    const durationMs = nowMonotonicMs() - startedAt;
+    console.log(`[C3][${id}] END — ${durationMs.toFixed(1)}ms`);
+    return durationMs;
+  } catch (err) {
+    const durationMs = nowMonotonicMs() - startedAt;
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[C3][${id}] FAIL — ${durationMs.toFixed(1)}ms — ${message}`);
+    throw err;
+  }
 }
 
 // ============================================================================
@@ -246,6 +291,7 @@ async function runC3LiveEpgManagerSubtest(
   const { XtreamService, liveEpgManagerModule } = deps;
 
   // 13.7. Preservação funcional de liveEpgManager (limite de concorrência, deduplicação, cache e cancelamento)
+  logC3Stage('13.7', 'prepare');
   const originalGetShortEpg = XtreamService.getShortEpg;
   liveEpgManagerModule.resetLiveEpgCacheForTest();
   liveEpgManagerModule.setLiveEpgConcurrencyLimitForTest(2);
@@ -289,6 +335,7 @@ async function runC3LiveEpgManagerSubtest(
   };
 
   try {
+    logC3Stage('13.7', 'verify');
     const updates501A: string[] = [];
     const updates501B: string[] = [];
     const unsub501A = liveEpgManagerModule.subscribeLiveChannelEpg({
@@ -380,6 +427,7 @@ async function runC3LiveEpgManagerSubtest(
     unsub504();
     unsub501Cached();
   } finally {
+    logC3Stage('13.7', 'cleanup');
     (XtreamService as any).getShortEpg = originalGetShortEpg;
     liveEpgManagerModule.setLiveEpgConcurrencyLimitForTest(2);
     liveEpgManagerModule.resetLiveEpgCacheForTest();
@@ -398,6 +446,7 @@ async function runC3PlayerNoDiagnosticsAndOverlaysSubtest(
   const { React, act } = env;
 
   // 13.3. VideoPlayer sem botão/menu/overlay de diagnóstico, mantendo controles e overlay de erro reais
+  logC3Stage('13.3', 'prepare');
   const doc = document;
   const tracked = env.createTrackedRoot();
   const root = tracked.root;
@@ -406,6 +455,7 @@ async function runC3PlayerNoDiagnosticsAndOverlaysSubtest(
   setNavMode('remote');
 
   try {
+    logC3Stage('13.3', 'mount');
     await act(async () => {
       root.render(
         React.createElement(VideoPlayer, {
@@ -418,6 +468,7 @@ async function runC3PlayerNoDiagnosticsAndOverlaysSubtest(
       await new Promise((r) => setTimeout(r, 30));
     });
 
+    logC3Stage('13.3', 'verify');
     const playerRoot = doc.querySelector('[data-player-container="true"]') as HTMLElement | null;
     assert(playerRoot, 'VideoPlayer deve montar o container principal');
 
@@ -500,7 +551,9 @@ async function runC3PlayerNoDiagnosticsAndOverlaysSubtest(
       'Overlay de erro não deve mencionar diagnóstico técnico'
     );
   } finally {
+    logC3Stage('13.3', 'unmount');
     await tracked.unmount();
+    logC3Stage('13.3', 'cleanup');
     hlsMock.restore();
     clearAllBackHandlersForTest();
   }
@@ -523,6 +576,9 @@ async function runC3AudioTrackSelectionSubtest(
 
   // 13.9. Seleção real de faixas de áudio (HLS assíncrono, índice vs id, AUDIO_TRACKS_UPDATED intermediário, evento atrasado, falha honesta, feedback visível, troca de mídia, nativo e vazio)
   {
+    const hlsPhaseStart = nowMonotonicMs();
+    console.log('[C3][13.9-hls] START — Seleção de faixas de áudio HLS (assíncrono, fora de ordem, erro, remoção e troca de mídia)');
+    logC3Stage('13.9-hls', 'prepare');
     const audioTracked = env.createTrackedRoot();
     const audioRoot = audioTracked.root;
     hlsMock.enable();
@@ -563,6 +619,7 @@ async function runC3AudioTrackSelectionSubtest(
     });
 
     try {
+      logC3Stage('13.9-hls', 'mount');
       await act(async () => {
         audioRoot.render(
           React.createElement(VideoPlayer, {
@@ -575,6 +632,7 @@ async function runC3AudioTrackSelectionSubtest(
         await new Promise((r) => setTimeout(r, 30));
       });
 
+      logC3Stage('13.9-hls', 'verify:initial-menu');
       const activeControllers1 = hlsMock.getActiveControllers();
       const hlsCtrl = activeControllers1[activeControllers1.length - 1];
       assert(hlsCtrl, 'Controlador mock HLS deve estar ativo para teste de troca de áudio');
@@ -932,19 +990,33 @@ async function runC3AudioTrackSelectionSubtest(
         'false',
         'Nova mídia não deve herdar estado pendente da mídia anterior'
       );
+      logC3Stage('13.9-hls', 'verify:media-change-done');
+    } catch (err) {
+      const hlsErrMs = nowMonotonicMs() - hlsPhaseStart;
+      console.error(
+        `[C3][13.9-hls] FAIL — ${hlsErrMs.toFixed(1)}ms — ${err instanceof Error ? err.message : String(err)}`
+      );
+      throw err;
     } finally {
+      logC3Stage('13.9-hls', 'unmount');
       await audioTracked.unmount();
+      logC3Stage('13.9-hls', 'cleanup');
       hlsMock.restore();
       clearAllBackHandlersForTest();
     }
+    console.log(`[C3][13.9-hls] END — ${(nowMonotonicMs() - hlsPhaseStart).toFixed(1)}ms`);
 
     // 13.9b. Áudio nativo (HTMLMediaElement.audioTracks): leitura real de .enabled e recusa de falsa confirmação
+    const nativePhaseStart = nowMonotonicMs();
+    console.log('[C3][13.9b-native] START — Seleção de faixas de áudio nativo (HTMLMediaElement.audioTracks)');
+    logC3Stage('13.9b-native', 'prepare');
     const nativeTracked = env.createTrackedRoot();
     const nativeRoot = nativeTracked.root;
     clearAllBackHandlersForTest();
     setNavMode('remote');
 
     try {
+      logC3Stage('13.9b-native', 'mount');
       await act(async () => {
         nativeRoot.render(
           React.createElement(VideoPlayer, {
@@ -957,6 +1029,7 @@ async function runC3AudioTrackSelectionSubtest(
         await new Promise((r) => setTimeout(r, 20));
       });
 
+      logC3Stage('13.9b-native', 'verify');
       const playerEl = doc.querySelector('[data-player-container="true"]') as HTMLElement;
       const videoEl = playerEl.querySelector('video') as any;
       assert(videoEl, 'Elemento video deve existir no player nativo');
@@ -1066,10 +1139,19 @@ async function runC3AudioTrackSelectionSubtest(
         playerEl.querySelector('[data-audio-track-feedback="true"]'),
         'Deve informar feedback visível quando navegador impedir troca de faixa nativa'
       );
+    } catch (err) {
+      const nativeErrMs = nowMonotonicMs() - nativePhaseStart;
+      console.error(
+        `[C3][13.9b-native] FAIL — ${nativeErrMs.toFixed(1)}ms — ${err instanceof Error ? err.message : String(err)}`
+      );
+      throw err;
     } finally {
+      logC3Stage('13.9b-native', 'unmount');
       await nativeTracked.unmount();
+      logC3Stage('13.9b-native', 'cleanup');
       clearAllBackHandlersForTest();
     }
+    console.log(`[C3][13.9b-native] END — ${(nowMonotonicMs() - nativePhaseStart).toFixed(1)}ms`);
   }
 }
 
@@ -1088,6 +1170,7 @@ async function runC3VolumeDpadAndMouseSubtest(
   const doc = document;
 
   // 13.10. Navegação D-Pad no controle de volume sem prisão de foco + edição explícita + preservação de mouse
+  logC3Stage('13.10', 'prepare');
   const volTracked = env.createTrackedRoot();
   const volRoot = volTracked.root;
   clearAllBackHandlersForTest();
@@ -1096,6 +1179,7 @@ async function runC3VolumeDpadAndMouseSubtest(
 
   let backCalled = false;
   try {
+    logC3Stage('13.10', 'mount');
     await act(async () => {
       volRoot.render(
         React.createElement(
@@ -1114,6 +1198,7 @@ async function runC3VolumeDpadAndMouseSubtest(
       await new Promise((r) => setTimeout(r, 30));
     });
 
+    logC3Stage('13.10', 'verify');
     const playerEl = doc.querySelector('[data-player-container="true"]') as HTMLElement;
     assert(playerEl, 'Player de teste de volume deve montar');
 
@@ -1274,7 +1359,9 @@ async function runC3VolumeDpadAndMouseSubtest(
       'Fora do modo remote, ajuste de teclado no slider deve continuar imediato sem exigir Enter'
     );
   } finally {
+    logC3Stage('13.10', 'unmount');
     await volTracked.unmount();
+    logC3Stage('13.10', 'cleanup');
     clearAllBackHandlersForTest();
     window.localStorage.removeItem('nc_player_volume');
   }
@@ -1288,6 +1375,7 @@ async function runC3PlaybackErrorClassificationSubtest(
   const doc = document;
 
   // 13.11. Robustez e classificação de erros de reprodução (URL inválida, HLS HTTP 404 imediato, MKV nativo)
+  logC3Stage('13.11', 'prepare');
   const errTracked = env.createTrackedRoot();
   const errRoot = errTracked.root;
   hlsMock.enable();
@@ -1296,6 +1384,7 @@ async function runC3PlaybackErrorClassificationSubtest(
   let finalErrors: string[] = [];
   try {
     // 13.11a. URL malformada deve falhar imediatamente sem carregamento infinito
+    logC3Stage('13.11', 'mount:13.11a-invalid-url');
     await act(async () => {
       errRoot.render(
         React.createElement(VideoPlayer, {
@@ -1308,6 +1397,7 @@ async function runC3PlaybackErrorClassificationSubtest(
       );
       await new Promise((r) => setTimeout(r, 25));
     });
+    logC3Stage('13.11', 'verify:13.11a-invalid-url');
     const invalidOverlay = doc.querySelector('[data-player-error-overlay="true"]') as HTMLElement | null;
     assert(invalidOverlay, 'URL malformada deve exibir overlay de erro imediatamente');
     assert(
@@ -1317,6 +1407,7 @@ async function runC3PlaybackErrorClassificationSubtest(
     assert(finalErrors.length >= 1, 'onPlaybackFinalError deve ser notificado para URL malformada');
 
     // 13.11b. HLS fatal HTTP 404 deve classificar como indisponível no provedor sem retries cegos
+    logC3Stage('13.11', 'mount:13.11b-hls-404');
     finalErrors = [];
     await act(async () => {
       errRoot.render(
@@ -1330,6 +1421,7 @@ async function runC3PlaybackErrorClassificationSubtest(
       );
       await new Promise((r) => setTimeout(r, 25));
     });
+    logC3Stage('13.11', 'verify:13.11b-hls-404');
     const activeControllers = hlsMock.getActiveControllers();
     const hls404Ctrl = activeControllers[activeControllers.length - 1];
     assert(hls404Ctrl, 'Controlador HLS deve existir para teste de HTTP 404');
@@ -1350,6 +1442,7 @@ async function runC3PlaybackErrorClassificationSubtest(
     );
 
     // 13.11c. Erro nativo code 4 em arquivo .mkv deve informar limitação real de contêiner/codec MKV
+    logC3Stage('13.11', 'mount:13.11c-mkv-native');
     await act(async () => {
       errRoot.render(
         React.createElement(VideoPlayer, {
@@ -1361,6 +1454,7 @@ async function runC3PlaybackErrorClassificationSubtest(
       );
       await new Promise((r) => setTimeout(r, 25));
     });
+    logC3Stage('13.11', 'verify:13.11c-mkv-native');
     const mkvVideo = doc.querySelector('[data-player-container="true"] video') as any;
     assert(mkvVideo, 'Elemento video deve existir para teste de erro MKV');
     Object.defineProperty(mkvVideo, 'error', {
@@ -1378,7 +1472,9 @@ async function runC3PlaybackErrorClassificationSubtest(
       'Erro nativo em arquivo .mkv deve mencionar limitação de formato MKV no navegador'
     );
   } finally {
+    logC3Stage('13.11', 'unmount');
     await errTracked.unmount();
+    logC3Stage('13.11', 'cleanup');
     hlsMock.restore();
     clearAllBackHandlersForTest();
   }
@@ -1390,22 +1486,96 @@ async function runC3PlaybackErrorClassificationSubtest(
 export async function runDeliveryC3FinalCleanupAndRegressionTests(
   deps: DeliveryC3FinalCleanupAndRegressionDeps
 ): Promise<void> {
-  console.log('🧪 [13] Testando Entrega C3 (Player sem diagnóstico, módulos limpos, ausência de contadores e regressões)...');
+  const subcaseFilter = deps.subcaseFilter ?? null;
+  if (subcaseFilter) {
+    console.log(
+      `🧪 [13] Testando Entrega C3 (execução PARCIAL NC_DIRECT_C3_SUBCASE=${subcaseFilter})...`
+    );
+  } else {
+    console.log(
+      '🧪 [13] Testando Entrega C3 (Player sem diagnóstico, módulos limpos, ausência de contadores e regressões)...'
+    );
+  }
+
+  const subcases: Array<{
+    id: DirectC3SubcaseId;
+    purpose: string;
+    fn: () => Promise<void> | void;
+  }> = [
+    {
+      id: '13.1',
+      purpose: 'Exclusão física de PlayerDiagnosticsModal',
+      fn: () => runC3StructuralModalExclusionSubtest(),
+    },
+    {
+      id: '13.2',
+      purpose: 'Ausência de exports, contadores e globais de diagnóstico removidos',
+      fn: () => runC3DiagnosticExportsCleanupSubtest(deps),
+    },
+    {
+      id: '13.3',
+      purpose: 'VideoPlayer sem diagnóstico visual e preservação dos controles e overlay de erro',
+      fn: () => runC3PlayerNoDiagnosticsAndOverlaysSubtest(deps),
+    },
+    {
+      id: '13.4',
+      purpose: 'mediaUtils.buildDirectImageUrl',
+      fn: () => runC3MediaUtilsDirectUrlSubtest(deps),
+    },
+    {
+      id: '13.5',
+      purpose: 'catalogRanking.sortByYearAndRating',
+      fn: () => runC3CatalogRankingSubtest(deps),
+    },
+    {
+      id: '13.6',
+      purpose: 'playbackHistory (persistência, progresso, limpeza e isolamento por conta)',
+      fn: () => runC3PlaybackHistorySubtest(deps),
+    },
+    {
+      id: '13.7',
+      purpose: 'liveEpgManager (concorrência, deduplicação, cache e cancelamento)',
+      fn: () => runC3LiveEpgManagerSubtest(deps),
+    },
+    {
+      id: '13.8',
+      purpose: 'Preservação dos helpers de teste legítimos',
+      fn: () => runC3LegitimateTestHelpersPreservationSubtest(deps),
+    },
+    {
+      id: '13.9',
+      purpose: 'Seleção real de faixas de áudio HLS (13.9) e nativo (13.9b)',
+      fn: () => runC3AudioTrackSelectionSubtest(deps),
+    },
+    {
+      id: '13.10',
+      purpose: 'Navegação D-Pad no controle de volume e preservação de mouse/pointer',
+      fn: () => runC3VolumeDpadAndMouseSubtest(deps),
+    },
+    {
+      id: '13.11',
+      purpose: 'Classificação e tratamento de erros de reprodução (URL inválida, HLS 404, MKV)',
+      fn: () => runC3PlaybackErrorClassificationSubtest(deps),
+    },
+  ];
 
   // Execução preservada na ordem original 13.1 -> 13.11
-  runC3StructuralModalExclusionSubtest(); // 13.1
-  runC3DiagnosticExportsCleanupSubtest(deps); // 13.2
-  await runC3PlayerNoDiagnosticsAndOverlaysSubtest(deps); // 13.3
-  runC3MediaUtilsDirectUrlSubtest(deps); // 13.4
-  runC3CatalogRankingSubtest(deps); // 13.5
-  runC3PlaybackHistorySubtest(deps); // 13.6
-  await runC3LiveEpgManagerSubtest(deps); // 13.7
-  runC3LegitimateTestHelpersPreservationSubtest(deps); // 13.8
-  await runC3AudioTrackSelectionSubtest(deps); // 13.9 e 13.9b
-  await runC3VolumeDpadAndMouseSubtest(deps); // 13.10
-  await runC3PlaybackErrorClassificationSubtest(deps); // 13.11
+  let executedCount = 0;
+  for (const subcase of subcases) {
+    if (subcaseFilter && subcase.id !== subcaseFilter) {
+      continue;
+    }
+    await runC3Subcase(subcase.id, subcase.purpose, subcase.fn);
+    executedCount += 1;
+  }
 
-  console.log(
-    '✅ Entrega C3 + Correções Pós-C3 (áudio real, volume D-Pad, erros de reprodução e EPG assíncrono) validadas!'
-  );
+  if (subcaseFilter) {
+    console.log(
+      `✅ Execução PARCIAL do Bloco 13 concluída: subcenário ${subcaseFilter} validado (${executedCount}/${subcases.length}; demais ${subcases.length - executedCount} ignorados).`
+    );
+  } else {
+    console.log(
+      '✅ Entrega C3 + Correções Pós-C3 (áudio real, volume D-Pad, erros de reprodução e EPG assíncrono) validadas!'
+    );
+  }
 }

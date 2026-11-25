@@ -19,7 +19,11 @@ import {
 } from './direct/android-image-cache';
 import { runStep3DpadFluidityAndDiagnosticsTests } from './direct/dpad-image-integration';
 import { runDeliveryAHeroBannerConsolidationTests } from './direct/hero-banner';
-import { runDeliveryC3FinalCleanupAndRegressionTests } from './direct/final-regressions';
+import {
+  runDeliveryC3FinalCleanupAndRegressionTests,
+  VALID_C3_SUBCASES,
+  type DirectC3SubcaseId,
+} from './direct/final-regressions';
 
 const TOTAL_BLOCKS = 13;
 
@@ -34,6 +38,24 @@ if (rawCaseFilter) {
     process.exit(1);
   }
   selectedCaseNumber = parsed;
+}
+
+const rawC3SubcaseFilter = process.env.NC_DIRECT_C3_SUBCASE?.trim();
+let selectedC3Subcase: DirectC3SubcaseId | null = null;
+if (rawC3SubcaseFilter) {
+  if (selectedCaseNumber !== 13) {
+    console.error(
+      `FALHA em test-direct: NC_DIRECT_C3_SUBCASE="${rawC3SubcaseFilter}" só pode ser utilizado em conjunto com NC_DIRECT_CASE=13.`
+    );
+    process.exit(1);
+  }
+  if (!(VALID_C3_SUBCASES as readonly string[]).includes(rawC3SubcaseFilter)) {
+    console.error(
+      `FALHA em test-direct: filtro inválido NC_DIRECT_C3_SUBCASE="${rawC3SubcaseFilter}". Valores válidos: ${VALID_C3_SUBCASES.join(', ')}.`
+    );
+    process.exit(1);
+  }
+  selectedC3Subcase = rawC3SubcaseFilter as DirectC3SubcaseId;
 }
 
 // Stub de fetch para arquivos de legenda externos (.srt / .vtt) e transporte sintético
@@ -494,7 +516,11 @@ async function main(): Promise<DirectRunSummary> {
   const executedBlocks: Array<{ index: number; name: string }> = [];
   const skippedBlocks: number[] = [];
 
-  if (selectedCaseNumber !== null) {
+  if (selectedCaseNumber !== null && selectedC3Subcase !== null) {
+    console.log(
+      `🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — NORTH CODE PLAY (filtro PARCIAL NC_DIRECT_CASE=${selectedCaseNumber}/${TOTAL_BLOCKS}, NC_DIRECT_C3_SUBCASE=${selectedC3Subcase})\n`
+    );
+  } else if (selectedCaseNumber !== null) {
     console.log(
       `🚀 INICIANDO SUÍTE DIRECIONADA DE TESTES — NORTH CODE PLAY (filtro PARCIAL NC_DIRECT_CASE=${selectedCaseNumber}/${TOTAL_BLOCKS})\n`
     );
@@ -773,6 +799,7 @@ async function main(): Promise<DirectRunSummary> {
           liveTvViewModule,
           liveEpgManagerModule,
           tvEnvironmentModule,
+          subcaseFilter: selectedC3Subcase,
         }),
     },
   ];
@@ -846,7 +873,12 @@ if (runError) {
   console.error('\n❌ FALHA DURANTE TEARDOWN EM test-direct:', teardownErrors);
   process.exitCode = 1;
 } else if (summary) {
-  if (selectedCaseNumber !== null) {
+  if (selectedCaseNumber !== null && selectedC3Subcase !== null) {
+    const execLabels = summary.executedBlocks.map((b) => `${b.index} (${b.name})`).join(', ');
+    console.log(
+      `\n🎉 Sucesso PARCIAL (filtro NC_DIRECT_CASE=${selectedCaseNumber}, NC_DIRECT_C3_SUBCASE=${selectedC3Subcase}): subcenário executado [${selectedC3Subcase}] em [${execLabels}] | demais 10 subcenários e ${summary.skippedBlocks.length} blocos ignorados de ${TOTAL_BLOCKS} em ${summary.durationMs}ms — test-direct.`
+    );
+  } else if (selectedCaseNumber !== null) {
     const execLabels = summary.executedBlocks.map((b) => `${b.index} (${b.name})`).join(', ');
     console.log(
       `\n🎉 Sucesso PARCIAL (filtro NC_DIRECT_CASE=${selectedCaseNumber}): bloco executado [${execLabels}] | ${summary.skippedBlocks.length} ignorados (${summary.skippedBlocks.join(', ')}) de ${TOTAL_BLOCKS} em ${summary.durationMs}ms — test-direct.`
