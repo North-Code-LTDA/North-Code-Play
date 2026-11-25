@@ -1,9 +1,18 @@
 import assert from 'node:assert';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { XtreamCredentials } from '../src/types';
 import { createDomTestEnv } from './helpers/domEnv';
+import {
+  runEssentialTrackAndSecurityTests,
+  runWhitePaletteAndControlsIntegrationTests,
+} from './direct/player';
+import {
+  runLiveTvFullscreenAndPreviewTransitionTests,
+  runCycle1230dLiveTvLatencyAndFullscreenTests,
+} from './direct/live-player';
+import { runDeliveryC21CatalogCleanupAndRegressionTests } from './direct/api-transport';
+import { runDeliveryC22NativeCleanupAndPreparationTests } from './direct/android-prepare';
 
 const TOTAL_BLOCKS = 13;
 
@@ -402,17 +411,76 @@ function restoreHlsMock() {
   nextHlsInitialTracks = {};
 }
 
-env.registerCleanup(() => {
-  restoreHlsMock();
-  customFetchResponder = null;
-  clearAllBackHandlersForTest();
-  clearFocusMemory();
-  invalidateCandidateCache();
-  setAndroidPlatformOverrideForDpadTest(null);
-  setAndroidCatalogFileAdapterTestOverride({ plugin: null, convertFileSrc: null });
-  setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null, androidCatalogPluginAvailable: null });
-  setCatalogTransferPhaseActiveForImageCache(false);
-  clearHeroSessionCache();
+const hlsMockControl = {
+  enable: enableDeterministicHlsMock,
+  restore: restoreHlsMock,
+  getActiveControllers: () => activeHlsControllers,
+  setNextInitialTracks: (tracks: {
+    audioTracks?: any[];
+    subtitleTracks?: any[];
+    audioTrack?: number;
+    subtitleTrack?: number;
+  }) => {
+    nextHlsInitialTracks = tracks;
+  },
+};
+
+async function runSharedStateResetSteps(): Promise<Error[]> {
+  const errors: Error[] = [];
+  const steps: Array<{ label: string; run: () => void | Promise<void> }> = [
+    { label: 'restoreHlsMock', run: () => restoreHlsMock() },
+    {
+      label: 'customFetchResponder',
+      run: () => {
+        customFetchResponder = null;
+      },
+    },
+    { label: 'clearAllBackHandlersForTest', run: () => clearAllBackHandlersForTest() },
+    { label: 'clearFocusMemory', run: () => clearFocusMemory() },
+    { label: 'invalidateCandidateCache', run: () => invalidateCandidateCache() },
+    {
+      label: 'setAndroidPlatformOverrideForDpadTest',
+      run: () => setAndroidPlatformOverrideForDpadTest(null),
+    },
+    {
+      label: 'setAndroidCatalogFileAdapterTestOverride',
+      run: () => setAndroidCatalogFileAdapterTestOverride({ plugin: null, convertFileSrc: null }),
+    },
+    {
+      label: 'setTransportTestConfig',
+      run: () =>
+        setTransportTestConfig({
+          mode: 'auto',
+          capacitorHttpGet: null,
+          androidCatalogPluginAvailable: null,
+        }),
+    },
+    {
+      label: 'setCatalogTransferPhaseActiveForImageCache',
+      run: () => setCatalogTransferPhaseActiveForImageCache(false),
+    },
+    { label: 'clearHeroSessionCache', run: () => clearHeroSessionCache() },
+  ];
+
+  for (const step of steps) {
+    try {
+      await step.run();
+    } catch (err) {
+      errors.push(
+        err instanceof Error
+          ? err
+          : new Error(`Falha ao resetar estado compartilhado (${step.label}): ${String(err)}`)
+      );
+    }
+  }
+  return errors;
+}
+
+env.registerCleanup(async () => {
+  const resetErrors = await runSharedStateResetSteps();
+  if (resetErrors.length > 0) {
+    throw resetErrors[0];
+  }
 });
 
 interface TestDomCallMetrics {
@@ -537,476 +605,8 @@ function measureDomCallsSync<T>(
 
 
 
-// ============================================================================
-// 1. TESTES ESSENCIAIS DE REGRESSÃO (LEGENDAS, ÁUDIO E SEGURANÇA — CICLO 12.29-a)
-// ============================================================================
-function runEssentialTrackAndSecurityTests(): void {
-  console.log('--- 1. Regressão Essencial: Utilitários de Legendas, Áudio e Segurança ---');
-
-  const rawMovieUrl = 'http://my-provider.tv:8080/movie/userSecret123/passSecret456/98765.mp4';
-  const redactedMovie = redactStreamUrlCredentials(rawMovieUrl);
-  assert(!redactedMovie.includes('userSecret123') && !redactedMovie.includes('passSecret456'));
-
-  assert.strictEqual(
-    formatMediaTrackLabel({
-      rawName: 'Português',
-      lang: 'pt-BR',
-      fallbackPrefix: 'Áudio',
-      index: 0,
-      channels: '6',
-    }),
-    'Português (Português (Brasil)) · 5.1'
-  );
-
-  const convertedVtt = convertSrtToWebVtt('1\r\n00:00:01,250 --> 00:00:04,500\r\nOlá!\r\n');
-  assert(convertedVtt.startsWith('WEBVTT\n\n') && convertedVtt.includes('00:00:01.250 --> 00:00:04.500'));
-
-  const extractedSubs = extractXtreamSubtitles(
-    {
-      info: {
-        subtitles: [
-          { url: 'http://cdn.server.tv/subs/movie_pt.srt', lang: 'pt-BR' },
-          { url: 'http://cdn.server.tv/subs/bitmap.pgs', lang: 'fr' },
-        ],
-      },
-    },
-    'http://cdn.server.tv'
-  );
-  assert.strictEqual(extractedSubs.length, 1);
-
-  console.log('✅ Utilitários de legendas, áudio e segurança validados!');
-}
-
-// ============================================================================
-// 2. CICLO 12.29-b.1 — PARTE A: TV AO VIVO (PREVIEW COMPACTO vs FULLSCREEN NATIVO
-//    E VISUAL EXPANDIDO + RETORNO SEM REINICIAR REPRODUÇÃO)
-// ============================================================================
-async function runLiveTvFullscreenAndPreviewTransitionTests(): Promise<void> {
-  console.log('--- 2. TV ao Vivo: Preview Compacto -> Fullscreen Nativo / Visual -> Retorno sem Reiniciar ---');
-
-  enableDeterministicHlsMock();
-  nextHlsInitialTracks = {
-    audioTracks: [{ id: 0, name: 'Português', lang: 'pt-BR', default: true }],
-    subtitleTracks: [],
-    audioTrack: 0,
-    subtitleTrack: -1,
-  };
-
-  const doc: Document = windowInstance.document as unknown as Document;
-  setNavMode('remote');
-  clearAllBackHandlersForTest();
-
-  const tracked = env.createTrackedRoot();
-  const container = tracked.host;
-  const root = tracked.root;
-
-  try {
-    let previewBackCalled = 0;
-    await act(async () => {
-      root.render(
-        React.createElement(VideoPlayer, {
-          streamUrl: 'http://server.tv:8080/live/user/pass/501.m3u8',
-          title: 'SporTV HD',
-          channelName: 'SporTV HD',
-          programTitle: 'Campeonato Brasileiro Ao Vivo',
-          contentType: 'live',
-          streamId: 501,
-          embedded: true,
-          disableEmbeddedControlsFocus: true,
-          onBack: () => {
-            previewBackCalled++;
-          },
-        })
-      );
-      await new Promise((r) => setTimeout(r, 20));
-    });
-
-    const playerContainer = doc.querySelector<HTMLElement>('[data-player-container="true"]')!;
-    const initialVideoEl = doc.querySelector<HTMLVideoElement>('video')!;
-    assert(playerContainer && initialVideoEl, 'Container e elemento <video> devem existir');
-    assert.strictEqual(
-      activeHlsControllers.length,
-      1,
-      'Deve haver exatamente 1 instância HLS criada para o canal'
-    );
-
-    // Verificação 1: embedded=true com preview normal usa controles compactos
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'compact-preview',
-      'Preview normal da TV ao Vivo deve usar apresentação compact-preview'
-    );
-    assert.strictEqual(
-      doc.querySelector('[data-player-center-title="true"]') === null,
-      true,
-      'No modo compact-preview não deve renderizar a barra centralizada de tela cheia'
-    );
-
-    // Verificação 2: Simular entrada em fullscreen nativo (isFullscreen=true, isVisuallyExpanded=false)
-    let currentFsElement: Element | null = null;
-    Object.defineProperty(doc, 'fullscreenElement', {
-      get: () => currentFsElement,
-      configurable: true,
-    });
-    (playerContainer as any).requestFullscreen = async () => {
-      currentFsElement = playerContainer;
-      doc.dispatchEvent(new Event('fullscreenchange'));
-    };
-    (doc as any).exitFullscreen = async () => {
-      currentFsElement = null;
-      doc.dispatchEvent(new Event('fullscreenchange'));
-    };
-
-    const fsBtnInPreview = doc.querySelector<HTMLButtonElement>(
-      'button[data-player-control="fullscreen"]'
-    )!;
-    await act(async () => {
-      fsBtnInPreview.click();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'full-layer',
-      'Em fullscreen nativo (mesmo com isVisuallyExpanded=false), o player de TV ao Vivo DEVE passar para full-layer'
-    );
-    const centerTitleInNativeFs = doc.querySelector<HTMLElement>('[data-player-center-title="true"]');
-    assert(
-      centerTitleInNativeFs,
-      'Em fullscreen nativo na TV ao Vivo, os controles devem usar o layout modernizado com título centralizado'
-    );
-    assert(
-      centerTitleInNativeFs.textContent?.includes('SporTV HD') &&
-        centerTitleInNativeFs.textContent?.includes('Campeonato Brasileiro Ao Vivo'),
-      `Título centralizado em fullscreen deve exibir canal e programa atual. Obtido: ${centerTitleInNativeFs.textContent}`
-    );
-
-    // Verificação 5: TV ao Vivo em fullscreen NÃO apresenta velocidade nem avanço/retrocesso de 10s
-    assert.strictEqual(
-      doc.querySelector('button[data-player-control="speed"]') === null,
-      true,
-      'TV ao Vivo em tela cheia NÃO deve exibir botão de Velocidade'
-    );
-    assert.strictEqual(
-      doc.querySelector('button[data-player-control="seek-back"]') === null,
-      true,
-      'TV ao Vivo sem suporte de seeking NÃO deve exibir botão Retroceder 10s'
-    );
-    assert.strictEqual(
-      doc.querySelector('button[data-player-control="seek-forward"]') === null,
-      true,
-      'TV ao Vivo sem suporte de seeking NÃO deve exibir botão Avançar 10s'
-    );
-    assert(
-      doc.querySelector('button[data-player-control="audio-subtitles"]'),
-      'TV ao Vivo em tela cheia deve exibir botão de Áudio e Legendas'
-    );
-
-    // Verificação 4: Sair de fullscreen com Voltar restaura o preview compacto sem reiniciar o vídeo nem fechar o canal
-    await act(async () => {
-      executeBackAction();
-      await new Promise((r) => setTimeout(r, 25));
-    });
-
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'compact-preview',
-      'Ao sair de fullscreen nativo, deve restaurar os controles compactos do preview'
-    );
-    assert.strictEqual(
-      doc.querySelector('video') === initialVideoEl,
-      true,
-      'O elemento <video> não deve ser desmontado nem recriado ao alternar entre preview e fullscreen'
-    );
-    assert.strictEqual(
-      activeHlsControllers.length,
-      1,
-      'A sessão de reprodução HLS não deve ser reiniciada ao sair de fullscreen para o preview'
-    );
-    assert.strictEqual(
-      previewBackCalled,
-      0,
-      'Sair de fullscreen para o preview NÃO deve fechar o canal selecionado'
-    );
-
-    // Verificação 3: Simular expansão visual alternativa (quando requestFullscreen falha -> isVisuallyExpanded=true)
-    delete (playerContainer as any).requestFullscreen;
-    const fsBtnAgain = doc.querySelector<HTMLButtonElement>(
-      'button[data-player-control="fullscreen"]'
-    )!;
-    await act(async () => {
-      fsBtnAgain.click();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'full-layer',
-      'Expansão visual alternativa (isVisuallyExpanded=true) também deve renderizar o layout modernizado full-layer'
-    );
-    assert(
-      doc.querySelector('[data-player-center-title="true"]'),
-      'Expansão visual alternativa deve exibir o título centralizado na barra inferior'
-    );
-
-    // Sair da expansão visual alternativa via botão Voltar do topo
-    const topBackBtn = doc.querySelector<HTMLButtonElement>('button[data-player-control="back"]')!;
-    await act(async () => {
-      topBackBtn.click();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'compact-preview',
-      'Sair da expansão visual alternativa deve restaurar o preview compacto'
-    );
-    assert.strictEqual(
-      activeHlsControllers.length,
-      1,
-      'Nenhuma reinicialização do motor HLS deve ocorrer após sair da expansão visual'
-    );
-  } finally {
-    delete (doc as any).fullscreenElement;
-    delete (doc as any).exitFullscreen;
-    clearAllBackHandlersForTest();
-    await tracked.unmount();
-    restoreHlsMock();
-  }
-
-  console.log('✅ TV ao Vivo (preview compacto, fullscreen nativo, expansão visual e retorno intacto) validada!');
-}
-
-// ============================================================================
-// 3. CICLO 12.29-b.1 — PARTE B E C: PADRONIZAÇÃO BRANCA, FILMES, SÉRIES,
-//    SUBMENUS DIRETOS E FOCO D-PAD / VOLTAR
-// ============================================================================
-async function runWhitePaletteAndControlsIntegrationTests(): Promise<void> {
-  console.log('--- 3. Identidade Visual Branca, Filmes, Séries, Submenus e Foco D-Pad/Voltar ---');
-
-  enableDeterministicHlsMock();
-  nextHlsInitialTracks = {
-    audioTracks: [
-      { id: 0, name: 'Português', lang: 'pt-BR', default: true },
-      { id: 1, name: 'Original', lang: 'en', default: false },
-    ],
-    subtitleTracks: [{ id: 0, name: 'Português', lang: 'pt-BR', forced: false }],
-    audioTrack: 0,
-    subtitleTrack: 0,
-  };
-
-  const doc: Document = windowInstance.document as unknown as Document;
-  (doc as any).pictureInPictureEnabled = true;
-  setNavMode('remote');
-  clearAllBackHandlersForTest();
-
-  const tracked = env.createTrackedRoot();
-  const container = tracked.host;
-  const root = tracked.root;
-
-  const origXtreamMethods = {
-    authenticate: XtreamService.authenticate,
-    getLiveCategories: XtreamService.getLiveCategories,
-    getVodCategories: XtreamService.getVodCategories,
-    getSeriesCategories: XtreamService.getSeriesCategories,
-    getLiveStreams: XtreamService.getLiveStreams,
-    getVodStreams: XtreamService.getVodStreams,
-    getSeries: XtreamService.getSeries,
-    getShortEpg: XtreamService.getShortEpg,
-  };
-
-  try {
-    // Renderizar Série com carregando ativo inicialmente para inspecionar spinner, progresso, thumb, volume e indicador de legenda
-    await act(async () => {
-      root.render(
-        React.createElement(VideoPlayer, {
-          streamUrl: 'http://server.tv:8080/series/user/pass/3001.m3u8',
-          title: 'Luna Nera - S1E1',
-          programTitle: 'Presságio',
-          contentType: 'episode',
-          isLoading: true,
-          onBack: () => {},
-          onNext: () => {},
-          onPrevious: () => {},
-        })
-      );
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 25));
-    });
-
-    const playerRoot = doc.querySelector<HTMLElement>('[data-player-container="true"]')!;
-    const htmlSnapshot = playerRoot.innerHTML;
-    assert(
-      !htmlSnapshot.includes('#E50914') && !htmlSnapshot.includes('e50914'),
-      'Nenhum valor vermelho decorativo (#E50914) deve existir na marcação do player'
-    );
-
-    const progressBar = doc.querySelector<HTMLElement>('[data-player-progress-bar="true"]')!;
-    const timelineThumb = doc.querySelector<HTMLElement>('[data-player-timeline-thumb="true"]')!;
-    const spinner = doc.querySelector<HTMLElement>('[data-player-spinner="true"]')!;
-    const volumeSlider = doc.querySelector<HTMLElement>(
-      'input[data-player-control="volume-slider"]'
-    )!;
-    const subActiveDot = doc.querySelector<HTMLElement>(
-      '[data-player-subtitles-active-dot="true"]'
-    )!;
-
-    assert(progressBar.className.includes('bg-nc-primary'), 'Barra de progresso deve usar bg-nc-primary (branco)');
-    assert(timelineThumb.className.includes('bg-nc-primary'), 'Marcador circular deve usar bg-nc-primary (branco)');
-    assert(spinner.className.includes('border-nc-primary'), 'Spinner de carregamento deve usar border-nc-primary (branco)');
-    assert(
-      volumeSlider.className.includes('accent-nc-primary') &&
-        volumeSlider.className.includes('nc-player-volume-slider'),
-      'Slider de volume deve usar accent-nc-primary e nc-player-volume-slider (branco)'
-    );
-    assert(
-      subActiveDot.className.includes('bg-nc-primary'),
-      'Indicador de legenda ativa deve usar bg-nc-primary (branco)'
-    );
-
-    // Verificar estrutura responsiva .nc-player-bottom-layout com grupos left, title-cell e right
-    const bottomRow = doc.querySelector<HTMLElement>('[data-nav-row="player-bottom"]')!;
-    assert(
-      bottomRow.className.includes('nc-player-bottom-layout'),
-      'Fileira inferior deve usar a classe responsiva nc-player-bottom-layout'
-    );
-    assert(
-      bottomRow.querySelector('.nc-player-title-cell[data-player-center-title="true"]'),
-      'Célula do título deve usar nc-player-title-cell'
-    );
-    assert(
-      bottomRow.querySelector('.nc-player-left-group[data-player-group="left"]'),
-      'Grupo esquerdo deve usar nc-player-left-group'
-    );
-    assert(
-      bottomRow.querySelector('.nc-player-right-group[data-player-group="right"]'),
-      'Grupo direito deve usar nc-player-right-group'
-    );
-
-    // Testar abertura direta de Áudio e Legendas + Velocidade e restauração de foco com Voltar
-    const audioSubBtn = doc.querySelector<HTMLButtonElement>(
-      'button[data-player-control="audio-subtitles"]'
-    )!;
-    await act(async () => {
-      audioSubBtn.click();
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
-
-    const settingsMenu = doc.querySelector<HTMLElement>('[data-player-settings-menu="true"]');
-    assert(settingsMenu, 'Menu deve abrir ao clicar em Áudio e Legendas');
-    assert.strictEqual(settingsMenu.getAttribute('data-active-submenu'), 'subtitles');
-
-    await act(async () => {
-      executeBackAction();
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    assert.strictEqual(
-      doc.querySelector('[data-player-settings-menu="true"]') === null,
-      true,
-      'Menu deve fechar ao pressionar Voltar'
-    );
-    assert.strictEqual(
-      doc.activeElement === doc.querySelector('button[data-player-control="audio-subtitles"]'),
-      true,
-      'Voltar deve devolver o foco exatamente para o botão Áudio e Legendas'
-    );
-
-    const speedBtn = doc.querySelector<HTMLButtonElement>('button[data-player-control="speed"]')!;
-    await act(async () => {
-      speedBtn.click();
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    assert.strictEqual(
-      doc.querySelector('[data-player-settings-menu="true"]')?.getAttribute('data-active-submenu'),
-      'speed'
-    );
-
-    await act(async () => {
-      executeBackAction();
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    assert.strictEqual(
-      doc.activeElement === doc.querySelector('button[data-player-control="speed"]'),
-      true,
-      'Voltar deve devolver o foco exatamente para o botão Velocidade'
-    );
-
-    // Fechar o VideoPlayer antes de montar LiveTvView e restaurar o mock HLS
-    await act(async () => {
-      root.render(null);
-    });
-    restoreHlsMock();
-
-    // Regressão essencial da página LiveTvView completa
-    const testCreds: XtreamCredentials = {
-      serverUrl: 'http://provider.tv:8080',
-      username: 'u',
-      password: 'p',
-    };
-    (XtreamService as any).authenticate = async () => ({
-      user_info: { auth: 1, status: 'Active' },
-      server_info: {},
-    });
-    (XtreamService as any).getLiveCategories = async () => [
-      { category_id: '10', category_name: 'Esportes' },
-    ];
-    (XtreamService as any).getVodCategories = async () => [];
-    (XtreamService as any).getSeriesCategories = async () => [];
-    (XtreamService as any).getLiveStreams = async () => [
-      {
-        stream_id: 501,
-        name: 'SporTV HD',
-        category_id: '10',
-        stream_icon: '',
-      },
-    ];
-    (XtreamService as any).getVodStreams = async () => [];
-    (XtreamService as any).getSeries = async () => [];
-    (XtreamService as any).getShortEpg = async () => ({ epg_listings: [] });
-
-    await act(async () => {
-      root.render(
-        React.createElement(
-          XtreamProvider,
-          { credentials: testCreds },
-          React.createElement(LiveTvView, {
-            searchQuery: '',
-          })
-        )
-      );
-    });
-
-    for (let attempt = 0; attempt < 10; attempt++) {
-      if (doc.querySelector('[data-live-channel-id="501"]')) {
-        break;
-      }
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 15));
-      });
-    }
-
-    assert(
-      doc.querySelector('[data-live-channel-id="501"]'),
-      'LiveTvView deve renderizar cartões de canais sem regressão'
-    );
-  } finally {
-    Object.assign(XtreamService, origXtreamMethods);
-    clearAllBackHandlersForTest();
-    await tracked.unmount();
-    restoreHlsMock();
-  }
-
-  console.log('✅ Identidade visual branca, controles responsivos, submenus e foco validados!');
-}
+// Blocos 1 e 3 extraídos para scripts/direct/player.ts
+// Bloco 2 extraído para scripts/direct/live-player.ts
 
 // ============================================================================
 // 4. CICLO 12.30-b — OTIMIZAÇÃO CIRÚRGICA DA NAVEGAÇÃO D-PAD EM MOVIMENTOS RÁPIDOS
@@ -2046,673 +1646,7 @@ async function runCycle1230cVerticalNavOptimizationTests(): Promise<void> {
   console.log('✅ Ciclo 12.30-c (caminho rápido vertical D-Pad, fileiras, grades virtualizadas, alinhamento visual e fallbacks) validado!');
 }
 
-// ============================================================================
-// 6. CICLO 12.30-d — REDUÇÃO DA LATÊNCIA NA TV AO VIVO E ENTRADA IMEDIATA EM TELA CHEIA
-// ============================================================================
-async function runCycle1230dLiveTvLatencyAndFullscreenTests(): Promise<void> {
-  console.log(
-    '--- 6. Ciclo 12.30-d: TV ao Vivo sem Re-render Global no Foco, Virtualização e 2º OK Imediato em Tela Cheia ---'
-  );
-
-  enableDeterministicHlsMock();
-  nextHlsInitialTracks = {
-    audioTracks: [{ id: 0, name: 'Português', lang: 'pt-BR', default: true }],
-    subtitleTracks: [],
-    audioTrack: 0,
-    subtitleTrack: -1,
-  };
-
-  const doc: Document = windowInstance.document as unknown as Document;
-  const origInnerWidth = windowInstance.innerWidth;
-  (windowInstance as any).innerWidth = 1280;
-  setNavMode('remote');
-  clearAllBackHandlersForTest();
-  clearFocusMemory();
-  setFastHorizontalRowNavEnabledForTest(true);
-  setFastVerticalNavEnabledForTest(true);
-
-  const origXtreamMethods = {
-    authenticate: XtreamService.authenticate,
-    getLiveCategories: XtreamService.getLiveCategories,
-    getVodCategories: XtreamService.getVodCategories,
-    getSeriesCategories: XtreamService.getSeriesCategories,
-    getLiveStreams: XtreamService.getLiveStreams,
-    getVodStreams: XtreamService.getVodStreams,
-    getSeries: XtreamService.getSeries,
-    getShortEpg: XtreamService.getShortEpg,
-  };
-
-  const tracked = env.createTrackedRoot();
-  const container = tracked.host;
-  const root = tracked.root;
-
-  const testCreds: XtreamCredentials = {
-    serverUrl: 'http://provider.tv:8080',
-    username: 'u',
-    password: 'p',
-  };
-
-  try {
-    // Configurar 4 categorias (Categoria 10 com 32 canais para exercitar virtualização horizontal > 24)
-    (XtreamService as any).authenticate = async () => ({
-      user_info: { auth: 1, status: 'Active' },
-      server_info: {},
-    });
-    (XtreamService as any).getLiveCategories = async () => [
-      { category_id: '10', category_name: 'Esportes' },
-      { category_id: '20', category_name: 'Notícias' },
-      { category_id: '30', category_name: 'Filmes e Séries' },
-      { category_id: '40', category_name: 'Documentários' },
-    ];
-    (XtreamService as any).getVodCategories = async () => [];
-    (XtreamService as any).getSeriesCategories = async () => [];
-
-    const sportsStreams = Array.from({ length: 32 }, (_, i) => ({
-      stream_id: 1000 + i,
-      name: `Canal Esporte ${i + 1} HD`,
-      category_id: '10',
-      stream_icon: '',
-    }));
-    const newsStreams = Array.from({ length: 8 }, (_, i) => ({
-      stream_id: 2000 + i,
-      name: `Canal Notícia ${i + 1} HD`,
-      category_id: '20',
-      stream_icon: '',
-    }));
-    const movieStreams = Array.from({ length: 8 }, (_, i) => ({
-      stream_id: 3000 + i,
-      name: `Canal Cinema ${i + 1} HD`,
-      category_id: '30',
-      stream_icon: '',
-    }));
-    const docStreams = Array.from({ length: 8 }, (_, i) => ({
-      stream_id: 4000 + i,
-      name: `Canal Doc ${i + 1} HD`,
-      category_id: '40',
-      stream_icon: '',
-    }));
-
-    (XtreamService as any).getLiveStreams = async () => [
-      ...sportsStreams,
-      ...newsStreams,
-      ...movieStreams,
-      ...docStreams,
-    ];
-    (XtreamService as any).getVodStreams = async () => [];
-    (XtreamService as any).getSeries = async () => [];
-
-    const nowSec = Math.floor(Date.now() / 1000);
-    (XtreamService as any).getShortEpg = async () => ({
-      epg_listings: [
-        {
-          id: 'epg-1',
-          title: Buffer.from('Grande Final Ao Vivo', 'utf-8').toString('base64'),
-          description: Buffer.from('Transmissão exclusiva em alta definição', 'utf-8').toString('base64'),
-          start_timestamp: String(nowSec - 600),
-          stop_timestamp: String(nowSec + 3000),
-        },
-        {
-          id: 'epg-2',
-          title: Buffer.from('Pós-Jogo Especial', 'utf-8').toString('base64'),
-          description: Buffer.from('Análise completa da rodada', 'utf-8').toString('base64'),
-          start_timestamp: String(nowSec + 3000),
-          stop_timestamp: String(nowSec + 6600),
-        },
-      ],
-    });
-
-    await act(async () => {
-      root.render(
-        React.createElement(
-          XtreamProvider,
-          { credentials: testCreds },
-          React.createElement(LiveTvView, {
-            searchQuery: '',
-          })
-        )
-      );
-    });
-
-    for (let attempt = 0; attempt < 15; attempt++) {
-      if (doc.querySelector('button[data-live-channel-id="1000"]')) {
-        break;
-      }
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 15));
-      });
-    }
-
-    const ch1000Btn = doc.querySelector<HTMLButtonElement>('button[data-live-channel-id="1000"]')!;
-    assert(ch1000Btn, 'Canal inicial 1000 deve estar montado');
-
-    // -------------------------------------------------------------------------
-    // 6.1. Primeiro OK inicia o preview compacto sem solicitar fullscreen
-    // -------------------------------------------------------------------------
-    await act(async () => {
-      focusElementSafely(ch1000Btn);
-      ch1000Btn.click();
-      await new Promise((r) => setTimeout(r, 25));
-    });
-
-    const playerContainer = doc.querySelector<HTMLElement>('[data-player-container="true"]')!;
-    const initialVideoEl = doc.querySelector<HTMLVideoElement>('video')!;
-    assert(playerContainer && initialVideoEl, '1º OK deve montar o VideoPlayer no painel de preview');
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'compact-preview',
-      '1º OK deve iniciar o player em modo compact-preview'
-    );
-    assert.strictEqual(
-      activeHlsControllers.length,
-      1,
-      '1º OK deve iniciar exatamente 1 sessão HLS'
-    );
-
-    // Simular vídeo em reprodução ativa no preview
-    let pauseCallsWhilePending = 0;
-    const origPause = initialVideoEl.pause?.bind(initialVideoEl);
-    (initialVideoEl as any).pause = () => {
-      pauseCallsWhilePending++;
-      if (origPause) origPause();
-    };
-    await act(async () => {
-      initialVideoEl.dispatchEvent(new Event('play'));
-      initialVideoEl.dispatchEvent(new Event('playing'));
-      await new Promise((r) => setTimeout(r, 15));
-    });
-
-    // -------------------------------------------------------------------------
-    // 6.2. Foco rápido entre canais (horizontal e vertical) com preview e EPG
-    //      ativos NÃO provoca re-render de LiveTvView, LiveCategoryRow,
-    //      painel de preview ou seção de EPG
-    // -------------------------------------------------------------------------
-    const showcaseRowsContainer = doc.querySelector<HTMLElement>(
-      '[data-showcase-rows-container="true"]'
-    )!;
-    assert(showcaseRowsContainer, 'Contêiner de fileiras da TV ao Vivo deve existir');
-
-    // Após o 1º OK iniciar a reprodução, a fileira "Assistidos Recentemente" ocupa o índice 0
-    // e a categoria "Esportes" (categoryId="10") passa a ocupar o índice 1.
-    const sportsRowEl = ch1000Btn.closest<HTMLElement>('[data-home-row-index]')!;
-    const sportsRowIndex = sportsRowEl.getAttribute('data-home-row-index') || '1';
-
-    await act(async () => {
-      focusElementSafely(ch1000Btn);
-    });
-    assert.strictEqual(doc.activeElement, ch1000Btn);
-    assert.strictEqual(ch1000Btn.getAttribute('data-live-channel-origin'), 'true');
-
-    // Observar estabilidade DOM do painel direito e da grade de EPG via MutationObserver local de teste
-    const rightPaneEl = doc.querySelector<HTMLElement>('[data-nav-zone="content"]')!;
-    const epgSectionEl = doc.querySelector<HTMLElement>('[data-live-epg-section="true"]')!;
-    assert(rightPaneEl && epgSectionEl, 'Painel direito e seção de EPG devem estar montados');
-    const initialRightPaneHtml = rightPaneEl.innerHTML;
-    const initialEpgHtml = epgSectionEl.innerHTML;
-    let rightPaneMutations = 0;
-    let epgMutations = 0;
-    const rightPaneObserver = new windowInstance.MutationObserver((records: any[]) => {
-      rightPaneMutations += records.length;
-    });
-    const epgObserver = new windowInstance.MutationObserver((records: any[]) => {
-      epgMutations += records.length;
-    });
-    rightPaneObserver.observe(rightPaneEl as any, { childList: true, subtree: true, attributes: true, characterData: true });
-    epgObserver.observe(epgSectionEl as any, { childList: true, subtree: true, attributes: true, characterData: true });
-
-    // Navegar horizontalmente por 4 canais na fileira Esportes (1000 -> 1001 -> 1002 -> 1003 -> 1004)
-    // e verticalmente entre categorias (Esportes -> Notícias -> Filmes -> voltar a Esportes)
-    const expectedNextRow1 = String(Number(sportsRowIndex) + 1);
-    const expectedNextRow2 = String(Number(sportsRowIndex) + 2);
-
-    try {
-      await act(async () => {
-        for (let step = 1; step <= 4; step++) {
-          moveSpatialFocus('right');
-          const expectedId = String(1000 + step);
-          const activeBtn = doc.activeElement as HTMLElement | null;
-          assert.strictEqual(
-            activeBtn?.getAttribute('data-live-channel-id'),
-            expectedId,
-            `Passo horizontal ${step} deve focar o canal ${expectedId}`
-          );
-          assert.strictEqual(
-            activeBtn?.getAttribute('data-live-channel-origin'),
-            'true',
-            `Canal focado ${expectedId} deve receber data-live-channel-origin="true"`
-          );
-          assert.strictEqual(
-            showcaseRowsContainer.getAttribute('data-live-origin-row-index'),
-            sportsRowIndex,
-            `data-live-origin-row-index deve permanecer ${sportsRowIndex} na fileira Esportes`
-          );
-          assert.strictEqual(
-            showcaseRowsContainer.getAttribute('data-live-origin-card-index'),
-            String(step),
-            `data-live-origin-card-index deve atualizar para ${step}`
-          );
-          assert.strictEqual(
-            doc.querySelectorAll('button[data-live-channel-origin="true"]').length,
-            1,
-            'Deve existir exatamente 1 botão com data-live-channel-origin="true"'
-          );
-        }
-
-        moveSpatialFocus('down');
-        assert.strictEqual(
-          showcaseRowsContainer.getAttribute('data-live-origin-row-index'),
-          expectedNextRow1,
-          `ArrowDown para a próxima categoria deve atualizar data-live-origin-row-index para ${expectedNextRow1}`
-        );
-
-        moveSpatialFocus('down');
-        assert.strictEqual(
-          showcaseRowsContainer.getAttribute('data-live-origin-row-index'),
-          expectedNextRow2,
-          `ArrowDown para a categoria seguinte deve atualizar data-live-origin-row-index para ${expectedNextRow2}`
-        );
-
-        moveSpatialFocus('up');
-        moveSpatialFocus('up');
-        assert.strictEqual(
-          showcaseRowsContainer.getAttribute('data-live-origin-row-index'),
-          sportsRowIndex,
-          `ArrowUp de volta à categoria Esportes deve atualizar data-live-origin-row-index para ${sportsRowIndex}`
-        );
-      });
-    } finally {
-      rightPaneObserver.disconnect();
-      epgObserver.disconnect();
-    }
-
-    assert.strictEqual(
-      rightPaneMutations,
-      0,
-      `Mudança de foco entre canais NÃO deve mutar o DOM do painel direito de preview (mutações=${rightPaneMutations})`
-    );
-    assert.strictEqual(
-      epgMutations,
-      0,
-      `Mudança de foco entre canais NÃO deve mutar o DOM da grade de EPG (mutações=${epgMutations})`
-    );
-    assert.strictEqual(
-      doc.querySelector('[data-nav-zone="content"]'),
-      rightPaneEl,
-      'Instância DOM do painel direito deve permanecer intacta durante navegação de foco'
-    );
-    assert.strictEqual(
-      doc.querySelector('[data-live-epg-section="true"]'),
-      epgSectionEl,
-      'Instância DOM da seção de EPG deve permanecer intacta durante navegação de foco'
-    );
-    assert.strictEqual(
-      rightPaneEl.innerHTML,
-      initialRightPaneHtml,
-      'Conteúdo do painel direito deve permanecer inalterado durante mudança de foco entre canais'
-    );
-    assert.strictEqual(
-      epgSectionEl.innerHTML,
-      initialEpgHtml,
-      'Conteúdo da grade de EPG deve permanecer inalterado durante mudança de foco entre canais'
-    );
-    assert.strictEqual(
-      activeHlsControllers.length,
-      1,
-      'Navegação entre canais com preview ativo deve manter a mesma sessão HLS intacta'
-    );
-
-    // -------------------------------------------------------------------------
-    // 6.3. Foco e restauração após virtualização horizontal de cartões
-    // -------------------------------------------------------------------------
-    const currentCardIdx = parseInt(
-      (doc.activeElement as HTMLElement)?.getAttribute('data-row-card-index') || '0',
-      10
-    );
-    // 1ª etapa: avançar até a borda da janela inicial (índice 18) para expandir a janela virtualizada para [12..30)
-    await act(async () => {
-      for (let idx = currentCardIdx; idx < 18; idx++) {
-        moveSpatialFocus('right');
-      }
-    });
-    // 2ª etapa: avançar pelos cartões recém-montados até o índice 28
-    await act(async () => {
-      const midIdx = parseInt(
-        (doc.activeElement as HTMLElement)?.getAttribute('data-row-card-index') || '17',
-        10
-      );
-      for (let idx = midIdx; idx < 28; idx++) {
-        moveSpatialFocus('right');
-      }
-    });
-
-    const ch1028Btn = doc.querySelector<HTMLButtonElement>(
-      'button[data-live-channel-id="1028"][data-live-channel-category-id="10"]'
-    )!;
-    assert(ch1028Btn, 'Canal 1028 (índice 28) deve ser montado pela virtualização horizontal');
-    assert.strictEqual(doc.activeElement, ch1028Btn);
-    assert.strictEqual(ch1028Btn.getAttribute('data-live-channel-origin'), 'true');
-    assert.strictEqual(
-      showcaseRowsContainer.getAttribute('data-live-origin-row-index'),
-      sportsRowIndex
-    );
-    assert.strictEqual(showcaseRowsContainer.getAttribute('data-live-origin-card-index'), '28');
-
-    // Mover o foco para o painel direito (zona content - item EPG) e rolar a fileira Esportes
-    // de volta para scrollLeft = 0 para desmontar o cartão 28 pela virtualização
-    const epgPrimaryEl = doc.querySelector<HTMLElement>('[data-epg-primary="true"]')!;
-    assert(epgPrimaryEl, 'Item primário de EPG deve existir no painel direito');
-    const sportsRowScrollEl = doc.querySelector<HTMLElement>(
-      `[data-home-row-index="${sportsRowIndex}"] [data-live-category-row-scroll="true"]`
-    )!;
-
-    await act(async () => {
-      focusElementSafely(epgPrimaryEl);
-      sportsRowScrollEl.scrollLeft = 0;
-      sportsRowScrollEl.dispatchEvent(new Event('scroll'));
-    });
-    assert.strictEqual(doc.activeElement === epgPrimaryEl, true);
-    assert.strictEqual(
-      doc.querySelector('button[data-live-channel-id="1028"][data-live-channel-category-id="10"]'),
-      null,
-      'Canal 1028 deve ter sido desmontado ao rolar a janela virtual para o início'
-    );
-
-    // Pressionar ArrowLeft a partir da zona content deve remontar o índice 28 e restaurar o foco nele
-    await act(async () => {
-      moveSpatialFocus('left');
-    });
-    const remounted1028Btn = doc.querySelector<HTMLButtonElement>(
-      'button[data-live-channel-id="1028"][data-live-channel-category-id="10"]'
-    )!;
-    assert(remounted1028Btn, 'Retorno para categorias deve remontar o canal de origem 1028');
-    if (doc.activeElement !== remounted1028Btn) {
-      await act(async () => {
-        moveSpatialFocus('left');
-      });
-    }
-    const activeAfterLeft = doc.activeElement as HTMLElement | null;
-    assert.strictEqual(
-      activeAfterLeft === remounted1028Btn,
-      true,
-      `Foco deve ser restaurado exatamente no canal de origem 1028 após virtualização (active: ${activeAfterLeft?.tagName} id=${activeAfterLeft?.getAttribute?.('data-live-channel-id')})`
-    );
-    assert.strictEqual(
-      remounted1028Btn.getAttribute('data-live-channel-origin'),
-      'true',
-      'Atributo data-live-channel-origin="true" deve ser preservado após remontagem virtual'
-    );
-
-    // Voltar para o canal 1000 (que já está selecionado no preview) para testar o 2º OK
-    await act(async () => {
-      sportsRowScrollEl.scrollLeft = 0;
-      sportsRowScrollEl.dispatchEvent(new Event('scroll'));
-    });
-    const ch1000Again = doc.querySelector<HTMLButtonElement>(
-      'button[data-live-channel-id="1000"][data-live-channel-category-id="10"]'
-    )!;
-    assert(ch1000Again, 'Canal 1000 deve estar montado no início da fileira Esportes');
-    await act(async () => {
-      focusElementSafely(ch1000Again);
-    });
-
-    // -------------------------------------------------------------------------
-    // 6.4 e 6.5. Segundo OK solicita fullscreen IMEDIATAMENTE na ativação do
-    //            usuário + proteção contra OK repetido durante solicitação pendente
-    // -------------------------------------------------------------------------
-    let currentFsElement: Element | null = null;
-    Object.defineProperty(doc, 'fullscreenElement', {
-      get: () => currentFsElement,
-      configurable: true,
-    });
-
-    let fsRequestCount = 0;
-    let fsCalledSynchronouslyDuringClick = false;
-    let insideClickActivation = false;
-    let resolvePendingFs!: () => void;
-
-    (playerContainer as any).requestFullscreen = () => {
-      fsRequestCount++;
-      if (insideClickActivation) {
-        fsCalledSynchronouslyDuringClick = true;
-      }
-      return new Promise<void>((resolve) => {
-        resolvePendingFs = () => {
-          currentFsElement = playerContainer;
-          doc.dispatchEvent(new Event('fullscreenchange'));
-          resolve();
-        };
-      });
-    };
-    (doc as any).exitFullscreen = async () => {
-      currentFsElement = null;
-      doc.dispatchEvent(new Event('fullscreenchange'));
-    };
-
-    pauseCallsWhilePending = 0;
-    const epgHtmlBeforeSecondOk = epgSectionEl.innerHTML;
-    let epgMutationsOnSecondOk = 0;
-    const epgSecondOkObserver = new windowInstance.MutationObserver((records: any[]) => {
-      epgMutationsOnSecondOk += records.length;
-    });
-    epgSecondOkObserver.observe(epgSectionEl as any, { childList: true, subtree: true, attributes: true, characterData: true });
-
-    // Executar 2º OK no canal 1000 já selecionado
-    try {
-      await act(async () => {
-        insideClickActivation = true;
-        ch1000Again.click();
-        insideClickActivation = false;
-      });
-    } finally {
-      epgSecondOkObserver.disconnect();
-    }
-
-    assert.strictEqual(
-      fsCalledSynchronouslyDuringClick,
-      true,
-      '2º OK deve chamar container.requestFullscreen() sincronamente dentro do evento de ativação do usuário'
-    );
-    assert.strictEqual(
-      fsRequestCount,
-      1,
-      '2º OK deve disparar exatamente 1 solicitação de fullscreen'
-    );
-    assert.strictEqual(
-      epgMutationsOnSecondOk,
-      0,
-      '2º OK via comunicação direta por ref NÃO deve mutar a seção de EPG da tela'
-    );
-    assert.strictEqual(
-      epgSectionEl.innerHTML,
-      epgHtmlBeforeSecondOk,
-      'Conteúdo da grade de EPG deve permanecer intacto ao solicitar fullscreen via 2º OK'
-    );
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'full-layer',
-      'Enquanto a solicitação de fullscreen está pendente, o player já deve estar em full-layer sem tela intermediária'
-    );
-
-    // Disparar múltiplos comandos de OK enquanto a entrada em fullscreen ainda está pendente:
-    // 1) OK repetido no botão do canal
-    // 2) Controle play-pause NÃO deve existir no Live; interação inofensiva em controle existente (mute)
-    // 3) Clique no próprio container do player
-    assert.strictEqual(
-      doc.querySelector('button[data-player-control="play-pause"]'),
-      null,
-      'Botão play-pause não deve existir na reprodução TV ao Vivo (Live)'
-    );
-    const muteBtn = doc.querySelector<HTMLButtonElement>(
-      'button[data-player-control="mute"]'
-    )!;
-    assert(muteBtn, 'Controle de mudo em full-layer deve estar disponível');
-
-    await act(async () => {
-      ch1000Again.click();
-      ch1000Again.click();
-      muteBtn.click();
-      muteBtn.click();
-      playerContainer.click();
-    });
-
-    assert.strictEqual(
-      fsRequestCount,
-      1,
-      'OK repetido durante solicitação pendente NÃO deve iniciar uma segunda chamada a requestFullscreen'
-    );
-    assert.strictEqual(
-      pauseCallsWhilePending,
-      0,
-      'OK repetido durante entrada pendente em fullscreen NÃO deve pausar acidentalmente a reprodução'
-    );
-    assert.strictEqual(
-      activeHlsControllers.length,
-      1,
-      'OK repetido não deve reinicializar o stream HLS'
-    );
-    assert.strictEqual(
-      doc.querySelector('video') === initialVideoEl,
-      true,
-      'O elemento <video> não deve ser desmontado nem remontado'
-    );
-
-    // Concluir a promessa pendente do Fullscreen API
-    await act(async () => {
-      resolvePendingFs();
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'full-layer',
-      'Após resolução da Fullscreen API, o player deve permanecer em full-layer'
-    );
-    const expectedBackBtn = doc.querySelector('button[data-player-control="back"]');
-    const expectedSettingsBtn = doc.querySelector('button[data-player-control="settings"]');
-    assert.strictEqual(
-      doc.activeElement === expectedBackBtn || doc.activeElement === expectedSettingsBtn,
-      true,
-      `Ao entrar em tela cheia Live no modo controle remoto, o foco deve estar em back ou settings (active: ${(doc.activeElement as HTMLElement | null)?.tagName} control=${(doc.activeElement as HTMLElement | null)?.getAttribute?.('data-player-control')})`
-    );
-
-    // -------------------------------------------------------------------------
-    // 6.6. Saída da tela cheia preserva a sessão, reprodução e restaura o foco
-    // -------------------------------------------------------------------------
-    await act(async () => {
-      executeBackAction();
-      await new Promise((r) => setTimeout(r, 15));
-    });
-
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'compact-preview',
-      'Voltar a partir da tela cheia deve retornar ao modo compact-preview'
-    );
-    assert.strictEqual(
-      activeHlsControllers.length,
-      1,
-      'Sair da tela cheia deve preservar a mesma sessão HLS sem reiniciar'
-    );
-    assert.strictEqual(
-      doc.querySelector('video') === initialVideoEl,
-      true,
-      'Sair da tela cheia deve preservar a mesma instância do elemento <video>'
-    );
-    assert.strictEqual(
-      doc.activeElement === ch1000Again,
-      true,
-      `Sair da tela cheia na TV ao Vivo deve restaurar o foco ao cartão do canal de origem (active: ${(doc.activeElement as HTMLElement | null)?.tagName} ch=${(doc.activeElement as HTMLElement | null)?.getAttribute?.('data-live-channel-id')})`
-    );
-
-    // -------------------------------------------------------------------------
-    // 6.7. Falha da Fullscreen API aciona o fallback visual sem tela intermediária
-    // -------------------------------------------------------------------------
-    let rejectFsCalled = 0;
-    (playerContainer as any).requestFullscreen = async () => {
-      rejectFsCalled++;
-      throw new Error('Fullscreen request denied by environment');
-    };
-
-    await act(async () => {
-      ch1000Again.click();
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    assert.strictEqual(rejectFsCalled, 1, 'Deve tentar chamar requestFullscreen no 2º OK');
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'full-layer',
-      'Quando a Fullscreen API rejeita, o fallback de expansão visual deve manter o player em full-layer'
-    );
-    assert.strictEqual(
-      activeHlsControllers.length,
-      1,
-      'Fallback de expansão visual não deve reiniciar o stream'
-    );
-
-    // Sair da expansão visual pelo botão Voltar restaura o preview compacto
-    await act(async () => {
-      executeBackAction();
-      await new Promise((r) => setTimeout(r, 15));
-    });
-    assert.strictEqual(
-      playerContainer.getAttribute('data-player-presentation'),
-      'compact-preview',
-      'Voltar deve sair da expansão visual de volta ao preview compacto'
-    );
-
-    // -------------------------------------------------------------------------
-    // 6.8. Compatibilidade com viewport mobile / Android e fechamento do preview
-    // -------------------------------------------------------------------------
-    (windowInstance as any).innerWidth = 390;
-    const ch2000Btn = doc.querySelector<HTMLButtonElement>('button[data-live-channel-id="2000"]')!;
-    assert(ch2000Btn, 'Canal 2000 deve existir para teste de viewport mobile');
-
-    await act(async () => {
-      focusElementSafely(ch2000Btn);
-      ch2000Btn.click();
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    const rightPaneMain = doc.querySelector<HTMLElement>('main[data-nav-zone="content"]')!;
-    assert(
-      rightPaneMain.className.includes('flex'),
-      'No mobile (<768px), selecionar um canal deve abrir o painel do player móvel'
-    );
-
-    // 1º Back no mobile fecha o painel móvel de volta à lista, 2º Back fecha o preview
-    await act(async () => {
-      executeBackAction();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    await act(async () => {
-      executeBackAction();
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    assert.strictEqual(
-      doc.querySelector('[data-player-container="true"]'),
-      null,
-      'Fechar o preview deve desmontar o player e retornar ao estado inicial de seleção'
-    );
-    assert.strictEqual(
-      doc.activeElement === ch2000Btn,
-      true,
-      `Fechar o preview deve restaurar o foco exatamente ao canal 2000 (active: ${(doc.activeElement as HTMLElement | null)?.tagName} ch=${(doc.activeElement as HTMLElement | null)?.getAttribute?.('data-live-channel-id')})`
-    );
-  } finally {
-    (windowInstance as any).innerWidth = origInnerWidth;
-    delete (doc as any).fullscreenElement;
-    delete (doc as any).exitFullscreen;
-    Object.assign(XtreamService, origXtreamMethods);
-    clearAllBackHandlersForTest();
-    clearFocusMemory();
-    await tracked.unmount();
-    restoreHlsMock();
-  }
-
-  console.log(
-    '✅ Ciclo 12.30-d (foco sem re-render global, virtualização, 2º OK imediato, proteção contra OK repetido e fallback visual) validado!'
-  );
-}
+// Bloco 6 extraído para scripts/direct/live-player.ts
 
 // ============================================================================
 // 7. CACHE PERSISTENTE DE IMAGENS E PRÉ-CARREGAMENTO INTELIGENTE (ETAPA 1 — APK ANDROID)
@@ -5963,530 +4897,8 @@ async function runDeliveryAHeroBannerConsolidationTests(): Promise<void> {
   );
 }
 
-// ============================================================================
-// 11. CONSOLIDAÇÃO PARA LANÇAMENTO — ENTREGA C2.1 (REMOÇÃO DE DIAGNÓSTICOS DE CATÁLOGO)
-// ============================================================================
-async function runDeliveryC21CatalogCleanupAndRegressionTests(): Promise<void> {
-  console.log(
-    '\n--- 11. Entrega C2.1: Remoção Física de catalogDiagnostics + Regressão Transporte & Orquestração ---'
-  );
-
-  // 1) Garantir exclusão física e ausência de símbolos removidos nos módulos
-  assert.strictEqual(
-    fs.existsSync(path.resolve('src/utils/catalogDiagnostics.ts')),
-    false,
-    'src/utils/catalogDiagnostics.ts deve ter sido excluído fisicamente'
-  );
-  for (const removedExport of [
-    'getImageCacheRuntimeStatsSnapshot',
-    'getStartupImageCoordinationMode',
-    'scheduleCooperativeCatalogUrlCount',
-  ]) {
-    assert.strictEqual(
-      typeof (androidImageCacheModule as any)[removedExport],
-      'undefined',
-      `androidImageCache não deve exportar ${removedExport}`
-    );
-  }
-  for (const removedIndexExport of ['getCatalogIndexPerfStats', 'resetCatalogIndexPerfStats']) {
-    assert.strictEqual(
-      typeof (catalogIndexModule as any)[removedIndexExport],
-      'undefined',
-      `catalogIndex não deve exportar ${removedIndexExport}`
-    );
-  }
-
-  const homeTsxSource = fs.readFileSync(path.resolve('src/pages/Home.tsx'), 'utf8');
-  assert(
-    !homeTsxSource.includes('deferFullUrlCount') &&
-      !homeTsxSource.includes('catalogDiagnostics') &&
-      homeTsxSource.includes('maxWaitMs: 3500'),
-    'Home.tsx deve preservar maxWaitMs: 3500 sem deferFullUrlCount ou catalogDiagnostics'
-  );
-
-  // 2) Transporte Web fetch vs arquivo temporário Android, rejeição de payload inválido e retry
-  const prevFetchResponder = customFetchResponder;
-  try {
-    // Web fetch válido
-    setTransportTestConfig({ mode: 'web', androidCatalogPluginAvailable: false });
-    customFetchResponder = async () =>
-      new Response(JSON.stringify([{ stream_id: 1, name: 'Filme Web' }]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    const webPayload = await executeXtreamGetRequest({
-      url: 'http://provider.tv/player_api.php?action=get_vod_streams',
-      timeoutMs: 5000,
-      isFullCatalogRequest: true,
-    });
-    assert(Array.isArray(webPayload) && webPayload.length === 1 && webPayload[0].stream_id === 1);
-
-    // JSON/HTML inválido deve falhar em normalizeCatalogArray via XtreamService
-    customFetchResponder = async () =>
-      new Response('<html><body>Erro 502</body></html>', { status: 200 });
-    let invalidCatalogFailed = false;
-    try {
-      await XtreamService.getVodStreams({
-        serverUrl: 'http://provider.tv',
-        username: 'u1',
-        password: 'p1',
-      });
-    } catch {
-      invalidCatalogFailed = true;
-    }
-    assert.strictEqual(
-      invalidCatalogFailed,
-      true,
-      'Resposta HTML/JSON inválida deve ser rejeitada pelo carregamento de catálogos'
-    );
-
-    // Retry único (1 retentativa) em erro transitório HTTP 503
-    let retryAttempts = 0;
-    customFetchResponder = async () => {
-      retryAttempts++;
-      if (retryAttempts === 1) {
-        return new Response('Busy', { status: 503 });
-      }
-      return new Response(JSON.stringify([{ stream_id: 2, name: 'Após Retry' }]), {
-        status: 200,
-      });
-    };
-    const retried = await XtreamService.getVodStreams({
-      serverUrl: 'http://provider.tv',
-      username: 'u1',
-      password: 'p1',
-    });
-    assert.strictEqual(retryAttempts, 2, 'Catálogo deve executar 1 retentativa em erro transitório');
-    assert.strictEqual(retried[0].stream_id, 2);
-
-    // Transferência Android por arquivo temporário (CatalogFileTransfer)
-    resetAndroidCatalogAdapterLoadCountForTest();
-    setTransportTestConfig({ mode: 'capacitor', androidCatalogPluginAvailable: true });
-    let cleanedFileId: string | null = null;
-    const tempPath = '/data/user/0/com.northcode.play/cache/nc_catalog_transfers/nc_catalog_test1.json';
-    const tempFileUrl = `${windowInstance.location.origin}/_capacitor_file_${tempPath}`;
-    setAndroidCatalogFileAdapterTestOverride({
-      convertFileSrc: () => tempFileUrl,
-      plugin: {
-        async downloadCatalogToTempFile() {
-          return {
-            status: 200,
-            fileId: 'nc_catalog_test1.json',
-            filePath: tempPath,
-            cacheDir: '/data/user/0/com.northcode.play/cache/nc_catalog_transfers',
-          };
-        },
-        async cancelTransfer() {
-          return { cancelled: true };
-        },
-        async cleanupTransferFile({ fileId }) {
-          cleanedFileId = fileId;
-          return { deleted: true };
-        },
-      },
-    });
-    customFetchResponder = async (url) => {
-      assert.strictEqual(url, tempFileUrl);
-      return new Response(JSON.stringify([{ stream_id: 99, name: 'Filme Temp Android' }]), {
-        status: 200,
-      });
-    };
-    const androidPayload = await executeXtreamGetRequest({
-      url: 'http://provider.tv/player_api.php?action=get_vod_streams',
-      timeoutMs: 5000,
-      isFullCatalogRequest: true,
-    });
-    assert.strictEqual(getAndroidCatalogAdapterLoadCountForTest(), 1);
-    assert.strictEqual(androidPayload[0].stream_id, 99);
-    assert.strictEqual(cleanedFileId, 'nc_catalog_test1.json');
-  } finally {
-    customFetchResponder = prevFetchResponder;
-    setAndroidCatalogFileAdapterTestOverride({ plugin: null, convertFileSrc: null });
-    setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null, androidCatalogPluginAvailable: null });
-  }
-
-  // 3) Orquestração das 6 operações em XtreamContext (concorrência máx 2 e allSixFinished)
-  const doc = windowInstance.document;
-  const tracked = env.createTrackedRoot();
-  const container = tracked.host;
-  const root = tracked.root;
-
-  const origMethods = {
-    getLiveCategories: XtreamService.getLiveCategories,
-    getVodCategories: XtreamService.getVodCategories,
-    getSeriesCategories: XtreamService.getSeriesCategories,
-    getLiveStreams: XtreamService.getLiveStreams,
-    getVodStreams: XtreamService.getVodStreams,
-    getSeries: XtreamService.getSeries,
-  };
-
-  let currentInFlightOps = 0;
-  let maxObservedConcurrentOps = 0;
-  let observedAllSixFinished = false;
-  let observedCounts = { live: 0, vod: 0, series: 0 };
-
-  const wrapConcurrent = <T,>(fn: () => Promise<T>) => async () => {
-    currentInFlightOps++;
-    if (currentInFlightOps > maxObservedConcurrentOps) {
-      maxObservedConcurrentOps = currentInFlightOps;
-    }
-    try {
-      await new Promise((r) => setTimeout(r, 15));
-      return await fn();
-    } finally {
-      currentInFlightOps--;
-    }
-  };
-
-  XtreamService.getLiveCategories = wrapConcurrent(async () => [
-    { category_id: '1', category_name: 'Canais', parent_id: 0 },
-  ]);
-  XtreamService.getVodCategories = wrapConcurrent(async () => [
-    { category_id: '2', category_name: 'Filmes', parent_id: 0 },
-  ]);
-  XtreamService.getSeriesCategories = wrapConcurrent(async () => [
-    { category_id: '3', category_name: 'Séries', parent_id: 0 },
-  ]);
-  XtreamService.getLiveStreams = wrapConcurrent(
-    async () => [{ stream_id: 11, name: 'Canal Teste', category_id: '1' } as any]
-  );
-  XtreamService.getVodStreams = wrapConcurrent(
-    async () => [{ stream_id: 22, name: 'Filme Teste', category_id: '2' } as any]
-  );
-  XtreamService.getSeries = wrapConcurrent(
-    async () => [{ series_id: 33, name: 'Série Teste', category_id: '3' } as any]
-  );
-
-  function ContextProbe() {
-    const session = useXtreamSession();
-    const live = useXtreamLive();
-    const vod = useXtreamVod();
-    const series = useXtreamSeries();
-    const triggeredRef = React.useRef(false);
-    React.useEffect(() => {
-      if (session.sessionReady && !triggeredRef.current) {
-        triggeredRef.current = true;
-        void live.fetchLiveStreams();
-        void vod.fetchVodStreams();
-        void series.fetchSeriesStreams();
-      }
-    }, [session.sessionReady, live, vod, series]);
-    observedAllSixFinished = session.allSixFinished;
-    observedCounts = {
-      live: live.allLiveStreams.length,
-      vod: vod.allVodStreams.length,
-      series: series.allSeriesStreams.length,
-    };
-    return null;
-  }
-
-  try {
-    await act(async () => {
-      root.render(
-        React.createElement(
-          XtreamProvider,
-          { credentials: { serverUrl: 'http://provider.tv', username: 'u1', password: 'p1' } },
-          React.createElement(ContextProbe)
-        )
-      );
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 250));
-    });
-    assert.strictEqual(observedAllSixFinished, true, 'XtreamContext deve concluir os 6 catálogos');
-    assert(
-      maxObservedConcurrentOps <= 2 && maxObservedConcurrentOps >= 1,
-      `Orquestração dos 6 catálogos deve manter concorrência máxima de 2 (observado=${maxObservedConcurrentOps})`
-    );
-    assert.deepStrictEqual(observedCounts, { live: 1, vod: 1, series: 1 });
-  } finally {
-    Object.assign(XtreamService, origMethods);
-    await tracked.unmount();
-  }
-
-  console.log(
-    '✅ Entrega C2.1 (exclusão física de catalogDiagnostics, preservação de transporte Web/Android, retries, validação de JSON inválido e fila de 6 catálogos) validada!'
-  );
-}
-
-async function runDeliveryC22NativeCleanupAndPreparationTests(): Promise<void> {
-  console.log(
-    '\n--- 12. Entrega C2.2: Remoção de Patch HTTP Nativo, Instrumentação Java e Integridade Android ---'
-  );
-
-  const patchFilePath = path.resolve(
-    'tooling/android/patches/capacitor-android-8.6.0-http-diagnostics.patch'
-  );
-  assert.strictEqual(
-    fs.existsSync(patchFilePath),
-    false,
-    'Patch HTTP diagnóstico P3.2 deve ter sido excluído fisicamente'
-  );
-  assert.strictEqual(
-    fs.existsSync(path.resolve('tooling/android/patches')),
-    false,
-    'Diretório vazio tooling/android/patches não deve permanecer no projeto'
-  );
-
-  const prepareAndroidMod: Record<string, any> = await import(
-    '../tooling/android/prepare-android.mjs'
-  );
-
-  for (const removedExport of [
-    'CAPACITOR_HTTP_DIAGNOSTICS_PATCH_REL_PATH',
-    'CAPACITOR_HTTP_HANDLER_REL_PATH',
-    'REQUIRED_PATCH_MARKERS',
-    'applyCapacitorAndroidHttpDiagnosticsPatch',
-    'verifyCapacitorAndroidHttpDiagnosticsPatch',
-  ]) {
-    assert.strictEqual(
-      typeof prepareAndroidMod[removedExport],
-      'undefined',
-      `prepare-android.mjs não deve exportar ${removedExport}`
-    );
-  }
-
-  assert.strictEqual(prepareAndroidMod.EXPECTED_CAPACITOR_ANDROID_VERSION, '8.6.0');
-  assert.strictEqual(typeof prepareAndroidMod.computeAndroidVersionCode, 'function');
-  assert.strictEqual(typeof prepareAndroidMod.verifyCleanCapacitorAndroidDependency, 'function');
-  assert.strictEqual(typeof prepareAndroidMod.verifyAndroidCustomizations, 'function');
-  assert.strictEqual(typeof prepareAndroidMod.prepareAndroidProject, 'function');
-
-  // Validar dependência real limpa em node_modules/@capacitor/android@8.6.0
-  const realIntegrity = prepareAndroidMod.verifyCleanCapacitorAndroidDependency(process.cwd());
-  assert.strictEqual(realIntegrity.version, '8.6.0');
-
-  // Validar CatalogFileTransferPlugin.java sem instrumentação diagnóstica e com métodos operacionais
-  const catalogPluginJava = fs.readFileSync(
-    path.resolve(
-      'tooling/android/overlay/app/src/main/java/com/northcode/play/CatalogFileTransferPlugin.java'
-    ),
-    'utf8'
-  );
-  for (const forbiddenSymbol of [
-    'collectDiagnostics',
-    'nativeDiagnostics',
-    'parseContentLengthHeader',
-    'nanosToMillis',
-    'statusAndHeadersMs',
-    'fileWriteMs',
-    'nativeTotalMs',
-    'contentLengthHeaderBytes',
-    'bytesWritten',
-    'ICapacitorHttpUrlConnection',
-  ]) {
-    assert(
-      !catalogPluginJava.includes(forbiddenSymbol),
-      `CatalogFileTransferPlugin.java não deve conter símbolo diagnóstico removido: ${forbiddenSymbol}`
-    );
-  }
-  for (const requiredOperationalSymbol of [
-    '@CapacitorPlugin(name = "CatalogFileTransfer")',
-    'downloadCatalogToTempFile',
-    'cancelTransfer',
-    'cleanupTransferFile',
-    'nc_catalog_transfers',
-    'STREAM_BUFFER_SIZE = 16384',
-    'HttpRequestHandler.HttpURLConnectionBuilder',
-    'HttpRequestHandler.isDomainExcludedFromSSL',
-  ]) {
-    assert(
-      catalogPluginJava.includes(requiredOperationalSymbol),
-      `CatalogFileTransferPlugin.java deve preservar comportamento operacional: ${requiredOperationalSymbol}`
-    );
-  }
-
-  // Validar ANDROID_BUILD.md atualizado e src/ sem parâmetros diagnósticos residuais
-  const androidBuildDoc = fs.readFileSync(path.resolve('ANDROID_BUILD.md'), 'utf8');
-  assert(
-    !androidBuildDoc.includes('capacitor-android-8.6.0-http-diagnostics.patch') &&
-      !androidBuildDoc.includes('P3.2'),
-    'ANDROID_BUILD.md não deve referenciar o patch P3.2 removido'
-  );
-  for (const tsFile of [
-    'src/services/androidCatalogFileAdapter.ts',
-    'src/services/httpTransport.ts',
-  ]) {
-    const content = fs.readFileSync(path.resolve(tsFile), 'utf8');
-    assert(
-      !content.includes('collectDiagnostics') && !content.includes('nativeDiagnostics'),
-      `${tsFile} deve permanecer compatível e livre de parâmetros diagnósticos removidos`
-    );
-  }
-
-  // Testar integridade contra dependência suja e fluxo completo de prepareAndroidProject em diretório temporário isolado
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-c22-android-prep-'));
-  try {
-    const setupCapacitorPackage = (version: string, httpHandlerJavaContent: string) => {
-      const capAndroidDir = path.join(tempRoot, 'node_modules', '@capacitor', 'android');
-      const handlerFile = path.join(
-        capAndroidDir,
-        'capacitor',
-        'src',
-        'main',
-        'java',
-        'com',
-        'getcapacitor',
-        'plugin',
-        'util',
-        'HttpRequestHandler.java'
-      );
-      fs.mkdirSync(path.dirname(handlerFile), { recursive: true });
-      fs.writeFileSync(
-        path.join(capAndroidDir, 'package.json'),
-        JSON.stringify({ name: '@capacitor/android', version }),
-        'utf8'
-      );
-      fs.writeFileSync(handlerFile, httpHandlerJavaContent, 'utf8');
-      return handlerFile;
-    };
-
-    const cleanHandlerContent = fs.readFileSync(
-      path.resolve(
-        'node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/util/HttpRequestHandler.java'
-      ),
-      'utf8'
-    );
-
-    // 1) Rejeitar HttpRequestHandler.java contaminado pelo patch antigo sem modificá-lo
-    const dirtyContent = `${cleanHandlerContent}\n// buildResponseWithDiagnostics(conn, rt, ns, nativeDiagnostics)\n// nativeDiagnostics.put("nativeTotalMs", 1);\n`;
-    const dirtyHandlerPath = setupCapacitorPackage('8.6.0', dirtyContent);
-    assert.throws(
-      () => prepareAndroidMod.verifyCleanCapacitorAndroidDependency(tempRoot),
-      /Integridade de @capacitor\/android@8\.6\.0 comprometida/,
-      'Deve detectar marcadores residuais do antigo patch em instalação local reaproveitada'
-    );
-    assert.strictEqual(
-      fs.readFileSync(dirtyHandlerPath, 'utf8'),
-      dirtyContent,
-      'Verificação de integridade não deve sobrescrever arquivo de terceiros automaticamente'
-    );
-
-    // 2) Rejeitar versão incorreta de @capacitor/android
-    setupCapacitorPackage('8.5.0', cleanHandlerContent);
-    assert.throws(
-      () => prepareAndroidMod.verifyCleanCapacitorAndroidDependency(tempRoot),
-      /Versão incompatível de @capacitor\/android/,
-      'Deve validar a versão travada 8.6.0 de @capacitor/android'
-    );
-
-    // 3) Preparação completa (geração inicial + reutilização idempotente) sem patch
-    setupCapacitorPackage('8.6.0', cleanHandlerContent);
-    fs.writeFileSync(
-      path.join(tempRoot, 'package.json'),
-      JSON.stringify({ name: 'north-code-play', version: '1.3.0' }),
-      'utf8'
-    );
-    fs.mkdirSync(path.join(tempRoot, 'dist'), { recursive: true });
-    fs.writeFileSync(path.join(tempRoot, 'dist', 'index.html'), '<html></html>', 'utf8');
-    fs.mkdirSync(path.join(tempRoot, 'src', 'assets'), { recursive: true });
-    fs.copyFileSync(
-      path.resolve('src/assets/logo.png'),
-      path.join(tempRoot, 'src', 'assets', 'logo.png')
-    );
-    fs.cpSync(
-      path.resolve('tooling/android/overlay'),
-      path.join(tempRoot, 'tooling', 'android', 'overlay'),
-      { recursive: true }
-    );
-
-    const mockCapCliPath = path.join(
-      tempRoot,
-      'node_modules',
-      '@capacitor',
-      'cli',
-      'bin',
-      'capacitor'
-    );
-    fs.mkdirSync(path.dirname(mockCapCliPath), { recursive: true });
-    fs.writeFileSync(
-      mockCapCliPath,
-      `import fs from 'node:fs';
-import path from 'node:path';
-const [cmd, target] = process.argv.slice(2);
-const androidDir = path.join(process.cwd(), 'android');
-if (cmd === 'add' && target === 'android') {
-  fs.mkdirSync(path.join(androidDir, 'app', 'src', 'main', 'assets', 'public'), { recursive: true });
-  fs.writeFileSync(
-    path.join(androidDir, 'app', 'build.gradle'),
-    'android {\\n  namespace = "com.example.placeholder"\\n  defaultConfig {\\n    applicationId "com.example.placeholder"\\n    versionCode 1\\n    versionName "1.0"\\n  }\\n}\\n',
-    'utf8'
-  );
-} else if (cmd === 'sync' && target === 'android') {
-  const assetsDir = path.join(androidDir, 'app', 'src', 'main', 'assets');
-  fs.mkdirSync(path.join(assetsDir, 'public'), { recursive: true });
-  fs.copyFileSync(path.join(process.cwd(), 'dist', 'index.html'), path.join(assetsDir, 'public', 'index.html'));
-  fs.writeFileSync(path.join(assetsDir, 'capacitor.config.json'), '{}', 'utf8');
-  fs.writeFileSync(path.join(assetsDir, 'capacitor.plugins.json'), '[]', 'utf8');
-}
-`,
-      'utf8'
-    );
-
-    const firstPrep = prepareAndroidMod.prepareAndroidProject({
-      rootDir: tempRoot,
-      skipWebBuild: true,
-    });
-    assert.strictEqual(firstPrep.reusedExistingAndroid, false);
-    assert.strictEqual(firstPrep.capacitorAndroidVersion, '8.6.0');
-    assert.strictEqual(firstPrep.versionName, '1.3.0');
-    assert.strictEqual(firstPrep.versionCode, 10300);
-    assert.strictEqual('patchApplied' in firstPrep, false);
-    assert.strictEqual('patchAlreadyApplied' in firstPrep, false);
-
-    const secondPrep = prepareAndroidMod.prepareAndroidProject({
-      rootDir: tempRoot,
-      skipWebBuild: true,
-    });
-    assert.strictEqual(secondPrep.reusedExistingAndroid, true);
-    assert.strictEqual(secondPrep.capacitorAndroidVersion, '8.6.0');
-  } finally {
-    fs.rmSync(tempRoot, { recursive: true, force: true });
-  }
-
-  // Confirmar preservação de status HTTP de erro (ex.: 403) no androidCatalogFileAdapter sem nativeDiagnostics
-  setTransportTestConfig({ mode: 'capacitor', androidCatalogPluginAvailable: true });
-  setAndroidCatalogFileAdapterTestOverride({
-    plugin: {
-      async downloadCatalogToTempFile() {
-        return {
-          status: 403,
-          fileId: null,
-          filePath: null,
-          cacheDir: '/data/user/0/com.northcode.play/cache/nc_catalog_transfers',
-        };
-      },
-      async cancelTransfer() {
-        return { cancelled: true };
-      },
-      async cleanupTransferFile() {
-        return { deleted: false };
-      },
-    },
-  });
-  let observedForbiddenStatus: number | undefined;
-  try {
-    await executeXtreamGetRequest({
-      url: 'http://provider.tv/player_api.php?action=get_vod_streams',
-      timeoutMs: 5000,
-      isFullCatalogRequest: true,
-    });
-  } catch (err: any) {
-    observedForbiddenStatus = err?.status;
-  } finally {
-    setAndroidCatalogFileAdapterTestOverride({ plugin: null, convertFileSrc: null });
-    setTransportTestConfig({ mode: 'auto', capacitorHttpGet: null, androidCatalogPluginAvailable: null });
-  }
-  assert.strictEqual(
-    observedForbiddenStatus,
-    403,
-    'Adapter Android deve continuar preservando códigos HTTP de erro reais'
-  );
-
-  console.log(
-    '✅ Entrega C2.2 (exclusão do patch HTTP, limpeza do CatalogFileTransferPlugin, integridade @capacitor/android@8.6.0 e preparação Android idempotente) validada!'
-  );
-}
+// Bloco 11 extraído para scripts/direct/api-transport.ts
+// Bloco 12 extraído para scripts/direct/android-prepare.ts
 
 // ============================================================================
 // 13. ENTREGA C3 — LIMPEZA FINAL DE DIAGNÓSTICOS, CONTADORES E REGRESSÕES
@@ -7753,18 +6165,107 @@ async function main(): Promise<DirectRunSummary> {
   }
 
   const blocks: Array<{ index: number; name: string; fn: () => Promise<void> | void }> = [
-    { index: 1, name: 'runEssentialTrackAndSecurityTests', fn: runEssentialTrackAndSecurityTests },
-    { index: 2, name: 'runLiveTvFullscreenAndPreviewTransitionTests', fn: runLiveTvFullscreenAndPreviewTransitionTests },
-    { index: 3, name: 'runWhitePaletteAndControlsIntegrationTests', fn: runWhitePaletteAndControlsIntegrationTests },
+    {
+      index: 1,
+      name: 'runEssentialTrackAndSecurityTests',
+      fn: () =>
+        runEssentialTrackAndSecurityTests({
+          redactStreamUrlCredentials,
+          formatMediaTrackLabel,
+          convertSrtToWebVtt,
+          extractXtreamSubtitles,
+        }),
+    },
+    {
+      index: 2,
+      name: 'runLiveTvFullscreenAndPreviewTransitionTests',
+      fn: () =>
+        runLiveTvFullscreenAndPreviewTransitionTests({
+          env,
+          hlsMock: hlsMockControl,
+          VideoPlayer,
+          setNavMode,
+          clearAllBackHandlersForTest,
+          executeBackAction,
+        }),
+    },
+    {
+      index: 3,
+      name: 'runWhitePaletteAndControlsIntegrationTests',
+      fn: () =>
+        runWhitePaletteAndControlsIntegrationTests({
+          env,
+          hlsMock: hlsMockControl,
+          VideoPlayer,
+          LiveTvView,
+          XtreamProvider,
+          XtreamService,
+          setNavMode,
+          clearAllBackHandlersForTest,
+          executeBackAction,
+        }),
+    },
     { index: 4, name: 'runCycle1230bSpatialNavOptimizationTests', fn: runCycle1230bSpatialNavOptimizationTests },
     { index: 5, name: 'runCycle1230cVerticalNavOptimizationTests', fn: runCycle1230cVerticalNavOptimizationTests },
-    { index: 6, name: 'runCycle1230dLiveTvLatencyAndFullscreenTests', fn: runCycle1230dLiveTvLatencyAndFullscreenTests },
+    {
+      index: 6,
+      name: 'runCycle1230dLiveTvLatencyAndFullscreenTests',
+      fn: () =>
+        runCycle1230dLiveTvLatencyAndFullscreenTests({
+          env,
+          hlsMock: hlsMockControl,
+          LiveTvView,
+          XtreamProvider,
+          XtreamService,
+          setNavMode,
+          clearAllBackHandlersForTest,
+          clearFocusMemory,
+          setFastHorizontalRowNavEnabledForTest,
+          setFastVerticalNavEnabledForTest,
+          focusElementSafely,
+          moveSpatialFocus,
+          executeBackAction,
+        }),
+    },
     { index: 7, name: 'runStep1PersistentImageCacheAndPreloadTests', fn: runStep1PersistentImageCacheAndPreloadTests },
     { index: 8, name: 'runStep2StartupAndFluidityStabilizationTests', fn: runStep2StartupAndFluidityStabilizationTests },
     { index: 9, name: 'runStep3DpadFluidityAndDiagnosticsTests', fn: runStep3DpadFluidityAndDiagnosticsTests },
     { index: 10, name: 'runDeliveryAHeroBannerConsolidationTests', fn: runDeliveryAHeroBannerConsolidationTests },
-    { index: 11, name: 'runDeliveryC21CatalogCleanupAndRegressionTests', fn: runDeliveryC21CatalogCleanupAndRegressionTests },
-    { index: 12, name: 'runDeliveryC22NativeCleanupAndPreparationTests', fn: runDeliveryC22NativeCleanupAndPreparationTests },
+    {
+      index: 11,
+      name: 'runDeliveryC21CatalogCleanupAndRegressionTests',
+      fn: () =>
+        runDeliveryC21CatalogCleanupAndRegressionTests({
+          env,
+          getCustomFetchResponder: () => customFetchResponder,
+          setCustomFetchResponder: (responder) => {
+            customFetchResponder = responder;
+          },
+          androidImageCacheModule,
+          catalogIndexModule,
+          XtreamService,
+          executeXtreamGetRequest,
+          setTransportTestConfig,
+          getAndroidCatalogAdapterLoadCountForTest,
+          resetAndroidCatalogAdapterLoadCountForTest,
+          setAndroidCatalogFileAdapterTestOverride,
+          XtreamProvider,
+          useXtreamSession,
+          useXtreamLive,
+          useXtreamVod,
+          useXtreamSeries,
+        }),
+    },
+    {
+      index: 12,
+      name: 'runDeliveryC22NativeCleanupAndPreparationTests',
+      fn: () =>
+        runDeliveryC22NativeCleanupAndPreparationTests({
+          executeXtreamGetRequest,
+          setTransportTestConfig,
+          setAndroidCatalogFileAdapterTestOverride,
+        }),
+    },
     { index: 13, name: 'runDeliveryC3FinalCleanupAndRegressionTests', fn: runDeliveryC3FinalCleanupAndRegressionTests },
   ];
 
@@ -7786,22 +6287,22 @@ async function main(): Promise<DirectRunSummary> {
     } catch (err) {
       blockError = err;
     } finally {
-      const unmountErrors = await env.unmountAllRoots();
-      restoreHlsMock();
-      customFetchResponder = null;
-      clearAllBackHandlersForTest();
-      clearFocusMemory();
-      invalidateCandidateCache();
-      setAndroidPlatformOverrideForDpadTest(null);
-      setAndroidCatalogFileAdapterTestOverride({ plugin: null, convertFileSrc: null });
-      setTransportTestConfig({
-        mode: 'auto',
-        capacitorHttpGet: null,
-        androidCatalogPluginAvailable: null,
-      });
-      setCatalogTransferPhaseActiveForImageCache(false);
-      if (!blockError && unmountErrors.length > 0) {
-        blockError = unmountErrors[0];
+      const cleanupErrors: Error[] = [];
+      try {
+        cleanupErrors.push(...(await env.unmountAllRoots()));
+      } catch (err) {
+        cleanupErrors.push(err instanceof Error ? err : new Error(String(err)));
+      }
+      cleanupErrors.push(...(await runSharedStateResetSteps()));
+      if (cleanupErrors.length > 0) {
+        if (blockError) {
+          console.error(
+            `Erros secundários durante limpeza pós-bloco ${block.index} (${block.name}):`,
+            cleanupErrors
+          );
+        } else {
+          blockError = cleanupErrors[0];
+        }
       }
     }
     if (blockError) {
