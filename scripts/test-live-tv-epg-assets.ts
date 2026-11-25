@@ -1,79 +1,28 @@
 import assert from 'node:assert';
-import { Window } from 'happy-dom';
-import React, { act, Profiler } from 'react';
-import { createRoot, Root } from 'react-dom/client';
+import { createDomTestEnv } from './helpers/domEnv';
 
 const IS_BASELINE_MODE = process.argv.includes('--baseline');
+const TOTAL_CASES = 6;
 
-// Watchdog de segurança para evitar travamentos em ambiente simulado
-const watchdog = setTimeout(() => {
-  console.error('TIMEOUT: test-live-tv-epg-assets excedeu 25s');
-  process.exit(1);
-}, 25000);
-watchdog.unref();
+const rawCaseFilter = process.env.NC_LIVE_TV_EPG_ASSETS_CASE?.trim();
+let selectedCaseNumber: number | null = null;
+if (rawCaseFilter) {
+  const parsed = Number.parseInt(rawCaseFilter, 10);
+  if (!/^\d+$/.test(rawCaseFilter) || parsed < 1 || parsed > TOTAL_CASES) {
+    console.error(
+      `FALHA em test-live-tv-epg-assets: filtro inválido NC_LIVE_TV_EPG_ASSETS_CASE="${rawCaseFilter}". Informe um número inteiro entre 1 e ${TOTAL_CASES}.`
+    );
+    process.exit(1);
+  }
+  selectedCaseNumber = parsed;
+}
 
 // ============================================================================
-// 1. Ambiente DOM determinístico (happy-dom) com viewport configurável (720p / 1080p)
+// 1. Estado de viewport, IntersectionObserver determinístico e geometria TV
 // ============================================================================
 let viewportWidth = 1280;
 let viewportHeight = 720;
 
-const windowInstance = new Window({
-  url: 'http://localhost:3000',
-  width: viewportWidth,
-  height: viewportHeight,
-});
-
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-(globalThis as any).window = windowInstance;
-(globalThis as any).document = windowInstance.document;
-Object.defineProperty(globalThis, 'navigator', {
-  value: windowInstance.navigator,
-  writable: true,
-  configurable: true,
-});
-(globalThis as any).HTMLElement = windowInstance.HTMLElement;
-(globalThis as any).HTMLButtonElement = windowInstance.HTMLButtonElement;
-(globalThis as any).HTMLVideoElement = windowInstance.HTMLVideoElement;
-(globalThis as any).HTMLImageElement = windowInstance.HTMLImageElement;
-(globalThis as any).Element = windowInstance.Element;
-(globalThis as any).Node = windowInstance.Node;
-(globalThis as any).SVGElement = windowInstance.SVGElement;
-(globalThis as any).Event = windowInstance.Event;
-(globalThis as any).CustomEvent = windowInstance.CustomEvent;
-(globalThis as any).KeyboardEvent = windowInstance.KeyboardEvent;
-(globalThis as any).MouseEvent = windowInstance.MouseEvent;
-(globalThis as any).FocusEvent = windowInstance.FocusEvent;
-(globalThis as any).MutationObserver = windowInstance.MutationObserver;
-(globalThis as any).localStorage = windowInstance.localStorage;
-(globalThis as any).sessionStorage = windowInstance.sessionStorage;
-(globalThis as any).URL = windowInstance.URL;
-(globalThis as any).Blob = windowInstance.Blob;
-(globalThis as any).getComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
-
-function setSimulatedViewport(width: number, height: number) {
-  viewportWidth = width;
-  viewportHeight = height;
-  Object.defineProperty(windowInstance, 'innerWidth', {
-    value: width,
-    writable: true,
-    configurable: true,
-  });
-  Object.defineProperty(windowInstance, 'innerHeight', {
-    value: height,
-    writable: true,
-    configurable: true,
-  });
-}
-setSimulatedViewport(1280, 720);
-
-(globalThis as any).ResizeObserver = class ResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-};
-
-// IntersectionObserver determinístico com suporte real a root + rootMargin
 interface MockIOInstance {
   callback: IntersectionObserverCallback;
   root: Element | null;
@@ -162,34 +111,6 @@ function flushIntersectionObservers() {
   }
 }
 
-(globalThis as any).IntersectionObserver = DeterministicIntersectionObserver;
-(windowInstance as any).IntersectionObserver = DeterministicIntersectionObserver;
-
-const matchMediaStub = (query: string) => ({
-  matches: query.includes('prefers-reduced-motion'),
-  media: query,
-  onchange: null,
-  addListener: () => {},
-  removeListener: () => {},
-  addEventListener: () => {},
-  removeEventListener: () => {},
-  dispatchEvent: () => false,
-});
-(globalThis as any).matchMedia = matchMediaStub;
-(windowInstance as any).matchMedia = matchMediaStub;
-
-if (typeof (globalThis as any).requestAnimationFrame !== 'function') {
-  (globalThis as any).requestAnimationFrame = (cb: FrameRequestCallback) =>
-    setTimeout(() => cb(Date.now()), 8) as unknown as number;
-  (globalThis as any).cancelAnimationFrame = (id: number) =>
-    clearTimeout(id as unknown as ReturnType<typeof setTimeout>);
-}
-(windowInstance as any).requestAnimationFrame = (globalThis as any).requestAnimationFrame;
-(windowInstance as any).cancelAnimationFrame = (globalThis as any).cancelAnimationFrame;
-
-// ============================================================================
-// 2. Geometria determinística vinculada à escala TV e viewport real
-// ============================================================================
 function getCurrentRemPx(): number {
   const mode = document.documentElement.getAttribute('data-display-mode');
   if (mode === 'tv') {
@@ -291,100 +212,182 @@ function computeRectForElement(el: HTMLElement): DOMRect {
   return makeRect(0, 0, 100, 40);
 }
 
-const proto = (windowInstance.HTMLElement as any).prototype;
-proto.animate = undefined;
-const videoProto = (windowInstance as any).HTMLMediaElement?.prototype;
-if (videoProto) {
-  videoProto.play = () => Promise.resolve();
-  videoProto.pause = () => {};
-  videoProto.load = () => {};
+// ============================================================================
+// 2. Ambiente DOM compartilhado (happy-dom) + importação tardia de React
+// ============================================================================
+const env = await createDomTestEnv({
+  url: 'http://localhost:3000',
+  width: viewportWidth,
+  height: viewportHeight,
+  watchdogMs: 25000,
+  watchdogLabel: 'test-live-tv-epg-assets',
+  rafIntervalMs: 8,
+  disableElementAnimate: true,
+  stubScrollIntoView: true,
+  stubMediaPlayback: true,
+  stubResizeObserver: true,
+  stubIntersectionObserver: true,
+  beforeReactImport: ({ window: win, registerCleanup }) => {
+    Object.defineProperty(win, 'innerWidth', {
+      value: viewportWidth,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(win, 'innerHeight', {
+      value: viewportHeight,
+      writable: true,
+      configurable: true,
+    });
+
+    // Substitui o stub padrão pelo IntersectionObserver determinístico com suporte a root + rootMargin
+    (globalThis as any).IntersectionObserver = DeterministicIntersectionObserver;
+    (win as any).IntersectionObserver = DeterministicIntersectionObserver;
+    registerCleanup(() => {
+      activeIOInstances.clear();
+    });
+
+    const proto = (win.HTMLElement as any).prototype;
+    proto.getBoundingClientRect = function (this: HTMLElement) {
+      return computeRectForElement(this);
+    };
+    Object.defineProperty(proto, 'clientWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return computeRectForElement(this).width;
+      },
+    });
+    Object.defineProperty(proto, 'clientHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return computeRectForElement(this).height;
+      },
+    });
+    Object.defineProperty(proto, 'offsetWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return computeRectForElement(this).width;
+      },
+    });
+    Object.defineProperty(proto, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return computeRectForElement(this).height;
+      },
+    });
+    Object.defineProperty(proto, 'scrollWidth', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute('data-live-category-row-scroll') === 'true') {
+          const m = getMockGeometryMetrics();
+          const cards = this.querySelectorAll('[data-live-channel-card="true"]').length;
+          const spacers = Array.from(this.querySelectorAll<HTMLElement>('[data-virtual-spacer]')).reduce(
+            (acc, sp) => acc + (parseFloat(sp.style.width || '0') || 0),
+            0
+          );
+          return Math.max(m.leftScrollWidth, cards * m.cardStride + spacers);
+        }
+        return computeRectForElement(this).width;
+      },
+    });
+    Object.defineProperty(proto, 'scrollHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.getAttribute('data-showcase-rows-container') === 'true') {
+          const total = Number(this.getAttribute('data-showcase-total-rows') || '0');
+          return Math.max(getMockGeometryMetrics().leftScrollHeight, total * getMockGeometryMetrics().rowStride);
+        }
+        return computeRectForElement(this).height;
+      },
+    });
+    proto.scrollIntoView = function () {};
+    proto.scrollTo = function (this: HTMLElement, arg1: any, arg2?: number) {
+      if (typeof arg1 === 'object' && arg1 !== null) {
+        if (typeof arg1.left === 'number') this.scrollLeft = arg1.left;
+        if (typeof arg1.top === 'number') this.scrollTop = arg1.top;
+      } else if (typeof arg1 === 'number') {
+        this.scrollLeft = arg1;
+        if (typeof arg2 === 'number') this.scrollTop = arg2;
+      }
+    };
+  },
+});
+
+const { React, act, Profiler } = env;
+
+function setSimulatedViewport(width: number, height: number) {
+  viewportWidth = width;
+  viewportHeight = height;
+  Object.defineProperty(env.window, 'innerWidth', {
+    value: width,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(env.window, 'innerHeight', {
+    value: height,
+    writable: true,
+    configurable: true,
+  });
 }
-proto.getBoundingClientRect = function (this: HTMLElement) {
-  return computeRectForElement(this);
-};
-Object.defineProperty(proto, 'clientWidth', {
-  configurable: true,
-  get(this: HTMLElement) {
-    return computeRectForElement(this).width;
-  },
-});
-Object.defineProperty(proto, 'clientHeight', {
-  configurable: true,
-  get(this: HTMLElement) {
-    return computeRectForElement(this).height;
-  },
-});
-Object.defineProperty(proto, 'offsetWidth', {
-  configurable: true,
-  get(this: HTMLElement) {
-    return computeRectForElement(this).width;
-  },
-});
-Object.defineProperty(proto, 'offsetHeight', {
-  configurable: true,
-  get(this: HTMLElement) {
-    return computeRectForElement(this).height;
-  },
-});
-Object.defineProperty(proto, 'scrollWidth', {
-  configurable: true,
-  get(this: HTMLElement) {
-    if (this.getAttribute('data-live-category-row-scroll') === 'true') {
-      const m = getMockGeometryMetrics();
-      const cards = this.querySelectorAll('[data-live-channel-card="true"]').length;
-      const spacers = Array.from(this.querySelectorAll<HTMLElement>('[data-virtual-spacer]')).reduce(
-        (acc, sp) => acc + (parseFloat(sp.style.width || '0') || 0),
-        0
-      );
-      return Math.max(m.leftScrollWidth, cards * m.cardStride + spacers);
-    }
-    return computeRectForElement(this).width;
-  },
-});
-Object.defineProperty(proto, 'scrollHeight', {
-  configurable: true,
-  get(this: HTMLElement) {
-    if (this.getAttribute('data-showcase-rows-container') === 'true') {
-      const total = Number(this.getAttribute('data-showcase-total-rows') || '0');
-      return Math.max(getMockGeometryMetrics().leftScrollHeight, total * getMockGeometryMetrics().rowStride);
-    }
-    return computeRectForElement(this).height;
-  },
-});
-proto.scrollIntoView = function () {};
-proto.scrollTo = function (this: HTMLElement, arg1: any, arg2?: number) {
-  if (typeof arg1 === 'object' && arg1 !== null) {
-    if (typeof arg1.left === 'number') this.scrollLeft = arg1.left;
-    if (typeof arg1.top === 'number') this.scrollTop = arg1.top;
-  } else if (typeof arg1 === 'number') {
-    this.scrollLeft = arg1;
-    if (typeof arg2 === 'number') this.scrollTop = arg2;
-  }
-};
 
 // ============================================================================
 // 3. Imports do aplicativo e instrumentação determinística de EPG (sem rede real)
 // ============================================================================
-const { XtreamCredentialsContext, XtreamLiveContext } = await import('../src/context/XtreamContext');
-const { XtreamService } = await import('../src/services/xtreamService');
-const {
-  resetLiveEpgCacheForTest,
-  setLiveEpgClockForTest,
-  setLiveEpgConcurrencyLimitForTest,
-  getCachedLiveEpgSnapshot,
-} = await import('../src/utils/liveEpgManager');
-const { clearLoadedImageUrlCache, hasLoadedImageUrl } = await import('../src/components/MediaImage');
-const { LiveTvView } = await import('../src/views/LiveTvView');
-const { NavigationProvider, setNavMode, focusElementSafely } = await import('../src/navigation');
-const { setAndroidPlatformOverrideForDpadTest } = await import('../src/navigation/navigationPlatformPolicy');
-const { confirmDisplayPreferences, syncDocumentDisplayAttributes } = await import(
-  '../src/platform/tvEnvironment'
-);
-const {
-  initPerformanceProfile,
-  setPerformanceProfilePreference,
-  resetPerformanceProfileCacheForTest,
-} = await import('../src/platform/performanceProfile');
+let XtreamCredentialsContext!: (typeof import('../src/context/XtreamContext'))['XtreamCredentialsContext'];
+let XtreamLiveContext!: (typeof import('../src/context/XtreamContext'))['XtreamLiveContext'];
+let XtreamService!: (typeof import('../src/services/xtreamService'))['XtreamService'];
+let resetLiveEpgCacheForTest!: (typeof import('../src/utils/liveEpgManager'))['resetLiveEpgCacheForTest'];
+let setLiveEpgClockForTest!: (typeof import('../src/utils/liveEpgManager'))['setLiveEpgClockForTest'];
+let setLiveEpgConcurrencyLimitForTest!: (typeof import('../src/utils/liveEpgManager'))['setLiveEpgConcurrencyLimitForTest'];
+let getCachedLiveEpgSnapshot!: (typeof import('../src/utils/liveEpgManager'))['getCachedLiveEpgSnapshot'];
+let clearLoadedImageUrlCache!: (typeof import('../src/components/MediaImage'))['clearLoadedImageUrlCache'];
+let hasLoadedImageUrl!: (typeof import('../src/components/MediaImage'))['hasLoadedImageUrl'];
+let LiveTvView!: (typeof import('../src/views/LiveTvView'))['LiveTvView'];
+let NavigationProvider!: (typeof import('../src/navigation'))['NavigationProvider'];
+let setNavMode!: (typeof import('../src/navigation'))['setNavMode'];
+let focusElementSafely!: (typeof import('../src/navigation'))['focusElementSafely'];
+let clearAllBackHandlersForTest!: (typeof import('../src/navigation'))['clearAllBackHandlersForTest'];
+let invalidateCandidateCache!: (typeof import('../src/navigation'))['invalidateCandidateCache'];
+let setAndroidPlatformOverrideForDpadTest!: (typeof import('../src/navigation/navigationPlatformPolicy'))['setAndroidPlatformOverrideForDpadTest'];
+let confirmDisplayPreferences!: (typeof import('../src/platform/tvEnvironment'))['confirmDisplayPreferences'];
+let syncDocumentDisplayAttributes!: (typeof import('../src/platform/tvEnvironment'))['syncDocumentDisplayAttributes'];
+let initPerformanceProfile!: (typeof import('../src/platform/performanceProfile'))['initPerformanceProfile'];
+let setPerformanceProfilePreference!: (typeof import('../src/platform/performanceProfile'))['setPerformanceProfilePreference'];
+let resetPerformanceProfileCacheForTest!: (typeof import('../src/platform/performanceProfile'))['resetPerformanceProfileCacheForTest'];
+
+try {
+  ({ XtreamCredentialsContext, XtreamLiveContext } = await import('../src/context/XtreamContext'));
+  ({ XtreamService } = await import('../src/services/xtreamService'));
+  ({
+    resetLiveEpgCacheForTest,
+    setLiveEpgClockForTest,
+    setLiveEpgConcurrencyLimitForTest,
+    getCachedLiveEpgSnapshot,
+  } = await import('../src/utils/liveEpgManager'));
+  ({ clearLoadedImageUrlCache, hasLoadedImageUrl } = await import('../src/components/MediaImage'));
+  ({ LiveTvView } = await import('../src/views/LiveTvView'));
+  ({
+    NavigationProvider,
+    setNavMode,
+    focusElementSafely,
+    clearAllBackHandlersForTest,
+    invalidateCandidateCache,
+  } = await import('../src/navigation'));
+  ({ setAndroidPlatformOverrideForDpadTest } = await import('../src/navigation/navigationPlatformPolicy'));
+  ({ confirmDisplayPreferences, syncDocumentDisplayAttributes } = await import(
+    '../src/platform/tvEnvironment'
+  ));
+  ({
+    initPerformanceProfile,
+    setPerformanceProfilePreference,
+    resetPerformanceProfileCacheForTest,
+  } = await import('../src/platform/performanceProfile'));
+} catch (importError) {
+  const cleanupErrors = await env.dispose();
+  if (cleanupErrors.length > 0) {
+    console.error('Erros adicionais ao limpar ambiente após falha de importação:', cleanupErrors);
+  }
+  throw importError;
+}
 
 // Intercepta XtreamService.getShortEpg para 100% de determinismo sem chamadas externas
 interface EpgCallRecord {
@@ -429,10 +432,23 @@ let customEpgHandler: EpgHandler = async (streamId: number) => ({
   ],
 });
 
+const origGetShortEpg = XtreamService.getShortEpg;
 (XtreamService as any).getShortEpg = async (_creds: any, streamId: number) => {
   epgCalls.push({ streamId: Number(streamId), atMs: performance.now() });
   return customEpgHandler(Number(streamId));
 };
+
+env.registerCleanup(() => {
+  (XtreamService as any).getShortEpg = origGetShortEpg;
+  setLiveEpgClockForTest(null);
+  setLiveEpgConcurrencyLimitForTest(3);
+  resetLiveEpgCacheForTest();
+  clearLoadedImageUrlCache();
+  setAndroidPlatformOverrideForDpadTest(null);
+  resetPerformanceProfileCacheForTest();
+  clearAllBackHandlersForTest();
+  invalidateCandidateCache();
+});
 
 function buildSyntheticLiveCatalog() {
   const liveCategories: any[] = [];
@@ -521,6 +537,10 @@ async function waitMs(ms: number): Promise<void> {
 const origPerfNow = performance.now.bind(performance);
 let simulatedClockOffsetMs = 0;
 performance.now = () => origPerfNow() + simulatedClockOffsetMs;
+env.registerCleanup(() => {
+  performance.now = origPerfNow;
+  simulatedClockOffsetMs = 0;
+});
 
 async function dispatchKey(key: string, repeat = false): Promise<void> {
   if (repeat) {
@@ -548,8 +568,10 @@ function resetEnv(
   window.localStorage.clear();
   clearLoadedImageUrlCache();
   resetLiveEpgCacheForTest();
+  activeIOInstances.clear();
   epgCalls = [];
   simulatedEpgNowMs = BASE_NOW_MS;
+  simulatedClockOffsetMs = 0;
   document.documentElement.removeAttribute('data-performance-mode');
   document.documentElement.removeAttribute('data-display-mode');
   document.documentElement.style.removeProperty('font-size');
@@ -561,6 +583,8 @@ function resetEnv(
   syncDocumentDisplayAttributes();
   setNavMode(nav);
   resetPerformanceProfileCacheForTest();
+  clearAllBackHandlersForTest();
+  invalidateCandidateCache();
   initPerformanceProfile();
   setPerformanceProfilePreference(perf);
 }
@@ -576,9 +600,8 @@ async function mountLiveTv(
   onCommit?: () => void,
   options?: { strictMode?: boolean; onStrictProbe?: (event: 'setup' | 'cleanup') => void }
 ) {
-  const host = document.createElement('div');
-  document.body.appendChild(host);
-  const root: Root = createRoot(host);
+  const tracked = env.createTrackedRoot();
+  const { host, root } = tracked;
 
   const liveContextValue = {
     liveCategories: catalog.liveCategories,
@@ -639,12 +662,7 @@ async function mountLiveTv(
   return {
     host,
     immediateEpgCallsAfterRender,
-    unmount: async () => {
-      await act(async () => {
-        root.unmount();
-      });
-      host.remove();
-    },
+    unmount: () => tracked.unmount(),
   };
 }
 
@@ -652,20 +670,54 @@ async function mountLiveTv(
 // 4. Execução dos cenários (16 requisitos da Fase 3/5)
 // ============================================================================
 async function runTests() {
+  const startedAt = Date.now();
   const catalog = buildSyntheticLiveCatalog();
+  let caseIndex = 0;
   let passed = 0;
+  let skipped = 0;
 
   const runCase = async (name: string, fn: () => Promise<void>) => {
-    await fn();
+    caseIndex += 1;
+    if (selectedCaseNumber !== null && caseIndex !== selectedCaseNumber) {
+      skipped += 1;
+      return;
+    }
+    let caseError: unknown = null;
+    try {
+      await fn();
+    } catch (err) {
+      caseError = err;
+    } finally {
+      const unmountErrors = await env.unmountAllRoots();
+      activeIOInstances.clear();
+      clearAllBackHandlersForTest();
+      invalidateCandidateCache();
+      resetLiveEpgCacheForTest();
+      setSimulatedViewport(1280, 720);
+      if (!caseError && unmountErrors.length > 0) {
+        caseError = unmountErrors[0];
+      }
+    }
+    if (caseError) {
+      throw caseError;
+    }
     passed += 1;
-    console.log(`  [OK] ${name}`);
+    console.log(`  [OK] [Caso ${caseIndex}/${TOTAL_CASES}] ${name}`);
   };
 
-  console.log(
-    IS_BASELINE_MODE
-      ? 'Executando medicao BASELINE (antes da Fase 3) de EPG, imagens e visibilidade...'
-      : 'Executando suite direcionada de EPG, logotipos e visibilidade da TV ao Vivo (test-live-tv-epg-assets)...'
-  );
+  if (selectedCaseNumber !== null) {
+    console.log(
+      IS_BASELINE_MODE
+        ? `Executando medicao BASELINE (antes da Fase 3) de EPG, imagens e visibilidade — filtro PARCIAL NC_LIVE_TV_EPG_ASSETS_CASE=${selectedCaseNumber}/${TOTAL_CASES}...`
+        : `Executando suite direcionada de EPG, logotipos e visibilidade da TV ao Vivo (test-live-tv-epg-assets) — filtro PARCIAL NC_LIVE_TV_EPG_ASSETS_CASE=${selectedCaseNumber}/${TOTAL_CASES}...`
+    );
+  } else {
+    console.log(
+      IS_BASELINE_MODE
+        ? 'Executando medicao BASELINE (antes da Fase 3) de EPG, imagens e visibilidade...'
+        : 'Executando suite direcionada de EPG, logotipos e visibilidade da TV ao Vivo (test-live-tv-epg-assets)...'
+    );
+  }
 
   // --------------------------------------------------------------------------
   // Bloco 1: Assinaturas iniciais (Full vs Lite 720p vs Lite 1080p) + commits redundantes (empty)
@@ -1624,15 +1676,48 @@ async function runTests() {
     }
   );
 
-  console.log(
-    `\nSucesso: ${passed} blocos de cenários passaram em test-live-tv-epg-assets${
-      IS_BASELINE_MODE ? ' (modo baseline)' : ''
-    }.`
-  );
-  process.exit(0);
+  if (caseIndex !== TOTAL_CASES) {
+    throw new Error(
+      `Contagem esperada de blocos em test-live-tv-epg-assets (${TOTAL_CASES}) diverge da executada (${caseIndex}).`
+    );
+  }
+
+  return {
+    passed,
+    skipped,
+    durationMs: Date.now() - startedAt,
+  };
 }
 
-runTests().catch((err) => {
-  console.error('FALHA em test-live-tv-epg-assets:', err);
-  process.exit(1);
-});
+let runError: unknown = null;
+let summary: { passed: number; skipped: number; durationMs: number } | null = null;
+
+try {
+  summary = await runTests();
+} catch (err) {
+  runError = err;
+}
+
+const teardownErrors = await env.dispose();
+
+if (runError) {
+  console.error('FALHA em test-live-tv-epg-assets:', runError);
+  if (teardownErrors.length > 0) {
+    console.error('Erros adicionais durante teardown em test-live-tv-epg-assets:', teardownErrors);
+  }
+  process.exitCode = 1;
+} else if (teardownErrors.length > 0) {
+  console.error('FALHA durante teardown em test-live-tv-epg-assets:', teardownErrors);
+  process.exitCode = 1;
+} else if (summary) {
+  const baselineSuffix = IS_BASELINE_MODE ? ' (modo baseline)' : '';
+  if (selectedCaseNumber !== null) {
+    console.log(
+      `\nSucesso PARCIAL (filtro NC_LIVE_TV_EPG_ASSETS_CASE=${selectedCaseNumber}): ${summary.passed} bloco executado (${summary.skipped} ignorados de ${TOTAL_CASES}) em ${summary.durationMs}ms — test-live-tv-epg-assets${baselineSuffix}.`
+    );
+  } else {
+    console.log(
+      `\nSucesso: ${summary.passed}/${TOTAL_CASES} blocos de cenários passaram em ${summary.durationMs}ms — test-live-tv-epg-assets${baselineSuffix}.`
+    );
+  }
+}

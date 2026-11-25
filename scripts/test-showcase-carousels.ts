@@ -1,144 +1,25 @@
 import assert from 'node:assert';
-import { Window } from 'happy-dom';
-import React, { act } from 'react';
-import { createRoot, Root } from 'react-dom/client';
+import type { ReactElement } from 'react';
+import type { Root } from 'react-dom/client';
+import { createDomTestEnv, type TrackedReactRoot } from './helpers/domEnv';
 
-// ============================================================================
-// 1. Ambiente DOM enxuto e determinístico (sem servidores ou credenciais reais)
-// ============================================================================
-const windowInstance = new Window({
-  url: 'http://localhost:3000',
-  width: 1280,
-  height: 720,
-});
+const TOTAL_CASES = 5;
 
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-(globalThis as any).window = windowInstance;
-(globalThis as any).document = windowInstance.document;
-Object.defineProperty(globalThis, 'navigator', {
-  value: windowInstance.navigator,
-  writable: true,
-  configurable: true,
-});
-(globalThis as any).HTMLElement = windowInstance.HTMLElement;
-(globalThis as any).HTMLButtonElement = windowInstance.HTMLButtonElement;
-(globalThis as any).HTMLInputElement = windowInstance.HTMLInputElement;
-(globalThis as any).HTMLVideoElement = windowInstance.HTMLVideoElement;
-(globalThis as any).HTMLImageElement = windowInstance.HTMLImageElement;
-(globalThis as any).Element = windowInstance.Element;
-(globalThis as any).Node = windowInstance.Node;
-(globalThis as any).SVGElement = windowInstance.SVGElement;
-(globalThis as any).Event = windowInstance.Event;
-(globalThis as any).CustomEvent = windowInstance.CustomEvent;
-(globalThis as any).KeyboardEvent = windowInstance.KeyboardEvent;
-(globalThis as any).MouseEvent = windowInstance.MouseEvent;
-(globalThis as any).MutationObserver = windowInstance.MutationObserver;
-(globalThis as any).localStorage = windowInstance.localStorage;
-(globalThis as any).sessionStorage = windowInstance.sessionStorage;
-(globalThis as any).URL = windowInstance.URL;
-(globalThis as any).Blob = windowInstance.Blob;
-(globalThis as any).getComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
-
-(globalThis as any).ResizeObserver = class ResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-};
-
-(globalThis as any).IntersectionObserver = class IntersectionObserver {
-  private cb: IntersectionObserverCallback;
-  constructor(cb: IntersectionObserverCallback) {
-    this.cb = cb;
-  }
-  observe(target: Element) {
-    // Marca apenas elementos montados na janela atual como visíveis de forma controlada
-    this.cb(
-      [
-        {
-          target,
-          isIntersecting: true,
-          intersectionRatio: 1,
-          boundingClientRect: target.getBoundingClientRect(),
-          intersectionRect: target.getBoundingClientRect(),
-          rootBounds: null,
-          time: Date.now(),
-        } as IntersectionObserverEntry,
-      ],
-      this as any
+const rawCaseFilter = process.env.NC_SHOWCASE_CAROUSELS_CASE?.trim();
+let selectedCaseNumber: number | null = null;
+if (rawCaseFilter) {
+  const parsed = Number.parseInt(rawCaseFilter, 10);
+  if (!/^\d+$/.test(rawCaseFilter) || parsed < 1 || parsed > TOTAL_CASES) {
+    console.error(
+      `FALHA em test-showcase-carousels: filtro inválido NC_SHOWCASE_CAROUSELS_CASE="${rawCaseFilter}". Informe um número inteiro entre 1 e ${TOTAL_CASES}.`
     );
+    process.exit(1);
   }
-  unobserve() {}
-  disconnect() {}
-  takeRecords() {
-    return [];
-  }
-};
-
-const matchMediaStub = (query: string) => ({
-  matches: false,
-  media: query,
-  onchange: null,
-  addListener: () => {},
-  removeListener: () => {},
-  addEventListener: () => {},
-  removeEventListener: () => {},
-  dispatchEvent: () => false,
-});
-(globalThis as any).matchMedia = matchMediaStub;
-(windowInstance as any).matchMedia = matchMediaStub;
-
-let rafIdCounter = 1;
-const rafTimers = new Map<number, NodeJS.Timeout>();
-const rafCallback = (cb: FrameRequestCallback) => {
-  const id = rafIdCounter++;
-  const timer = setTimeout(() => {
-    rafTimers.delete(id);
-    cb(Date.now());
-  }, 0);
-  rafTimers.set(id, timer);
-  return id;
-};
-const cancelRafCallback = (id: number) => {
-  const timer = rafTimers.get(id);
-  if (timer) {
-    clearTimeout(timer);
-    rafTimers.delete(id);
-  }
-};
-(globalThis as any).requestAnimationFrame = rafCallback;
-(globalThis as any).cancelAnimationFrame = cancelRafCallback;
-(windowInstance as any).requestAnimationFrame = rafCallback;
-(windowInstance as any).cancelAnimationFrame = cancelRafCallback;
-
-// Stub de fetch (sem requisições reais a provedores externos)
-(globalThis as any).fetch = async () => {
-  return new Response(JSON.stringify({}), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  });
-};
-
-const htmlProto = windowInstance.HTMLElement.prototype as any;
-htmlProto.animate = undefined;
-(windowInstance.Element.prototype as any).animate = undefined;
-htmlProto.scrollIntoView = function () {};
-htmlProto.scrollTo = function (options?: any, y?: number) {
-  if (typeof options === 'object' && options !== null) {
-    if (typeof options.top === 'number') this.scrollTop = options.top;
-    if (typeof options.left === 'number') this.scrollLeft = options.left;
-  } else if (typeof options === 'number') {
-    this.scrollLeft = options;
-    if (typeof y === 'number') this.scrollTop = y;
-  }
-};
-
-const videoProto = windowInstance.HTMLVideoElement.prototype as any;
-videoProto.play = () => Promise.resolve();
-videoProto.pause = () => {};
-videoProto.load = () => {};
+  selectedCaseNumber = parsed;
+}
 
 // ============================================================================
-// 2. Geometria determinística para HorizontalRow / LiveTvView / spatialNav
+// 1. Geometria determinística para HorizontalRow / LiveTvView / spatialNav
 // ============================================================================
 function makeRect(left: number, top: number, width: number, height: number): DOMRect {
   return {
@@ -162,138 +43,244 @@ const CARD_HEIGHT_POSTER = 264;
 const ROW_SLOT_HEIGHT = 340;
 const ROW_TOP_OFFSET = 460;
 
-Object.defineProperty(htmlProto, 'clientWidth', {
-  configurable: true,
-  get() {
-    const el = this as HTMLElement;
-    if (el.getAttribute?.('data-nav-row') === 'true') return ROW_VIEWPORT_WIDTH;
-    if (el.getAttribute?.('data-nav-grid') === 'true') return ROW_VIEWPORT_WIDTH;
-    if (el.getAttribute?.('data-scroll-container') === 'true') return 1280;
-    if (el.hasAttribute?.('data-row-card-index')) return CARD_WIDTH_POSTER;
-    return 1280;
+// ============================================================================
+// 2. Ambiente DOM compartilhado (happy-dom) + importação tardia de React
+// ============================================================================
+const env = await createDomTestEnv({
+  url: 'http://localhost:3000',
+  width: 1280,
+  height: 720,
+  watchdogMs: 25000,
+  watchdogLabel: 'test-showcase-carousels',
+  rafIntervalMs: 0,
+  disableElementAnimate: true,
+  stubScrollIntoView: true,
+  stubMediaPlayback: true,
+  stubResizeObserver: true,
+  stubIntersectionObserver: true,
+  matchMedia: (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }),
+  fetchImpl: (async () => {
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch,
+  beforeReactImport: ({ window: win }) => {
+    const ShowcaseIntersectionObserver = class IntersectionObserver {
+      private cb: IntersectionObserverCallback;
+      constructor(cb: IntersectionObserverCallback) {
+        this.cb = cb;
+      }
+      observe(target: Element) {
+        // Marca apenas elementos montados na janela atual como visíveis de forma controlada
+        this.cb(
+          [
+            {
+              target,
+              isIntersecting: true,
+              intersectionRatio: 1,
+              boundingClientRect: target.getBoundingClientRect(),
+              intersectionRect: target.getBoundingClientRect(),
+              rootBounds: null,
+              time: Date.now(),
+            } as IntersectionObserverEntry,
+          ],
+          this as any
+        );
+      }
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+    };
+    (globalThis as any).IntersectionObserver = ShowcaseIntersectionObserver;
+    (win as any).IntersectionObserver = ShowcaseIntersectionObserver;
+
+    const htmlProto = win.HTMLElement.prototype as any;
+    htmlProto.scrollIntoView = function () {};
+    htmlProto.scrollTo = function (options?: any, y?: number) {
+      if (typeof options === 'object' && options !== null) {
+        if (typeof options.top === 'number') this.scrollTop = options.top;
+        if (typeof options.left === 'number') this.scrollLeft = options.left;
+      } else if (typeof options === 'number') {
+        this.scrollLeft = options;
+        if (typeof y === 'number') this.scrollTop = y;
+      }
+    };
+
+    Object.defineProperty(htmlProto, 'clientWidth', {
+      configurable: true,
+      get() {
+        const el = this as HTMLElement;
+        if (el.getAttribute?.('data-nav-row') === 'true') return ROW_VIEWPORT_WIDTH;
+        if (el.getAttribute?.('data-nav-grid') === 'true') return ROW_VIEWPORT_WIDTH;
+        if (el.getAttribute?.('data-scroll-container') === 'true') return 1280;
+        if (el.hasAttribute?.('data-row-card-index')) return CARD_WIDTH_POSTER;
+        return 1280;
+      },
+    });
+
+    Object.defineProperty(htmlProto, 'clientHeight', {
+      configurable: true,
+      get() {
+        const el = this as HTMLElement;
+        if (el.getAttribute?.('data-nav-row') === 'true') return 290;
+        if (el.getAttribute?.('data-scroll-container') === 'true') return 720;
+        if (el.hasAttribute?.('data-row-card-index')) return CARD_HEIGHT_POSTER;
+        return 720;
+      },
+    });
+
+    Object.defineProperty(htmlProto, 'offsetWidth', {
+      configurable: true,
+      get() {
+        const el = this as HTMLElement;
+        if (el.hasAttribute?.('data-row-card-index')) return CARD_WIDTH_POSTER;
+        if (el.getAttribute?.('data-nav-row') === 'true') return ROW_VIEWPORT_WIDTH;
+        return 160;
+      },
+    });
+
+    Object.defineProperty(htmlProto, 'offsetHeight', {
+      configurable: true,
+      get() {
+        const el = this as HTMLElement;
+        if (el.hasAttribute?.('data-row-card-index')) return CARD_HEIGHT_POSTER;
+        if (el.getAttribute?.('data-nav-row') === 'true') return 290;
+        return 44;
+      },
+    });
+
+    htmlProto.getBoundingClientRect = function (this: HTMLElement): DOMRect {
+      if (this.hasAttribute('hidden') || this.getAttribute('aria-hidden') === 'true') {
+        return makeRect(0, 0, 0, 0);
+      }
+      const hiddenAncestor = this.closest?.('[hidden], [aria-hidden="true"]');
+      if (hiddenAncestor) {
+        return makeRect(0, 0, 0, 0);
+      }
+
+      // Card inside horizontal row (CatalogShowcaseView HorizontalRow or LiveTvView)
+      if (this.hasAttribute('data-row-card-index')) {
+        const cardIdx = parseInt(this.getAttribute('data-row-card-index') || '0', 10) || 0;
+        const rowEl = this.closest<HTMLElement>('[data-nav-row="true"]');
+        const rowWrapper = this.closest<HTMLElement>('[data-home-row-index], [data-showcase-row-index]');
+        const rowIdxAttr =
+          rowWrapper?.getAttribute('data-home-row-index') ??
+          rowWrapper?.getAttribute('data-showcase-row-index') ??
+          '0';
+        const rowIdx = parseInt(rowIdxAttr, 10) || 0;
+        const scrollLeft = rowEl ? rowEl.scrollLeft || 0 : 0;
+        const scrollContainer = this.closest<HTMLElement>('[data-scroll-container="true"]');
+        const scrollTop = scrollContainer ? scrollContainer.scrollTop || 0 : 0;
+        const left = 16 + cardIdx * CARD_STRIDE_POSTER - scrollLeft;
+        const top = ROW_TOP_OFFSET + rowIdx * ROW_SLOT_HEIGHT - scrollTop;
+        return makeRect(left, top, CARD_WIDTH_POSTER, CARD_HEIGHT_POSTER);
+      }
+
+      // Horizontal row container
+      if (this.getAttribute('data-nav-row') === 'true') {
+        const rowWrapper = this.closest<HTMLElement>('[data-home-row-index], [data-showcase-row-index]');
+        const rowIdxAttr =
+          rowWrapper?.getAttribute('data-home-row-index') ??
+          rowWrapper?.getAttribute('data-showcase-row-index') ??
+          '0';
+        const rowIdx = parseInt(rowIdxAttr, 10) || 0;
+        const scrollContainer = this.closest<HTMLElement>('[data-scroll-container="true"]');
+        const scrollTop = scrollContainer ? scrollContainer.scrollTop || 0 : 0;
+        const top = ROW_TOP_OFFSET + rowIdx * ROW_SLOT_HEIGHT - scrollTop;
+        return makeRect(0, top, ROW_VIEWPORT_WIDTH, 290);
+      }
+
+      // Showcase/Home row block wrapper
+      if (
+        this.hasAttribute('data-showcase-row-index') ||
+        this.hasAttribute('data-home-row-index')
+      ) {
+        const rowIdxAttr =
+          this.getAttribute('data-showcase-row-index') ??
+          this.getAttribute('data-home-row-index') ??
+          '0';
+        const rowIdx = parseInt(rowIdxAttr, 10) || 0;
+        const scrollContainer = this.closest<HTMLElement>('[data-scroll-container="true"]');
+        const scrollTop = scrollContainer ? scrollContainer.scrollTop || 0 : 0;
+        const top = ROW_TOP_OFFSET - 30 + rowIdx * ROW_SLOT_HEIGHT - scrollTop;
+        return makeRect(0, top, ROW_VIEWPORT_WIDTH, ROW_SLOT_HEIGHT);
+      }
+
+      if (this.getAttribute('data-scroll-container') === 'true') {
+        return makeRect(0, 0, 1280, 720);
+      }
+
+      // Generic interactive element (buttons, grid cards, etc.)
+      if (this.hasAttribute('data-nav-item') || this.tagName === 'BUTTON' || this.tagName === 'INPUT') {
+        return makeRect(24, 24, 160, 44);
+      }
+
+      return makeRect(0, 0, 1200, 100);
+    };
   },
 });
 
-Object.defineProperty(htmlProto, 'clientHeight', {
-  configurable: true,
-  get() {
-    const el = this as HTMLElement;
-    if (el.getAttribute?.('data-nav-row') === 'true') return 290;
-    if (el.getAttribute?.('data-scroll-container') === 'true') return 720;
-    if (el.hasAttribute?.('data-row-card-index')) return CARD_HEIGHT_POSTER;
-    return 720;
-  },
-});
-
-Object.defineProperty(htmlProto, 'offsetWidth', {
-  configurable: true,
-  get() {
-    const el = this as HTMLElement;
-    if (el.hasAttribute?.('data-row-card-index')) return CARD_WIDTH_POSTER;
-    if (el.getAttribute?.('data-nav-row') === 'true') return ROW_VIEWPORT_WIDTH;
-    return 160;
-  },
-});
-
-Object.defineProperty(htmlProto, 'offsetHeight', {
-  configurable: true,
-  get() {
-    const el = this as HTMLElement;
-    if (el.hasAttribute?.('data-row-card-index')) return CARD_HEIGHT_POSTER;
-    if (el.getAttribute?.('data-nav-row') === 'true') return 290;
-    return 44;
-  },
-});
-
-htmlProto.getBoundingClientRect = function (this: HTMLElement): DOMRect {
-  if (this.hasAttribute('hidden') || this.getAttribute('aria-hidden') === 'true') {
-    return makeRect(0, 0, 0, 0);
-  }
-  const hiddenAncestor = this.closest?.('[hidden], [aria-hidden="true"]');
-  if (hiddenAncestor) {
-    return makeRect(0, 0, 0, 0);
-  }
-
-  // Card inside horizontal row (CatalogShowcaseView HorizontalRow or LiveTvView)
-  if (this.hasAttribute('data-row-card-index')) {
-    const cardIdx = parseInt(this.getAttribute('data-row-card-index') || '0', 10) || 0;
-    const rowEl = this.closest<HTMLElement>('[data-nav-row="true"]');
-    const rowWrapper = this.closest<HTMLElement>('[data-home-row-index], [data-showcase-row-index]');
-    const rowIdxAttr =
-      rowWrapper?.getAttribute('data-home-row-index') ??
-      rowWrapper?.getAttribute('data-showcase-row-index') ??
-      '0';
-    const rowIdx = parseInt(rowIdxAttr, 10) || 0;
-    const scrollLeft = rowEl ? rowEl.scrollLeft || 0 : 0;
-    const scrollContainer = this.closest<HTMLElement>('[data-scroll-container="true"]');
-    const scrollTop = scrollContainer ? scrollContainer.scrollTop || 0 : 0;
-    const left = 16 + cardIdx * CARD_STRIDE_POSTER - scrollLeft;
-    const top = ROW_TOP_OFFSET + rowIdx * ROW_SLOT_HEIGHT - scrollTop;
-    return makeRect(left, top, CARD_WIDTH_POSTER, CARD_HEIGHT_POSTER);
-  }
-
-  // Horizontal row container
-  if (this.getAttribute('data-nav-row') === 'true') {
-    const rowWrapper = this.closest<HTMLElement>('[data-home-row-index], [data-showcase-row-index]');
-    const rowIdxAttr =
-      rowWrapper?.getAttribute('data-home-row-index') ??
-      rowWrapper?.getAttribute('data-showcase-row-index') ??
-      '0';
-    const rowIdx = parseInt(rowIdxAttr, 10) || 0;
-    const scrollContainer = this.closest<HTMLElement>('[data-scroll-container="true"]');
-    const scrollTop = scrollContainer ? scrollContainer.scrollTop || 0 : 0;
-    const top = ROW_TOP_OFFSET + rowIdx * ROW_SLOT_HEIGHT - scrollTop;
-    return makeRect(0, top, ROW_VIEWPORT_WIDTH, 290);
-  }
-
-  // Showcase/Home row block wrapper
-  if (
-    this.hasAttribute('data-showcase-row-index') ||
-    this.hasAttribute('data-home-row-index')
-  ) {
-    const rowIdxAttr =
-      this.getAttribute('data-showcase-row-index') ??
-      this.getAttribute('data-home-row-index') ??
-      '0';
-    const rowIdx = parseInt(rowIdxAttr, 10) || 0;
-    const scrollContainer = this.closest<HTMLElement>('[data-scroll-container="true"]');
-    const scrollTop = scrollContainer ? scrollContainer.scrollTop || 0 : 0;
-    const top = ROW_TOP_OFFSET - 30 + rowIdx * ROW_SLOT_HEIGHT - scrollTop;
-    return makeRect(0, top, ROW_VIEWPORT_WIDTH, ROW_SLOT_HEIGHT);
-  }
-
-  if (this.getAttribute('data-scroll-container') === 'true') {
-    return makeRect(0, 0, 1280, 720);
-  }
-
-  // Generic interactive element (buttons, grid cards, etc.)
-  if (this.hasAttribute('data-nav-item') || this.tagName === 'BUTTON' || this.tagName === 'INPUT') {
-    return makeRect(24, 24, 160, 44);
-  }
-
-  return makeRect(0, 0, 1200, 100);
-};
+const { React, act } = env;
 
 // ============================================================================
 // 3. Imports dinâmicos após o bootstrap do DOM
 // ============================================================================
-const { CatalogShowcaseView } = await import('../src/components/CatalogShowcaseView');
-const { LiveTvView } = await import('../src/views/LiveTvView');
-const {
-  XtreamCredentialsContext,
-  XtreamLiveContext,
-} = await import('../src/context/XtreamContext');
-const {
-  NavigationProvider,
-  moveSpatialFocus,
-  setNavMode,
-  invalidateCandidateCache,
-} = await import('../src/navigation');
-const {
-  getOrCreateVodIndex,
-  getOrCreateSeriesIndex,
-  getHeroBannerItems,
-} = await import('../src/utils/catalogIndex');
+let CatalogShowcaseView!: (typeof import('../src/components/CatalogShowcaseView'))['CatalogShowcaseView'];
+let LiveTvView!: (typeof import('../src/views/LiveTvView'))['LiveTvView'];
+let XtreamCredentialsContext!: (typeof import('../src/context/XtreamContext'))['XtreamCredentialsContext'];
+let XtreamLiveContext!: (typeof import('../src/context/XtreamContext'))['XtreamLiveContext'];
+let NavigationProvider!: (typeof import('../src/navigation'))['NavigationProvider'];
+let moveSpatialFocus!: (typeof import('../src/navigation'))['moveSpatialFocus'];
+let setNavMode!: (typeof import('../src/navigation'))['setNavMode'];
+let clearAllBackHandlersForTest!: (typeof import('../src/navigation'))['clearAllBackHandlersForTest'];
+let invalidateCandidateCache!: (typeof import('../src/navigation'))['invalidateCandidateCache'];
+let getOrCreateVodIndex!: (typeof import('../src/utils/catalogIndex'))['getOrCreateVodIndex'];
+let getOrCreateSeriesIndex!: (typeof import('../src/utils/catalogIndex'))['getOrCreateSeriesIndex'];
+let getHeroBannerItems!: (typeof import('../src/utils/catalogIndex'))['getHeroBannerItems'];
+
+try {
+  ({ CatalogShowcaseView } = await import('../src/components/CatalogShowcaseView'));
+  ({ LiveTvView } = await import('../src/views/LiveTvView'));
+  ({
+    XtreamCredentialsContext,
+    XtreamLiveContext,
+  } = await import('../src/context/XtreamContext'));
+  ({
+    NavigationProvider,
+    moveSpatialFocus,
+    setNavMode,
+    clearAllBackHandlersForTest,
+    invalidateCandidateCache,
+  } = await import('../src/navigation'));
+  ({
+    getOrCreateVodIndex,
+    getOrCreateSeriesIndex,
+    getHeroBannerItems,
+  } = await import('../src/utils/catalogIndex'));
+} catch (importError) {
+  const cleanupErrors = await env.dispose();
+  if (cleanupErrors.length > 0) {
+    console.error('Erros adicionais ao limpar ambiente após falha de importação:', cleanupErrors);
+  }
+  throw importError;
+}
+
+env.registerCleanup(() => {
+  clearAllBackHandlersForTest();
+  invalidateCandidateCache();
+});
 
 // ============================================================================
 // 4. Geradores de catálogos sintéticos determinísticos
@@ -390,21 +377,28 @@ async function flushMicrotasks(ms = 15) {
   });
 }
 
-function mountInContainer(element: React.ReactElement): { container: HTMLElement; root: Root } {
-  const container = document.createElement('div');
-  document.body.appendChild(container);
-  const root = createRoot(container);
+const trackedByRoot = new WeakMap<Root, TrackedReactRoot>();
+
+function mountInContainer(element: ReactElement): { container: HTMLElement; root: Root } {
+  const tracked = env.createTrackedRoot();
+  trackedByRoot.set(tracked.root, tracked);
   act(() => {
-    root.render(element);
+    tracked.root.render(element);
   });
-  return { container, root };
+  return { container: tracked.host, root: tracked.root };
 }
 
 function unmountContainer(root: Root, container: HTMLElement) {
-  act(() => {
-    root.unmount();
-  });
-  container.remove();
+  const tracked = trackedByRoot.get(root);
+  if (tracked) {
+    tracked.unmountSync();
+    trackedByRoot.delete(root);
+  } else {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  }
   invalidateCandidateCache();
 }
 
@@ -443,17 +437,55 @@ function stepSpatial(direction: 'left' | 'right' | 'up' | 'down', steps = 1): HT
 // ============================================================================
 // 5. Execução dos cenários direcionados
 // ============================================================================
-let passed = 0;
-function pass(label: string) {
-  passed += 1;
-  console.log(`  ✓ ${label}`);
-}
+async function runTests() {
+  const startedAt = Date.now();
+  let caseIndex = 0;
+  let passed = 0;
+  let skipped = 0;
 
-console.log('=== North Code Play — Teste Direcionado de Carrosséis Completos ===');
+  function pass(label: string) {
+    passed += 1;
+    console.log(`  ✓ ${label}`);
+  }
 
-// --- Cenário 1: Indexação, estabilidade de referência e preservação do HeroBanner ---
-{
-  console.log('\n[1/5] Indexação completa, estabilidade de referência e preservação do HeroBanner');
+  const runCase = async (title: string, fn: () => Promise<void> | void) => {
+    caseIndex += 1;
+    if (selectedCaseNumber !== null && caseIndex !== selectedCaseNumber) {
+      skipped += 1;
+      return;
+    }
+    console.log(`\n[${caseIndex}/${TOTAL_CASES}] ${title}`);
+    window.localStorage.clear();
+    clearAllBackHandlersForTest();
+    invalidateCandidateCache();
+    let caseError: unknown = null;
+    try {
+      await fn();
+    } catch (err) {
+      caseError = err;
+    } finally {
+      const unmountErrors = await env.unmountAllRoots();
+      clearAllBackHandlersForTest();
+      invalidateCandidateCache();
+      if (!caseError && unmountErrors.length > 0) {
+        caseError = unmountErrors[0];
+      }
+    }
+    if (caseError) {
+      throw caseError;
+    }
+  };
+
+  if (selectedCaseNumber !== null) {
+    console.log(
+      `=== North Code Play — Teste Direcionado de Carrosséis Completos (filtro PARCIAL NC_SHOWCASE_CAROUSELS_CASE=${selectedCaseNumber}/${TOTAL_CASES}) ===`
+    );
+  } else {
+    console.log('=== North Code Play — Teste Direcionado de Carrosséis Completos ===');
+  }
+
+  // --- Cenário 1: Indexação, estabilidade de referência e preservação do HeroBanner ---
+  await runCase('Indexação completa, estabilidade de referência e preservação do HeroBanner', () => {
   const vodData = makeSyntheticVodList([
     { id: 'v8', name: 'Curtas', count: 8 },
     { id: 'v24', name: 'Clássicos', count: 24 },
@@ -500,11 +532,10 @@ console.log('=== North Code Play — Teste Direcionado de Carrosséis Completos 
   assert.strictEqual(heroSeries.length, 30, 'HeroBanner (Séries) deve continuar limitado a 30 itens');
 
   pass('catalogIndex preserva catálogos completos (1200 filmes / 120 séries), referências estáveis e HeroBanner limitado a 30 itens');
-}
+  });
 
-// --- Cenário 2: Início (Canais Ao Vivo, Filmes em Destaque, Séries em Destaque) ---
-{
-  console.log('\n[2/5] Início: Canais Ao Vivo (>24), Filmes em Destaque (>24) e Séries em Destaque (>24)');
+  // --- Cenário 2: Início (Canais Ao Vivo, Filmes em Destaque, Séries em Destaque) ---
+  await runCase('Início: Canais Ao Vivo (>24), Filmes em Destaque (>24) e Séries em Destaque (>24)', async () => {
   setNavMode('remote');
   const vodData = makeSyntheticVodList([
     { id: 'v8', name: 'Curtas', count: 8 },
@@ -607,11 +638,10 @@ console.log('=== North Code Play — Teste Direcionado de Carrosséis Completos 
 
   unmountContainer(root, container);
   pass('Início exibe Canais Ao Vivo (60), Filmes em Destaque (1208) e Séries em Destaque (120) sem truncamento de 24 e com virtualização controlada');
-}
+  });
 
-// --- Cenário 3: Filmes (8, 24, 25, 80, 1063 itens + detalhes + retorno + Ver todos + atualização) ---
-{
-  console.log('\n[3/5] Filmes: 8, 24, 25, 80 e 1063 itens, navegação completa, detalhes, Ver todos e atualização de catálogo');
+  // --- Cenário 3: Filmes (8, 24, 25, 80, 1063 itens + detalhes + retorno + Ver todos + atualização) ---
+  await runCase('Filmes: 8, 24, 25, 80 e 1063 itens, navegação completa, detalhes, Ver todos e atualização de catálogo', async () => {
   setNavMode('remote');
   const vodData = makeSyntheticVodList([
     { id: 'v8', name: 'Curtas', count: 8 },
@@ -852,11 +882,10 @@ console.log('=== North Code Play — Teste Direcionado de Carrosséis Completos 
 
   unmountContainer(root, container);
   pass('Filmes valida 8/24/25/80/1063 itens, navegação completa, retorno de MovieDetails além de 24, Ver todos e atualização de catálogo');
-}
+  });
 
-// --- Cenário 4: Séries (10, 24, 25, 61 itens + SeriesDetails além de 24 + filtro de categoria) ---
-{
-  console.log('\n[4/5] Séries: 10, 24, 25 e 61 itens, navegação completa, SeriesDetails além de 24 e filtro');
+  // --- Cenário 4: Séries (10, 24, 25, 61 itens + SeriesDetails além de 24 + filtro de categoria) ---
+  await runCase('Séries: 10, 24, 25 e 61 itens, navegação completa, SeriesDetails além de 24 e filtro', async () => {
   setNavMode('remote');
   const seriesData = makeSyntheticSeriesList([
     { id: 's10', name: 'Minisséries', count: 10 },
@@ -955,11 +984,10 @@ console.log('=== North Code Play — Teste Direcionado de Carrosséis Completos 
 
   unmountContainer(root, container);
   pass('Séries valida 10/24/25/61 itens, navegação completa, retorno de SeriesDetails além de 24 e filtro de categoria');
-}
+  });
 
-// --- Cenário 5: Auditoria em execução (somente leitura) da TV ao Vivo (>24 canais por categoria) ---
-{
-  console.log('\n[5/5] TV ao Vivo (somente leitura): confirmação de inexistência de truncamento acima de 24 canais');
+  // --- Cenário 5: Auditoria em execução (somente leitura) da TV ao Vivo (>24 canais por categoria) ---
+  await runCase('TV ao Vivo (somente leitura): confirmação de inexistência de truncamento acima de 24 canais', async () => {
   setNavMode('remote');
   const liveData = makeSyntheticLiveList([
     { id: 'l12', name: 'Notícias', count: 12 },
@@ -1030,11 +1058,49 @@ console.log('=== North Code Play — Teste Direcionado de Carrosséis Completos 
 
   unmountContainer(root, container);
   pass('LiveTvView confirmado sem truncamento: categoria de 60 canais virtualiza janela e alcança do índice 0 ao 59');
+  });
+
+  if (caseIndex !== TOTAL_CASES) {
+    throw new Error(
+      `Contagem esperada de blocos em test-showcase-carousels (${TOTAL_CASES}) diverge da executada (${caseIndex}).`
+    );
+  }
+
+  return {
+    passed,
+    skipped,
+    durationMs: Date.now() - startedAt,
+  };
 }
 
-// Limpar timers residuais de rAF
-rafTimers.forEach((timer) => clearTimeout(timer));
-rafTimers.clear();
+let runError: unknown = null;
+let summary: { passed: number; skipped: number; durationMs: number } | null = null;
 
-console.log(`\n✅ Todos os ${passed} blocos de verificação de carrosséis completos passaram com sucesso!`);
-process.exit(0);
+try {
+  summary = await runTests();
+} catch (err) {
+  runError = err;
+}
+
+const teardownErrors = await env.dispose();
+
+if (runError) {
+  console.error('FALHA em test-showcase-carousels:', runError);
+  if (teardownErrors.length > 0) {
+    console.error('Erros adicionais durante teardown em test-showcase-carousels:', teardownErrors);
+  }
+  process.exitCode = 1;
+} else if (teardownErrors.length > 0) {
+  console.error('FALHA durante teardown em test-showcase-carousels:', teardownErrors);
+  process.exitCode = 1;
+} else if (summary) {
+  if (selectedCaseNumber !== null) {
+    console.log(
+      `\n✅ Sucesso PARCIAL (filtro NC_SHOWCASE_CAROUSELS_CASE=${selectedCaseNumber}): ${summary.passed} bloco executado (${summary.skipped} ignorados de ${TOTAL_CASES}) em ${summary.durationMs}ms — test-showcase-carousels.`
+    );
+  } else {
+    console.log(
+      `\n✅ Todos os ${summary.passed}/${TOTAL_CASES} blocos de verificação de carrosséis completos passaram com sucesso em ${summary.durationMs}ms — test-showcase-carousels.`
+    );
+  }
+}
