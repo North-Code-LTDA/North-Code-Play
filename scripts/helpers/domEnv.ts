@@ -47,7 +47,6 @@ export interface DomTestEnv {
   React: typeof ReactNamespace.default;
   act: typeof ReactNamespace.act;
   Profiler: typeof ReactNamespace.Profiler;
-  createRoot: (container: Element | DocumentFragment) => Root;
   createTrackedRoot: (existingHost?: HTMLDivElement) => TrackedReactRoot;
   unmountAllRoots: () => Promise<Error[]>;
   registerCleanup: (fn: () => void | Promise<void>) => void;
@@ -120,8 +119,10 @@ function restoreGlobalProperties(saved: SavedGlobalDescriptor[]): Error[] {
 
 /**
  * Inicializa um ambiente happy-dom isolado seguindo a ordem obrigatória:
- * 1) Watchdog de segurança (protege bootstrap, execução e teardown)
- * 2) Criação da Window happy-dom e registro de window/document/globais/mocks
+ * 1) Watchdog de segurança (permanece ativo durante bootstrap, execução e teardown;
+ *    sem unref() para impedir saída prematura silenciosa de Promises pendentes,
+ *    e cancelado explicitamente ao final de dispose() para permitir encerramento natural)
+ * 2) Criação da Window happy-dom (dentro do bloco protegido) e registro de globais/mocks
  * 3) Hook opcional beforeReactImport (geometria, protótipos e mocks específicos)
  * 4) Import dinâmico de react e react-dom/client (garantindo canUseDOM=true)
  */
@@ -151,7 +152,6 @@ export async function createDomTestEnv(
       console.error(`TIMEOUT GLOBAL: ${watchdogLabel} excedeu ${watchdogMs / 1000}s`);
       process.exit(1);
     }, watchdogMs);
-    watchdog.unref();
   }
 
   const clearWatchdog = () => {
@@ -165,7 +165,9 @@ export async function createDomTestEnv(
   const customCleanups: Array<() => void | Promise<void>> = [];
   const rafTimers = new Map<number, ReturnType<typeof setTimeout>>();
   const activeRoots = new Set<TrackedReactRoot>();
-  let disposed = false;
+  let windowInstance: Window | null = null;
+  let loadedAct: typeof ReactNamespace.act | null = null;
+  let disposePromise: Promise<Error[]> | null = null;
 
   const registerCleanup = (fn: () => void | Promise<void>) => {
     customCleanups.push(fn);
@@ -177,11 +179,6 @@ export async function createDomTestEnv(
     }
     rafTimers.clear();
   };
-
-  const windowInstance = new Window({ url, width, height });
-  const doc = windowInstance.document as unknown as Document;
-
-  let loadedAct: typeof ReactNamespace.act | null = null;
 
   const unmountAllRoots = async (): Promise<Error[]> => {
     const errors: Error[] = [];
@@ -199,52 +196,65 @@ export async function createDomTestEnv(
     return errors;
   };
 
-  const dispose = async (): Promise<Error[]> => {
-    if (disposed) {
-      return [];
+  const dispose = (): Promise<Error[]> => {
+    if (disposePromise) {
+      return disposePromise;
     }
-    disposed = true;
-    const errors: Error[] = [];
 
-    const rootErrors = await unmountAllRoots();
-    errors.push(...rootErrors);
-
-    for (let i = customCleanups.length - 1; i >= 0; i -= 1) {
+    disposePromise = (async () => {
+      const errors: Error[] = [];
       try {
-        await customCleanups[i]();
-      } catch (err) {
-        errors.push(
-          err instanceof Error
-            ? err
-            : new Error(`Falha em rotina de limpeza registrada: ${String(err)}`)
-        );
+        const rootErrors = await unmountAllRoots();
+        errors.push(...rootErrors);
+
+        for (let i = customCleanups.length - 1; i >= 0; i -= 1) {
+          try {
+            await customCleanups[i]();
+          } catch (err) {
+            errors.push(
+              err instanceof Error
+                ? err
+                : new Error(`Falha em rotina de limpeza registrada: ${String(err)}`)
+            );
+          }
+        }
+        customCleanups.length = 0;
+
+        try {
+          clearRafTimers();
+        } catch (err) {
+          errors.push(err instanceof Error ? err : new Error(String(err)));
+        }
+
+        if (windowInstance !== null) {
+          const closingWindow = windowInstance;
+          windowInstance = null;
+          try {
+            await closingWindow.close();
+          } catch (err) {
+            errors.push(
+              err instanceof Error
+                ? err
+                : new Error(`Falha ao encerrar happy-dom Window: ${String(err)}`)
+            );
+          }
+        }
+
+        errors.push(...restoreGlobalProperties(savedGlobals));
+      } finally {
+        clearWatchdog();
       }
-    }
-    customCleanups.length = 0;
 
-    try {
-      clearRafTimers();
-    } catch (err) {
-      errors.push(err instanceof Error ? err : new Error(String(err)));
-    }
+      return errors;
+    })();
 
-    try {
-      await windowInstance.close();
-    } catch (err) {
-      errors.push(
-        err instanceof Error
-          ? err
-          : new Error(`Falha ao encerrar happy-dom Window: ${String(err)}`)
-      );
-    }
-
-    errors.push(...restoreGlobalProperties(savedGlobals));
-    clearWatchdog();
-
-    return errors;
+    return disposePromise;
   };
 
   try {
+    windowInstance = new Window({ url, width, height });
+    const doc = windowInstance.document as unknown as Document;
+
     setGlobalProperty(savedGlobals, 'IS_REACT_ACT_ENVIRONMENT', true);
     setGlobalProperty(savedGlobals, 'window', windowInstance);
     setGlobalProperty(savedGlobals, 'document', doc);
@@ -381,31 +391,50 @@ export async function createDomTestEnv(
     loadedAct = act;
 
     const createTrackedRoot = (existingHost?: HTMLDivElement): TrackedReactRoot => {
+      const createdHost = !existingHost;
       const host = existingHost ?? doc.createElement('div');
-      if (!host.parentNode) {
+      const attachedByHelper = !host.parentNode;
+      if (attachedByHelper) {
         doc.body.appendChild(host);
       }
-      const root = createRoot(host);
+
+      let root: Root;
+      try {
+        root = createRoot(host);
+      } catch (err) {
+        if (createdHost || attachedByHelper) {
+          host.remove();
+        }
+        throw err;
+      }
+
       let isUnmounted = false;
+      let unmountPromise: Promise<void> | null = null;
 
       const tracked: TrackedReactRoot = {
         host,
         root,
         unmount: async () => {
+          if (unmountPromise) {
+            return unmountPromise;
+          }
           if (isUnmounted) return;
           isUnmounted = true;
-          try {
-            if (loadedAct) {
-              await loadedAct(async () => {
+          unmountPromise = (async () => {
+            try {
+              if (loadedAct) {
+                await loadedAct(async () => {
+                  root.unmount();
+                });
+              } else {
                 root.unmount();
-              });
-            } else {
-              root.unmount();
+              }
+            } finally {
+              activeRoots.delete(tracked);
+              host.remove();
             }
-          } finally {
-            activeRoots.delete(tracked);
-            host.remove();
-          }
+          })();
+          return unmountPromise;
         },
         unmountSync: () => {
           if (isUnmounted) return;
@@ -435,7 +464,6 @@ export async function createDomTestEnv(
       React,
       act,
       Profiler,
-      createRoot,
       createTrackedRoot,
       unmountAllRoots,
       registerCleanup,

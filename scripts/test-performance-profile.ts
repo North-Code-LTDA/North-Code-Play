@@ -1,154 +1,131 @@
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Window } from 'happy-dom';
-import React, { act } from 'react';
-import { createRoot, Root } from 'react-dom/client';
+import { createDomTestEnv } from './helpers/domEnv';
 
-// Watchdog de segurança para evitar travamentos em ambiente simulado
-const watchdog = setTimeout(() => {
-  console.error('TIMEOUT: test-performance-profile excedeu 20s');
-  process.exit(1);
-}, 20000);
-watchdog.unref();
+const TOTAL_CASES = 20;
+
+const rawCaseFilter = process.env.NC_PERFORMANCE_PROFILE_CASE?.trim();
+let selectedCaseNumber: number | null = null;
+if (rawCaseFilter) {
+  const parsed = Number.parseInt(rawCaseFilter, 10);
+  if (!/^\d+$/.test(rawCaseFilter) || parsed < 1 || parsed > TOTAL_CASES) {
+    console.error(
+      `FALHA em test-performance-profile: filtro inválido NC_PERFORMANCE_PROFILE_CASE="${rawCaseFilter}". Informe um número inteiro entre 1 e ${TOTAL_CASES}.`
+    );
+    process.exit(1);
+  }
+  selectedCaseNumber = parsed;
+}
 
 // ============================================================================
-// 1. Ambiente DOM enxuto e determinístico (happy-dom)
+// 1. Ambiente DOM compartilhado (happy-dom) + importação tardia de React
 // ============================================================================
-const windowInstance = new Window({
+const env = await createDomTestEnv({
   url: 'http://localhost:3000',
   width: 1280,
   height: 720,
+  watchdogMs: 20000,
+  watchdogLabel: 'test-performance-profile',
+  rafIntervalMs: 16,
+  disableElementAnimate: true,
+  stubScrollIntoView: true,
+  stubMediaPlayback: true,
 });
 
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-(globalThis as any).window = windowInstance;
-(globalThis as any).document = windowInstance.document;
-Object.defineProperty(globalThis, 'navigator', {
-  value: windowInstance.navigator,
-  writable: true,
-  configurable: true,
-});
-(globalThis as any).HTMLElement = windowInstance.HTMLElement;
-(globalThis as any).HTMLButtonElement = windowInstance.HTMLButtonElement;
-(globalThis as any).HTMLVideoElement = windowInstance.HTMLVideoElement;
-(globalThis as any).HTMLImageElement = windowInstance.HTMLImageElement;
-(globalThis as any).Element = windowInstance.Element;
-(globalThis as any).Node = windowInstance.Node;
-(globalThis as any).SVGElement = windowInstance.SVGElement;
-(globalThis as any).Event = windowInstance.Event;
-(globalThis as any).CustomEvent = windowInstance.CustomEvent;
-(globalThis as any).KeyboardEvent = windowInstance.KeyboardEvent;
-(globalThis as any).MouseEvent = windowInstance.MouseEvent;
-(globalThis as any).MutationObserver = windowInstance.MutationObserver;
-(globalThis as any).localStorage = windowInstance.localStorage;
-(globalThis as any).sessionStorage = windowInstance.sessionStorage;
-(globalThis as any).URL = windowInstance.URL;
-(globalThis as any).Blob = windowInstance.Blob;
-(globalThis as any).getComputedStyle = windowInstance.getComputedStyle.bind(windowInstance);
-
-(globalThis as any).ResizeObserver = class ResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-};
-
-(globalThis as any).IntersectionObserver = class IntersectionObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-  takeRecords() {
-    return [];
-  }
-};
-
-const matchMediaStub = (query: string) => ({
-  matches: query.includes('prefers-reduced-motion'),
-  media: query,
-  onchange: null,
-  addListener: () => {},
-  removeListener: () => {},
-  addEventListener: () => {},
-  removeEventListener: () => {},
-  dispatchEvent: () => false,
-});
-(globalThis as any).matchMedia = matchMediaStub;
-(windowInstance as any).matchMedia = matchMediaStub;
-
-let rafIdCounter = 1;
-const rafTimers = new Map<number, NodeJS.Timeout>();
-const rafCallback = (cb: FrameRequestCallback) => {
-  const id = rafIdCounter++;
-  const timer = setTimeout(() => {
-    rafTimers.delete(id);
-    cb(performance.now());
-  }, 16);
-  rafTimers.set(id, timer);
-  return id;
-};
-const cancelRafCallback = (id: number) => {
-  const timer = rafTimers.get(id);
-  if (timer) {
-    clearTimeout(timer);
-    rafTimers.delete(id);
-  }
-};
-(globalThis as any).requestAnimationFrame = rafCallback;
-(windowInstance as any).requestAnimationFrame = rafCallback;
-(globalThis as any).cancelAnimationFrame = cancelRafCallback;
-(windowInstance as any).cancelAnimationFrame = cancelRafCallback;
-
-const htmlProto = windowInstance.HTMLElement.prototype as any;
-htmlProto.animate = undefined;
-if (!htmlProto.scrollIntoView) {
-  htmlProto.scrollIntoView = () => {};
-}
-
-// Stub mínimo de mídia para VideoPlayer em cenário de verificação de handlers
-const videoProto = windowInstance.HTMLMediaElement?.prototype as any;
-if (videoProto) {
-  videoProto.play = () => Promise.resolve();
-  videoProto.pause = () => {};
-  videoProto.load = () => {};
-}
+const { React, act } = env;
 
 // ============================================================================
 // 2. Importações após bootstrap DOM
 // ============================================================================
-const { MotionConfig } = await import('motion/react');
-const { setAndroidPlatformOverrideForDpadTest } = await import(
-  '../src/navigation/navigationPlatformPolicy'
-);
-const {
-  STORAGE_KEY_DISPLAY_PREFS,
-  confirmDisplayPreferences,
-  getDisplayPreferencesSnapshot,
-  syncDocumentDisplayAttributes,
-} = await import('../src/platform/tvEnvironment');
-const {
-  STORAGE_KEY_PERFORMANCE_PROFILE,
-  initPerformanceProfile,
-  getPerformanceProfileSnapshot,
-  setPerformanceProfilePreference,
-  syncDocumentPerformanceAttributes,
-  subscribePerformanceProfile,
-  resetPerformanceProfileCacheForTest,
-  getPerformanceProfileSubscriptionCountsForTest,
-} = await import('../src/platform/performanceProfile');
-const { NavigationProvider, setNavMode, getNavMode, executeBackAction } = await import(
-  '../src/navigation'
-);
-const { XtreamProvider } = await import('../src/context/XtreamContext');
-const { ConfigView } = await import('../src/views/ConfigView');
-const { HorizontalRow, parseElementScaleFactor } = await import('../src/components/HorizontalRow');
-const { VideoPlayer } = await import('../src/components/VideoPlayer');
-const { HeroBanner } = await import('../src/components/HeroBanner');
-const { DetailsModalShell } = await import('../src/components/DetailsModalShell');
-const { TopHeader } = await import('../src/components/TopHeader');
-const { FavoritesView } = await import('../src/views/FavoritesView');
-const { getFavoritesKey, setStoredFavorites } = await import('../src/utils/accountUtils');
-const { notifyAccountSubscribers } = await import('../src/hooks/useFavorites');
-const { getHeroBannerItems } = await import('../src/utils/catalogIndex');
+let MotionConfig!: (typeof import('motion/react'))['MotionConfig'];
+let setAndroidPlatformOverrideForDpadTest!: (typeof import('../src/navigation/navigationPlatformPolicy'))['setAndroidPlatformOverrideForDpadTest'];
+let STORAGE_KEY_DISPLAY_PREFS!: (typeof import('../src/platform/tvEnvironment'))['STORAGE_KEY_DISPLAY_PREFS'];
+let confirmDisplayPreferences!: (typeof import('../src/platform/tvEnvironment'))['confirmDisplayPreferences'];
+let getDisplayPreferencesSnapshot!: (typeof import('../src/platform/tvEnvironment'))['getDisplayPreferencesSnapshot'];
+let syncDocumentDisplayAttributes!: (typeof import('../src/platform/tvEnvironment'))['syncDocumentDisplayAttributes'];
+let STORAGE_KEY_PERFORMANCE_PROFILE!: (typeof import('../src/platform/performanceProfile'))['STORAGE_KEY_PERFORMANCE_PROFILE'];
+let initPerformanceProfile!: (typeof import('../src/platform/performanceProfile'))['initPerformanceProfile'];
+let getPerformanceProfileSnapshot!: (typeof import('../src/platform/performanceProfile'))['getPerformanceProfileSnapshot'];
+let setPerformanceProfilePreference!: (typeof import('../src/platform/performanceProfile'))['setPerformanceProfilePreference'];
+let syncDocumentPerformanceAttributes!: (typeof import('../src/platform/performanceProfile'))['syncDocumentPerformanceAttributes'];
+let subscribePerformanceProfile!: (typeof import('../src/platform/performanceProfile'))['subscribePerformanceProfile'];
+let resetPerformanceProfileCacheForTest!: (typeof import('../src/platform/performanceProfile'))['resetPerformanceProfileCacheForTest'];
+let getPerformanceProfileSubscriptionCountsForTest!: (typeof import('../src/platform/performanceProfile'))['getPerformanceProfileSubscriptionCountsForTest'];
+let NavigationProvider!: (typeof import('../src/navigation'))['NavigationProvider'];
+let setNavMode!: (typeof import('../src/navigation'))['setNavMode'];
+let getNavMode!: (typeof import('../src/navigation'))['getNavMode'];
+let executeBackAction!: (typeof import('../src/navigation'))['executeBackAction'];
+let clearAllBackHandlersForTest!: (typeof import('../src/navigation'))['clearAllBackHandlersForTest'];
+let invalidateCandidateCache!: (typeof import('../src/navigation'))['invalidateCandidateCache'];
+let XtreamProvider!: (typeof import('../src/context/XtreamContext'))['XtreamProvider'];
+let ConfigView!: (typeof import('../src/views/ConfigView'))['ConfigView'];
+let HorizontalRow!: (typeof import('../src/components/HorizontalRow'))['HorizontalRow'];
+let parseElementScaleFactor!: (typeof import('../src/components/HorizontalRow'))['parseElementScaleFactor'];
+let VideoPlayer!: (typeof import('../src/components/VideoPlayer'))['VideoPlayer'];
+let HeroBanner!: (typeof import('../src/components/HeroBanner'))['HeroBanner'];
+let DetailsModalShell!: (typeof import('../src/components/DetailsModalShell'))['DetailsModalShell'];
+let TopHeader!: (typeof import('../src/components/TopHeader'))['TopHeader'];
+let FavoritesView!: (typeof import('../src/views/FavoritesView'))['FavoritesView'];
+let getFavoritesKey!: (typeof import('../src/utils/accountUtils'))['getFavoritesKey'];
+let setStoredFavorites!: (typeof import('../src/utils/accountUtils'))['setStoredFavorites'];
+let notifyAccountSubscribers!: (typeof import('../src/hooks/useFavorites'))['notifyAccountSubscribers'];
+let getHeroBannerItems!: (typeof import('../src/utils/catalogIndex'))['getHeroBannerItems'];
+
+try {
+  ({ MotionConfig } = await import('motion/react'));
+  ({ setAndroidPlatformOverrideForDpadTest } = await import(
+    '../src/navigation/navigationPlatformPolicy'
+  ));
+  ({
+    STORAGE_KEY_DISPLAY_PREFS,
+    confirmDisplayPreferences,
+    getDisplayPreferencesSnapshot,
+    syncDocumentDisplayAttributes,
+  } = await import('../src/platform/tvEnvironment'));
+  ({
+    STORAGE_KEY_PERFORMANCE_PROFILE,
+    initPerformanceProfile,
+    getPerformanceProfileSnapshot,
+    setPerformanceProfilePreference,
+    syncDocumentPerformanceAttributes,
+    subscribePerformanceProfile,
+    resetPerformanceProfileCacheForTest,
+    getPerformanceProfileSubscriptionCountsForTest,
+  } = await import('../src/platform/performanceProfile'));
+  ({
+    NavigationProvider,
+    setNavMode,
+    getNavMode,
+    executeBackAction,
+    clearAllBackHandlersForTest,
+    invalidateCandidateCache,
+  } = await import('../src/navigation'));
+  ({ XtreamProvider } = await import('../src/context/XtreamContext'));
+  ({ ConfigView } = await import('../src/views/ConfigView'));
+  ({ HorizontalRow, parseElementScaleFactor } = await import('../src/components/HorizontalRow'));
+  ({ VideoPlayer } = await import('../src/components/VideoPlayer'));
+  ({ HeroBanner } = await import('../src/components/HeroBanner'));
+  ({ DetailsModalShell } = await import('../src/components/DetailsModalShell'));
+  ({ TopHeader } = await import('../src/components/TopHeader'));
+  ({ FavoritesView } = await import('../src/views/FavoritesView'));
+  ({ getFavoritesKey, setStoredFavorites } = await import('../src/utils/accountUtils'));
+  ({ notifyAccountSubscribers } = await import('../src/hooks/useFavorites'));
+  ({ getHeroBannerItems } = await import('../src/utils/catalogIndex'));
+} catch (importError) {
+  const cleanupErrors = await env.dispose();
+  if (cleanupErrors.length > 0) {
+    console.error('Erros adicionais ao limpar ambiente após falha de importação:', cleanupErrors);
+  }
+  throw importError;
+}
+
+env.registerCleanup(() => {
+  setAndroidPlatformOverrideForDpadTest(null);
+  resetPerformanceProfileCacheForTest();
+  clearAllBackHandlersForTest();
+  invalidateCandidateCache();
+});
 
 async function flush(ticks = 4): Promise<void> {
   for (let i = 0; i < ticks; i++) {
@@ -168,6 +145,8 @@ function resetAllState() {
   document.documentElement.style.removeProperty('--nc-rem-compensation');
   setAndroidPlatformOverrideForDpadTest(null);
   resetPerformanceProfileCacheForTest();
+  clearAllBackHandlersForTest();
+  invalidateCandidateCache();
   setNavMode('pointer');
 }
 
@@ -175,9 +154,8 @@ async function mountConfigView(): Promise<{
   host: HTMLDivElement;
   unmount: () => Promise<void>;
 }> {
-  const host = document.createElement('div');
-  document.body.appendChild(host);
-  const root: Root = createRoot(host);
+  const tracked = env.createTrackedRoot();
+  const { host, root } = tracked;
 
   await act(async () => {
     root.render(
@@ -200,12 +178,7 @@ async function mountConfigView(): Promise<{
 
   return {
     host,
-    unmount: async () => {
-      await act(async () => {
-        root.unmount();
-      });
-      host.remove();
-    },
+    unmount: () => tracked.unmount(),
   };
 }
 
@@ -213,15 +186,44 @@ async function mountConfigView(): Promise<{
 // 3. Execução dos cenários direcionados do Perfil Lite (Fase 1/5)
 // ============================================================================
 async function runTests() {
+  const startedAt = Date.now();
+  let caseIndex = 0;
   let passed = 0;
+  let skipped = 0;
   const runCase = async (name: string, fn: () => Promise<void>) => {
+    caseIndex += 1;
+    if (selectedCaseNumber !== null && caseIndex !== selectedCaseNumber) {
+      skipped += 1;
+      return;
+    }
     resetAllState();
-    await fn();
+    let caseError: unknown = null;
+    try {
+      await fn();
+    } catch (err) {
+      caseError = err;
+    } finally {
+      const unmountErrors = await env.unmountAllRoots();
+      clearAllBackHandlersForTest();
+      invalidateCandidateCache();
+      if (!caseError && unmountErrors.length > 0) {
+        caseError = unmountErrors[0];
+      }
+    }
+    if (caseError) {
+      throw caseError;
+    }
     passed += 1;
-    console.log(`  [OK] ${name}`);
+    console.log(`  [OK] [Caso ${caseIndex}/${TOTAL_CASES}] ${name}`);
   };
 
-  console.log('Executando suite direcionada do Perfil Lite (test-performance-profile)...');
+  if (selectedCaseNumber !== null) {
+    console.log(
+      `Executando suite direcionada do Perfil Lite (test-performance-profile) — filtro PARCIAL NC_PERFORMANCE_PROFILE_CASE=${selectedCaseNumber}/${TOTAL_CASES}...`
+    );
+  } else {
+    console.log('Executando suite direcionada do Perfil Lite (test-performance-profile)...');
+  }
 
   // 1. Web + qualquer navMode (pointer e remote) -> sempre full
   await runCase(
@@ -725,9 +727,8 @@ async function runTests() {
       }));
 
       const clickedNames: string[] = [];
-      const host = document.createElement('div');
-      document.body.appendChild(host);
-      const root: Root = createRoot(host);
+      const tracked = env.createTrackedRoot();
+      const { host, root } = tracked;
 
       try {
         await act(async () => {
@@ -788,10 +789,7 @@ async function runTests() {
         });
         assert.deepStrictEqual(clickedNames, ['Filme Teste 1']);
       } finally {
-        await act(async () => {
-          root.unmount();
-        });
-        host.remove();
+        await tracked.unmount();
       }
     }
   );
@@ -810,9 +808,8 @@ async function runTests() {
       assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
 
       let backCalled = 0;
-      const host = document.createElement('div');
-      document.body.appendChild(host);
-      const root: Root = createRoot(host);
+      const tracked = env.createTrackedRoot();
+      const { root } = tracked;
 
       try {
         await act(async () => {
@@ -851,10 +848,7 @@ async function runTests() {
         assert.strictEqual(handled, true, 'Handler FULLSCREEN_PLAYER deve continuar consumindo Back normalmente no modo Lite');
         assert.strictEqual(backCalled, 1, 'Callback onBack do VideoPlayer deve ser executado normalmente no modo Lite');
       } finally {
-        await act(async () => {
-          root.unmount();
-        });
-        host.remove();
+        await tracked.unmount();
       }
     }
   );
@@ -1040,14 +1034,13 @@ async function runTests() {
         activeHeroIntervals.delete(handle);
         return origClearInterval(handle);
       }) as typeof clearInterval;
+      const tracked = env.createTrackedRoot();
+      const { host, root } = tracked;
+
       (globalThis as any).setInterval = interceptSetInterval;
       (window as any).setInterval = interceptSetInterval;
       (globalThis as any).clearInterval = interceptClearInterval;
       (window as any).clearInterval = interceptClearInterval;
-
-      const host = document.createElement('div');
-      document.body.appendChild(host);
-      const root: Root = createRoot(host);
 
       const renderShowcaseAndModal = async () => {
         await act(async () => {
@@ -1303,10 +1296,7 @@ async function runTests() {
         (window as any).setInterval = origWindowSetInterval;
         (globalThis as any).clearInterval = origClearInterval;
         (window as any).clearInterval = origWindowClearInterval;
-        await act(async () => {
-          root.unmount();
-        });
-        host.remove();
+        await tracked.unmount();
       }
 
       assert.strictEqual(
@@ -1329,9 +1319,8 @@ async function runTests() {
       assert.strictEqual(document.documentElement.getAttribute('data-performance-mode'), 'lite');
 
       // 19a. TopHeader: abre/fecha menu de conta preservando orientação rotate-180 no chevron
-      const headerHost = document.createElement('div');
-      document.body.appendChild(headerHost);
-      const headerRoot: Root = createRoot(headerHost);
+      const headerTracked = env.createTrackedRoot();
+      const { host: headerHost, root: headerRoot } = headerTracked;
       let isAccountOpen = false;
       const renderHeader = async () => {
         await act(async () => {
@@ -1387,10 +1376,7 @@ async function runTests() {
           'Chevron aberto deve preservar orientação final rotate-180 no Lite'
         );
       } finally {
-        await act(async () => {
-          headerRoot.unmount();
-        });
-        headerHost.remove();
+        await headerTracked.unmount();
       }
 
       // 19b. Favoritos: renderiza e remove favorito normalmente no Lite (zero assinaturas por card)
@@ -1407,9 +1393,8 @@ async function runTests() {
         { id: 'fav-2', type: 'live', name: 'Canal Favorito 1', cover: '' },
       ]);
       notifyAccountSubscribers(favStorageKey);
-      const favHost = document.createElement('div');
-      document.body.appendChild(favHost);
-      const favRoot: Root = createRoot(favHost);
+      const favTracked = env.createTrackedRoot();
+      const { host: favHost, root: favRoot } = favTracked;
       try {
         await act(async () => {
           favRoot.render(
@@ -1445,10 +1430,7 @@ async function runTests() {
         const cardsAfter = favHost.querySelectorAll('[data-favorite-card="true"]').length;
         assert.strictEqual(cardsAfter, 2, 'Remoção de favorito deve funcionar normalmente no Lite');
       } finally {
-        await act(async () => {
-          favRoot.unmount();
-        });
-        favHost.remove();
+        await favTracked.unmount();
       }
 
       // 19c. ConfigView + DisplaySetupModal: abre calibração, escolhe 90% e confirma no Lite
@@ -1518,9 +1500,8 @@ async function runTests() {
       }
 
       let clickedItems: any[] = [];
-      const host = document.createElement('div');
-      document.body.appendChild(host);
-      const root: Root = createRoot(host);
+      const tracked = env.createTrackedRoot();
+      const { host, root } = tracked;
 
       try {
         await act(async () => {
@@ -1647,10 +1628,9 @@ async function runTests() {
         );
 
         // Plataforma Web (sessão independente) preserva whileTap ativo mesmo em apresentação tv + remote
-        await act(async () => {
-          root.unmount();
-        });
-        const webRoot: Root = createRoot(host);
+        await tracked.unmount();
+        const webTracked = env.createTrackedRoot(host);
+        const { root: webRoot } = webTracked;
         try {
           setAndroidPlatformOverrideForDpadTest(false);
           confirmDisplayPreferences('tv', 85);
@@ -1684,15 +1664,10 @@ async function runTests() {
             'Web deve preservar whileTap nos cards'
           );
         } finally {
-          await act(async () => {
-            webRoot.unmount();
-          });
+          await webTracked.unmount();
         }
       } finally {
-        await act(async () => {
-          root.unmount();
-        });
-        host.remove();
+        await tracked.unmount();
       }
     }
   );
@@ -1793,13 +1768,47 @@ async function runTests() {
     }
   );
 
-  clearTimeout(watchdog);
-  console.log(`\nSucesso: ${passed} blocos de cenários passaram em test-performance-profile.`);
-  process.exit(0);
+  if (caseIndex !== TOTAL_CASES) {
+    throw new Error(
+      `Contagem esperada de blocos em test-performance-profile (${TOTAL_CASES}) diverge da executada (${caseIndex}).`
+    );
+  }
+
+  return {
+    passed,
+    skipped,
+    durationMs: Date.now() - startedAt,
+  };
 }
 
-runTests().catch((err) => {
-  clearTimeout(watchdog);
-  console.error('FALHA em test-performance-profile:', err);
-  process.exit(1);
-});
+let runError: unknown = null;
+let summary: { passed: number; skipped: number; durationMs: number } | null = null;
+
+try {
+  summary = await runTests();
+} catch (err) {
+  runError = err;
+}
+
+const teardownErrors = await env.dispose();
+
+if (runError) {
+  console.error('FALHA em test-performance-profile:', runError);
+  if (teardownErrors.length > 0) {
+    console.error('Erros adicionais durante teardown em test-performance-profile:', teardownErrors);
+  }
+  process.exitCode = 1;
+} else if (teardownErrors.length > 0) {
+  console.error('FALHA durante teardown em test-performance-profile:', teardownErrors);
+  process.exitCode = 1;
+} else if (summary) {
+  if (selectedCaseNumber !== null) {
+    console.log(
+      `\nSucesso PARCIAL (filtro NC_PERFORMANCE_PROFILE_CASE=${selectedCaseNumber}): ${summary.passed} bloco executado (${summary.skipped} ignorados de ${TOTAL_CASES}) em ${summary.durationMs}ms — test-performance-profile.`
+    );
+  } else {
+    console.log(
+      `\nSucesso: ${summary.passed}/${TOTAL_CASES} blocos de cenários passaram em ${summary.durationMs}ms — test-performance-profile.`
+    );
+  }
+}
