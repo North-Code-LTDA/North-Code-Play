@@ -7,7 +7,6 @@ import { defineConfig } from 'vite';
 
 function resolveBuildCommit(): string {
   const envCommit =
-    process.env.RENDER_GIT_COMMIT ||
     process.env.GIT_COMMIT ||
     process.env.VITE_APP_COMMIT ||
     process.env.COMMIT_SHA;
