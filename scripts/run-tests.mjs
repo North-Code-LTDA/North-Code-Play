@@ -37,6 +37,10 @@ export const EXTERNAL_TIMEOUTS_MS = Object.freeze({
 });
 
 export const DEFAULT_KILL_GRACE_MS = 2_000;
+export const DEFAULT_POST_KILL_SETTLE_MS = 1_500;
+export const DEFAULT_TASKKILL_TIMEOUT_MS = 5_000;
+const CLEANUP_POLL_INTERVAL_MS = 25;
+const MAX_DIAGNOSTIC_OUTPUT_CHARS = 512;
 
 export const TEST_PLANS = Object.freeze({
   smoke: Object.freeze({
@@ -286,6 +290,15 @@ export function resolveTsxLoaderUrl(projectRoot = PROJECT_ROOT) {
 }
 
 /**
+ * Mapeia sinais de cancelamento manual para códigos de saída POSIX convencionais.
+ */
+export function getCancellationExitCode(signal) {
+  if (signal === 'SIGINT') return 130;
+  if (signal === 'SIGTERM') return 143;
+  return 1;
+}
+
+/**
  * Cria cópia isolada do ambiente, removendo todos os filtros herdados (sem mutar baseEnv)
  * e aplicando somente os filtros explicitamente definidos pelo passo.
  */
@@ -369,76 +382,417 @@ function formatFiltersSummary(appliedFilters) {
   return entries.map(([k, v]) => `${k}=${v}`).join(', ');
 }
 
-function killProcessTreeWindows(pid) {
-  return new Promise((resolve) => {
-    try {
-      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
-        shell: false,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-      killer.once('error', () => {
-        try {
-          process.kill(pid, 'SIGKILL');
-        } catch {}
-        resolve();
-      });
-      killer.once('close', () => resolve());
-    } catch {
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {}
-      resolve();
-    }
-  });
-}
-
-function terminateChildTree(child, signal) {
-  const pid = child.pid;
-  if (!pid) return;
-
-  if (process.platform === 'win32') {
-    if (signal === 'SIGKILL') {
-      void killProcessTreeWindows(pid);
-    } else {
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        void killProcessTreeWindows(pid);
-      }
-    }
-    return;
-  }
-
-  // Em POSIX, o processo filho é criado em grupo próprio (detached: true),
-  // permitindo encerrar exclusivamente o filho e seus descendentes via -pid.
-  try {
-    process.kill(-pid, signal);
-  } catch (err) {
-    if (err && err.code !== 'ESRCH') {
-      try {
-        child.kill(signal);
-      } catch {}
-    }
-  }
-}
-
 function defaultLogger(line) {
   console.log(line);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function waitWithTimeout(promise, timeoutMs) {
+  let timer = null;
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (timedOut) => {
+      if (done) return;
+      done = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      resolve({ timedOut });
+    };
+    timer = setTimeout(() => finish(true), timeoutMs);
+    promise.then(
+      () => finish(false),
+      () => finish(false)
+    );
+  });
+}
+
+function appendBounded(current, chunk) {
+  if (current.length >= MAX_DIAGNOSTIC_OUTPUT_CHARS) return current;
+  const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk ?? '');
+  return (current + text).slice(0, MAX_DIAGNOSTIC_OUTPUT_CHARS);
+}
+
+function isPosixProcessGroupPresent(pgid) {
+  if (!pgid || pgid <= 0) return false;
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    if (err && err.code === 'ESRCH') {
+      return false;
+    }
+    // EPERM ou erro inesperado: não afirmar que o grupo foi encerrado
+    return true;
+  }
+}
+
+function trySafeSingleChildFallbackKill(child, pid, errors) {
+  let attempted = false;
+  if (child && typeof child.kill === 'function') {
+    attempted = true;
+    try {
+      child.kill('SIGKILL');
+      return { attempted, succeeded: true };
+    } catch (err) {
+      if (err && err.code === 'ESRCH') {
+        return { attempted, succeeded: true };
+      }
+      errors.push(
+        `Fallback seguro child.kill('SIGKILL') para PID ${pid} falhou: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return { attempted, succeeded: false };
+    }
+  }
+  if (pid) {
+    attempted = true;
+    try {
+      process.kill(pid, 'SIGKILL');
+      return { attempted, succeeded: true };
+    } catch (err) {
+      if (err && err.code === 'ESRCH') {
+        return { attempted, succeeded: true };
+      }
+      errors.push(
+        `Fallback seguro process.kill(${pid}, 'SIGKILL') falhou: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return { attempted, succeeded: false };
+    }
+  }
+  return { attempted, succeeded: false };
+}
+
+/**
+ * Encerramento da árvore do processo filho no Windows:
+ * - Executa `taskkill /PID <pid> /T /F` como PRIMEIRA ação enquanto o processo principal ainda existe.
+ * - Usa argumentos separados, `shell: false` e `windowsHide: true`.
+ * - Aguarda a conclusão efetiva de `taskkill` (com limite de segurança) e verifica seu código de saída.
+ * - Nunca utiliza encerramento por nome de executável (`/IM`).
+ * - Só declara `confirmed: true` quando `taskkill` concluir com código 0 e o processo principal encerrar.
+ */
+export async function terminateWindowsProcessTree(pid, options = {}) {
+  const spawnFn = options.spawnFn ?? spawn;
+  const child = options.child ?? null;
+  const isChildClosed = options.isChildClosed ?? (() => true);
+  const waitForChildClose = options.waitForChildClose ?? (() => Promise.resolve());
+  const taskkillTimeoutMs = options.taskkillTimeoutMs ?? DEFAULT_TASKKILL_TIMEOUT_MS;
+  const postKillSettleMs = options.postKillSettleMs ?? DEFAULT_POST_KILL_SETTLE_MS;
+  const log = options.logger ?? defaultLogger;
+  const stepLabel = options.stepLabel ?? '';
+
+  const errors = [];
+  let fallbackUsed = false;
+  let taskkillExitCode = null;
+  let taskkillSignal = null;
+  let taskkillTimedOut = false;
+  let taskkillSpawnError = null;
+  let taskkillOutput = '';
+  let taskkillConfirmed = false;
+
+  if (!pid || pid <= 0) {
+    errors.push('PID do processo filho indisponível para encerramento no Windows.');
+    return {
+      platform: 'win32',
+      method: 'taskkill',
+      taskkillExitCode,
+      taskkillSignal,
+      taskkillTimedOut,
+      escalatedToKill: false,
+      fallbackUsed,
+      confirmed: false,
+      childCloseTimedOut: false,
+      errors,
+    };
+  }
+
+  const taskkillArgs = ['/PID', String(pid), '/T', '/F'];
+
+  await new Promise((resolve) => {
+    let settled = false;
+    let helperTimer = null;
+    let killer = null;
+
+    const finishHelper = () => {
+      if (settled) return;
+      settled = true;
+      if (helperTimer !== null) {
+        clearTimeout(helperTimer);
+        helperTimer = null;
+      }
+      resolve();
+    };
+
+    try {
+      killer = spawnFn('taskkill', taskkillArgs, {
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+    } catch (spawnErr) {
+      taskkillSpawnError = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
+      errors.push(`Falha síncrona ao iniciar taskkill para PID ${pid}: ${taskkillSpawnError}`);
+      finishHelper();
+      return;
+    }
+
+    if (killer.stdout && typeof killer.stdout.on === 'function') {
+      killer.stdout.on('data', (chunk) => {
+        taskkillOutput = appendBounded(taskkillOutput, chunk);
+      });
+    }
+    if (killer.stderr && typeof killer.stderr.on === 'function') {
+      killer.stderr.on('data', (chunk) => {
+        taskkillOutput = appendBounded(taskkillOutput, chunk);
+      });
+    }
+
+    helperTimer = setTimeout(() => {
+      if (settled) return;
+      taskkillTimedOut = true;
+      errors.push(
+        `Timeout (${formatDurationMs(taskkillTimeoutMs)}) aguardando conclusão de taskkill /PID ${pid} /T /F.`
+      );
+      try {
+        killer.kill('SIGKILL');
+      } catch {}
+      finishHelper();
+    }, taskkillTimeoutMs);
+
+    killer.once('error', (err) => {
+      taskkillSpawnError = err instanceof Error ? err.message : String(err);
+      errors.push(`Erro ao executar taskkill para PID ${pid}: ${taskkillSpawnError}`);
+      finishHelper();
+    });
+
+    killer.once('close', (code, signal) => {
+      taskkillExitCode = code;
+      taskkillSignal = signal ?? null;
+      finishHelper();
+    });
+  });
+
+  if (!taskkillSpawnError && !taskkillTimedOut) {
+    if (taskkillExitCode === 0 && !taskkillSignal) {
+      taskkillConfirmed = true;
+    } else if (taskkillExitCode === 128) {
+      errors.push(
+        `taskkill retornou código 128 para PID ${pid} (processo principal não encontrado; não é possível confirmar encerramento de descendentes).`
+      );
+    } else {
+      const detail = taskkillOutput.trim() ? ` | saída: ${taskkillOutput.trim()}` : '';
+      errors.push(
+        `taskkill encerrou com falha para PID ${pid} (code=${taskkillExitCode ?? 'null'}, signal=${taskkillSignal ?? 'none'})${detail}`
+      );
+    }
+  }
+
+  // Fallback limitado e seguro exclusivamente sobre o processo filho desta execução
+  if (!taskkillConfirmed && !isChildClosed()) {
+    fallbackUsed = true;
+    if (stepLabel) {
+      log(
+        `[run-tests] ⚠ ${stepLabel} Executando fallback limitado sobre PID ${pid} (sem encerramento por nome de executável)...`
+      );
+    }
+    trySafeSingleChildFallbackKill(child, pid, errors);
+  }
+
+  let childCloseTimedOut = false;
+  if (!isChildClosed()) {
+    const waitResult = await waitWithTimeout(waitForChildClose(), postKillSettleMs);
+    childCloseTimedOut = waitResult.timedOut;
+    if (childCloseTimedOut) {
+      errors.push(
+        `Evento close do processo principal (PID ${pid}) não ocorreu dentro de ${formatDurationMs(postKillSettleMs)} após encerramento no Windows.`
+      );
+    }
+  }
+
+  const confirmed = taskkillConfirmed && !childCloseTimedOut && isChildClosed() && errors.length === 0;
+
+  return {
+    platform: 'win32',
+    method: 'taskkill',
+    taskkillExitCode,
+    taskkillSignal,
+    taskkillTimedOut,
+    escalatedToKill: false,
+    fallbackUsed,
+    confirmed,
+    childCloseTimedOut,
+    errors,
+  };
+}
+
+/**
+ * Encerramento do grupo dedicado de processos em POSIX (`detached: true`, `-pgid`):
+ * - Envia o sinal inicial (`SIGTERM` ou `SIGINT`) exclusivamente ao grupo próprio `-pgid`.
+ * - NÃO cancela a limpeza nem a escalada se o processo principal encerrar enquanto ainda houver
+ *   descendentes presentes no grupo `-pgid`.
+ * - Aguarda a margem (`killGraceMs`) encerrando antecipadamente apenas quando o processo principal
+ *   já fechou E o grupo `-pgid` não existe mais (`ESRCH`).
+ * - Escala para `SIGKILL` em `-pgid` se o processo principal ou algum descendente do grupo permanecer ativo.
+ * - Aguarda de forma limitada (`postKillSettleMs`) a conclusão da limpeza e registra qualquer falha.
+ */
+async function terminatePosixProcessGroup(pid, options = {}) {
+  const child = options.child ?? null;
+  const initialSignal = options.initialSignal ?? 'SIGTERM';
+  const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+  const postKillSettleMs = options.postKillSettleMs ?? DEFAULT_POST_KILL_SETTLE_MS;
+  const isChildClosed = options.isChildClosed ?? (() => true);
+  const waitForChildClose = options.waitForChildClose ?? (() => Promise.resolve());
+  const log = options.logger ?? defaultLogger;
+  const stepLabel = options.stepLabel ?? '';
+  const stepName = options.stepName ?? String(pid);
+
+  const errors = [];
+  let escalatedToKill = false;
+  let fallbackUsed = false;
+  let childCloseTimedOut = false;
+
+  if (!pid || pid <= 0) {
+    errors.push('PID do processo filho indisponível para encerramento POSIX.');
+    return {
+      platform: process.platform,
+      method: 'posix-process-group',
+      initialSignal,
+      escalatedToKill: false,
+      fallbackUsed: false,
+      confirmed: false,
+      childCloseTimedOut: false,
+      errors,
+    };
+  }
+
+  const pgid = pid;
+  let initialGroupAlreadyGone = false;
+
+  try {
+    process.kill(-pgid, initialSignal);
+  } catch (err) {
+    if (err && err.code === 'ESRCH') {
+      initialGroupAlreadyGone = true;
+    } else {
+      errors.push(
+        `Falha ao enviar ${initialSignal} ao grupo próprio -${pgid}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      if (!isChildClosed() && child) {
+        fallbackUsed = true;
+        try {
+          child.kill(initialSignal);
+        } catch (fallbackErr) {
+          if (!fallbackErr || fallbackErr.code !== 'ESRCH') {
+            errors.push(
+              `Fallback ${initialSignal} no filho ${pid} falhou: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // Margem de encerramento gracioso: continua ativa mesmo após `close` do processo principal
+  // caso ainda existam descendentes no grupo próprio `-pgid`.
+  if (!initialGroupAlreadyGone) {
+    const graceDeadline = Date.now() + killGraceMs;
+    while (Date.now() < graceDeadline) {
+      if (isChildClosed() && !isPosixProcessGroupPresent(pgid)) {
+        break;
+      }
+      const remaining = Math.max(1, Math.min(CLEANUP_POLL_INTERVAL_MS, graceDeadline - Date.now()));
+      await sleep(remaining);
+    }
+  }
+
+  const needsEscalation = !isChildClosed() || isPosixProcessGroupPresent(pgid);
+  if (needsEscalation) {
+    escalatedToKill = true;
+    if (stepLabel) {
+      log(
+        `[run-tests] ⏱ ${stepLabel} Grupo próprio -${pgid} (${stepName}) ainda ativo após margem de ${formatDurationMs(killGraceMs)} — escalando para SIGKILL...`
+      );
+    }
+    try {
+      process.kill(-pgid, 'SIGKILL');
+    } catch (err) {
+      if (!err || err.code !== 'ESRCH') {
+        errors.push(
+          `Falha ao enviar SIGKILL ao grupo próprio -${pgid}: ${err instanceof Error ? err.message : String(err)}`
+        );
+        if (!isChildClosed()) {
+          fallbackUsed = true;
+          trySafeSingleChildFallbackKill(child, pid, errors);
+        }
+      }
+    }
+
+    const settleDeadline = Date.now() + postKillSettleMs;
+    while (Date.now() < settleDeadline) {
+      if (isChildClosed() && !isPosixProcessGroupPresent(pgid)) {
+        break;
+      }
+      const remaining = Math.max(1, Math.min(CLEANUP_POLL_INTERVAL_MS, settleDeadline - Date.now()));
+      await sleep(remaining);
+    }
+  } else if (!isChildClosed()) {
+    const waitResult = await waitWithTimeout(waitForChildClose(), postKillSettleMs);
+    childCloseTimedOut = waitResult.timedOut;
+  }
+
+  if (!isChildClosed()) {
+    childCloseTimedOut = true;
+    errors.push(
+      `Evento close do processo principal (PID ${pid}) não foi recebido após janela limitada de encerramento.`
+    );
+  }
+
+  const groupStillPresent = isPosixProcessGroupPresent(pgid);
+  if (groupStillPresent) {
+    errors.push(
+      `Grupo próprio -${pgid} ainda reportou presença após tentativa de limpeza (pode haver processo resistente ou zumbi pendente de coleta).`
+    );
+  }
+
+  const confirmed = !childCloseTimedOut && !groupStillPresent && errors.length === 0;
+
+  return {
+    platform: process.platform,
+    method: 'posix-process-group',
+    initialSignal,
+    escalatedToKill,
+    fallbackUsed,
+    confirmed,
+    childCloseTimedOut,
+    errors,
+  };
+}
+
 /**
  * Executa um único passo em processo independente, com isolamento de filtros,
- * timeout externo real, encerramento da árvore do processo filho e aguardo efetivo do fim.
+ * timeout externo real, cancelamento manual seguro, encerramento consistente
+ * da árvore do processo filho e aguardo efetivo da limpeza antes de finalizar.
  */
 export function runStep(step, options = {}) {
   const cwd = options.cwd ?? PROJECT_ROOT;
   const baseEnv = options.baseEnv ?? process.env;
   const stdio = options.stdio ?? 'inherit';
   const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+  const postKillSettleMs = options.postKillSettleMs ?? DEFAULT_POST_KILL_SETTLE_MS;
+  const taskkillTimeoutMs = options.taskkillTimeoutMs ?? DEFAULT_TASKKILL_TIMEOUT_MS;
   const log = options.logger ?? defaultLogger;
   const stepIndex = options.stepIndex ?? 1;
   const totalSteps = options.totalSteps ?? 1;
+  const stepLabel = `[${stepIndex}/${totalSteps}]`;
+  const signalTarget = options.signalTarget ?? process;
+  const attachParentSignals = options.attachParentSignals ?? true;
+  const registerCancelHandler = options.registerCancelHandler ?? null;
+  const platform = options.platform ?? process.platform;
 
   const startedAtNs = process.hrtime.bigint();
   const { env, strippedFilters, appliedFilters } = buildIsolatedChildEnv(baseEnv, step.env);
@@ -453,9 +807,7 @@ export function runStep(step, options = {}) {
   } catch (err) {
     const durationMs = Number(process.hrtime.bigint() - startedAtNs) / 1_000_000;
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `[run-tests] ❌ [${stepIndex}/${totalSteps}] FALHA DE INICIALIZAÇÃO em ${step.name}: ${message}`
-    );
+    log(`[run-tests] ❌ ${stepLabel} FALHA DE INICIALIZAÇÃO em ${step.name}: ${message}`);
     return Promise.resolve({
       id: step.id,
       name: step.name,
@@ -465,6 +817,10 @@ export function runStep(step, options = {}) {
       exitCode: 1,
       signal: null,
       timedOut: false,
+      cancelled: false,
+      cancelSignal: null,
+      escalatedToKill: false,
+      cleanup: null,
       durationMs,
       strippedFilters,
       appliedFilters,
@@ -475,9 +831,7 @@ export function runStep(step, options = {}) {
   if (!fs.existsSync(built.scriptAbsPath)) {
     const durationMs = Number(process.hrtime.bigint() - startedAtNs) / 1_000_000;
     const message = `Script não encontrado: ${built.scriptAbsPath}`;
-    log(
-      `[run-tests] ❌ [${stepIndex}/${totalSteps}] FALHA DE INICIALIZAÇÃO em ${step.name}: ${message}`
-    );
+    log(`[run-tests] ❌ ${stepLabel} FALHA DE INICIALIZAÇÃO em ${step.name}: ${message}`);
     return Promise.resolve({
       id: step.id,
       name: step.name,
@@ -487,6 +841,10 @@ export function runStep(step, options = {}) {
       exitCode: 1,
       signal: null,
       timedOut: false,
+      cancelled: false,
+      cancelSignal: null,
+      escalatedToKill: false,
+      cleanup: null,
       durationMs,
       strippedFilters,
       appliedFilters,
@@ -500,7 +858,7 @@ export function runStep(step, options = {}) {
       ? ` | filtros herdados removidos: ${strippedFilters.join(', ')}`
       : '';
   log(
-    `\n[run-tests] ▶ [${stepIndex}/${totalSteps}] INÍCIO: ${step.name}` +
+    `\n[run-tests] ▶ ${stepLabel} INÍCIO: ${step.name}` +
       `\n            Finalidade: ${step.purpose ?? step.id}` +
       `\n            Filtros aplicados: ${formatFiltersSummary(appliedFilters)}${strippedNote}` +
       `\n            Timeout externo: ${formatDurationMs(timeoutMs)}`
@@ -508,135 +866,207 @@ export function runStep(step, options = {}) {
 
   return new Promise((resolve) => {
     let settled = false;
-    let timedOut = false;
-    let escalatedToKill = false;
+    let childClosed = false;
+    let closeCode = null;
+    let closeSignal = null;
+    let spawnErrorMessage = null;
+
+    let terminationTrigger = null; // null | 'timeout' | 'cancelled'
+    let cancelSignal = null;
+    let terminationPromise = null;
+    let cleanupReport = null;
     let timeoutTimer = null;
-    let killTimer = null;
     let activeChild = null;
 
-    const cleanupTimers = () => {
+    let resolveChildClosed;
+    const childClosedPromise = new Promise((res) => {
+      resolveChildClosed = res;
+    });
+
+    const clearExternalTimeout = () => {
       if (timeoutTimer !== null) {
         clearTimeout(timeoutTimer);
         timeoutTimer = null;
       }
-      if (killTimer !== null) {
-        clearTimeout(killTimer);
-        killTimer = null;
-      }
     };
 
     const detachParentSignals = () => {
-      process.off('SIGINT', onParentSignal);
-      process.off('SIGTERM', onParentSignal);
-    };
-
-    const onParentSignal = (sig) => {
-      if (activeChild && !settled) {
-        terminateChildTree(activeChild, sig);
+      if (attachParentSignals && signalTarget && typeof signalTarget.off === 'function') {
+        signalTarget.off('SIGINT', onCancelSignal);
+        signalTarget.off('SIGTERM', onCancelSignal);
+      }
+      if (typeof registerCancelHandler === 'function') {
+        registerCancelHandler(null);
       }
     };
 
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      cleanupTimers();
-      detachParentSignals();
-      resolve(result);
+    const markChildClosed = (code, signal) => {
+      if (childClosed) return;
+      childClosed = true;
+      closeCode = code;
+      closeSignal = signal ?? null;
+      resolveChildClosed();
     };
 
-    try {
-      activeChild = spawn(built.command, built.args, {
-        cwd: built.cwd,
-        env,
-        stdio,
-        shell: false,
-        detached: process.platform !== 'win32',
-        windowsHide: true,
-      });
-    } catch (spawnErr) {
-      const durationMs = Number(process.hrtime.bigint() - startedAtNs) / 1_000_000;
-      const message = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
-      log(
-        `[run-tests] ❌ [${stepIndex}/${totalSteps}] FALHA DE INICIALIZAÇÃO (spawn) em ${step.name} (${formatDurationMs(durationMs)}): ${message}`
-      );
-      finish({
-        id: step.id,
-        name: step.name,
-        purpose: step.purpose ?? '',
-        script: step.script,
-        status: 'init-error',
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        durationMs,
-        strippedFilters,
-        appliedFilters,
-        errorMessage: message,
-      });
-      return;
-    }
+    const startTermination = (trigger, initialSignal) => {
+      if (settled || terminationTrigger !== null) {
+        return;
+      }
+      terminationTrigger = trigger;
+      if (trigger === 'cancelled') {
+        cancelSignal = initialSignal;
+      }
+      clearExternalTimeout();
 
-    process.on('SIGINT', onParentSignal);
-    process.on('SIGTERM', onParentSignal);
+      const pid = activeChild?.pid ?? null;
 
-    timeoutTimer = setTimeout(() => {
+      if (trigger === 'timeout') {
+        const actionDesc =
+          platform === 'win32'
+            ? `taskkill /PID ${pid ?? '?'} /T /F`
+            : `encerramento do grupo próprio -${pid ?? '?'} (${initialSignal})`;
+        log(
+          `[run-tests] ⏱ ${stepLabel} TIMEOUT EXTERNO (${formatDurationMs(timeoutMs)}) em ${step.name} — iniciando ${actionDesc}...`
+        );
+      } else {
+        const actionDesc =
+          platform === 'win32'
+            ? `taskkill /PID ${pid ?? '?'} /T /F`
+            : `encerramento do grupo próprio -${pid ?? '?'} (${initialSignal})`;
+        log(
+          `[run-tests] 🛑 ${stepLabel} CANCELAMENTO MANUAL (${initialSignal}) em ${step.name} — iniciando ${actionDesc}...`
+        );
+      }
+
+      const terminationRunner =
+        platform === 'win32'
+          ? terminateWindowsProcessTree(pid, {
+              child: activeChild,
+              isChildClosed: () => childClosed,
+              waitForChildClose: () => childClosedPromise,
+              taskkillTimeoutMs,
+              postKillSettleMs,
+              logger: log,
+              stepLabel,
+              spawnFn: options.taskkillSpawnFn,
+            })
+          : terminatePosixProcessGroup(pid, {
+              child: activeChild,
+              initialSignal,
+              killGraceMs,
+              postKillSettleMs,
+              isChildClosed: () => childClosed,
+              waitForChildClose: () => childClosedPromise,
+              logger: log,
+              stepLabel,
+              stepName: step.name,
+            });
+
+      terminationPromise = terminationRunner
+        .catch((unexpectedErr) => ({
+          platform,
+          method: platform === 'win32' ? 'taskkill' : 'posix-process-group',
+          escalatedToKill: false,
+          fallbackUsed: false,
+          confirmed: false,
+          childCloseTimedOut: !childClosed,
+          errors: [
+            `Erro inesperado durante limpeza do processo: ${unexpectedErr instanceof Error ? unexpectedErr.message : String(unexpectedErr)}`,
+          ],
+        }))
+        .then((report) => {
+          cleanupReport = report;
+          tryFinalize();
+        });
+    };
+
+    const onCancelSignal = (sig) => {
       if (settled) return;
-      timedOut = true;
-      log(
-        `[run-tests] ⏱ [${stepIndex}/${totalSteps}] TIMEOUT EXTERNO (${formatDurationMs(timeoutMs)}) em ${step.name} — encerrando processo filho (SIGTERM)...`
-      );
-      terminateChildTree(activeChild, 'SIGTERM');
-
-      killTimer = setTimeout(() => {
-        if (settled) return;
-        escalatedToKill = true;
+      if (terminationTrigger === null) {
+        startTermination('cancelled', sig);
+      } else if (terminationTrigger === 'timeout') {
         log(
-          `[run-tests] ⏱ [${stepIndex}/${totalSteps}] Processo ${step.name} não encerrou após margem de ${formatDurationMs(killGraceMs)} — escalando para SIGKILL...`
+          `[run-tests] 🛑 ${stepLabel} Sinal ${sig} recebido durante encerramento por timeout em ${step.name}; aguardando conclusão da limpeza em andamento.`
         );
-        terminateChildTree(activeChild, 'SIGKILL');
-      }, killGraceMs);
-    }, timeoutMs);
+      }
+    };
 
-    activeChild.once('error', (err) => {
-      const durationMs = Number(process.hrtime.bigint() - startedAtNs) / 1_000_000;
-      const message = err instanceof Error ? err.message : String(err);
-      log(
-        `[run-tests] ❌ [${stepIndex}/${totalSteps}] FALHA DE INICIALIZAÇÃO em ${step.name} (${formatDurationMs(durationMs)}): ${message}`
-      );
-      finish({
-        id: step.id,
-        name: step.name,
-        purpose: step.purpose ?? '',
-        script: step.script,
-        status: 'init-error',
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        durationMs,
-        strippedFilters,
-        appliedFilters,
-        errorMessage: message,
-      });
-    });
+    const tryFinalize = () => {
+      if (settled) return;
 
-    activeChild.once('close', (code, signal) => {
+      // Não finalizar prematuramente enquanto houver operação de encerramento pendente
+      if (terminationPromise !== null && cleanupReport === null) {
+        return;
+      }
+
+      // Sem encerramento ativo, só finaliza quando o processo filho fecha ou falha no spawn
+      if (terminationPromise === null && !childClosed && spawnErrorMessage === null) {
+        return;
+      }
+
+      settled = true;
+      clearExternalTimeout();
+      detachParentSignals();
+
       const durationMs = Number(process.hrtime.bigint() - startedAtNs) / 1_000_000;
 
-      if (timedOut) {
+      if (cleanupReport && cleanupReport.errors.length > 0) {
+        for (const cleanupErr of cleanupReport.errors) {
+          log(`[run-tests] ⚠ ${stepLabel} Falha/aviso na limpeza de processos: ${cleanupErr}`);
+        }
+      }
+
+      if (terminationTrigger === 'cancelled') {
+        const exitCode = getCancellationExitCode(cancelSignal);
+        const escalated = Boolean(cleanupReport?.escalatedToKill);
+        const confirmed = Boolean(cleanupReport?.confirmed);
         log(
-          `[run-tests] ❌ [${stepIndex}/${totalSteps}] TIMEOUT: ${step.name} encerrado após ${formatDurationMs(durationMs)} (code=${code ?? 'null'}, signal=${signal ?? 'none'}, escalatedSigkill=${escalatedToKill})`
+          `[run-tests] 🛑 ${stepLabel} CANCELADO (${cancelSignal}): ${step.name} interrompido após ${formatDurationMs(durationMs)} ` +
+            `(rawCode=${closeCode ?? 'null'}, rawSignal=${closeSignal ?? 'none'}, escalatedSigkill=${escalated}, cleanupConfirmed=${confirmed}, exitCode=${exitCode})`
         );
-        finish({
+        resolve({
+          id: step.id,
+          name: step.name,
+          purpose: step.purpose ?? '',
+          script: step.script,
+          status: 'cancelled',
+          exitCode,
+          rawExitCode: closeCode,
+          signal: closeSignal,
+          timedOut: false,
+          cancelled: true,
+          cancelSignal,
+          escalatedToKill: escalated,
+          cleanup: cleanupReport,
+          durationMs,
+          strippedFilters,
+          appliedFilters,
+          errorMessage: `Execução cancelada manualmente por ${cancelSignal}`,
+        });
+        return;
+      }
+
+      if (terminationTrigger === 'timeout') {
+        const escalated = Boolean(cleanupReport?.escalatedToKill);
+        const confirmed = Boolean(cleanupReport?.confirmed);
+        log(
+          `[run-tests] ❌ ${stepLabel} TIMEOUT: ${step.name} encerrado após ${formatDurationMs(durationMs)} ` +
+            `(rawCode=${closeCode ?? 'null'}, rawSignal=${closeSignal ?? 'none'}, escalatedSigkill=${escalated}, cleanupConfirmed=${confirmed})`
+        );
+        resolve({
           id: step.id,
           name: step.name,
           purpose: step.purpose ?? '',
           script: step.script,
           status: 'timeout',
           exitCode: 124,
-          rawExitCode: code,
-          signal: signal ?? null,
+          rawExitCode: closeCode,
+          signal: closeSignal,
           timedOut: true,
-          escalatedToKill,
+          cancelled: false,
+          cancelSignal: null,
+          escalatedToKill: escalated,
+          cleanup: cleanupReport,
           durationMs,
           strippedFilters,
           appliedFilters,
@@ -645,43 +1075,77 @@ export function runStep(step, options = {}) {
         return;
       }
 
-      if (signal) {
+      if (spawnErrorMessage !== null) {
         log(
-          `[run-tests] ❌ [${stepIndex}/${totalSteps}] ENCERRAMENTO POR SINAL: ${step.name} recebeu ${signal} após ${formatDurationMs(durationMs)}`
+          `[run-tests] ❌ ${stepLabel} FALHA DE INICIALIZAÇÃO em ${step.name} (${formatDurationMs(durationMs)}): ${spawnErrorMessage}`
         );
-        finish({
+        resolve({
+          id: step.id,
+          name: step.name,
+          purpose: step.purpose ?? '',
+          script: step.script,
+          status: 'init-error',
+          exitCode: 1,
+          rawExitCode: null,
+          signal: null,
+          timedOut: false,
+          cancelled: false,
+          cancelSignal: null,
+          escalatedToKill: false,
+          cleanup: cleanupReport,
+          durationMs,
+          strippedFilters,
+          appliedFilters,
+          errorMessage: spawnErrorMessage,
+        });
+        return;
+      }
+
+      if (closeSignal) {
+        log(
+          `[run-tests] ❌ ${stepLabel} ENCERRAMENTO POR SINAL: ${step.name} recebeu ${closeSignal} após ${formatDurationMs(durationMs)}`
+        );
+        resolve({
           id: step.id,
           name: step.name,
           purpose: step.purpose ?? '',
           script: step.script,
           status: 'signal-error',
           exitCode: 1,
-          rawExitCode: code,
-          signal,
+          rawExitCode: closeCode,
+          signal: closeSignal,
           timedOut: false,
+          cancelled: false,
+          cancelSignal: null,
+          escalatedToKill: false,
+          cleanup: null,
           durationMs,
           strippedFilters,
           appliedFilters,
-          errorMessage: `Processo encerrado por sinal ${signal}`,
+          errorMessage: `Processo encerrado por sinal ${closeSignal}`,
         });
         return;
       }
 
-      if (code !== 0) {
-        const normalizedCode = typeof code === 'number' && code > 0 ? code : 1;
+      if (closeCode !== 0) {
+        const normalizedCode = typeof closeCode === 'number' && closeCode > 0 ? closeCode : 1;
         log(
-          `[run-tests] ❌ [${stepIndex}/${totalSteps}] FALHA DE ASSERÇÃO/EXECUÇÃO: ${step.name} encerrou com código ${normalizedCode} em ${formatDurationMs(durationMs)}`
+          `[run-tests] ❌ ${stepLabel} FALHA DE ASSERÇÃO/EXECUÇÃO: ${step.name} encerrou com código ${normalizedCode} em ${formatDurationMs(durationMs)}`
         );
-        finish({
+        resolve({
           id: step.id,
           name: step.name,
           purpose: step.purpose ?? '',
           script: step.script,
           status: 'assertion-failure',
           exitCode: normalizedCode,
-          rawExitCode: code,
+          rawExitCode: closeCode,
           signal: null,
           timedOut: false,
+          cancelled: false,
+          cancelSignal: null,
+          escalatedToKill: false,
+          cleanup: null,
           durationMs,
           strippedFilters,
           appliedFilters,
@@ -691,9 +1155,9 @@ export function runStep(step, options = {}) {
       }
 
       log(
-        `[run-tests] ✅ [${stepIndex}/${totalSteps}] APROVADO: ${step.name} em ${formatDurationMs(durationMs)} (código 0)`
+        `[run-tests] ✅ ${stepLabel} APROVADO: ${step.name} em ${formatDurationMs(durationMs)} (código 0)`
       );
-      finish({
+      resolve({
         id: step.id,
         name: step.name,
         purpose: step.purpose ?? '',
@@ -703,11 +1167,60 @@ export function runStep(step, options = {}) {
         rawExitCode: 0,
         signal: null,
         timedOut: false,
+        cancelled: false,
+        cancelSignal: null,
+        escalatedToKill: false,
+        cleanup: null,
         durationMs,
         strippedFilters,
         appliedFilters,
         errorMessage: null,
       });
+    };
+
+    try {
+      activeChild = spawn(built.command, built.args, {
+        cwd: built.cwd,
+        env,
+        stdio,
+        shell: false,
+        detached: platform !== 'win32',
+        windowsHide: true,
+      });
+    } catch (spawnErr) {
+      spawnErrorMessage = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
+      markChildClosed(null, null);
+      tryFinalize();
+      return;
+    }
+
+    if (attachParentSignals && signalTarget && typeof signalTarget.on === 'function') {
+      signalTarget.on('SIGINT', onCancelSignal);
+      signalTarget.on('SIGTERM', onCancelSignal);
+    }
+
+    if (typeof registerCancelHandler === 'function') {
+      registerCancelHandler(onCancelSignal);
+    }
+
+    // Se cancelamento já disparou imediatamente ao registrar o handler, não armar timer externo
+    if (terminationTrigger === null) {
+      timeoutTimer = setTimeout(() => {
+        if (settled || childClosed || terminationTrigger !== null) return;
+        startTermination('timeout', 'SIGTERM');
+      }, timeoutMs);
+    }
+
+    activeChild.once('error', (err) => {
+      spawnErrorMessage = err instanceof Error ? err.message : String(err);
+      markChildClosed(null, null);
+      tryFinalize();
+    });
+
+    activeChild.once('close', (code, signal) => {
+      clearExternalTimeout();
+      markChildClosed(code, signal);
+      tryFinalize();
     });
   });
 }
@@ -729,6 +1242,8 @@ function getApprovalBanner(plan, totalSteps) {
 
 function getFailureLabel(status) {
   switch (status) {
+    case 'cancelled':
+      return 'CANCELAMENTO MANUAL';
     case 'timeout':
       return 'TIMEOUT';
     case 'init-error':
@@ -743,15 +1258,35 @@ function getFailureLabel(status) {
 }
 
 /**
- * Executa um plano sequencialmente, interrompendo na primeira falha e
- * registrando explicitamente as execuções não alcançadas.
+ * Executa um plano sequencialmente, interrompendo na primeira falha ou cancelamento manual
+ * e registrando explicitamente as execuções não alcançadas.
  */
 export async function runPlan(plan, options = {}) {
   const log = options.logger ?? defaultLogger;
+  const signalTarget = options.signalTarget ?? process;
   const planStartNs = process.hrtime.bigint();
   const results = [];
   const skipped = [];
   let firstFailure = null;
+  let planCancelSignal = null;
+  let activeStepCancelHandler = null;
+
+  const onPlanCancelSignal = (sig) => {
+    if (!planCancelSignal) {
+      planCancelSignal = sig;
+      log(
+        `\n[run-tests] 🛑 CANCELAMENTO MANUAL (${sig}) recebido no plano [${plan.id}] — nenhuma nova etapa será iniciada.`
+      );
+    }
+    if (typeof activeStepCancelHandler === 'function') {
+      activeStepCancelHandler(sig);
+    }
+  };
+
+  if (signalTarget && typeof signalTarget.on === 'function') {
+    signalTarget.on('SIGINT', onPlanCancelSignal);
+    signalTarget.on('SIGTERM', onPlanCancelSignal);
+  }
 
   log(
     `================================================================================\n` +
@@ -760,38 +1295,67 @@ export async function runPlan(plan, options = {}) {
       `================================================================================`
   );
 
-  for (let i = 0; i < plan.steps.length; i += 1) {
-    const step = plan.steps[i];
-    if (firstFailure) {
-      const skippedEntry = {
-        id: step.id,
-        name: step.name,
-        purpose: step.purpose ?? '',
-        script: step.script,
-        status: 'skipped-after-failure',
-        exitCode: null,
-        signal: null,
-        timedOut: false,
-        durationMs: 0,
-        strippedFilters: [],
-        appliedFilters: step.env ? { ...step.env } : {},
-        errorMessage: `Não executada devido à falha anterior em ${firstFailure.name}`,
-      };
-      results.push(skippedEntry);
-      skipped.push(skippedEntry);
-      continue;
+  try {
+    for (let i = 0; i < plan.steps.length; i += 1) {
+      const step = plan.steps[i];
+
+      if (firstFailure || planCancelSignal) {
+        const isCancelled = Boolean(planCancelSignal || firstFailure?.status === 'cancelled');
+        const effectiveCancelSignal = planCancelSignal ?? firstFailure?.cancelSignal ?? null;
+        const skippedEntry = {
+          id: step.id,
+          name: step.name,
+          purpose: step.purpose ?? '',
+          script: step.script,
+          status: isCancelled ? 'skipped-after-cancellation' : 'skipped-after-failure',
+          exitCode: null,
+          signal: null,
+          timedOut: false,
+          cancelled: isCancelled,
+          cancelSignal: effectiveCancelSignal,
+          escalatedToKill: false,
+          cleanup: null,
+          durationMs: 0,
+          strippedFilters: [],
+          appliedFilters: step.env ? { ...step.env } : {},
+          errorMessage: isCancelled
+            ? `Não executada devido ao cancelamento manual (${effectiveCancelSignal})`
+            : `Não executada devido à falha anterior em ${firstFailure.name}`,
+        };
+        results.push(skippedEntry);
+        skipped.push(skippedEntry);
+        continue;
+      }
+
+      const stepResult = await runStep(step, {
+        ...options,
+        stepIndex: i + 1,
+        totalSteps: plan.steps.length,
+        logger: log,
+        signalTarget,
+        attachParentSignals: false,
+        registerCancelHandler: (handler) => {
+          activeStepCancelHandler = handler;
+          if (handler && planCancelSignal) {
+            handler(planCancelSignal);
+          }
+        },
+      });
+      activeStepCancelHandler = null;
+      results.push(stepResult);
+
+      if (stepResult.status !== 'passed') {
+        firstFailure = stepResult;
+        if (stepResult.status === 'cancelled' && !planCancelSignal) {
+          planCancelSignal = stepResult.cancelSignal;
+        }
+      }
     }
-
-    const stepResult = await runStep(step, {
-      ...options,
-      stepIndex: i + 1,
-      totalSteps: plan.steps.length,
-      logger: log,
-    });
-    results.push(stepResult);
-
-    if (stepResult.status !== 'passed') {
-      firstFailure = stepResult;
+  } finally {
+    activeStepCancelHandler = null;
+    if (signalTarget && typeof signalTarget.off === 'function') {
+      signalTarget.off('SIGINT', onPlanCancelSignal);
+      signalTarget.off('SIGTERM', onPlanCancelSignal);
     }
   }
 
@@ -799,6 +1363,42 @@ export async function runPlan(plan, options = {}) {
   const passedCount = results.filter((r) => r.status === 'passed').length;
 
   log('\n--------------------------------------------------------------------------------');
+
+  // Nunca converter um plano cancelado em aprovação, mesmo que o último passo tenha encerrado com código 0
+  if (!firstFailure && planCancelSignal) {
+    const exitCode = getCancellationExitCode(planCancelSignal);
+    log(
+      `[run-tests] 🛑 PLANO CANCELADO [${plan.id}] — CANCELAMENTO MANUAL (${planCancelSignal}) recebido durante a execução (código ${exitCode}).`
+    );
+    log(
+      `[run-tests] Resumo: ${passedCount} concluída(s) antes do cancelamento, ${skipped.length} não alcançada(s)/ignorada(s) de ${plan.steps.length}.`
+    );
+    if (skipped.length > 0) {
+      log('[run-tests] Execuções NÃO realizadas após o cancelamento:');
+      for (const s of skipped) {
+        log(`            - ${s.name} (${s.id}): ${s.errorMessage}`);
+      }
+    }
+    log(`[run-tests] Duração total: ${formatDurationMs(totalDurationMs)} | Código de saída: ${exitCode}`);
+    log('--------------------------------------------------------------------------------');
+
+    return {
+      ok: false,
+      planId: plan.id,
+      category: plan.category,
+      outcome: 'cancelled',
+      cancelled: true,
+      cancelSignal: planCancelSignal,
+      exitCode,
+      totalDurationMs,
+      passedCount,
+      totalSteps: plan.steps.length,
+      results,
+      skipped,
+      firstFailure: null,
+    };
+  }
+
   if (!firstFailure) {
     log(`[run-tests] ${getApprovalBanner(plan, plan.steps.length)}`);
     log(`[run-tests] Duração total: ${formatDurationMs(totalDurationMs)} | Código de saída: 0`);
@@ -815,6 +1415,8 @@ export async function runPlan(plan, options = {}) {
             : plan.category === 'domain'
               ? 'domain-passed'
               : 'partial-passed',
+      cancelled: false,
+      cancelSignal: null,
       exitCode: 0,
       totalDurationMs,
       passedCount,
@@ -826,14 +1428,25 @@ export async function runPlan(plan, options = {}) {
   }
 
   const failureLabel = getFailureLabel(firstFailure.status);
+  const isCancelledFailure = firstFailure.status === 'cancelled';
+  if (isCancelledFailure) {
+    log(
+      `[run-tests] 🛑 PLANO CANCELADO [${plan.id}] — ${failureLabel} (${firstFailure.cancelSignal}) em "${firstFailure.name}" (código ${firstFailure.exitCode}).`
+    );
+  } else {
+    log(
+      `[run-tests] ❌ PLANO INTERROMPIDO [${plan.id}] — ${failureLabel} em "${firstFailure.name}" (código ${firstFailure.exitCode}${firstFailure.signal ? `, sinal ${firstFailure.signal}` : ''}).`
+    );
+  }
   log(
-    `[run-tests] ❌ PLANO INTERROMPIDO [${plan.id}] — ${failureLabel} em "${firstFailure.name}" (código ${firstFailure.exitCode}${firstFailure.signal ? `, sinal ${firstFailure.signal}` : ''}).`
-  );
-  log(
-    `[run-tests] Resumo: ${passedCount} aprovada(s), 1 falha (${failureLabel}), ${skipped.length} não alcançada(s)/ignorada(s) de ${plan.steps.length}.`
+    `[run-tests] Resumo: ${passedCount} aprovada(s), 1 ${isCancelledFailure ? 'cancelada' : 'falha'} (${failureLabel}), ${skipped.length} não alcançada(s)/ignorada(s) de ${plan.steps.length}.`
   );
   if (skipped.length > 0) {
-    log('[run-tests] Execuções NÃO realizadas após a primeira falha:');
+    log(
+      isCancelledFailure
+        ? '[run-tests] Execuções NÃO realizadas após o cancelamento:'
+        : '[run-tests] Execuções NÃO realizadas após a primeira falha:'
+    );
     for (const s of skipped) {
       log(`            - ${s.name} (${s.id}): ${s.errorMessage}`);
     }
@@ -848,6 +1461,8 @@ export async function runPlan(plan, options = {}) {
     planId: plan.id,
     category: plan.category,
     outcome: firstFailure.status,
+    cancelled: isCancelledFailure,
+    cancelSignal: isCancelledFailure ? firstFailure.cancelSignal : planCancelSignal,
     exitCode: firstFailure.exitCode,
     totalDurationMs,
     passedCount,
