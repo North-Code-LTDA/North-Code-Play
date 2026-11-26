@@ -908,7 +908,8 @@ async function testSyntheticContracts() {
       assert.strictEqual(isPidRunning(pids9a.childPid), false);
       assert.strictEqual(isPidRunning(pids9a.grandchildPid), false);
       assert(
-        silentLogs.some((l) => l.includes('PLANO CANCELADO') && l.includes('Execuções NÃO realizadas após o cancelamento')),
+        silentLogs.some((l) => l.includes('PLANO CANCELADO')) &&
+        silentLogs.some((l) => l.includes('Execuções NÃO realizadas após o cancelamento')),
         'Relatório deve distinguir cancelamento manual e listar passos não realizados'
       );
     }
