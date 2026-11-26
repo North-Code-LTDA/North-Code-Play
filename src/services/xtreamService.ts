@@ -7,30 +7,119 @@ import {
   XtreamCredentials,
 } from "../types";
 import { normalizeServerUrl } from "../utils/mediaUtils";
-import { executeXtreamGetRequest } from "./httpTransport";
+import {
+  createAbortError,
+  createHttpError,
+  executeXtreamGetRequest,
+  type TransportErrorCategory,
+} from "./httpTransport";
 
 export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+export type XtreamAuthErrorReason =
+  | 'invalid_credentials'
+  | 'account_inactive'
+  | 'http_unauthorized';
+
+export type XtreamErrorCategory =
+  | TransportErrorCategory
+  | 'auth_rejected'
+  | 'ambiguous_auth_response';
+
 export interface XtreamCategorizedError extends Error {
+  errorCategory?: XtreamErrorCategory;
   isAuthError?: boolean;
   isTransient?: boolean;
   isClientError?: boolean;
   isFatalFormat?: boolean;
+  isAborted?: boolean;
+  isRateLimited?: boolean;
+  retryAfterMs?: number;
+  requiresAuthRecheck?: boolean;
   status?: number;
-  authErrorReason?: 'invalid_credentials' | 'account_inactive' | 'http_unauthorized';
+  authErrorReason?: XtreamAuthErrorReason;
+}
+
+const EXPLICIT_INACTIVE_STATUSES = new Set([
+  'disabled',
+  'expired',
+  'banned',
+  'inactive',
+  'suspended',
+  'blocked',
+  'revoked',
+  'deactivated',
+  'expirado',
+  'expirada',
+  'desativado',
+  'desativada',
+  'banido',
+  'banida',
+  'inativo',
+  'inativa',
+  'suspenso',
+  'suspensa',
+  'bloqueado',
+  'bloqueada',
+]);
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeTextField(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  return value.trim().toLowerCase();
+}
+
+function isExplicitAuthRejectionValue(auth: unknown): boolean {
+  if (auth === 0 || auth === false) return true;
+  const normalized = normalizeTextField(auth);
+  return normalized === '0' || normalized === 'false';
+}
+
+function isExplicitAuthSuccessValue(auth: unknown): boolean {
+  if (auth === 1 || auth === true) return true;
+  const normalized = normalizeTextField(auth);
+  return normalized === '1' || normalized === 'true';
+}
+
+function createAmbiguousAuthResponseError(message: string): XtreamCategorizedError {
+  const err: XtreamCategorizedError = new Error(message);
+  err.errorCategory = 'ambiguous_auth_response';
+  err.isAuthError = false;
+  err.isClientError = false;
+  err.isTransient = false;
+  err.isFatalFormat = true;
+  return err;
+}
+
+function createResourceUnauthorizedError(): XtreamCategorizedError {
+  const err: XtreamCategorizedError = new Error(
+    'Acesso recusado ao recurso pelo servidor do provedor (HTTP 401).'
+  );
+  err.errorCategory = 'http_unauthorized';
+  err.status = 401;
+  err.isAuthError = false;
+  err.isClientError = true;
+  err.isTransient = false;
+  err.requiresAuthRecheck = true;
+  return err;
 }
 
 export function createXtreamAuthError(
   message: string,
-  reason: 'invalid_credentials' | 'account_inactive' | 'http_unauthorized' = 'invalid_credentials',
+  reason: XtreamAuthErrorReason = 'invalid_credentials',
   status?: number
 ): XtreamCategorizedError {
   const err: XtreamCategorizedError = new Error(message);
+  err.errorCategory = 'auth_rejected';
   err.isAuthError = true;
   err.isClientError = true;
   err.isTransient = false;
+  err.isFatalFormat = false;
   err.authErrorReason = reason;
   if (status !== undefined) {
     err.status = status;
@@ -39,72 +128,118 @@ export function createXtreamAuthError(
 }
 
 /**
- * Diferencia rejeição comprovada de autenticação (credenciais inválidas, auth=0,
- * conta expirada/desativada/banida ou HTTP 401/403) de falhas transitórias
- * (timeout, falha de rede, CORS, HTTP 5xx ou indisponibilidade temporária).
+ * Diferencia rejeição comprovada de autenticação (auth=0/false, conta inativa/expirada/desativada/banida
+ * ou HTTP 401 confirmado no endpoint authenticate()) de HTTP 403, HTTP 401 em outros recursos antes de
+ * revalidação, respostas ambíguas/inválidas, rate limit (429), cancelamentos e falhas transitórias.
  */
 export function isAuthenticationRejectedError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const anyErr = err as XtreamCategorizedError;
 
   if (anyErr.isAuthError === true) return true;
-  if (anyErr.isTransient === true) return false;
-  if (anyErr.status === 401 || anyErr.status === 403) return true;
+  if (anyErr.isAuthError === false) return false;
+  if (
+    anyErr.isAborted === true ||
+    anyErr.isTransient === true ||
+    anyErr.isRateLimited === true ||
+    anyErr.isFatalFormat === true
+  ) {
+    return false;
+  }
+  if (anyErr.errorCategory !== undefined) {
+    return anyErr.errorCategory === 'auth_rejected';
+  }
+  if (anyErr.authErrorReason !== undefined) {
+    return true;
+  }
+  if (typeof anyErr.status === 'number') {
+    return false;
+  }
 
   const msg = String(anyErr.message || '').trim();
   if (!msg) return false;
 
-  // Nunca classificar erros de rede, timeout, CORS ou cancelamento como rejeição de credenciais
+  // Fallback defensivo apenas para erros não estruturados
   if (
-    /tempo limite|timeout|falha de rede|cors|cancelad|indispon|http 5\d\d|http 429|http 408/i.test(
+    /tempo limite|timeout|falha de rede|cors|cancelad|indispon|http 5\d\d|http 429|http 408|http 403|proibid|restrit|formato inválido|não é um json|resposta vazia|página html|não confirmou a autenticação/i.test(
       msg
     )
   ) {
     return false;
   }
 
-  return /usuário ou senha (inválidos|incorretos)|conta (de usuário )?(desativada|expirada|banida)|credenciais inválidas|acesso (negado|expirado)|http (401|403)\b/i.test(
+  return /usuário ou senha (inválidos|incorretos)|conta (de usuário )?(desativada|expirada|banida|suspensa|bloqueada|inativa)|credenciais inválidas/i.test(
     msg
   );
 }
 
+/**
+ * Identifica falhas transitórias de comunicação/provedor (rede, CORS, timeout, HTTP 408,
+ * HTTP 429 ou HTTP 5xx), diferenciando-as de rejeição de autenticação, erros HTTP 4xx,
+ * respostas malformadas/vazias e cancelamento intencional.
+ */
 export function isTransientXtreamError(err: unknown): boolean {
-  if (!err) return false;
-  if (isAuthenticationRejectedError(err)) return false;
+  if (!err || typeof err !== 'object') return false;
   const anyErr = err as XtreamCategorizedError;
+
+  if (anyErr.isAborted === true) return false;
+  if (isAuthenticationRejectedError(anyErr)) return false;
+  if (anyErr.isFatalFormat === true) return false;
+  if (anyErr.isClientError === true) return false;
   if (anyErr.isTransient === true) return true;
+  if (anyErr.isTransient === false) return false;
+
+  if (anyErr.errorCategory !== undefined) {
+    return (
+      anyErr.errorCategory === 'network' ||
+      anyErr.errorCategory === 'timeout' ||
+      anyErr.errorCategory === 'http_timeout' ||
+      anyErr.errorCategory === 'http_rate_limited' ||
+      anyErr.errorCategory === 'http_server_error' ||
+      anyErr.errorCategory === 'local_file_read'
+    );
+  }
+
+  if (typeof anyErr.status === 'number') {
+    return (
+      anyErr.status === 408 ||
+      anyErr.status === 429 ||
+      (anyErr.status >= 500 && anyErr.status <= 599)
+    );
+  }
+
   const msg = String(anyErr.message || '');
   if (/Operação cancelada pelo usuário/i.test(msg)) return false;
-  return true;
+  return /tempo limite|timeout|falha de rede|cors|indisponível|limite de requisições|http 5\d\d|http 408|http 429/i.test(
+    msg
+  );
 }
 
 /**
  * Inspeciona se um payload retornado pelo servidor Xtream (em authenticate ou em endpoints
  * de categorias/catálogo) indica explicitamente credenciais inválidas ou conta inativa/expirada.
+ * Prioriza rejeições explícitas mesmo quando outros campos do payload forem contraditórios.
  */
 export function inspectPayloadForAuthError(data: unknown): void {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+  if (!isPlainObject(data)) {
     return;
   }
-  const obj = data as Record<string, any>;
-  if (!obj.user_info || typeof obj.user_info !== 'object') {
+  const userInfo = data.user_info;
+  if (!isPlainObject(userInfo)) {
     return;
   }
 
-  const auth = obj.user_info.auth;
-  if (auth === 0 || auth === '0' || auth === false || String(auth) === '0') {
+  if (isExplicitAuthRejectionValue(userInfo.auth)) {
     throw createXtreamAuthError(
       'Usuário ou senha inválidos ou conta desativada.',
       'invalid_credentials'
     );
   }
 
-  if (
-    obj.user_info.status &&
-    ['disabled', 'expired', 'banned'].includes(String(obj.user_info.status).toLowerCase())
-  ) {
+  const normalizedStatus = normalizeTextField(userInfo.status);
+  if (normalizedStatus && EXPLICIT_INACTIVE_STATUSES.has(normalizedStatus)) {
     throw createXtreamAuthError(
-      'Conta de usuário desativada ou expirada.',
+      'Conta de usuário desativada, expirada ou suspensa pelo provedor.',
       'account_inactive'
     );
   }
@@ -121,7 +256,17 @@ export function normalizeCatalogArray<T = any>(
 ): T[] {
   inspectPayloadForAuthError(data);
   if (!Array.isArray(data)) {
-    throw new Error(invalidFormatMessage);
+    const formatErr: XtreamCategorizedError = new Error(invalidFormatMessage);
+    formatErr.errorCategory = 'invalid_format';
+    formatErr.isFatalFormat = true;
+    formatErr.isTransient = false;
+    formatErr.isClientError = false;
+    formatErr.isAuthError = false;
+    if (isPlainObject(data)) {
+      // Alguns provedores retornam um objeto de erro fora do padrão user_info em endpoints de catálogo
+      formatErr.requiresAuthRecheck = true;
+    }
+    throw formatErr;
   }
   const result: T[] = [];
   for (let i = 0; i < data.length; i++) {
@@ -137,6 +282,8 @@ export function normalizeCatalogArray<T = any>(
 export class XtreamService {
   private static readonly DEFAULT_TIMEOUT_MS = 25000;
   private static readonly CATALOG_TIMEOUT_MS = 90000;
+  private static readonly RATE_LIMIT_MIN_WAIT_MS = 1000;
+  private static readonly RATE_LIMIT_MAX_RETRY_AFTER_MS = 15000;
   private static retryDelayMs = 1000;
 
   static setRetryDelayMsForTest(ms: number): void {
@@ -149,7 +296,7 @@ export class XtreamService {
   private static sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
-        return reject(new Error("Operação cancelada pelo usuário."));
+        return reject(createAbortError());
       }
       const timer = setTimeout(() => {
         if (signal) {
@@ -160,7 +307,7 @@ export class XtreamService {
 
       const onAbort = () => {
         clearTimeout(timer);
-        reject(new Error("Operação cancelada pelo usuário."));
+        reject(createAbortError());
       };
 
       if (signal) {
@@ -195,8 +342,9 @@ export class XtreamService {
   /**
    * Performs direct HTTP/HTTPS GET requests to the Xtream provider via the transport adapter
    * (fetch on Web, explicit CapacitorHttp or temp-file catalog plugin on Android).
-   * Applies at most ONE automatic retry for transient network errors or timeouts.
-   * Does NOT retry HTTP 4xx, auth rejections, invalid JSON, or intentional caller cancellation.
+   * Applies at most ONE automatic retry for transient network errors, timeouts, HTTP 408,
+   * HTTP 5xx, or HTTP 429 strictly when a valid Retry-After <= 15s is provided.
+   * Does NOT retry other HTTP 4xx, auth rejections, invalid/empty payloads, or caller cancellation.
    */
   private static async request<T = any>(
     credentials: XtreamCredentials,
@@ -207,7 +355,14 @@ export class XtreamService {
   ): Promise<T> {
     const cleanServerUrl = normalizeServerUrl(credentials.serverUrl);
     if (!cleanServerUrl) {
-      throw new Error("URL do servidor Xtream não fornecida ou inválida.");
+      const urlErr: XtreamCategorizedError = new Error(
+        "URL do servidor Xtream não fornecida ou inválida."
+      );
+      urlErr.errorCategory = "http_client_error";
+      urlErr.isClientError = true;
+      urlErr.isTransient = false;
+      urlErr.isAuthError = false;
+      throw urlErr;
     }
 
     let targetUrl: URL;
@@ -216,7 +371,14 @@ export class XtreamService {
         `${cleanServerUrl.replace(/\/+$/, "")}/player_api.php`
       );
     } catch {
-      throw new Error(`Endereço de servidor inválido: ${cleanServerUrl}`);
+      const invalidUrlErr: XtreamCategorizedError = new Error(
+        "Endereço de servidor inválido. Verifique a URL informada."
+      );
+      invalidUrlErr.errorCategory = "http_client_error";
+      invalidUrlErr.isClientError = true;
+      invalidUrlErr.isTransient = false;
+      invalidUrlErr.isAuthError = false;
+      throw invalidUrlErr;
     }
 
     targetUrl.searchParams.set("username", credentials.username);
@@ -233,12 +395,13 @@ export class XtreamService {
     }
 
     const callerSignal = options?.signal;
+    const isAuthEndpoint = action === undefined;
     const isFullCatalogRequest = XtreamService.isFullCatalogQuery(action, params);
     const maxAttempts = 2;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (callerSignal?.aborted) {
-        throw new Error("Operação cancelada pelo usuário.");
+        throw createAbortError();
       }
 
       try {
@@ -251,36 +414,80 @@ export class XtreamService {
         inspectPayloadForAuthError(payload);
         return payload;
       } catch (err: any) {
-        const isAbort =
-          callerSignal?.aborted || err?.message === "Operação cancelada pelo usuário.";
+        const isAbort = Boolean(
+          callerSignal?.aborted ||
+            err?.isAborted === true ||
+            err?.message === "Operação cancelada pelo usuário."
+        );
 
-        // Classify HTTP 401 / 403 as explicit authentication rejection before finalizing attempt
-        const effectiveErr =
-          !isAbort && (err?.status === 401 || err?.status === 403) && !err?.isAuthError
-            ? createXtreamAuthError(
-                `Acesso recusado pelo servidor do provedor (HTTP ${err.status}). Verifique seu usuário e senha.`,
-                "http_unauthorized",
-                err.status
-              )
-            : err;
-
-        // Do not retry caller aborts
         if (isAbort) {
-          throw new Error("Operação cancelada pelo usuário.");
+          throw createAbortError();
         }
-        // Do not retry auth errors or HTTP 4xx
-        if (effectiveErr?.isAuthError || effectiveErr?.isClientError) {
+
+        const status = typeof err?.status === "number" ? err.status : undefined;
+        let effectiveErr: XtreamCategorizedError;
+
+        if (status === 401 && !err?.isAuthError) {
+          effectiveErr = isAuthEndpoint
+            ? createXtreamAuthError(
+                "Acesso recusado pelo servidor do provedor (HTTP 401). Verifique as credenciais ou a situação da conta.",
+                "http_unauthorized",
+                401
+              )
+            : createResourceUnauthorizedError();
+        } else if (status === 403) {
+          effectiveErr = createHttpError(403) as XtreamCategorizedError;
+          effectiveErr.isAuthError = false;
+          effectiveErr.requiresAuthRecheck = false;
+        } else if (status === 408 && err?.errorCategory !== "http_timeout") {
+          effectiveErr = createHttpError(408) as XtreamCategorizedError;
+          effectiveErr.isAuthError = false;
+        } else if (status === 429 && err?.errorCategory !== "http_rate_limited") {
+          effectiveErr = createHttpError(429) as XtreamCategorizedError;
+          effectiveErr.isAuthError = false;
+          if (typeof err?.retryAfterMs === "number" && Number.isFinite(err.retryAfterMs) && err.retryAfterMs >= 0) {
+            effectiveErr.retryAfterMs = err.retryAfterMs;
+          }
+        } else {
+          effectiveErr = err as XtreamCategorizedError;
+        }
+
+        // Nunca repetir rejeições de autenticação, erros HTTP 4xx (exceto 408/429 tratados acima) ou formato inválido/vazio
+        if (
+          effectiveErr?.isAuthError ||
+          effectiveErr?.isClientError ||
+          effectiveErr?.isFatalFormat
+        ) {
           throw effectiveErr;
         }
-        // Do not retry fatal format errors (malformed JSON)
-        if (err?.isFatalFormat) {
-          throw err;
+
+        // Política controlada de HTTP 429: somente uma nova tentativa quando houver Retry-After válido <= 15s
+        if (effectiveErr?.isRateLimited || effectiveErr?.status === 429) {
+          const retryAfterMs = effectiveErr?.retryAfterMs;
+          const canRetryRateLimit =
+            attempt < maxAttempts &&
+            typeof retryAfterMs === "number" &&
+            Number.isFinite(retryAfterMs) &&
+            retryAfterMs >= 0 &&
+            retryAfterMs <= XtreamService.RATE_LIMIT_MAX_RETRY_AFTER_MS;
+
+          if (!canRetryRateLimit) {
+            throw effectiveErr;
+          }
+
+          const waitMs = Math.max(
+            XtreamService.RATE_LIMIT_MIN_WAIT_MS,
+            retryAfterMs
+          );
+          await XtreamService.sleep(waitMs, callerSignal);
+          continue;
         }
-        // If this was the last attempt, rethrow error
-        if (attempt >= maxAttempts) {
-          throw err;
+
+        if (effectiveErr?.isTransient !== true || attempt >= maxAttempts) {
+          throw effectiveErr;
         }
-        // Wait briefly before the single retry
+
+        // Uma única nova tentativa controlada para falhas transitórias (rede, CORS, timeout, HTTP 408 ou 5xx)
         await XtreamService.sleep(XtreamService.retryDelayMs, callerSignal);
       }
     }
@@ -305,18 +512,19 @@ export class XtreamService {
       options
     );
 
-    if (!data || typeof data !== "object" || Array.isArray(data)) {
-      throw new Error("Resposta inválida recebida do servidor do provedor.");
-    }
-
-    if (!data.user_info) {
-      throw createXtreamAuthError(
-        "Usuário ou senha incorretos ou resposta inesperada do provedor.",
-        "invalid_credentials"
+    if (!isPlainObject(data) || !isPlainObject(data.user_info)) {
+      throw createAmbiguousAuthResponseError(
+        "Resposta de autenticação inválida ou incompleta recebida do servidor do provedor."
       );
     }
 
     inspectPayloadForAuthError(data);
+
+    if (!isExplicitAuthSuccessValue(data.user_info.auth)) {
+      throw createAmbiguousAuthResponseError(
+        "O servidor do provedor não confirmou a autenticação da conta na resposta recebida."
+      );
+    }
 
     return data as XtreamAuthResponse;
   }

@@ -200,6 +200,22 @@ export function XtreamProvider({
   // Auth rejection state (distinct from transient errors)
   const [isAuthRejected, setIsAuthRejected] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const isAuthRejectedRef = useRef<boolean>(false);
+  isAuthRejectedRef.current = isAuthRejected;
+  const authRecheckInFlightRef = useRef<{
+    session: number;
+    promise: Promise<{ rejected: boolean; message?: string }>;
+  } | null>(null);
+
+  const isAbortedOperation = useCallback(
+    (err: any, signal?: AbortSignal): boolean =>
+      Boolean(
+        signal?.aborted ||
+          err?.isAborted === true ||
+          err?.message === "Operação cancelada pelo usuário."
+      ),
+    []
+  );
 
   const registerErrorAndCheckAuth = useCallback(
     async (
@@ -210,8 +226,13 @@ export function XtreamProvider({
       const fallbackMsg =
         err?.message || "Falha ao comunicar com o servidor do provedor.";
 
+      if (isAbortedOperation(err, signal)) {
+        return fallbackMsg;
+      }
+
       if (isAuthenticationRejectedError(err)) {
         if (sessionRef.current === currentSession) {
+          isAuthRejectedRef.current = true;
           setIsAuthRejected(true);
           setAuthError(fallbackMsg);
           markCredentialsAuthRejected(fallbackMsg);
@@ -219,38 +240,79 @@ export function XtreamProvider({
         return fallbackMsg;
       }
 
-      // Se o erro não é transitório nem cancelamento (ex.: servidor retornou objeto não-array inesperado
-      // em endpoint de categorias), consulta authenticate() para verificar se a conta expirou/foi desativada
-      if (
+      // Restringe rechecagem via authenticate() apenas a casos pertinentes:
+      // HTTP 401 em endpoint de recurso ou objeto JSON inesperado onde se esperava lista de catálogo.
+      // Nunca dispara rechecagem nem invalida credenciais em HTTP 403, 404, 429, 408, 5xx, rede,
+      // timeout, resposta vazia/HTML/JSON inválido ou cancelamento.
+      const shouldRecheckAuth = Boolean(
         credentials &&
-        !err?.isTransient &&
-        err?.message !== "Operação cancelada pelo usuário." &&
-        !signal?.aborted
-      ) {
-        try {
-          await XtreamService.authenticate(credentials, { signal });
-        } catch (authCheckErr: any) {
-          if (
-            sessionRef.current === currentSession &&
-            isAuthenticationRejectedError(authCheckErr)
-          ) {
-            if (err && typeof err === "object") {
-              err.isAuthError = true;
-            }
-            const authMsg =
-              authCheckErr?.message ||
-              "Usuário ou senha inválidos ou conta desativada.";
-            setIsAuthRejected(true);
-            setAuthError(authMsg);
-            markCredentialsAuthRejected(authMsg);
-            return authMsg;
+          sessionRef.current === currentSession &&
+          !isAuthRejectedRef.current &&
+          !err?.isTransient &&
+          !err?.isRateLimited &&
+          err?.status !== 403 &&
+          (err?.requiresAuthRecheck === true || err?.status === 401)
+      );
+
+      if (shouldRecheckAuth && credentials) {
+        let recheckPromise: Promise<{ rejected: boolean; message?: string }>;
+        if (
+          authRecheckInFlightRef.current &&
+          authRecheckInFlightRef.current.session === currentSession
+        ) {
+          recheckPromise = authRecheckInFlightRef.current.promise;
+        } else {
+          recheckPromise = XtreamService.authenticate(credentials, { signal })
+            .then(() => ({ rejected: false }))
+            .catch((authCheckErr: any) => {
+              if (
+                sessionRef.current === currentSession &&
+                !isAbortedOperation(authCheckErr, signal) &&
+                isAuthenticationRejectedError(authCheckErr)
+              ) {
+                return {
+                  rejected: true,
+                  message:
+                    authCheckErr?.message ||
+                    "Usuário ou senha inválidos ou conta desativada.",
+                };
+              }
+              return { rejected: false };
+            })
+            .finally(() => {
+              if (authRecheckInFlightRef.current?.session === currentSession) {
+                authRecheckInFlightRef.current = null;
+              }
+            });
+
+          authRecheckInFlightRef.current = {
+            session: currentSession,
+            promise: recheckPromise,
+          };
+        }
+
+        const result = await recheckPromise;
+        if (
+          result.rejected &&
+          sessionRef.current === currentSession &&
+          !signal?.aborted
+        ) {
+          const authMsg =
+            result.message || "Usuário ou senha inválidos ou conta desativada.";
+          if (err && typeof err === "object") {
+            err.isAuthError = true;
           }
+          isAuthRejectedRef.current = true;
+          setIsAuthRejected(true);
+          setAuthError(authMsg);
+          markCredentialsAuthRejected(authMsg);
+          return authMsg;
         }
       }
 
       return fallbackMsg;
     },
-    [credentials]
+    [credentials, isAbortedOperation]
   );
 
   // Status refs for stable action callbacks across status transitions
@@ -260,8 +322,6 @@ export function XtreamProvider({
   vodCatalogStatusRef.current = vodCatalogStatus;
   const seriesCatalogStatusRef = useRef<OperationStatus>("idle");
   seriesCatalogStatusRef.current = seriesCatalogStatus;
-  const isAuthRejectedRef = useRef<boolean>(false);
-  isAuthRejectedRef.current = isAuthRejected;
 
   // Full-catalog memory references
   const allLiveStreamsRef = useRef<LiveStream[]>([]);
@@ -448,6 +508,7 @@ export function XtreamProvider({
     queueRef.current = [];
     pendingSetRef.current.clear();
     inFlightPromisesRef.current.clear();
+    authRecheckInFlightRef.current = null;
     activeCountRef.current = 0;
 
     // Reset data
@@ -518,8 +579,7 @@ export function XtreamProvider({
       } catch (err: any) {
         if (
           sessionRef.current !== currentSession ||
-          signal.aborted ||
-          err?.message === "Operação cancelada pelo usuário."
+          isAbortedOperation(err, signal)
         ) {
           return;
         }
@@ -554,8 +614,7 @@ export function XtreamProvider({
       } catch (err: any) {
         if (
           sessionRef.current !== currentSession ||
-          signal.aborted ||
-          err?.message === "Operação cancelada pelo usuário."
+          isAbortedOperation(err, signal)
         ) {
           return;
         }
@@ -590,8 +649,7 @@ export function XtreamProvider({
       } catch (err: any) {
         if (
           sessionRef.current !== currentSession ||
-          signal.aborted ||
-          err?.message === "Operação cancelada pelo usuário."
+          isAbortedOperation(err, signal)
         ) {
           return;
         }
@@ -616,7 +674,7 @@ export function XtreamProvider({
     return () => {
       abortControllerRef.current?.abort();
     };
-  }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
+  }, [credentials, enqueueOperation, registerErrorAndCheckAuth, isAbortedOperation]);
 
   // Actions for Categories
   const fetchLiveCategories = useCallback(async () => {
@@ -638,8 +696,7 @@ export function XtreamProvider({
       } catch (err: any) {
         if (
           sessionRef.current !== currentSession ||
-          signal.aborted ||
-          err?.message === "Operação cancelada pelo usuário."
+          isAbortedOperation(err, signal)
         ) {
           return;
         }
@@ -657,7 +714,7 @@ export function XtreamProvider({
         setLiveCategoriesStatus("error");
       }
     });
-  }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
+  }, [credentials, enqueueOperation, registerErrorAndCheckAuth, isAbortedOperation]);
 
   const fetchVodCategories = useCallback(async () => {
     if (!credentials) return;
@@ -678,8 +735,7 @@ export function XtreamProvider({
       } catch (err: any) {
         if (
           sessionRef.current !== currentSession ||
-          signal.aborted ||
-          err?.message === "Operação cancelada pelo usuário."
+          isAbortedOperation(err, signal)
         ) {
           return;
         }
@@ -697,7 +753,7 @@ export function XtreamProvider({
         setVodCategoriesStatus("error");
       }
     });
-  }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
+  }, [credentials, enqueueOperation, registerErrorAndCheckAuth, isAbortedOperation]);
 
   const fetchSeriesCategories = useCallback(async () => {
     if (!credentials) return;
@@ -718,8 +774,7 @@ export function XtreamProvider({
       } catch (err: any) {
         if (
           sessionRef.current !== currentSession ||
-          signal.aborted ||
-          err?.message === "Operação cancelada pelo usuário."
+          isAbortedOperation(err, signal)
         ) {
           return;
         }
@@ -737,7 +792,7 @@ export function XtreamProvider({
         setSeriesCategoriesStatus("error");
       }
     });
-  }, [credentials, enqueueOperation, registerErrorAndCheckAuth]);
+  }, [credentials, enqueueOperation, registerErrorAndCheckAuth, isAbortedOperation]);
 
   // Backward-compatible category retry
   const retryCategories = useCallback(async () => {
@@ -802,8 +857,7 @@ export function XtreamProvider({
         } catch (err: any) {
           if (
             sessionRef.current !== currentSession ||
-            signal.aborted ||
-            err?.message === "Operação cancelada pelo usuário."
+            isAbortedOperation(err, signal)
           ) {
             return;
           }
@@ -821,7 +875,7 @@ export function XtreamProvider({
         }
       });
     },
-    [credentials, enqueueOperation, registerErrorAndCheckAuth]
+    [credentials, enqueueOperation, registerErrorAndCheckAuth, isAbortedOperation]
   );
 
   // VOD Streams Catalog Fetch
@@ -878,8 +932,7 @@ export function XtreamProvider({
         } catch (err: any) {
           if (
             sessionRef.current !== currentSession ||
-            signal.aborted ||
-            err?.message === "Operação cancelada pelo usuário."
+            isAbortedOperation(err, signal)
           ) {
             return;
           }
@@ -897,7 +950,7 @@ export function XtreamProvider({
         }
       });
     },
-    [credentials, enqueueOperation, registerErrorAndCheckAuth]
+    [credentials, enqueueOperation, registerErrorAndCheckAuth, isAbortedOperation]
   );
 
   // Series Streams Catalog Fetch
@@ -954,8 +1007,7 @@ export function XtreamProvider({
         } catch (err: any) {
           if (
             sessionRef.current !== currentSession ||
-            signal.aborted ||
-            err?.message === "Operação cancelada pelo usuário."
+            isAbortedOperation(err, signal)
           ) {
             return;
           }
@@ -973,7 +1025,7 @@ export function XtreamProvider({
         }
       });
     },
-    [credentials, enqueueOperation, registerErrorAndCheckAuth]
+    [credentials, enqueueOperation, registerErrorAndCheckAuth, isAbortedOperation]
   );
 
   // Orchestrate initial catalog fetches independently of whether HomeView is mounted,
@@ -1017,7 +1069,12 @@ export function XtreamProvider({
         setAuthError(null);
         safeSaveCredentials(credentials);
       } catch (err: any) {
-        if (sessionRef.current !== currentSession) return;
+        if (
+          sessionRef.current !== currentSession ||
+          isAbortedOperation(err, abortControllerRef.current?.signal)
+        ) {
+          return;
+        }
         if (isAuthenticationRejectedError(err)) {
           const msg =
             err?.message || "Usuário ou senha inválidos ou conta desativada.";
@@ -1040,6 +1097,7 @@ export function XtreamProvider({
     ]);
   }, [
     credentials,
+    isAbortedOperation,
     fetchLiveCategories,
     fetchVodCategories,
     fetchSeriesCategories,
