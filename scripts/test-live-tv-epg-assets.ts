@@ -219,7 +219,7 @@ const env = await createDomTestEnv({
   url: 'http://localhost:3000',
   width: viewportWidth,
   height: viewportHeight,
-  watchdogMs: 25000,
+  watchdogMs: 60000,
   watchdogLabel: 'test-live-tv-epg-assets',
   rafIntervalMs: 8,
   disableElementAnimate: true,

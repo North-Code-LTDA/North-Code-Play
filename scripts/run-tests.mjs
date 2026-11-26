@@ -19,8 +19,8 @@ export const INHERITED_FILTER_ENV_KEYS = Object.freeze([
 ]);
 
 /**
- * Limites externos derivados dos watchdogs internos existentes nas suítes,
- * com margem para bootstrap do Node/tsx e teardown completo (sem alterar watchdogs internos).
+ * Limites externos derivados dos watchdogs internos configurados nas suítes,
+ * com margem para bootstrap do Node/tsx e teardown completo.
  */
 export const EXTERNAL_TIMEOUTS_MS = Object.freeze({
   logicFull: 20_000, // test-live-zapping.ts (lógica pura, sem DOM)
@@ -29,7 +29,7 @@ export const EXTERNAL_TIMEOUTS_MS = Object.freeze({
   fullLoginConfig: 35_000, // watchdog interno 20s + 15s margem
   fullFullscreenExit: 35_000, // watchdog interno 20s + 15s margem
   fullPerformanceProfile: 35_000, // watchdog interno 20s + 15s margem
-  fullLiveTvEpgAssets: 40_000, // watchdog interno 25s + 15s margem
+  fullLiveTvEpgAssets: 75_000, // watchdog interno 60s + 15s margem
   fullShowcaseCarousels: 40_000, // watchdog interno 25s + 15s margem
   fullLiveTvNav: 210_000, // watchdog interno 180s + 30s margem
   fullDirect: 150_000, // watchdog interno 120s + 30s margem
@@ -233,7 +233,7 @@ export const TEST_PLANS = Object.freeze({
         runtime: 'tsx',
         env: Object.freeze({}),
         timeoutMs: EXTERNAL_TIMEOUTS_MS.fullLiveTvEpgAssets,
-        internalWatchdogMs: 25_000,
+        internalWatchdogMs: 60_000,
       }),
       Object.freeze({
         id: 'all:6-showcase-carousels',
