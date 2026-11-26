@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -270,23 +269,14 @@ export const TEST_PLANS = Object.freeze({
   }),
 });
 
-let cachedTsxLoaderUrl = null;
+export const TEST_BOOTSTRAP_SCRIPT = 'scripts/test-bootstrap.mjs';
 
 /**
- * Resolve o loader ESM local do tsx a partir de node_modules do projeto,
- * retornando URL file:// compatível com Node >=22 em POSIX e Windows.
+ * Resolve o caminho absoluto do bootstrap compartilhado de testes (scripts/test-bootstrap.mjs),
+ * compatível com Node >=22 em POSIX e Windows sem uso de --import tsx.
  */
-export function resolveTsxLoaderUrl(projectRoot = PROJECT_ROOT) {
-  if (projectRoot === PROJECT_ROOT && cachedTsxLoaderUrl) {
-    return cachedTsxLoaderUrl;
-  }
-  const req = createRequire(path.join(projectRoot, 'package.json'));
-  const resolvedPath = req.resolve('tsx');
-  const loaderUrl = pathToFileURL(resolvedPath).href;
-  if (projectRoot === PROJECT_ROOT) {
-    cachedTsxLoaderUrl = loaderUrl;
-  }
-  return loaderUrl;
+export function resolveTestBootstrapPath(projectRoot = PROJECT_ROOT) {
+  return path.resolve(projectRoot, TEST_BOOTSTRAP_SCRIPT);
 }
 
 /**
@@ -348,12 +338,13 @@ export function buildChildCommand(step, options = {}) {
   const runtime = step.runtime ?? (scriptAbsPath.endsWith('.ts') ? 'tsx' : 'node');
 
   if (runtime === 'tsx') {
-    const loaderUrl = options.tsxLoaderUrl ?? resolveTsxLoaderUrl(cwd);
+    const bootstrapAbsPath = options.bootstrapPath ?? resolveTestBootstrapPath(cwd);
     return {
       command: execPath,
-      args: ['--import', loaderUrl, scriptAbsPath, ...extraArgs],
+      args: [bootstrapAbsPath, scriptAbsPath, ...extraArgs],
       cwd,
       scriptAbsPath,
+      bootstrapAbsPath,
       runtime,
     };
   }
@@ -802,11 +793,35 @@ export function runStep(step, options = {}) {
     built = buildChildCommand(step, {
       cwd,
       execPath: options.execPath,
-      tsxLoaderUrl: options.tsxLoaderUrl,
+      bootstrapPath: options.bootstrapPath,
     });
   } catch (err) {
     const durationMs = Number(process.hrtime.bigint() - startedAtNs) / 1_000_000;
     const message = err instanceof Error ? err.message : String(err);
+    log(`[run-tests] ❌ ${stepLabel} FALHA DE INICIALIZAÇÃO em ${step.name}: ${message}`);
+    return Promise.resolve({
+      id: step.id,
+      name: step.name,
+      purpose: step.purpose ?? '',
+      script: step.script,
+      status: 'init-error',
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      cancelled: false,
+      cancelSignal: null,
+      escalatedToKill: false,
+      cleanup: null,
+      durationMs,
+      strippedFilters,
+      appliedFilters,
+      errorMessage: message,
+    });
+  }
+
+  if (built.bootstrapAbsPath && !fs.existsSync(built.bootstrapAbsPath)) {
+    const durationMs = Number(process.hrtime.bigint() - startedAtNs) / 1_000_000;
+    const message = `Bootstrap de testes não encontrado: ${built.bootstrapAbsPath}`;
     log(`[run-tests] ❌ ${stepLabel} FALHA DE INICIALIZAÇÃO em ${step.name}: ${message}`);
     return Promise.resolve({
       id: step.id,

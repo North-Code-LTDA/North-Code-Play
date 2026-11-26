@@ -8,11 +8,12 @@ import {
   EXTERNAL_TIMEOUTS_MS,
   INHERITED_FILTER_ENV_KEYS,
   PROJECT_ROOT,
+  TEST_BOOTSTRAP_SCRIPT,
   TEST_PLANS,
   buildChildCommand,
   buildIsolatedChildEnv,
   getCancellationExitCode,
-  resolveTsxLoaderUrl,
+  resolveTestBootstrapPath,
   runPlan,
   terminateWindowsProcessTree,
 } from './run-tests.mjs';
@@ -111,26 +112,52 @@ async function testStaticPackageAndPlansMapping() {
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   const scripts = pkg.scripts ?? {};
 
-  // 1. Verificar preservação integral dos comandos existentes
-  const preservedCommands = {
-    test: 'tsx scripts/test-direct.ts',
-    'test:carousels': 'tsx scripts/test-showcase-carousels.ts',
-    'test:login-config': 'tsx scripts/test-login-config.ts',
-    'test:fullscreen-exit': 'tsx scripts/test-fullscreen-exit.ts',
-    'test:performance-profile': 'tsx scripts/test-performance-profile.ts',
-    'test:live-tv-nav': 'tsx scripts/test-live-tv-nav.ts',
-    'test:live-tv-epg-assets': 'tsx scripts/test-live-tv-epg-assets.ts',
+  // 1. Verificar os 24 comandos npm (10 preservados gerais + 7 aliases legados via bootstrap + 7 orquestrador)
+  assert.strictEqual(
+    Object.keys(scripts).length,
+    24,
+    'package.json deve preservar exatamente 24 comandos npm'
+  );
+
+  const preservedGeneralCommands = {
+    dev: 'vite',
+    build: 'vite build',
+    start: 'vite preview',
+    preview: 'vite preview',
+    clean: 'node -e "require(\'node:fs\').rmSync(\'dist\', { recursive: true, force: true })"',
+    lint: 'tsc --noEmit',
+    'cap:sync': 'node tooling/android/prepare-android.mjs --skip-web-build',
+    'android:sync': 'npm run build && node tooling/android/prepare-android.mjs --skip-web-build',
+    'android:prepare': 'npm run build && node tooling/android/prepare-android.mjs --skip-web-build',
+    'android:open': 'node tooling/android/prepare-android.mjs --skip-web-build --open',
   };
-  for (const [name, expectedCmd] of Object.entries(preservedCommands)) {
+  for (const [name, expectedCmd] of Object.entries(preservedGeneralCommands)) {
     assert.strictEqual(
       scripts[name],
       expectedCmd,
-      `Comando existente "${name}" deve permanecer preservado`
+      `Comando preservado "${name}" deve permanecer inalterado`
     );
   }
 
-  // 2. Verificar todos os novos comandos npm
-  const expectedNewCommands = {
+  const bootstrapLegacyCommands = {
+    test: 'node scripts/test-bootstrap.mjs scripts/test-direct.ts',
+    'test:carousels': 'node scripts/test-bootstrap.mjs scripts/test-showcase-carousels.ts',
+    'test:login-config': 'node scripts/test-bootstrap.mjs scripts/test-login-config.ts',
+    'test:fullscreen-exit': 'node scripts/test-bootstrap.mjs scripts/test-fullscreen-exit.ts',
+    'test:performance-profile': 'node scripts/test-bootstrap.mjs scripts/test-performance-profile.ts',
+    'test:live-tv-nav': 'node scripts/test-bootstrap.mjs scripts/test-live-tv-nav.ts',
+    'test:live-tv-epg-assets': 'node scripts/test-bootstrap.mjs scripts/test-live-tv-epg-assets.ts',
+  };
+  for (const [name, expectedCmd] of Object.entries(bootstrapLegacyCommands)) {
+    assert.strictEqual(
+      scripts[name],
+      expectedCmd,
+      `Alias legado "${name}" deve utilizar node scripts/test-bootstrap.mjs`
+    );
+  }
+
+  // 2. Verificar os 7 comandos do orquestrador multiplataforma
+  const expectedOrchestratorCommands = {
     'test:live-zapping': 'node scripts/run-tests.mjs live-zapping',
     'test:api-transport': 'node scripts/run-tests.mjs api-transport',
     'test:spatial-nav': 'node scripts/run-tests.mjs spatial-nav',
@@ -139,11 +166,11 @@ async function testStaticPackageAndPlansMapping() {
     'test:smoke': 'node scripts/run-tests.mjs smoke',
     'test:all': 'node scripts/run-tests.mjs all',
   };
-  for (const [name, expectedCmd] of Object.entries(expectedNewCommands)) {
+  for (const [name, expectedCmd] of Object.entries(expectedOrchestratorCommands)) {
     assert.strictEqual(
       scripts[name],
       expectedCmd,
-      `Novo comando "${name}" deve apontar para o orquestrador multiplataforma`
+      `Comando "${name}" deve continuar apontando para o orquestrador multiplataforma`
     );
   }
 
@@ -229,23 +256,66 @@ async function testStaticPackageAndPlansMapping() {
   assert(EXTERNAL_TIMEOUTS_MS.fullLiveTvNav >= 200_000, 'test-live-tv-nav completo deve ter margem sobre 180s');
   assert(EXTERNAL_TIMEOUTS_MS.fullDirect >= 140_000, 'test-direct completo deve ter margem sobre 120s');
 
-  // 5. Verificar resolução local de tsx e construção de argumentos sem shell
-  const loaderUrl = resolveTsxLoaderUrl();
-  assert(loaderUrl.startsWith('file://'), `Loader tsx deve ser URL file:// local (obtido: ${loaderUrl})`);
-  assert(
-    loaderUrl.includes('/node_modules/tsx/'),
-    `Loader tsx deve apontar para node_modules/tsx local (obtido: ${loaderUrl})`
+  // 5. Verificar resolução do bootstrap compartilhado e construção de argumentos sem shell e sem --import tsx
+  const bootstrapAbsPath = resolveTestBootstrapPath();
+  assert.strictEqual(
+    bootstrapAbsPath,
+    path.resolve(PROJECT_ROOT, TEST_BOOTSTRAP_SCRIPT),
+    'Bootstrap resolvido deve apontar para scripts/test-bootstrap.mjs na raiz do projeto'
+  );
+  assert.strictEqual(
+    fs.existsSync(bootstrapAbsPath),
+    true,
+    `Bootstrap compartilhado deve existir no disco: ${bootstrapAbsPath}`
   );
 
-  const built = buildChildCommand(TEST_PLANS.smoke.steps[0]);
-  assert.strictEqual(built.command, process.execPath, 'Comando deve usar process.execPath');
-  assert.strictEqual(built.cwd, PROJECT_ROOT, 'Diretório de trabalho deve ser a raiz do projeto');
-  assert.strictEqual(built.args[0], '--import', 'Deve carregar tsx via --import');
-  assert.strictEqual(built.args[1], loaderUrl, 'Deve usar URL local do tsx');
+  const builtTsx = buildChildCommand({
+    ...TEST_PLANS.smoke.steps[1],
+    args: ['--flag-a', 'valor-b'],
+  });
+  assert.strictEqual(builtTsx.command, process.execPath, 'Comando tsx deve usar process.execPath');
+  assert.strictEqual(builtTsx.cwd, PROJECT_ROOT, 'Diretório de trabalho deve ser a raiz do projeto');
   assert.strictEqual(
-    built.args[2],
-    path.resolve(PROJECT_ROOT, 'scripts/test-live-zapping.ts'),
-    'Argumento do script deve ser caminho resolvido separado em array'
+    builtTsx.bootstrapAbsPath,
+    bootstrapAbsPath,
+    'bootstrapAbsPath deve apontar para scripts/test-bootstrap.mjs'
+  );
+  assert.deepStrictEqual(
+    builtTsx.args,
+    [
+      bootstrapAbsPath,
+      path.resolve(PROJECT_ROOT, 'scripts/test-login-config.ts'),
+      '--flag-a',
+      'valor-b',
+    ],
+    'Runtime tsx deve passar [bootstrapAbsPath, scriptAbsPath, ...extraArgs] separados em array'
+  );
+  assert.strictEqual(
+    builtTsx.args.includes('--import'),
+    false,
+    'Novo caminho tsx não deve utilizar --import tsx'
+  );
+  assert.strictEqual(
+    builtTsx.args.some((arg) => arg.includes('/node_modules/tsx/') || arg.includes('\\node_modules\\tsx\\')),
+    false,
+    'Novo caminho tsx não deve referenciar loader tsx diretamente nos argumentos'
+  );
+
+  // Verificar preservação integral do caminho runtime node
+  const builtNode = buildChildCommand({
+    id: 'synthetic-node-cmd',
+    name: 'Script Node direto',
+    script: 'scripts/test-runner.mjs',
+    runtime: 'node',
+    args: ['arg1', 'arg2'],
+    env: {},
+  });
+  assert.strictEqual(builtNode.command, process.execPath, 'Runtime node deve usar process.execPath');
+  assert.strictEqual(builtNode.runtime, 'node');
+  assert.deepStrictEqual(
+    builtNode.args,
+    [path.resolve(PROJECT_ROOT, 'scripts/test-runner.mjs'), 'arg1', 'arg2'],
+    'Runtime node deve manter execução direta sem bootstrap'
   );
 
   // 6. Verificar lista exata dos 8 filtros herdados e códigos de cancelamento
@@ -265,7 +335,9 @@ async function testStaticPackageAndPlansMapping() {
   assert.strictEqual(getCancellationExitCode('SIGINT'), 130);
   assert.strictEqual(getCancellationExitCode('SIGTERM'), 143);
 
-  console.log('  [OK] 1. Mapeamento estático de package.json, planos, watchdogs, códigos de cancelamento e loader tsx local');
+  console.log(
+    '  [OK] 1. Mapeamento estático dos 24 comandos npm, planos, watchdogs, códigos de cancelamento e bootstrap compartilhado'
+  );
 }
 
 async function testSyntheticContracts() {
