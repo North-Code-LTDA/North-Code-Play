@@ -6,9 +6,16 @@ import { Eye, EyeOff, Loader2, AlertCircle, Check, X, Pencil } from 'lucide-reac
 import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from '../components/MediaImage';
 import {
+  extractPersistableUserInfo,
   readAutoLoginState,
   safeSaveCredentials,
 } from '../utils/accountUtils';
+import {
+  extractXtreamCredentialsFromUrl,
+  normalizeAllowedOutputFormats,
+  normalizeServerUrl,
+} from '../utils/mediaUtils';
+import { XtreamCredentials } from '../types';
 import {
   useBackHandler,
   BACK_PRIORITY,
@@ -149,29 +156,15 @@ export function Login() {
 
   const handleServerUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
-    setServerUrl(value);
-
-    // Try to parse an M3U link automatically
-    try {
-      if (value.includes('username=') && value.includes('password=')) {
-        const urlObj = new URL(value.trim());
-        const urlUser = urlObj.searchParams.get('username');
-        const urlPass = urlObj.searchParams.get('password');
-        if (urlUser && urlPass) {
-          setUsername(urlUser);
-          setPassword(urlPass);
-          // urlObj.host already includes the port if present (e.g. "domain.com:8080")
-          // Strip M3U script endpoints like /get.php while preserving any base path
-          const cleanPath = urlObj.pathname
-            .replace(/\/get\.php.*$/i, '')
-            .replace(/\/player_api\.php.*$/i, '')
-            .replace(/\/+$/, '');
-          setServerUrl(`${urlObj.protocol}//${urlObj.host}${cleanPath}`);
-        }
-      }
-    } catch {
-      // Ignore invalid URLs while typing
+    const extracted = extractXtreamCredentialsFromUrl(value);
+    if (extracted) {
+      setServerUrl(extracted.serverUrl);
+      setUsername(extracted.username);
+      setPassword(extracted.password);
+      return;
     }
+
+    setServerUrl(value);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -181,11 +174,35 @@ export function Login() {
     setIsLoading(true);
     setError(null);
 
-    const baseCredentials = {
+    const extractedOnSubmit = extractXtreamCredentialsFromUrl(serverUrl);
+    const rawServerInput = extractedOnSubmit ? extractedOnSubmit.serverUrl : serverUrl;
+    const effectiveUsername = (extractedOnSubmit && !username.trim()
+      ? extractedOnSubmit.username
+      : username
+    ).trim();
+    const effectivePassword =
+      extractedOnSubmit && !password ? extractedOnSubmit.password : password;
+
+    const normalizedServerUrl = normalizeServerUrl(rawServerInput);
+    if (!normalizedServerUrl) {
+      setError(
+        'Informe uma URL de servidor HTTP ou HTTPS válida (ex.: http://servidor.com:8080).'
+      );
+      setIsLoading(false);
+      return;
+    }
+
+    if (extractedOnSubmit) {
+      setServerUrl(normalizedServerUrl);
+      if (!username.trim()) setUsername(effectiveUsername);
+      if (!password) setPassword(effectivePassword);
+    }
+
+    const baseCredentials: XtreamCredentials = {
       playlistName: playlistName.trim() || 'Minha Lista',
-      serverUrl: serverUrl.trim().replace(/\/+$/, ''),
-      username: username.trim(),
-      password,
+      serverUrl: normalizedServerUrl,
+      username: effectiveUsername,
+      password: effectivePassword,
       avatar,
     };
 
@@ -193,10 +210,24 @@ export function Login() {
       // Validate credentials directly against Xtream server
       const authResponse = await XtreamService.authenticate(baseCredentials);
 
-      const fullCredentials = {
+      const normalizedFormats = normalizeAllowedOutputFormats(
+        authResponse?.user_info?.allowed_output_formats
+      );
+      const persistableUserInfo = extractPersistableUserInfo(authResponse?.user_info);
+      const rawServerInfo =
+        authResponse?.server_info &&
+        typeof authResponse.server_info === 'object' &&
+        !Array.isArray(authResponse.server_info)
+          ? authResponse.server_info
+          : undefined;
+
+      const fullCredentials: XtreamCredentials = {
         ...baseCredentials,
-        allowed_output_formats: authResponse?.user_info?.allowed_output_formats || [],
-        server_info: authResponse?.server_info || {},
+        ...(normalizedFormats !== undefined
+          ? { allowed_output_formats: normalizedFormats }
+          : {}),
+        ...(persistableUserInfo ? { user_info: persistableUserInfo } : {}),
+        ...(rawServerInfo ? { server_info: rawServerInfo } : {}),
       };
 
       // If validation succeeds, save and redirect
@@ -401,7 +432,10 @@ export function Login() {
               </label>
               <input
                 id="serverUrl"
-                type="url"
+                type="text"
+                inputMode="url"
+                autoCapitalize="none"
+                spellCheck={false}
                 required
                 autoComplete="url"
                 placeholder="http://exemplo.com:8080 ou link M3U"

@@ -14,7 +14,13 @@ import {
   recordPlaybackPosition,
   clearItemProgress,
 } from '../utils/playbackHistory';
-import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
+import {
+  buildDirectMediaUrl,
+  normalizeContainerExtension,
+  normalizeDirectMediaSource,
+  normalizeImageSource,
+  normalizeMetadataText,
+} from '../utils/mediaUtils';
 import { ExternalSubtitleTrackInput } from './player/types';
 import { extractXtreamSubtitles } from './player/trackUtils';
 import { MediaImage } from './MediaImage';
@@ -37,6 +43,7 @@ export interface MovieDetailsProps {
   rating?: string | number;
   year?: string | number;
   containerExtension?: string;
+  directSource?: string | null;
   catalogMovies?: any[];
   onSelectSimilarMovie?: (movie: any) => void;
   onClose: () => void;
@@ -63,6 +70,7 @@ interface ActiveMovieSnapshot {
   rating?: string | number;
   year?: string | number;
   containerExtension?: string;
+  directSource?: string | null;
 }
 
 function formatMovieDuration(rawDuration?: string | number, durationSecs?: number | string): {
@@ -155,6 +163,7 @@ export const MovieDetails = React.memo(function MovieDetails({
   rating,
   year,
   containerExtension,
+  directSource,
   catalogMovies,
   onSelectSimilarMovie,
   onClose,
@@ -179,6 +188,7 @@ export const MovieDetails = React.memo(function MovieDetails({
     rating,
     year,
     containerExtension,
+    directSource,
   };
 
   const activeStreamId = activeMovie.streamId;
@@ -189,6 +199,7 @@ export const MovieDetails = React.memo(function MovieDetails({
   const activeRatingProp = activeMovie.rating;
   const activeYearProp = activeMovie.year;
   const activeContainerExtProp = activeMovie.containerExtension;
+  const activeDirectSourceProp = activeMovie.directSource;
 
   const [details, setDetails] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -310,6 +321,7 @@ export const MovieDetails = React.memo(function MovieDetails({
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
+    setDetails(null);
     setShowResumePrompt(false);
     setPlayError(null);
 
@@ -349,8 +361,15 @@ export const MovieDetails = React.memo(function MovieDetails({
     };
   }, [credentials, activeStreamId]);
 
-  const info = details?.info || {};
-  const movieData = details?.movie_data || {};
+  const rawInfo = details?.info && typeof details.info === 'object' ? details.info : {};
+  const rawMovieData =
+    details?.movie_data && typeof details.movie_data === 'object' ? details.movie_data : {};
+  const detailsMatchActiveStream =
+    rawMovieData.stream_id === undefined ||
+    rawMovieData.stream_id === null ||
+    String(rawMovieData.stream_id) === String(activeStreamId);
+  const info = detailsMatchActiveStream ? rawInfo : {};
+  const movieData = detailsMatchActiveStream ? rawMovieData : {};
 
   const displayTitle = info.name || movieData.name || activeStreamName || 'Filme';
   const titleId = `movie-details-title-${activeStreamId}`;
@@ -371,10 +390,10 @@ export const MovieDetails = React.memo(function MovieDetails({
   const releaseYear = useMemo(
     () =>
       extractCleanYear(
-        info.releasedate || info.releaseDate || info.year,
+        info.releasedate || info.releaseDate || info.release_date || info.year,
         activeYearProp
       ),
-    [info.releasedate, info.releaseDate, info.year, activeYearProp]
+    [info.releasedate, info.releaseDate, info.release_date, info.year, activeYearProp]
   );
 
   const { text: durationText, totalMinutes: totalDurationMinutes } = useMemo(
@@ -390,19 +409,20 @@ export const MovieDetails = React.memo(function MovieDetails({
     return str;
   }, [info.rating, activeRatingProp]);
 
-  const castText = useMemo(() => {
-    const raw = info.cast || info.actors;
-    return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
-  }, [info.cast, info.actors]);
+  const castText = useMemo(
+    () => normalizeMetadataText(info.cast) || normalizeMetadataText(info.actors),
+    [info.cast, info.actors]
+  );
 
-  const directorText = useMemo(() => {
-    const raw = info.director;
-    return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
-  }, [info.director]);
+  const directorText = useMemo(
+    () => normalizeMetadataText(info.director),
+    [info.director]
+  );
 
   const genreText = useMemo(() => {
-    if (typeof info.genre === 'string' && info.genre.trim().length > 0) {
-      return info.genre.trim();
+    const normalizedGenre = normalizeMetadataText(info.genre);
+    if (normalizedGenre) {
+      return normalizedGenre;
     }
     if (
       typeof activeCategoryName === 'string' &&
@@ -516,6 +536,8 @@ export const MovieDetails = React.memo(function MovieDetails({
           rating: movie.rating,
           year: movie.year,
           containerExtension: movie.container_extension,
+          directSource:
+            typeof movie.direct_source === 'string' ? movie.direct_source : undefined,
         });
       }
     },
@@ -531,10 +553,15 @@ export const MovieDetails = React.memo(function MovieDetails({
       setSavedProgress(0);
     }
 
+    const resolvedDirectSource =
+      normalizeDirectMediaSource(movieData?.direct_source) ||
+      normalizeDirectMediaSource(info?.direct_source) ||
+      normalizeDirectMediaSource(activeDirectSourceProp);
+
     const containerExt =
-      movieData?.container_extension ||
-      info?.container_extension ||
-      activeContainerExtProp ||
+      normalizeContainerExtension(movieData?.container_extension) ||
+      normalizeContainerExtension(info?.container_extension) ||
+      normalizeContainerExtension(activeContainerExtProp) ||
       'mp4';
 
     recordPlaybackPosition(credentials, {
@@ -549,6 +576,7 @@ export const MovieDetails = React.memo(function MovieDetails({
         type: 'movie',
         streamId: activeStreamId,
         containerExtension: containerExt,
+        directSource: resolvedDirectSource ?? undefined,
       });
       const extractedSubs = extractXtreamSubtitles(details, credentials.serverUrl);
       onPlay(
@@ -862,7 +890,9 @@ export const MovieDetails = React.memo(function MovieDetails({
                   className="nc-tv-movie-synopsis rounded-lg p-1.5 -m-1.5 transition-colors focus:outline-none"
                 >
                   <p className="nc-text-reading text-white/95 leading-relaxed whitespace-pre-line break-words">
-                    {info.plot || 'Sinopse não disponível.'}
+                    {normalizeMetadataText(info.plot) ||
+                      normalizeMetadataText(info.description) ||
+                      'Sinopse não disponível.'}
                   </p>
                 </div>
               </div>

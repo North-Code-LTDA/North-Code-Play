@@ -5,8 +5,13 @@ import {
   SeriesStream,
   XtreamAuthResponse,
   XtreamCredentials,
+  XtreamSeriesInfoResponse,
+  XtreamVodInfoResponse,
 } from "../types";
-import { normalizeServerUrl } from "../utils/mediaUtils";
+import {
+  normalizeAllowedOutputFormats,
+  normalizeServerUrl,
+} from "../utils/mediaUtils";
 import {
   createAbortError,
   createHttpError,
@@ -526,6 +531,16 @@ export class XtreamService {
       );
     }
 
+    const normalizedFormats = normalizeAllowedOutputFormats(
+      data.user_info.allowed_output_formats
+    );
+    if (normalizedFormats !== undefined) {
+      data.user_info = {
+        ...data.user_info,
+        allowed_output_formats: normalizedFormats,
+      };
+    }
+
     return data as XtreamAuthResponse;
   }
 
@@ -620,8 +635,8 @@ export class XtreamService {
     credentials: XtreamCredentials,
     vodId: string | number,
     options?: RequestOptions
-  ): Promise<any> {
-    return this.request<any>(
+  ): Promise<XtreamVodInfoResponse> {
+    return this.request<XtreamVodInfoResponse>(
       credentials,
       "get_vod_info",
       { vod_id: String(vodId) },
@@ -679,8 +694,8 @@ export class XtreamService {
     credentials: XtreamCredentials,
     seriesId: string | number,
     options?: RequestOptions
-  ): Promise<any> {
-    return this.request<any>(
+  ): Promise<XtreamSeriesInfoResponse> {
+    return this.request<XtreamSeriesInfoResponse>(
       credentials,
       "get_series_info",
       { series_id: String(seriesId) },

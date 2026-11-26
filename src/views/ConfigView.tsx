@@ -26,6 +26,12 @@ import {
   getNavMode,
   focusElementSafely,
 } from '../navigation';
+import {
+  formatAccountConnections,
+  formatAccountExpiration,
+  formatAccountStatus,
+} from '../utils/accountUtils';
+import { XtreamUserInfo } from '../types';
 
 const PERFORMANCE_OPTIONS: ReadonlyArray<{
   id: PerformanceProfilePreference;
@@ -59,7 +65,7 @@ export const ConfigView = React.memo(function ConfigView({
   focusRequestId = 0,
 }: ConfigViewProps = {}) {
   const { credentials } = useXtreamCredentials();
-  const [accountInfo, setAccountInfo] = useState<any>(null);
+  const [accountInfo, setAccountInfo] = useState<XtreamUserInfo | null>(null);
   const [loading, setLoading] = useState(Boolean(credentials));
   const [error, setError] = useState<string | null>(null);
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
@@ -115,6 +121,10 @@ export const ConfigView = React.memo(function ConfigView({
 
   useEffect(() => {
     let isMounted = true;
+    const abortController =
+      typeof AbortController !== 'undefined' ? new AbortController() : null;
+
+    setAccountInfo(null);
     if (!credentials) {
       setLoading(false);
       return;
@@ -122,22 +132,24 @@ export const ConfigView = React.memo(function ConfigView({
 
     setLoading(true);
     setError(null);
-    XtreamService.authenticate(credentials)
+    XtreamService.authenticate(
+      credentials,
+      abortController ? { signal: abortController.signal } : undefined
+    )
       .then((data) => {
-        if (isMounted) {
-          setAccountInfo(data.user_info);
-          setLoading(false);
-        }
+        if (!isMounted || abortController?.signal.aborted) return;
+        setAccountInfo(data?.user_info ?? null);
+        setLoading(false);
       })
       .catch((err) => {
-        if (isMounted) {
-          setError(err.message || 'Falha ao buscar informações da conta.');
-          setLoading(false);
-        }
+        if (!isMounted || abortController?.signal.aborted || err?.name === 'AbortError') return;
+        setError(err?.message || 'Falha ao buscar informações da conta.');
+        setLoading(false);
       });
 
     return () => {
       isMounted = false;
+      abortController?.abort();
     };
   }, [credentials]);
 
@@ -165,32 +177,22 @@ export const ConfigView = React.memo(function ConfigView({
     }, 0);
   };
 
-  const formatDate = (expDate: string | number) => {
-    if (!expDate || expDate === 'null') return 'Vitalícia / Indisponível';
-    const timestamp = typeof expDate === 'string' ? parseInt(expDate, 10) : expDate;
-    if (isNaN(timestamp)) return String(expDate);
+  const rawUsername =
+    typeof accountInfo?.username === 'string' && accountInfo.username.trim().length > 0
+      ? accountInfo.username.trim()
+      : typeof credentials?.username === 'string' && credentials.username.trim().length > 0
+        ? credentials.username.trim()
+        : '';
+  const usernameDisplay = rawUsername || 'Indisponível';
 
-    // Xtream typically uses seconds for timestamp
-    const date = new Date(timestamp * 1000);
-    if (date.getFullYear() > 2099) return 'Vitalícia';
-    return `Expira em ${date.toLocaleDateString('pt-BR')}`;
-  };
+  const expirationInfo = formatAccountExpiration(accountInfo?.exp_date);
+  const statusInfo = formatAccountStatus(accountInfo?.status);
+  const connectionsInfo = formatAccountConnections(
+    accountInfo?.active_cons,
+    accountInfo?.max_connections
+  );
 
-  const rawStatus = typeof accountInfo?.status === 'string' ? accountInfo.status.trim() : '';
-  const hasStatus = rawStatus.length > 0;
-  const isAccountActive = rawStatus.toLowerCase() === 'active';
-  const formattedStatus = isAccountActive ? 'Ativa' : rawStatus;
-
-  const hasConnections =
-    accountInfo?.max_connections !== undefined &&
-    accountInfo?.max_connections !== null &&
-    String(accountInfo.max_connections).trim() !== '';
-
-  const accountItemCount = 2 + (hasStatus ? 1 : 0) + (hasConnections ? 1 : 0);
-  const accountGridClass =
-    accountItemCount === 3
-      ? 'grid grid-cols-1 sm:grid-cols-3 gap-3.5 sm:gap-4'
-      : 'grid grid-cols-1 sm:grid-cols-2 gap-3.5 sm:gap-4';
+  const accountGridClass = 'grid grid-cols-1 sm:grid-cols-2 gap-3.5 sm:gap-4';
 
   const activeModeLabel = effectiveMode === 'tv' ? 'TV' : 'Outros dispositivos';
   const activeScaleLabel = effectiveMode === 'tv' ? `${effectiveTvScale}%` : '100%';
@@ -274,8 +276,12 @@ export const ConfigView = React.memo(function ConfigView({
                   <User className="w-5 h-5 text-nc-text-secondary mt-0.5 shrink-0" aria-hidden="true" />
                   <div className="min-w-0 flex-1">
                     <p className="nc-text-meta text-nc-text-secondary">Usuário</p>
-                    <p className="font-semibold text-white break-words text-base mt-1">
-                      {credentials?.username || 'Desconhecido'}
+                    <p
+                      className={`font-semibold break-words text-base mt-1 ${
+                        rawUsername ? 'text-white' : 'text-nc-text-secondary'
+                      }`}
+                    >
+                      {usernameDisplay}
                     </p>
                   </div>
                 </div>
@@ -285,45 +291,61 @@ export const ConfigView = React.memo(function ConfigView({
                   <Calendar className="w-5 h-5 text-nc-text-secondary mt-0.5 shrink-0" aria-hidden="true" />
                   <div className="min-w-0 flex-1">
                     <p className="nc-text-meta text-nc-text-secondary">Validade da Assinatura</p>
-                    <p className="font-semibold text-white break-words text-base mt-1 tabular-nums">
-                      {formatDate(accountInfo?.exp_date)}
+                    <p
+                      className={`font-semibold break-words text-base mt-1 tabular-nums ${
+                        expirationInfo.isExpired
+                          ? 'text-red-400'
+                          : expirationInfo.isAvailable
+                            ? 'text-white'
+                            : 'text-nc-text-secondary'
+                      }`}
+                    >
+                      {expirationInfo.label}
                     </p>
                   </div>
                 </div>
 
-                {/* Status da conta (quando fornecido) */}
-                {hasStatus && (
-                  <div className="rounded-xl bg-nc-bg-input/90 border border-white/[0.07] px-4 py-4 flex items-start gap-3.5 min-w-0">
-                    {isAccountActive ? (
-                      <CheckCircle2 className="w-5 h-5 text-emerald-400 mt-0.5 shrink-0" aria-hidden="true" />
-                    ) : (
-                      <AlertCircle className="w-5 h-5 text-red-400 mt-0.5 shrink-0" aria-hidden="true" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <p className="nc-text-meta text-nc-text-secondary">Status da Conta</p>
-                      <p
-                        className={`font-semibold break-words text-base mt-1 ${
-                          isAccountActive ? 'text-emerald-400' : 'text-red-400'
-                        }`}
-                      >
-                        {formattedStatus}
-                      </p>
-                    </div>
+                {/* Status da conta */}
+                <div className="rounded-xl bg-nc-bg-input/90 border border-white/[0.07] px-4 py-4 flex items-start gap-3.5 min-w-0">
+                  {statusInfo.tone === 'active' ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-400 mt-0.5 shrink-0" aria-hidden="true" />
+                  ) : statusInfo.tone === 'inactive' ? (
+                    <AlertCircle className="w-5 h-5 text-red-400 mt-0.5 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-nc-text-secondary mt-0.5 shrink-0" aria-hidden="true" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="nc-text-meta text-nc-text-secondary">Status da Conta</p>
+                    <p
+                      className={`font-semibold break-words text-base mt-1 ${
+                        statusInfo.tone === 'active'
+                          ? 'text-emerald-400'
+                          : statusInfo.tone === 'inactive'
+                            ? 'text-red-400'
+                            : statusInfo.isAvailable
+                              ? 'text-white'
+                              : 'text-nc-text-secondary'
+                      }`}
+                    >
+                      {statusInfo.label}
+                    </p>
                   </div>
-                )}
+                </div>
 
-                {/* Conexões ativas e limite simultâneo (quando disponíveis) */}
-                {hasConnections && (
-                  <div className="rounded-xl bg-nc-bg-input/90 border border-white/[0.07] px-4 py-4 flex items-start gap-3.5 min-w-0">
-                    <Users className="w-5 h-5 text-nc-text-secondary mt-0.5 shrink-0" aria-hidden="true" />
-                    <div className="min-w-0 flex-1">
-                      <p className="nc-text-meta text-nc-text-secondary">Conexões Ativas</p>
-                      <p className="font-semibold text-white text-base mt-1 tabular-nums">
-                        {accountInfo.active_cons || 0} / {accountInfo.max_connections}
-                      </p>
-                    </div>
+                {/* Conexões ativas e limite simultâneo */}
+                <div className="rounded-xl bg-nc-bg-input/90 border border-white/[0.07] px-4 py-4 flex items-start gap-3.5 min-w-0">
+                  <Users className="w-5 h-5 text-nc-text-secondary mt-0.5 shrink-0" aria-hidden="true" />
+                  <div className="min-w-0 flex-1">
+                    <p className="nc-text-meta text-nc-text-secondary">Conexões Ativas</p>
+                    <p
+                      className={`font-semibold text-base mt-1 tabular-nums ${
+                        connectionsInfo.isAvailable ? 'text-white' : 'text-nc-text-secondary'
+                      }`}
+                    >
+                      {connectionsInfo.displayText}
+                    </p>
                   </div>
-                )}
+                </div>
               </div>
             )}
           </section>

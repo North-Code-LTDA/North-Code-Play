@@ -24,36 +24,321 @@ export function normalizeImageSource(source: unknown): string | null {
 }
 
 /**
+ * Normalizes text metadata that may arrive from Xtream providers as a string or array of strings
+ * (e.g. cast, director, genre) without fabricating unavailable values.
+ */
+export function normalizeMetadataText(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value)) {
+    const parts: string[] = [];
+    for (const item of value) {
+      if (typeof item === "string") {
+        const trimmed = item.trim();
+        if (trimmed) parts.push(trimmed);
+      } else if (typeof item === "number" && Number.isFinite(item)) {
+        parts.push(String(item));
+      }
+    }
+    return parts.length > 0 ? parts.join(", ") : null;
+  }
+  return null;
+}
+
+const DISALLOWED_URL_SCHEMES = new Set([
+  "javascript",
+  "vbscript",
+  "data",
+  "blob",
+  "file",
+  "mailto",
+  "tel",
+  "about",
+  "ftp",
+  "ftps",
+  "rtmp",
+  "rtmps",
+  "rtsp",
+  "ws",
+  "wss",
+  "udp",
+  "rtp",
+  "magnet",
+  "chrome",
+  "edge",
+]);
+
+function repairCommonHttpProtocolTypos(input: string): string {
+  let fixed = input;
+  // Backslashes after http:/https: (e.g. "http:\\example.com" -> "http://example.com")
+  fixed = fixed.replace(/^(https?):\\+/i, "$1://");
+  // Semicolon typo in protocol (e.g. "http;//example.com" -> "http://example.com")
+  fixed = fixed.replace(/^(https?);\/+/i, "$1://");
+  // Missing colon after protocol (e.g. "http//example.com" -> "http://example.com")
+  fixed = fixed.replace(/^(https?)\/\//i, "$1://");
+  // Single or excessive slashes after http:/https: (e.g. "http:/example.com", "https:///example.com")
+  fixed = fixed.replace(/^(https?):\/+/i, "$1://");
+  // Simple letter typos only when explicitly followed by :/ or ://
+  fixed = fixed.replace(/^(?:htp|htpp|ttp|hhtp|htttp):\/+/i, "http://");
+  fixed = fixed.replace(/^(?:htps|htpps|ttps|hhtps|htttps):\/+/i, "https://");
+  return fixed;
+}
+
+function isValidServerHostname(hostname: string): boolean {
+  if (!hostname) return false;
+  const lower = hostname.toLowerCase();
+
+  // IPv6 literal (e.g. [::1], [2001:db8::1])
+  if (lower.startsWith("[") && lower.endsWith("]")) {
+    const inner = lower.slice(1, -1);
+    return inner.length >= 2 && /^[0-9a-f:]+$/i.test(inner) && inner.includes(":");
+  }
+
+  if (lower === "localhost") {
+    return true;
+  }
+
+  // Must contain at least one dot (domain or IPv4) and not start/end with dot or contain empty labels
+  if (!lower.includes(".") || lower.startsWith(".") || lower.endsWith(".") || lower.includes("..")) {
+    return false;
+  }
+
+  // IPv4 validation
+  if (/^\d+(?:\.\d+)+$/.test(lower)) {
+    const octets = lower.split(".");
+    if (octets.length !== 4) return false;
+    return octets.every((octet) => {
+      if (!/^\d{1,3}$/.test(octet)) return false;
+      const num = Number(octet);
+      return Number.isInteger(num) && num >= 0 && num <= 255;
+    });
+  }
+
+  // Domain hostname labels (supports standard DNS and punycode labels)
+  const labels = lower.split(".");
+  if (labels.length < 2) return false;
+  return labels.every(
+    (label) =>
+      label.length >= 1 &&
+      label.length <= 63 &&
+      /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
+  );
+}
+
+function prepareHttpCandidateUrl(rawInput: string): URL | null {
+  if (!rawInput || typeof rawInput !== "string") return null;
+  const trimmed = rawInput.trim();
+  if (!trimmed) return null;
+
+  // Reject internal whitespace or ASCII control chars
+  if (/[\s\u0000-\u001f\u007f]/.test(trimmed)) {
+    return null;
+  }
+
+  const repaired = repairCommonHttpProtocolTypos(trimmed);
+
+  // Reject relative paths or protocol-relative strings as server base URLs
+  if (repaired.startsWith("/")) {
+    return null;
+  }
+
+  let candidate = repaired;
+  const hasHttpScheme = /^https?:\/\//i.test(repaired);
+
+  if (!hasHttpScheme) {
+    // Explicit non-HTTP scheme with :// (e.g. ftp://, rtmp://, ws://)
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(repaired)) {
+      return null;
+    }
+
+    // Check scheme:rest vs host:port
+    const colonMatch = repaired.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):(.*)$/);
+    if (colonMatch) {
+      const prefix = colonMatch[1].toLowerCase();
+      const rest = colonMatch[2];
+      const looksLikePort = /^\d+(?:[/?#]|$)/.test(rest);
+      if (DISALLOWED_URL_SCHEMES.has(prefix) || !looksLikePort) {
+        return null;
+      }
+    }
+
+    candidate = `http://${repaired}`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return null;
+  }
+
+  // Reject userinfo credentials embedded in authority (e.g. email addresses like user@example.com)
+  if (parsed.username || parsed.password) {
+    return null;
+  }
+
+  // Reject explicit port 0
+  if (parsed.port === "0") {
+    return null;
+  }
+
+  if (!isValidServerHostname(parsed.hostname)) {
+    return null;
+  }
+
+  return parsed;
+}
+
+/**
  * Normalizes an Xtream server URL:
- * - Fixes single slash protocols (e.g. "http:/example.com" -> "http://example.com")
- * - Prepends http:// if protocol is missing
- * - Preserves explicit ports (e.g. "example.com:8080")
- * - Preserves user-supplied base paths (e.g. "http://example.com:8080/iptv")
- * - Strips trailing slashes
+ * - Supports HTTP and HTTPS
+ * - Defaults schemeless domains/IPs to HTTP
+ * - Fixes common protocol typos (e.g. "http:/example.com", "htpp://example.com")
+ * - Preserves custom ports and provider base paths
+ * - Strips trailing slashes and trailing Xtream API script names (/player_api.php, /get.php)
+ * - Rejects invalid URLs and incompatible protocols (returning "") instead of prefixing http:// blindly
  * - Returns canonical "http(s)://host(:port)(/basePath)"
  */
 export function normalizeServerUrl(rawUrl: string): string {
-  if (!rawUrl || typeof rawUrl !== "string") return "";
-  let trimmed = rawUrl.trim();
+  const parsed = prepareHttpCandidateUrl(rawUrl);
+  if (!parsed) return "";
 
-  // Fix single slash after protocol: http:/example -> http://example
-  trimmed = trimmed.replace(/^(https?):\/(?!\/)/i, "$1://");
+  const basePath = parsed.pathname
+    .replace(/\/(?:player_api|get)\.php\/?$/i, "")
+    .replace(/\/+$/, "");
 
-  // If protocol is missing, add http://
-  if (!/^https?:\/\//i.test(trimmed)) {
-    trimmed = `http://${trimmed}`;
+  return `${parsed.protocol}//${parsed.host}${basePath}`;
+}
+
+export interface ExtractedXtreamLinkCredentials {
+  serverUrl: string;
+  username: string;
+  password: string;
+  endpoint: "get.php" | "player_api.php";
+}
+
+/**
+ * Extracts Xtream server base URL, username, and exact password from a pasted
+ * Xtream `get.php` or `player_api.php` link (with or without explicit protocol).
+ * Never alters password casing/whitespace and rejects non-HTTP(S) or non-Xtream URLs.
+ */
+export function extractXtreamCredentialsFromUrl(
+  rawInput: string
+): ExtractedXtreamLinkCredentials | null {
+  const parsed = prepareHttpCandidateUrl(rawInput);
+  if (!parsed) return null;
+
+  const endpointMatch = parsed.pathname.match(/\/(get\.php|player_api\.php)\/?$/i);
+  if (!endpointMatch) return null;
+
+  const rawUser = parsed.searchParams.get("username");
+  const rawPass = parsed.searchParams.get("password");
+  if (!rawUser || !rawUser.trim() || rawPass === null || rawPass.length === 0) {
+    return null;
   }
 
-  // Remove trailing slashes
-  trimmed = trimmed.replace(/\/+$/, "");
+  const cleanBasePath = parsed.pathname
+    .replace(/\/(?:get|player_api)\.php\/?$/i, "")
+    .replace(/\/+$/, "");
+
+  return {
+    serverUrl: `${parsed.protocol}//${parsed.host}${cleanBasePath}`,
+    username: rawUser.trim(),
+    password: rawPass,
+    endpoint: endpointMatch[1].toLowerCase() as "get.php" | "player_api.php",
+  };
+}
+
+/**
+ * Normalizes provider `allowed_output_formats` metadata without dropping legitimate formats
+ * or fabricating permissions when the field is absent/null.
+ * - Returns `undefined` when the provider did not supply format information.
+ * - Returns `[]` when the provider explicitly supplied an empty array.
+ * - Returns deduplicated lowercase format tokens preserving original provider order otherwise.
+ */
+export function normalizeAllowedOutputFormats(
+  rawFormats: unknown
+): string[] | undefined {
+  if (rawFormats === null || rawFormats === undefined) {
+    return undefined;
+  }
+
+  if (Array.isArray(rawFormats) && rawFormats.length === 0) {
+    return [];
+  }
+
+  let candidates: unknown[];
+  if (Array.isArray(rawFormats)) {
+    candidates = rawFormats;
+  } else if (typeof rawFormats === "string") {
+    const trimmed = rawFormats.trim();
+    if (!trimmed) return undefined;
+    candidates = trimmed.split(/[,;\s]+/);
+  } else if (typeof rawFormats === "object") {
+    candidates = Object.values(rawFormats as Record<string, unknown>);
+  } else {
+    return undefined;
+  }
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const item of candidates) {
+    if (typeof item !== "string") continue;
+    const cleaned = item.trim().replace(/^\.+/, "").toLowerCase();
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    normalized.push(cleaned);
+  }
+
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+/**
+ * Validates and preserves a direct HTTP/HTTPS playback source (`direct_source`) literally,
+ * keeping query parameters, signatures, casing, encoding, and extensionless paths intact.
+ * Returns null if missing, non-HTTP(S), or structurally invalid.
+ */
+export function normalizeDirectMediaSource(rawSource: unknown): string | null {
+  if (typeof rawSource !== "string") return null;
+  const trimmed = rawSource.trim();
+  if (!trimmed) return null;
+  if (/[\s\u0000-\u001f\u007f]/.test(trimmed)) return null;
+  if (!/^https?:\/\//i.test(trimmed)) return null;
 
   try {
     const parsed = new URL(trimmed);
-    const basePath = parsed.pathname.replace(/\/+$/, "");
-    return `${parsed.protocol}//${parsed.host}${basePath}`;
-  } catch {
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    if (!parsed.hostname) {
+      return null;
+    }
+    // Preserve the exact literal URL string so signed tokens/casing/encoding are never altered
     return trimmed;
+  } catch {
+    return null;
   }
+}
+
+/**
+ * Sanitizes a container extension without enforcing an artificial format whitelist.
+ */
+export function normalizeContainerExtension(rawExt: unknown): string | null {
+  if (typeof rawExt !== "string") return null;
+  const cleaned = rawExt.trim().replace(/^\.+/, "").toLowerCase();
+  if (!cleaned) return null;
+  if (!/^[a-z0-9][a-z0-9._-]{0,15}$/.test(cleaned)) {
+    return null;
+  }
+  return cleaned;
 }
 
 const COMMON_IMAGE_EXTENSIONS = new Set([
@@ -211,13 +496,13 @@ export function buildDirectImageUrl(
 
   // 6. Relative path (e.g. "logo.png", "/logos/1.png", "./ch.png", "../ch.png")
   if (effectiveBase) {
+    const cleanBase = normalizeServerUrl(effectiveBase);
+    if (!cleanBase) return null;
     try {
-      const cleanBase = normalizeServerUrl(effectiveBase);
       const baseWithSlash = cleanBase.endsWith("/") ? cleanBase : `${cleanBase}/`;
       const resolved = new URL(trimmed, baseWithSlash);
       return resolved.href;
     } catch {
-      const cleanBase = normalizeServerUrl(effectiveBase);
       const relativePart = trimmed.replace(/^\/+/, "");
       return `${cleanBase}/${relativePart}`;
     }
@@ -229,17 +514,18 @@ export function buildDirectImageUrl(
 export interface BuildDirectMediaUrlOptions {
   type: "live" | "movie" | "series";
   streamId: string | number;
-  containerExtension?: string;
-  allowedOutputFormats?: string[];
-  directSource?: string;
+  containerExtension?: string | null;
+  allowedOutputFormats?: string[] | string | Record<string, unknown> | null;
+  directSource?: string | null;
 }
 
 /**
  * Builds DIRECT media stream URLs from browser to the IPTV Xtream provider.
- * Follows standard Xtream Codes routing conventions:
- * - Live:   /live/{username}/{password}/{stream_id}.{format}
- * - Movies: /movie/{username}/{password}/{stream_id}.{container_extension}
- * - Series: /series/{username}/{password}/{episode_id}.{container_extension}
+ * - Uses valid HTTP/HTTPS `directSource` literally without adding Xtream credentials.
+ * - Otherwise follows standard Xtream Codes routing conventions:
+ *   - Live:   /live/{username}/{password}/{stream_id}.{format}
+ *   - Movies: /movie/{username}/{password}/{stream_id}.{container_extension}
+ *   - Series: /series/{username}/{password}/{episode_id}.{container_extension}
  */
 export function buildDirectMediaUrl(
   credentials: Pick<XtreamCredentials, "serverUrl" | "username" | "password">,
@@ -247,14 +533,16 @@ export function buildDirectMediaUrl(
 ): string {
   const { type, streamId, containerExtension, allowedOutputFormats, directSource } = options;
 
-  if (directSource && typeof directSource === "string") {
-    const trimmedSource = directSource.trim();
-    if (/^https?:\/\//i.test(trimmedSource)) {
-      return trimmedSource;
-    }
+  const validDirectSource = normalizeDirectMediaSource(directSource);
+  if (validDirectSource) {
+    return validDirectSource;
   }
 
   const cleanBase = normalizeServerUrl(credentials.serverUrl);
+  if (!cleanBase) {
+    throw new Error("URL do servidor Xtream inválida para construir o endereço de reprodução.");
+  }
+
   const user = encodeURIComponent(credentials.username);
   const pass = encodeURIComponent(credentials.password);
   const id = encodeURIComponent(String(streamId).trim());
@@ -262,31 +550,31 @@ export function buildDirectMediaUrl(
   if (type === "live") {
     let format = "m3u8";
 
-    if (containerExtension) {
-      const cleaned = containerExtension.trim().replace(/^\./, "").toLowerCase();
-      if (cleaned) format = cleaned;
-    } else if (allowedOutputFormats && Array.isArray(allowedOutputFormats) && allowedOutputFormats.length > 0) {
-      const lowerFormats = allowedOutputFormats.map((f) => String(f).toLowerCase());
-      if (lowerFormats.includes("m3u8")) {
-        format = "m3u8";
-      } else if (lowerFormats.includes("ts")) {
-        format = "ts";
+    const cleanedExt = normalizeContainerExtension(containerExtension);
+    if (cleanedExt) {
+      format = cleanedExt;
+    } else {
+      const normalizedFormats = normalizeAllowedOutputFormats(allowedOutputFormats);
+      if (normalizedFormats && normalizedFormats.length > 0) {
+        if (normalizedFormats.includes("m3u8")) {
+          format = "m3u8";
+        } else if (normalizedFormats.includes("ts")) {
+          format = "ts";
+        }
       }
     }
 
-    return `${cleanBase}/live/${user}/${pass}/${id}.${format}`;
+    return `${cleanBase}/live/${user}/${pass}/${id}.${encodeURIComponent(format)}`;
   }
 
   if (type === "movie") {
-    const rawExt = containerExtension || "mp4";
-    const ext = encodeURIComponent(rawExt.trim().replace(/^\./, "").toLowerCase() || "mp4");
-    return `${cleanBase}/movie/${user}/${pass}/${id}.${ext}`;
+    const ext = normalizeContainerExtension(containerExtension) || "mp4";
+    return `${cleanBase}/movie/${user}/${pass}/${id}.${encodeURIComponent(ext)}`;
   }
 
   if (type === "series") {
-    const rawExt = containerExtension || "mp4";
-    const ext = encodeURIComponent(rawExt.trim().replace(/^\./, "").toLowerCase() || "mp4");
-    return `${cleanBase}/series/${user}/${pass}/${id}.${ext}`;
+    const ext = normalizeContainerExtension(containerExtension) || "mp4";
+    return `${cleanBase}/series/${user}/${pass}/${id}.${encodeURIComponent(ext)}`;
   }
 
   return `${cleanBase}/live/${user}/${pass}/${id}.m3u8`;

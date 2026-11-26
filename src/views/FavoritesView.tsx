@@ -533,6 +533,7 @@ export const FavoritesView = React.memo(function FavoritesView({
             type: 'live',
             streamId: fav.id,
             allowedOutputFormats: credentials.allowed_output_formats,
+            directSource: fav.extraData?.direct_source,
           });
           onPlay(url, fav.name, 0, fav.id, 'live', fav.name);
         } catch (err: any) {
@@ -805,6 +806,8 @@ export const FavoritesView = React.memo(function FavoritesView({
           categoryName={selectedMovie.extraData?.category || 'Favorito'}
           rating={selectedMovie.extraData?.rating}
           year={selectedMovie.extraData?.year}
+          containerExtension={selectedMovie.extraData?.container_extension}
+          directSource={selectedMovie.extraData?.direct_source}
           onClose={handleCloseMovieDetails}
           onPlay={onPlay}
         />

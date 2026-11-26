@@ -34,6 +34,8 @@ import {
 import {
   buildDirectMediaUrl,
   buildDirectImageUrl,
+  normalizeContainerExtension,
+  normalizeDirectMediaSource,
   normalizeImageSource,
 } from '../utils/mediaUtils';
 import {
@@ -2404,18 +2406,19 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               }
 
               if (foundEp) {
-                const confirmedExt =
-                  typeof foundEp.container_extension === 'string'
-                    ? foundEp.container_extension.trim().replace(/^\.+/, '')
-                    : '';
-                if (/^[a-z0-9]+$/i.test(confirmedExt)) {
+                const epDirectSource =
+                  normalizeDirectMediaSource(foundEp.direct_source) ||
+                  normalizeDirectMediaSource(foundEp.info?.direct_source);
+                const confirmedExt = normalizeContainerExtension(foundEp.container_extension);
+                if (epDirectSource || confirmedExt) {
                   const epNum = String(foundEp.episode_num || 1).padStart(2, '0');
                   const sNum = String(foundSeasonKey).padStart(2, '0');
                   const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${foundEp.title || `Episódio ${foundEp.episode_num || 1}`}`;
                   const directUrl = buildDirectMediaUrl(creds, {
                     type: 'series',
                     streamId: latestEpisodeRecord.id,
-                    containerExtension: confirmedExt,
+                    containerExtension: confirmedExt || 'mp4',
+                    directSource: epDirectSource ?? undefined,
                   });
                   if (directUrl) {
                     const epSubs = extractXtreamSubtitles(foundEp, creds.serverUrl);
@@ -2450,14 +2453,15 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               if (Array.isArray(firstSeasonList) && firstSeasonList.length > 0) {
                 const firstEp = firstSeasonList[0];
                 const epId = firstEp.id ?? firstEp.stream_id;
-                const epExt =
-                  String(firstEp.container_extension || '')
-                    .trim()
-                    .replace(/^\./, '') || 'mp4';
+                const epDirectSource =
+                  normalizeDirectMediaSource(firstEp.direct_source) ||
+                  normalizeDirectMediaSource(firstEp.info?.direct_source);
+                const epExt = normalizeContainerExtension(firstEp.container_extension) || 'mp4';
                 const directUrl = buildDirectMediaUrl(creds, {
                   type: 'series',
                   streamId: epId,
                   containerExtension: epExt,
+                  directSource: epDirectSource ?? undefined,
                 });
                 if (directUrl) {
                   const sNum = String(seasons[0]).padStart(2, '0');
@@ -2542,14 +2546,28 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       if (creds?.serverUrl && creds?.username && creds?.password && movieId !== undefined) {
         const effectiveMovieDetails =
           detailsResponse || getCachedHeroDetails(creds, item);
+        const detailMovieData = effectiveMovieDetails?.movie_data;
+        const detailsMatchMovie =
+          !detailMovieData ||
+          detailMovieData.stream_id === undefined ||
+          detailMovieData.stream_id === null ||
+          String(detailMovieData.stream_id) === String(movieId);
+        const movieDirectSource =
+          (detailsMatchMovie
+            ? normalizeDirectMediaSource(detailMovieData?.direct_source) ||
+              normalizeDirectMediaSource(effectiveMovieDetails?.info?.direct_source)
+            : null) || normalizeDirectMediaSource(item.direct_source);
         const ext =
-          effectiveMovieDetails?.movie_data?.container_extension ||
-          item.container_extension ||
+          (detailsMatchMovie
+            ? normalizeContainerExtension(detailMovieData?.container_extension)
+            : null) ||
+          normalizeContainerExtension(item.container_extension) ||
           'mp4';
         const directUrl = buildDirectMediaUrl(creds, {
           type: 'movie',
           streamId: movieId,
           containerExtension: ext,
+          directSource: movieDirectSource ?? undefined,
         });
         if (directUrl) {
           const savedSec = getItemProgress(creds, 'movie', movieId);
@@ -2596,12 +2614,14 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       );
       return;
     }
-    const ext = stream.container_extension || 'm3u8';
+    const liveExt = normalizeContainerExtension(stream.container_extension) || undefined;
+    const liveDirectSource = normalizeDirectMediaSource(stream.direct_source) ?? undefined;
     const url = buildDirectMediaUrl(creds, {
       type: 'live',
       streamId: stream.stream_id,
-      containerExtension: ext,
+      containerExtension: liveExt,
       allowedOutputFormats: creds.allowed_output_formats,
+      directSource: liveDirectSource,
     });
     if (!url) {
       setPlayError(
@@ -3155,6 +3175,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           rating={selectedMovie.rating}
           year={selectedMovie.year}
           containerExtension={selectedMovie.container_extension}
+          directSource={selectedMovie.direct_source}
           catalogMovies={allVodStreams.length > 0 ? allVodStreams : vodStreams}
           onSelectSimilarMovie={handleSelectSimilarMovie}
           onClose={handleCloseMovieDetails}
