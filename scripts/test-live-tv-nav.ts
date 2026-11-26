@@ -479,6 +479,56 @@ async function flush(ticks = 6): Promise<void> {
   }
 }
 
+async function syncFocusTimerCallbacks(flushTicks = 4): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+  });
+  await flush(flushTicks);
+}
+
+const PRIMITIVE_DIAG_ATTRS = [
+  'role',
+  'data-live-quality-option',
+  'data-variant-active',
+  'data-live-quality-trigger',
+  'data-live-channel-btn',
+  'data-row-card-index',
+  'data-header-nav-id',
+] as const;
+
+function describeDomNodePrimitive(node: Element | null | undefined): string {
+  if (node === null) return 'null';
+  if (node === undefined) return 'undefined';
+  const parts: string[] = [node.tagName || 'UNKNOWN'];
+  if (node.id) {
+    parts.push(`id=${node.id}`);
+  }
+  for (const attr of PRIMITIVE_DIAG_ATTRS) {
+    const val = node.getAttribute?.(attr);
+    if (val !== null && val !== undefined) {
+      parts.push(`${attr}=${val}`);
+    }
+  }
+  return parts.join(' ');
+}
+
+function assertSameDomNode(
+  actual: Element | null | undefined,
+  expected: Element | null | undefined,
+  message: string
+): void {
+  const isSame = actual === expected;
+  assert.strictEqual(
+    isSame,
+    true,
+    isSame
+      ? message
+      : `${message} [atual: ${describeDomNodePrimitive(actual)} | esperado: ${describeDomNodePrimitive(expected)}]`
+  );
+}
+
 const origPerfNow = performance.now.bind(performance);
 let simulatedClockOffsetMs = 0;
 performance.now = () => origPerfNow() + simulatedClockOffsetMs;
@@ -504,6 +554,34 @@ async function dispatchArrow(key: string, repeat = false): Promise<void> {
       repeat,
     });
     document.dispatchEvent(ev);
+  });
+  await flush(3);
+}
+
+async function dispatchQualityMenuKey(key: string, repeat = false): Promise<void> {
+  if (repeat) {
+    simulatedClockOffsetMs += 90;
+  }
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || !active.isConnected) {
+    throw new Error(
+      `dispatchQualityMenuKey("${key}"): nenhum elemento conectado focado no momento do despacho [atual: ${describeDomNodePrimitive(active)}]`
+    );
+  }
+  const openMenu = active.closest<HTMLElement>('[data-live-quality-menu="true"]');
+  if (!openMenu || !openMenu.isConnected || !openMenu.contains(active)) {
+    throw new Error(
+      `dispatchQualityMenuKey("${key}"): elemento focado não pertence ao menu de qualidade aberto [atual: ${describeDomNodePrimitive(active)}]`
+    );
+  }
+  await act(async () => {
+    const ev = new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      cancelable: true,
+      repeat,
+    });
+    active.dispatchEvent(ev);
   });
   await flush(3);
 }
@@ -804,7 +882,7 @@ async function runTests() {
           focusElementSafely(favBtn0);
         });
         await flush();
-        assert.strictEqual(
+        assertSameDomNode(
           document.activeElement,
           favBtn0,
           'Botão de favoritos do card 0 deve ser focável'
@@ -1076,7 +1154,11 @@ async function runTests() {
           focusElementSafely(row16Btn);
         });
         await flush();
-        assert.strictEqual(document.activeElement, row16Btn);
+        assertSameDomNode(
+          document.activeElement,
+          row16Btn,
+          'Foco deve estar posicionado no botão da linha 16 card 12'
+        );
 
         // Alternar Full -> Lite com foco na linha 16 / card 12
         act(() => {
@@ -1370,12 +1452,12 @@ async function runTests() {
           qualityTrigger,
           'Canal agrupado SD/HD/FHD deve exibir o controle compacto [data-live-quality-trigger="true"] no painel direito'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('[data-live-variants-row="true"]'),
           null,
           'Fileira fixa [data-live-variants-row="true"] não deve mais ser exibida no painel direito'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('[data-live-quality-menu="true"]'),
           null,
           'Menu compacto de qualidade deve iniciar fechado'
@@ -1409,20 +1491,21 @@ async function runTests() {
           qualityTrigger.click();
         });
         await flush(4);
+        await syncFocusTimerCallbacks(4);
         const openedMenu = host.querySelector<HTMLElement>('[data-live-quality-menu="true"]');
         assert.ok(openedMenu, 'Menu compacto de qualidade deve abrir ao acionar o trigger');
         const optionButtons = Array.from(
           openedMenu!.querySelectorAll<HTMLButtonElement>('button[data-live-quality-option]')
         );
         assert.ok(optionButtons.length >= 4, 'Menu compacto deve listar Automático + SD/HD/FHD');
-        assert.strictEqual(
+        assertSameDomNode(
           document.activeElement,
           optionButtons[0],
           'Ao abrir o menu, foco deve mover para a opção ativa (Automático)'
         );
         console.log('    [CHECKPOINT 7.5] Teste de navegação dentro do menu');
-        await dispatchArrow('ArrowDown');
-        assert.strictEqual(
+        await dispatchQualityMenuKey('ArrowDown');
+        assertSameDomNode(
           document.activeElement,
           optionButtons[1],
           'ArrowDown dentro do menu compacto deve avançar para a próxima resolução'
@@ -1432,12 +1515,13 @@ async function runTests() {
           executeBackAction();
         });
         await flush(4);
-        assert.strictEqual(
+        await syncFocusTimerCallbacks(4);
+        assertSameDomNode(
           host.querySelector('[data-live-quality-menu="true"]'),
           null,
           'Back deve fechar o menu compacto de qualidade'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           document.activeElement,
           qualityTrigger,
           'Back deve restaurar o foco ao botão compacto de qualidade'
@@ -1471,7 +1555,7 @@ async function runTests() {
           leftScroll.dispatchEvent(new Event('scroll'));
         });
         await flush(4);
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector(`[data-home-row-index="${deepOriginRow}"]`),
           null,
           'Linha de origem profunda deve ter sido desmontada pela virtualização antes do retorno'
@@ -1558,7 +1642,7 @@ async function runTests() {
         });
         await flush();
         await dispatchArrow('ArrowDown');
-        assert.strictEqual(
+        assertSameDomNode(
           document.activeElement,
           homeContentBtn,
           'Cabeçalho Início + ArrowDown deve continuar descendo normalmente para a zona content'
@@ -1637,7 +1721,7 @@ async function runTests() {
         });
         await flush();
         await dispatchArrow('ArrowDown');
-        assert.strictEqual(
+        assertSameDomNode(
           document.activeElement,
           moviesCatBtn,
           'Cabeçalho Filmes + ArrowDown deve preservar a entrada na barra de categorias da vitrine'
@@ -1816,7 +1900,7 @@ async function runTests() {
         });
         await flush(4);
 
-        assert.strictEqual(hookHost.querySelector('video'), probeVideo, 'Elemento <video> não pode ser recriado ao sair da supressão');
+        assertSameDomNode(hookHost.querySelector('video'), probeVideo, 'Elemento <video> não pode ser recriado ao sair da supressão');
         assert.strictEqual(vState.loadCalls, loadCallsBeforeToggle, 'video.load() não pode ser chamado ao sair da supressão');
         assert.strictEqual(vState.playCalls, playCallsBeforeToggle, 'video.play() não pode reiniciar sessão ao sair da supressão');
         assert.strictEqual(latestSession!.currentTime, 25, 'currentTime deve sincronizar imediatamente a partir do <video>');
@@ -1857,7 +1941,7 @@ async function runTests() {
         });
         await flush(4);
 
-        assert.strictEqual(hookHost.querySelector('video'), probeVideo, 'Elemento <video> não pode ser recriado ao voltar ao preview Lite');
+        assertSameDomNode(hookHost.querySelector('video'), probeVideo, 'Elemento <video> não pode ser recriado ao voltar ao preview Lite');
         assert.strictEqual(vState.loadCalls, loadCallsBeforeToggle, 'video.load() não pode ser chamado ao voltar ao preview Lite');
         assert.strictEqual(vState.playCalls, playCallsBeforeToggle, 'video.play() não pode reiniciar ao voltar ao preview Lite');
 
@@ -1994,7 +2078,7 @@ async function runTests() {
               'full-layer',
               'Player deve entrar em apresentação full-layer'
             );
-            assert.strictEqual(vpHost.querySelector('video'), videoEl, 'Mesmo elemento <video> deve ser preservado ao entrar em fullscreen');
+            assertSameDomNode(vpHost.querySelector('video'), videoEl, 'Mesmo elemento <video> deve ser preservado ao entrar em fullscreen');
             assert.strictEqual(vState.loadCalls, loadCountBeforeFs, 'Fullscreen não pode disparar video.load()');
             assert.strictEqual(vState.playCalls, playCountBeforeFs, 'Fullscreen não pode reiniciar video.play()');
 
@@ -2024,7 +2108,7 @@ async function runTests() {
               'compact-preview',
               'Player deve retornar para apresentação compact-preview'
             );
-            assert.strictEqual(vpHost.querySelector('video'), videoEl, 'Mesmo elemento <video> deve ser preservado ao retornar ao preview');
+            assertSameDomNode(vpHost.querySelector('video'), videoEl, 'Mesmo elemento <video> deve ser preservado ao retornar ao preview');
             assert.strictEqual(vState.loadCalls, loadCountBeforeFs, 'Retornar ao preview não pode disparar video.load()');
             assert.strictEqual(vState.playCalls, playCountBeforeFs, 'Retornar ao preview não pode reiniciar video.play()');
             assert.strictEqual(videoEl.volume, 0.65, 'Volume do vídeo deve ser preservado na transição');
@@ -2389,7 +2473,7 @@ async function runTests() {
           trigger.textContent?.includes('Qualidade: Automático'),
           `Trigger inicial deve exibir Qualidade: Automático (atual: ${trigger.textContent})`
         );
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('[data-live-quality-menu="true"]'),
           null,
           'Menu de qualidade não deve existir no DOM enquanto fechado'
@@ -2406,6 +2490,7 @@ async function runTests() {
           trigger.click();
         });
         await flush(6);
+        await syncFocusTimerCallbacks(4);
         const menu = host.querySelector<HTMLElement>('[data-live-quality-menu="true"]')!;
         assert.ok(menu, 'Menu de qualidade deve abrir ao acionar o trigger');
         assert.strictEqual(trigger.getAttribute('aria-expanded'), 'true');
@@ -2423,46 +2508,47 @@ async function runTests() {
           'true',
           'Automático deve estar marcado como opção ativa'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           document.activeElement,
           options[0],
           'Ao abrir o menu, o foco deve ir para a opção ativa'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('video'),
           initialVideoEl,
           'Abrir o menu de qualidade não pode recriar o elemento <video>'
         );
 
         // 7. Navegação D-pad (ArrowDown / ArrowUp / ArrowLeft / ArrowRight) sem vazar foco
-        await dispatchArrow('ArrowDown');
-        assert.strictEqual(document.activeElement, options[1], 'ArrowDown deve mover para FHD');
-        await dispatchArrow('ArrowDown');
-        assert.strictEqual(document.activeElement, options[2], 'ArrowDown deve mover para HD');
-        await dispatchArrow('ArrowLeft');
+        await dispatchQualityMenuKey('ArrowDown');
+        assertSameDomNode(document.activeElement, options[1], 'ArrowDown deve mover para FHD');
+        await dispatchQualityMenuKey('ArrowDown');
+        assertSameDomNode(document.activeElement, options[2], 'ArrowDown deve mover para HD');
+        await dispatchQualityMenuKey('ArrowLeft');
         assert.ok(
           menu.contains(document.activeElement),
           'ArrowLeft no menu aberto não pode vazar foco para canais ou EPG'
         );
-        await dispatchArrow('ArrowRight');
+        await dispatchQualityMenuKey('ArrowRight');
         assert.ok(
           menu.contains(document.activeElement),
           'ArrowRight no menu aberto não pode vazar foco para fora do menu'
         );
-        await dispatchArrow('ArrowUp');
-        assert.strictEqual(document.activeElement, options[1], 'ArrowUp deve retornar para FHD');
+        await dispatchQualityMenuKey('ArrowUp');
+        assertSameDomNode(document.activeElement, options[1], 'ArrowUp deve retornar para FHD');
 
         // 9. Back fecha sem alterar resolução e restaura foco ao botão compacto
         act(() => {
           executeBackAction();
         });
         await flush(6);
-        assert.strictEqual(
+        await syncFocusTimerCallbacks(4);
+        assertSameDomNode(
           host.querySelector('[data-live-quality-menu="true"]'),
           null,
           'Back deve fechar o menu de qualidade'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           document.activeElement,
           trigger,
           'Back deve restaurar foco ao botão compacto de qualidade'
@@ -2471,7 +2557,7 @@ async function runTests() {
           trigger.textContent?.includes('Qualidade: Automático'),
           'Back não deve alterar a resolução ativa'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('video'),
           initialVideoEl,
           'Fechar menu via Back deve manter exatamente o mesmo elemento <video>'
@@ -2482,6 +2568,7 @@ async function runTests() {
           trigger.click();
         });
         await flush(6);
+        await syncFocusTimerCallbacks(4);
         const menuForSelect = host.querySelector<HTMLElement>('[data-live-quality-menu="true"]')!;
         const hdOption = Array.from(
           menuForSelect.querySelectorAll<HTMLButtonElement>('button[data-live-quality-option]')
@@ -2491,7 +2578,8 @@ async function runTests() {
           hdOption.click();
         });
         await flush(6);
-        assert.strictEqual(
+        await syncFocusTimerCallbacks(4);
+        assertSameDomNode(
           host.querySelector('[data-live-quality-menu="true"]'),
           null,
           'Selecionar HD deve fechar o menu'
@@ -2500,12 +2588,12 @@ async function runTests() {
           trigger.textContent?.includes('Qualidade: HD'),
           `Trigger deve exibir Qualidade: HD após seleção manual (atual: ${trigger.textContent})`
         );
-        assert.strictEqual(
+        assertSameDomNode(
           document.activeElement,
           trigger,
           'Selecionar opção deve restaurar foco ao botão compacto'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('video'),
           initialVideoEl,
           'Selecionar variante pelo seletor compacto deve preservar exatamente o mesmo <video>'
@@ -2516,13 +2604,14 @@ async function runTests() {
           trigger.click();
         });
         await flush(4);
+        await syncFocusTimerCallbacks(4);
         assert.ok(host.querySelector('[data-live-quality-menu="true"]'), 'Menu deve reabrir');
         const epgHeader = host.querySelector<HTMLElement>('[data-live-epg-header="true"]')!;
         act(() => {
           epgHeader.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
         });
         await flush(4);
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('[data-live-quality-menu="true"]'),
           null,
           'Clique fora deve fechar o menu compacto de qualidade'
@@ -2545,6 +2634,7 @@ async function runTests() {
           trigger.click();
         });
         await flush(4);
+        await syncFocusTimerCallbacks(4);
         assert.ok(
           host.querySelector('[data-live-quality-menu="true"]'),
           'Menu deve estar aberto antes da troca de canal'
@@ -2553,17 +2643,17 @@ async function runTests() {
           ch1Btn.click();
         });
         await flush(6);
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('[data-live-quality-menu="true"]'),
           null,
           'Trocar de canal deve fechar qualquer menu de qualidade aberto'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('[data-live-quality-trigger="true"]'),
           null,
           'Canal com apenas uma variante não deve exibir o controle compacto de qualidade'
         );
-        assert.strictEqual(
+        assertSameDomNode(
           host.querySelector('video'),
           initialVideoEl,
           'Troca de canal no preview deve manter o mesmo elemento <video> sem recriar player'
