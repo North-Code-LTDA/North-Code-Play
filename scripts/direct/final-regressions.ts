@@ -429,7 +429,7 @@ async function runC3LiveEpgManagerSubtest(
   } finally {
     logC3Stage('13.7', 'cleanup');
     (XtreamService as any).getShortEpg = originalGetShortEpg;
-    liveEpgManagerModule.setLiveEpgConcurrencyLimitForTest(2);
+    liveEpgManagerModule.setLiveEpgConcurrencyLimitForTest(3);
     liveEpgManagerModule.resetLiveEpgCacheForTest();
   }
 }
@@ -1170,12 +1170,6 @@ async function runC3VolumeDpadAndMouseSubtest(
   const doc = document;
 
   // 13.10. Navegação D-Pad no controle de volume sem prisão de foco + edição explícita + preservação de mouse
-  const subtestStartNs = process.hrtime.bigint();
-  const mark1310 = (tag: string): void => {
-    const elapsedMs = Number(process.hrtime.bigint() - subtestStartNs) / 1_000_000;
-    console.log(`[C3][13.10][+${elapsedMs.toFixed(1)}ms] ${tag}`);
-  };
-
   logC3Stage('13.10', 'prepare');
   const volTracked = env.createTrackedRoot();
   const volRoot = volTracked.root;
@@ -1201,6 +1195,8 @@ async function runC3VolumeDpadAndMouseSubtest(
           })
         )
       );
+    });
+    await act(async () => {
       await new Promise((r) => setTimeout(r, 30));
     });
 
@@ -1209,7 +1205,6 @@ async function runC3VolumeDpadAndMouseSubtest(
     assert(playerEl, 'Player de teste de volume deve montar');
 
     // Geometria horizontal determinística para a fileira inferior no happy-dom
-    mark1310('geom:before');
     const orderedControls = [
       'play-pause',
       'seek-back',
@@ -1238,9 +1233,7 @@ async function runC3VolumeDpadAndMouseSubtest(
           }) as DOMRect;
       }
     });
-    mark1310('geom:after');
 
-    mark1310('controls:before');
     const muteBtn = playerEl.querySelector('[data-player-control="mute"]') as HTMLButtonElement;
     const volSlider = playerEl.querySelector(
       'input[data-player-control="volume-slider"]'
@@ -1249,40 +1242,46 @@ async function runC3VolumeDpadAndMouseSubtest(
       '[data-player-control="audio-subtitles"]'
     ) as HTMLButtonElement;
     assert(muteBtn && volSlider && audioSubBtn, 'Controles mute, volume-slider e audio-subtitles devem existir');
-    mark1310('controls:after');
+
+    const describeElementPrimitive = (el: Element | null): string => {
+      if (!el) return 'null';
+      const htmlEl = el as HTMLElement;
+      const ctrl = htmlEl.getAttribute?.('data-player-control') ?? 'none';
+      const tabIdx = htmlEl.getAttribute?.('tabindex') ?? 'none';
+      const role = htmlEl.getAttribute?.('role') ?? 'none';
+      const hiddenAttr = Boolean(htmlEl.hidden) || htmlEl.getAttribute?.('aria-hidden') === 'true';
+      const rect = typeof htmlEl.getBoundingClientRect === 'function' ? htmlEl.getBoundingClientRect() : null;
+      const rectStr = rect ? `${rect.left},${rect.top},${rect.width}x${rect.height}` : 'no-rect';
+      return `${el.tagName}[ctrl=${ctrl},tabIndex=${tabIdx},role=${role},hidden=${hiddenAttr},rect=${rectStr}]`;
+    };
+    const describeActiveFocus = (expectedEl: Element | null): string => {
+      const active = doc.activeElement;
+      const navModeAttr = doc.documentElement?.dataset?.navMode ?? 'unset';
+      const sliderEditing = volSlider.getAttribute('data-slider-editing') ?? 'null';
+      const sliderWrapper = volSlider.parentElement;
+      const wrapperCls = typeof sliderWrapper?.className === 'string' ? sliderWrapper.className : '';
+      const wrapperInvisible = wrapperCls.includes('invisible') || wrapperCls.includes('opacity-0');
+      return `active=${describeElementPrimitive(active)} expected=${describeElementPrimitive(expectedEl)} same=${active === expectedEl} editing=${sliderEditing} navMode=${navModeAttr} vol=${volSlider.value} wrapperHidden=${wrapperInvisible}`;
+    };
 
     // 1) Focar slider sem modo de edição: ArrowRight NÃO pode prender o foco e NÃO pode alterar volume
-    mark1310('s1-focus:before-act');
     await act(async () => {
-      mark1310('s1-focus:in-act');
-      mark1310('s1-focus:before-focus');
       volSlider.focus();
-      mark1310('s1-focus:after-focus');
-      mark1310('s1-focus:before-timer');
       await new Promise((r) => setTimeout(r, 10));
-      mark1310('s1-focus:after-timer');
     });
-    mark1310('s1-focus:after-act');
     assert.strictEqual(volSlider.getAttribute('data-slider-editing'), 'false');
     const initialVol = parseFloat(volSlider.value);
 
-    mark1310('s1-arrow-right:before-act');
     await act(async () => {
-      mark1310('s1-arrow-right:in-act');
-      mark1310('s1-arrow-right:before-dispatch');
       volSlider.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
       );
-      mark1310('s1-arrow-right:after-dispatch');
-      mark1310('s1-arrow-right:before-timer');
       await new Promise((r) => setTimeout(r, 15));
-      mark1310('s1-arrow-right:after-timer');
     });
-    mark1310('s1-arrow-right:after-act');
     assert.strictEqual(
-      doc.activeElement,
-      audioSubBtn,
-      'ArrowRight fora do modo de edição deve sair do slider de volume para o controle à direita sem prender foco'
+      doc.activeElement === audioSubBtn,
+      true,
+      `ArrowRight fora do modo de edição deve sair do slider de volume para o controle à direita sem prender foco (${describeActiveFocus(audioSubBtn)})`
     );
     assert.strictEqual(
       parseFloat(volSlider.value),
@@ -1291,103 +1290,61 @@ async function runC3VolumeDpadAndMouseSubtest(
     );
 
     // 2) Voltar para o slider e sair pela esquerda com ArrowLeft -> deve ir para mute
-    mark1310('s2-focus:before-act');
     await act(async () => {
-      mark1310('s2-focus:in-act');
-      mark1310('s2-focus:before-focus');
       volSlider.focus();
-      mark1310('s2-focus:after-focus');
-      mark1310('s2-focus:before-timer');
       await new Promise((r) => setTimeout(r, 10));
-      mark1310('s2-focus:after-timer');
     });
-    mark1310('s2-focus:after-act');
 
-    mark1310('s2-arrow-left:before-act');
     await act(async () => {
-      mark1310('s2-arrow-left:in-act');
-      mark1310('s2-arrow-left:before-dispatch');
       volSlider.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })
       );
-      mark1310('s2-arrow-left:after-dispatch');
-      mark1310('s2-arrow-left:before-timer');
       await new Promise((r) => setTimeout(r, 15));
-      mark1310('s2-arrow-left:after-timer');
     });
-    mark1310('s2-arrow-left:after-act');
     assert.strictEqual(
-      doc.activeElement,
-      muteBtn,
-      'ArrowLeft fora do modo de edição deve sair do slider de volume para o botão mute'
+      doc.activeElement === muteBtn,
+      true,
+      `ArrowLeft fora do modo de edição deve sair do slider de volume para o botão mute (${describeActiveFocus(muteBtn)})`
     );
 
     // 3) Entrar no modo explícito de edição com Enter -> ajustar volume -> sair com Voltar sem fechar player
-    mark1310('s3-focus:before-act');
     await act(async () => {
-      mark1310('s3-focus:in-act');
-      mark1310('s3-focus:before-focus');
       volSlider.focus();
-      mark1310('s3-focus:after-focus');
-      mark1310('s3-focus:before-timer');
       await new Promise((r) => setTimeout(r, 10));
-      mark1310('s3-focus:after-timer');
     });
-    mark1310('s3-focus:after-act');
 
-    mark1310('s3-enter:before-act');
     await act(async () => {
-      mark1310('s3-enter:in-act');
-      mark1310('s3-enter:before-dispatch');
       volSlider.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
       );
-      mark1310('s3-enter:after-dispatch');
-      mark1310('s3-enter:before-timer');
       await new Promise((r) => setTimeout(r, 15));
-      mark1310('s3-enter:after-timer');
     });
-    mark1310('s3-enter:after-act');
     assert.strictEqual(
       volSlider.getAttribute('data-slider-editing'),
       'true',
       'Pressionar OK/Enter no slider de volume deve ativar modo de edição'
     );
 
-    mark1310('s3-arrow-right-edit:before-act');
     await act(async () => {
-      mark1310('s3-arrow-right-edit:in-act');
-      mark1310('s3-arrow-right-edit:before-dispatch');
       volSlider.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
       );
-      mark1310('s3-arrow-right-edit:after-dispatch');
-      mark1310('s3-arrow-right-edit:before-timer');
       await new Promise((r) => setTimeout(r, 15));
-      mark1310('s3-arrow-right-edit:after-timer');
     });
-    mark1310('s3-arrow-right-edit:after-act');
     assert.strictEqual(
-      doc.activeElement,
-      volSlider,
-      'Durante modo de edição, ArrowRight deve manter o foco no slider enquanto ajusta o volume'
+      doc.activeElement === volSlider,
+      true,
+      `Durante modo de edição, ArrowRight deve manter o foco no slider enquanto ajusta o volume (${describeActiveFocus(volSlider)})`
     );
     assert(
       parseFloat(volSlider.value) > initialVol,
       `ArrowRight no modo de edição deve aumentar o volume (antes=${initialVol}, depois=${volSlider.value})`
     );
 
-    mark1310('s3-back:before-act');
     await act(async () => {
-      mark1310('s3-back:in-act');
-      mark1310('s3-back:before-back');
       executeBackAction();
-      mark1310('s3-back:after-back');
-      mark1310('s3-back:before-timer');
       await new Promise((r) => setTimeout(r, 15));
-      mark1310('s3-back:after-timer');
     });
-    mark1310('s3-back:after-act');
     assert.strictEqual(
       volSlider.getAttribute('data-slider-editing'),
       'false',
@@ -1400,60 +1357,38 @@ async function runC3VolumeDpadAndMouseSubtest(
     );
 
     // 4) Confirmar saída livre após encerrar edição
-    mark1310('s4-arrow-right-exit:before-act');
     await act(async () => {
-      mark1310('s4-arrow-right-exit:in-act');
-      mark1310('s4-arrow-right-exit:before-dispatch');
       volSlider.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
       );
-      mark1310('s4-arrow-right-exit:after-dispatch');
-      mark1310('s4-arrow-right-exit:before-timer');
       await new Promise((r) => setTimeout(r, 15));
-      mark1310('s4-arrow-right-exit:after-timer');
     });
-    mark1310('s4-arrow-right-exit:after-act');
     assert.strictEqual(
-      doc.activeElement,
-      audioSubBtn,
-      'Após sair do modo de edição, ArrowRight deve voltar a navegar livremente para a direita'
+      doc.activeElement === audioSubBtn,
+      true,
+      `Após sair do modo de edição, ArrowRight deve voltar a navegar livremente para a direita (${describeActiveFocus(audioSubBtn)})`
     );
 
     // 5) Modo desktop/pointer preserva ajuste direto sem exigir Enter
-    mark1310('s5-setNavMode:before');
     setNavMode('pointer');
-    mark1310('s5-setNavMode:after');
     const volBeforePointer = parseFloat(volSlider.value);
-    mark1310('s5-pointer:before-act');
     await act(async () => {
-      mark1310('s5-pointer:in-act');
-      mark1310('s5-pointer:before-focus');
       volSlider.focus();
-      mark1310('s5-pointer:after-focus');
-      mark1310('s5-pointer:before-dispatch');
       volSlider.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })
       );
-      mark1310('s5-pointer:after-dispatch');
-      mark1310('s5-pointer:before-timer');
       await new Promise((r) => setTimeout(r, 15));
-      mark1310('s5-pointer:after-timer');
     });
-    mark1310('s5-pointer:after-act');
     assert(
       parseFloat(volSlider.value) < volBeforePointer,
       'Fora do modo remote, ajuste de teclado no slider deve continuar imediato sem exigir Enter'
     );
   } finally {
     logC3Stage('13.10', 'unmount');
-    mark1310('unmount:before');
     await volTracked.unmount();
-    mark1310('unmount:after');
     logC3Stage('13.10', 'cleanup');
-    mark1310('cleanup:before');
     clearAllBackHandlersForTest();
     window.localStorage.removeItem('nc_player_volume');
-    mark1310('cleanup:after');
   }
 }
 
