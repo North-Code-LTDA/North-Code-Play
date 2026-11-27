@@ -58,6 +58,10 @@ export interface VideoPlayerProps {
   streamUrl?: string;
   title: string;
   contentType?: PlayerContentType;
+  containerExtension?: string | null;
+  mimeType?: string | null;
+  allowedOutputFormats?: string[] | null;
+  directSource?: string | null;
   channelName?: string;
   programTitle?: string;
   onBack: () => void;

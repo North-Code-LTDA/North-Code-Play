@@ -787,3 +787,1244 @@ export function buildDirectMediaUrl(
   return `${cleanBase}/live/${user}/${pass}/${id}.m3u8`;
 }
 
+// ============================================================================
+// M01 — Source Identification, Engine Selection, Authorized Fallback & Error Classification
+// ============================================================================
+
+export type PlaybackContentType = "live" | "movie" | "episode";
+export type PlaybackTransportProtocol = "http" | "https" | "unsupported" | "invalid";
+export type PlaybackTransportMode = "hls" | "progressive" | "unknown";
+export type PlaybackEngineKind = "hls.js" | "native-hls" | "native";
+export type PlaybackDetectionSource =
+  | "mime_type"
+  | "pathname_extension"
+  | "query_param"
+  | "provider_metadata"
+  | "unknown";
+
+export type PlaybackErrorCategory =
+  | "invalid_url"
+  | "unsupported_protocol"
+  | "source_unavailable"
+  | "network_error"
+  | "timeout"
+  | "access_restricted"
+  | "rate_limited"
+  | "invalid_manifest"
+  | "incompatible_container_or_codec"
+  | "decode_error"
+  | "cors_or_mixed_content"
+  | "user_aborted";
+
+export interface MediaSourceIdentification {
+  url: string;
+  isValidUrl: boolean;
+  isSupportedProtocol: boolean;
+  protocol: PlaybackTransportProtocol;
+  rawScheme: string;
+  transport: PlaybackTransportMode;
+  container: string;
+  contentType: PlaybackContentType;
+  detectionSource: PlaybackDetectionSource;
+  detectedExtension: string | null;
+  detectedMimeType: string | null;
+  isDirectSource: boolean;
+  isConventionalXtreamLiveUrl: boolean;
+}
+
+export interface IdentifyMediaSourceOptions {
+  url: string;
+  contentType?: PlaybackContentType | null;
+  containerExtension?: string | null;
+  mimeType?: string | null;
+  directSource?: string | null;
+  credentials?: Pick<
+    XtreamCredentials,
+    "serverUrl" | "username" | "password" | "allowed_output_formats"
+  > | null;
+}
+
+export interface PlaybackEnvironmentCapabilities {
+  hlsJsSupported: boolean;
+  nativeHlsSupported: boolean;
+  canPlayType?: (mimeType: string) => string;
+}
+
+export interface PlaybackEngineSelection {
+  primaryEngine: PlaybackEngineKind | null;
+  fallbackEngine: PlaybackEngineKind | null;
+  reason: string;
+}
+
+export interface PlaybackAttemptDescriptor {
+  url: string;
+  engine: PlaybackEngineKind;
+  source: MediaSourceIdentification;
+  isFallback: boolean;
+  fallbackKind?: "authorized_format" | "engine_switch";
+}
+
+export interface PlaybackErrorClassification {
+  category: PlaybackErrorCategory;
+  message: string;
+  retryable: boolean;
+  isDefinitiveCodecDiagnosis: boolean;
+  httpStatus?: number;
+}
+
+export interface PlaybackAttemptPlan {
+  primarySource: MediaSourceIdentification;
+  attempts: PlaybackAttemptDescriptor[];
+  validationError: PlaybackErrorClassification | null;
+}
+
+const NON_MEDIA_PATH_EXTENSIONS = new Set([
+  "php",
+  "asp",
+  "aspx",
+  "jsp",
+  "cgi",
+  "pl",
+  "py",
+  "do",
+  "action",
+  "html",
+  "htm",
+  "json",
+  "xml",
+  "txt",
+  "js",
+  "css",
+]);
+
+const KNOWN_MEDIA_EXTENSIONS = new Set([
+  "m3u8",
+  "m3u",
+  "ts",
+  "mts",
+  "m2ts",
+  "mp2t",
+  "mpegts",
+  "mp4",
+  "m4v",
+  "m4a",
+  "mkv",
+  "mk3d",
+  "mka",
+  "webm",
+  "avi",
+  "mov",
+  "qt",
+  "flv",
+  "f4v",
+  "wmv",
+  "asf",
+  "3gp",
+  "3g2",
+  "ogg",
+  "ogv",
+  "oga",
+  "mpg",
+  "mpeg",
+  "mpe",
+  "mpv",
+  "m2v",
+  "vob",
+  "divx",
+  "xvid",
+  "rm",
+  "rmvb",
+  "mpd",
+  "aac",
+  "mp3",
+  "flac",
+  "wav",
+  "opus",
+  "ac3",
+  "eac3",
+]);
+
+const FORMAT_QUERY_PARAMETER_KEYS = [
+  "output",
+  "format",
+  "ext",
+  "extension",
+  "container",
+  "stream_type",
+  "mime",
+  "content_type",
+  "type",
+] as const;
+
+function classifyTokenAsTransportAndContainer(
+  rawToken: string
+): { transport: PlaybackTransportMode; container: string; normalizedToken: string } | null {
+  const token = rawToken.trim().toLowerCase().replace(/^\.+/, "").split(";")[0].trim();
+  if (!token) return null;
+
+  // MIME types or format tokens for HLS manifests
+  if (
+    token === "m3u8" ||
+    token === "m3u" ||
+    token === "hls" ||
+    token === "application/vnd.apple.mpegurl" ||
+    token === "application/x-mpegurl" ||
+    token === "audio/mpegurl" ||
+    token === "audio/x-mpegurl" ||
+    token === "vnd.apple.mpegurl"
+  ) {
+    return { transport: "hls", container: "hls", normalizedToken: "m3u8" };
+  }
+
+  // Continuous MPEG-TS streams (distinct from HLS segments inside an M3U8 manifest)
+  if (
+    token === "ts" ||
+    token === "mts" ||
+    token === "m2ts" ||
+    token === "mp2t" ||
+    token === "mpegts" ||
+    token === "video/mp2t" ||
+    token === "video/mpeg2ts"
+  ) {
+    return { transport: "progressive", container: "mpegts", normalizedToken: "ts" };
+  }
+
+  if (token === "mp4" || token === "m4v" || token === "m4a" || token === "video/mp4") {
+    return { transport: "progressive", container: "mp4", normalizedToken: "mp4" };
+  }
+
+  if (
+    token === "mkv" ||
+    token === "mk3d" ||
+    token === "mka" ||
+    token === "video/x-matroska" ||
+    token === "video/matroska"
+  ) {
+    return { transport: "progressive", container: "mkv", normalizedToken: "mkv" };
+  }
+
+  if (token === "webm" || token === "video/webm" || token === "audio/webm") {
+    return { transport: "progressive", container: "webm", normalizedToken: "webm" };
+  }
+
+  if (token === "avi" || token === "video/x-msvideo" || token === "video/avi") {
+    return { transport: "progressive", container: "avi", normalizedToken: "avi" };
+  }
+
+  if (token === "mov" || token === "qt" || token === "video/quicktime") {
+    return { transport: "progressive", container: "mov", normalizedToken: "mov" };
+  }
+
+  if (token === "flv" || token === "f4v" || token === "video/x-flv") {
+    return { transport: "progressive", container: "flv", normalizedToken: "flv" };
+  }
+
+  if (
+    token === "wmv" ||
+    token === "asf" ||
+    token === "video/x-ms-wmv" ||
+    token === "video/x-ms-asf"
+  ) {
+    return { transport: "progressive", container: "wmv", normalizedToken: "wmv" };
+  }
+
+  if (token === "3gp" || token === "3g2" || token === "video/3gpp" || token === "video/3gpp2") {
+    return { transport: "progressive", container: "3gp", normalizedToken: "3gp" };
+  }
+
+  if (
+    token === "ogg" ||
+    token === "ogv" ||
+    token === "oga" ||
+    token === "video/ogg" ||
+    token === "audio/ogg" ||
+    token === "application/ogg"
+  ) {
+    return { transport: "progressive", container: "ogg", normalizedToken: "ogg" };
+  }
+
+  if (
+    token === "mpg" ||
+    token === "mpeg" ||
+    token === "mpe" ||
+    token === "mpv" ||
+    token === "m2v" ||
+    token === "vob" ||
+    token === "video/mpeg"
+  ) {
+    return { transport: "progressive", container: "mpeg", normalizedToken: token.startsWith("video/") ? "mpeg" : token };
+  }
+
+  if (token === "mpd" || token === "dash" || token === "application/dash+xml") {
+    return { transport: "progressive", container: "dash", normalizedToken: "mpd" };
+  }
+
+  // Generic video/* or audio/* MIME type
+  if (token.startsWith("video/") || token.startsWith("audio/")) {
+    const sub = token.slice(token.indexOf("/") + 1).replace(/^x-/, "");
+    if (sub && /^[a-z0-9.+-]{2,20}$/.test(sub)) {
+      return { transport: "progressive", container: sub, normalizedToken: sub };
+    }
+  }
+
+  // Custom or provider-declared container extension (never blocked by an artificial whitelist)
+  if (/^(?=.*[a-z])[a-z0-9]{2,12}$/.test(token) && !NON_MEDIA_PATH_EXTENSIONS.has(token)) {
+    return { transport: "progressive", container: token, normalizedToken: token };
+  }
+
+  return null;
+}
+
+function extractSafePathnameExtension(
+  pathname: string,
+  declaredProviderExtension: string | null
+): string | null {
+  if (!pathname) return null;
+  const segments = pathname.split("/");
+  const rawLeaf = segments[segments.length - 1] || "";
+  if (!rawLeaf) return null;
+
+  // If this looks like a truncated Xtream path (/live/user/pass without the 4th stream segment),
+  // rawLeaf is the password segment, never a media filename.
+  const nonEmptySegments = segments.filter(Boolean);
+  if (
+    nonEmptySegments.length === 3 &&
+    /^(live|movie|series)$/i.test(nonEmptySegments[0])
+  ) {
+    return null;
+  }
+
+  let leaf = rawLeaf;
+  try {
+    leaf = decodeURIComponent(rawLeaf);
+  } catch {
+    leaf = rawLeaf;
+  }
+
+  const lastDotIdx = leaf.lastIndexOf(".");
+  if (lastDotIdx <= 0 || lastDotIdx === leaf.length - 1) {
+    return null;
+  }
+
+  const candidateExt = leaf.slice(lastDotIdx + 1).trim().toLowerCase();
+  if (!/^(?=.*[a-z])[a-z0-9]{2,12}$/.test(candidateExt)) {
+    return null;
+  }
+
+  if (NON_MEDIA_PATH_EXTENSIONS.has(candidateExt)) {
+    return null;
+  }
+
+  // Accept if it's a recognized media extension OR matches the provider's declared container_extension
+  if (
+    KNOWN_MEDIA_EXTENSIONS.has(candidateExt) ||
+    (declaredProviderExtension && candidateExt === declaredProviderExtension)
+  ) {
+    return candidateExt;
+  }
+
+  return null;
+}
+
+function extractFormatFromQueryParams(
+  searchParams: URLSearchParams,
+  declaredProviderExtension: string | null
+): string | null {
+  for (const key of FORMAT_QUERY_PARAMETER_KEYS) {
+    const values: string[] = [];
+    searchParams.forEach((v, k) => {
+      if (k.trim().toLowerCase() === key) {
+        values.push(v);
+      }
+    });
+
+    for (const rawVal of values) {
+      const cleaned = rawVal.trim().toLowerCase().replace(/^\.+/, "");
+      if (!cleaned) continue;
+      // Ignore playlist file type descriptors like type=m3u_plus when looking for stream format
+      if (key === "type" && (cleaned === "m3u_plus" || cleaned === "enigma216_script")) {
+        continue;
+      }
+      if (
+        KNOWN_MEDIA_EXTENSIONS.has(cleaned) ||
+        cleaned === "hls" ||
+        cleaned.startsWith("application/") ||
+        cleaned.startsWith("video/") ||
+        cleaned.startsWith("audio/") ||
+        (declaredProviderExtension && cleaned === declaredProviderExtension)
+      ) {
+        return cleaned;
+      }
+    }
+  }
+  return null;
+}
+
+function matchConventionalXtreamLiveUrl(
+  url: string,
+  credentials?: Pick<XtreamCredentials, "serverUrl" | "username" | "password"> | null,
+  directSource?: string | null
+): { cleanBase: string; userPart: string; passPart: string; streamIdPart: string; ext: string } | null {
+  const validDirectSource = normalizeDirectMediaSource(directSource);
+  if (validDirectSource && validDirectSource === url.trim()) {
+    return null;
+  }
+
+  if (!credentials?.serverUrl || !credentials.username || !credentials.password) {
+    return null;
+  }
+
+  const cleanBase = normalizeServerUrl(credentials.serverUrl);
+  if (!cleanBase) return null;
+
+  const trimmedUrl = url.trim();
+  if (trimmedUrl.includes("?") || trimmedUrl.includes("#")) {
+    return null;
+  }
+
+  const candidatePairs = [
+    {
+      userPart: encodeURIComponent(credentials.username),
+      passPart: encodeURIComponent(credentials.password),
+    },
+    {
+      userPart: credentials.username.trim(),
+      passPart: credentials.password.trim(),
+    },
+  ];
+
+  for (const { userPart, passPart } of candidatePairs) {
+    const prefix = `${cleanBase}/live/${userPart}/${passPart}/`;
+    if (trimmedUrl.startsWith(prefix)) {
+      const leaf = trimmedUrl.slice(prefix.length);
+      if (!leaf || leaf.includes("/")) continue;
+      const dotIdx = leaf.lastIndexOf(".");
+      if (dotIdx <= 0 || dotIdx === leaf.length - 1) continue;
+      const streamIdPart = leaf.slice(0, dotIdx);
+      const ext = normalizeContainerExtension(leaf.slice(dotIdx + 1));
+      if (streamIdPart && ext) {
+        return { cleanBase, userPart, passPart, streamIdPart, ext };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * M01 — Intelligent media source identification.
+ * - Preserves explicit `contentType` informed by consumer (HLS does not overwrite movie/episode to live).
+ * - Never matches arbitrary substrings inside passwords, tokens, titles, or signatures.
+ * - Distinguishes transmission protocol, delivery transport ('hls' | 'progressive' | 'unknown'), and multimedia container.
+ */
+export function identifyMediaSource(
+  options: IdentifyMediaSourceOptions
+): MediaSourceIdentification {
+  const rawUrl = typeof options.url === "string" ? options.url.trim() : "";
+  const explicitContentType =
+    options.contentType === "live" ||
+    options.contentType === "movie" ||
+    options.contentType === "episode"
+      ? options.contentType
+      : null;
+
+  const validDirectSource = normalizeDirectMediaSource(options.directSource);
+  const isDirectSource = Boolean(validDirectSource && validDirectSource === rawUrl);
+  const declaredExt = normalizeContainerExtension(options.containerExtension);
+  const declaredMime =
+    typeof options.mimeType === "string" && options.mimeType.trim()
+      ? options.mimeType.trim().toLowerCase()
+      : null;
+
+  if (!rawUrl) {
+    return {
+      url: rawUrl,
+      isValidUrl: false,
+      isSupportedProtocol: false,
+      protocol: "invalid",
+      rawScheme: "",
+      transport: "unknown",
+      container: "unknown",
+      contentType: explicitContentType || "movie",
+      detectionSource: "unknown",
+      detectedExtension: null,
+      detectedMimeType: null,
+      isDirectSource: false,
+      isConventionalXtreamLiveUrl: false,
+    };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return {
+      url: rawUrl,
+      isValidUrl: false,
+      isSupportedProtocol: false,
+      protocol: "invalid",
+      rawScheme: "",
+      transport: "unknown",
+      container: "unknown",
+      contentType: explicitContentType || "movie",
+      detectionSource: "unknown",
+      detectedExtension: null,
+      detectedMimeType: null,
+      isDirectSource: false,
+      isConventionalXtreamLiveUrl: false,
+    };
+  }
+
+  if (!parsed.hostname) {
+    return {
+      url: rawUrl,
+      isValidUrl: false,
+      isSupportedProtocol: false,
+      protocol: "invalid",
+      rawScheme: "",
+      transport: "unknown",
+      container: "unknown",
+      contentType: explicitContentType || "movie",
+      detectionSource: "unknown",
+      detectedExtension: null,
+      detectedMimeType: null,
+      isDirectSource: false,
+      isConventionalXtreamLiveUrl: false,
+    };
+  }
+
+  const rawScheme = parsed.protocol.replace(/:$/, "").toLowerCase();
+  const isHttpOrHttps = rawScheme === "http" || rawScheme === "https";
+  const protocol: PlaybackTransportProtocol = isHttpOrHttps
+    ? (rawScheme as "http" | "https")
+    : "unsupported";
+
+  const resolvedContentType: PlaybackContentType = (() => {
+    if (explicitContentType) return explicitContentType;
+    const pathLower = parsed.pathname.toLowerCase();
+    if (pathLower.startsWith("/live/")) return "live";
+    if (pathLower.startsWith("/series/")) return "episode";
+    if (pathLower.startsWith("/movie/")) return "movie";
+    return "movie";
+  })();
+
+  const conventionalLiveMatch =
+    resolvedContentType === "live"
+      ? matchConventionalXtreamLiveUrl(rawUrl, options.credentials, options.directSource)
+      : null;
+
+  // Priority 1: Explicit MIME type
+  if (declaredMime) {
+    const classified = classifyTokenAsTransportAndContainer(declaredMime);
+    if (classified) {
+      return {
+        url: rawUrl,
+        isValidUrl: true,
+        isSupportedProtocol: isHttpOrHttps,
+        protocol,
+        rawScheme,
+        transport: classified.transport,
+        container: classified.container,
+        contentType: resolvedContentType,
+        detectionSource: "mime_type",
+        detectedExtension: classified.normalizedToken,
+        detectedMimeType: declaredMime,
+        isDirectSource,
+        isConventionalXtreamLiveUrl: Boolean(conventionalLiveMatch),
+      };
+    }
+  }
+
+  // Priority 2: Safe leaf pathname extension
+  const pathExt = extractSafePathnameExtension(parsed.pathname, declaredExt);
+  if (pathExt) {
+    const classified = classifyTokenAsTransportAndContainer(pathExt);
+    if (classified) {
+      return {
+        url: rawUrl,
+        isValidUrl: true,
+        isSupportedProtocol: isHttpOrHttps,
+        protocol,
+        rawScheme,
+        transport: classified.transport,
+        container: classified.container,
+        contentType: resolvedContentType,
+        detectionSource: "pathname_extension",
+        detectedExtension: pathExt,
+        detectedMimeType: null,
+        isDirectSource,
+        isConventionalXtreamLiveUrl: Boolean(conventionalLiveMatch),
+      };
+    }
+  }
+
+  // Priority 3: Recognized format query parameters
+  const queryFormat = extractFormatFromQueryParams(parsed.searchParams, declaredExt);
+  if (queryFormat) {
+    const classified = classifyTokenAsTransportAndContainer(queryFormat);
+    if (classified) {
+      return {
+        url: rawUrl,
+        isValidUrl: true,
+        isSupportedProtocol: isHttpOrHttps,
+        protocol,
+        rawScheme,
+        transport: classified.transport,
+        container: classified.container,
+        contentType: resolvedContentType,
+        detectionSource: "query_param",
+        detectedExtension: classified.normalizedToken,
+        detectedMimeType: queryFormat.includes("/") ? queryFormat : null,
+        isDirectSource,
+        isConventionalXtreamLiveUrl: Boolean(conventionalLiveMatch),
+      };
+    }
+  }
+
+  // Priority 4: Provider container_extension metadata
+  if (declaredExt) {
+    const classified = classifyTokenAsTransportAndContainer(declaredExt);
+    if (classified) {
+      return {
+        url: rawUrl,
+        isValidUrl: true,
+        isSupportedProtocol: isHttpOrHttps,
+        protocol,
+        rawScheme,
+        transport: classified.transport,
+        container: classified.container,
+        contentType: resolvedContentType,
+        detectionSource: "provider_metadata",
+        detectedExtension: declaredExt,
+        detectedMimeType: null,
+        isDirectSource,
+        isConventionalXtreamLiveUrl: Boolean(conventionalLiveMatch),
+      };
+    }
+  }
+
+  // Priority 5: Explicitly unknown transport/container (no unsafe assumptions)
+  return {
+    url: rawUrl,
+    isValidUrl: true,
+    isSupportedProtocol: isHttpOrHttps,
+    protocol,
+    rawScheme,
+    transport: "unknown",
+    container: "unknown",
+    contentType: resolvedContentType,
+    detectionSource: "unknown",
+    detectedExtension: null,
+    detectedMimeType: null,
+    isDirectSource,
+    isConventionalXtreamLiveUrl: Boolean(conventionalLiveMatch),
+  };
+}
+
+/**
+ * M01 — Coherent playback engine selection based on identified source and environment capabilities.
+ */
+export function selectPlaybackEngine(
+  source: MediaSourceIdentification,
+  capabilities: PlaybackEnvironmentCapabilities
+): PlaybackEngineSelection {
+  if (!source.isValidUrl || !source.isSupportedProtocol) {
+    return {
+      primaryEngine: null,
+      fallbackEngine: null,
+      reason: "invalid_or_unsupported_source",
+    };
+  }
+
+  if (source.transport === "hls") {
+    if (capabilities.hlsJsSupported) {
+      return {
+        primaryEngine: "hls.js",
+        fallbackEngine: capabilities.nativeHlsSupported ? "native-hls" : null,
+        reason: "hls_via_hlsjs",
+      };
+    }
+    if (capabilities.nativeHlsSupported) {
+      return {
+        primaryEngine: "native-hls",
+        fallbackEngine: null,
+        reason: "hls_via_native",
+      };
+    }
+    return {
+      primaryEngine: "native",
+      fallbackEngine: null,
+      reason: "hls_unverified_native_attempt",
+    };
+  }
+
+  if (source.transport === "progressive") {
+    return {
+      primaryEngine: "native",
+      fallbackEngine: null,
+      reason:
+        source.container === "mpegts"
+          ? "continuous_mpegts_via_native"
+          : "progressive_container_via_native",
+    };
+  }
+
+  // source.transport === 'unknown' (extensionless URL without format query param or container metadata)
+  if (source.contentType === "live") {
+    if (capabilities.hlsJsSupported) {
+      return {
+        primaryEngine: "hls.js",
+        fallbackEngine: "native",
+        reason: "unknown_live_try_hlsjs_then_native",
+      };
+    }
+    if (capabilities.nativeHlsSupported) {
+      return {
+        primaryEngine: "native-hls",
+        fallbackEngine: null,
+        reason: "unknown_live_try_native_hls",
+      };
+    }
+    return {
+      primaryEngine: "native",
+      fallbackEngine: null,
+      reason: "unknown_live_try_native",
+    };
+  }
+
+  // Unknown Movie / Episode source: attempt native HTMLMediaElement first, with 1 controlled HLS fallback if available
+  return {
+    primaryEngine: "native",
+    fallbackEngine: capabilities.hlsJsSupported
+      ? "hls.js"
+      : capabilities.nativeHlsSupported
+        ? "native-hls"
+        : null,
+    reason: "unknown_vod_try_native_then_hls",
+  };
+}
+
+/**
+ * Strips any URLs, query strings, tokens, or credentials from an error message.
+ */
+export function sanitizePlaybackErrorMessage(rawMessage: string): string {
+  if (!rawMessage || typeof rawMessage !== "string") {
+    return "Não foi possível reproduzir esta transmissão.";
+  }
+  return rawMessage
+    .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[endereço ocultado]")
+    .replace(/\?[a-z0-9_=&%.-]+/gi, "")
+    .replace(/(password|pass|token|sig|signature|auth|key)=[^&\s]+/gi, "$1=[ocultado]")
+    .trim();
+}
+
+export interface ClassifyPlaybackErrorInput {
+  source: MediaSourceIdentification;
+  kind: "validation" | "hls" | "native" | "timeout";
+  hlsErrorData?: any;
+  mediaError?: { code?: number; message?: string } | null;
+  httpStatus?: number;
+  isMixedContent?: boolean;
+  isCorsError?: boolean;
+}
+
+/**
+ * M01 — Evidence-based playback error classification across all 12 required categories.
+ * Never claims a generic browser MEDIA_ERR_SRC_NOT_SUPPORTED proves codec incompatibility,
+ * and never exposes authenticated URLs, tokens, passwords, or raw provider messages.
+ */
+export function classifyPlaybackError(
+  input: ClassifyPlaybackErrorInput
+): PlaybackErrorClassification {
+  const { source, kind, hlsErrorData, mediaError } = input;
+
+  if (!source.isValidUrl) {
+    return {
+      category: "invalid_url",
+      message: "URL de transmissão inválida ou malformada.",
+      retryable: false,
+      isDefinitiveCodecDiagnosis: false,
+    };
+  }
+
+  if (!source.isSupportedProtocol) {
+    return {
+      category: "unsupported_protocol",
+      message: "Protocolo de transmissão não suportado por este mecanismo de reprodução.",
+      retryable: false,
+      isDefinitiveCodecDiagnosis: false,
+    };
+  }
+
+  if (input.isMixedContent) {
+    return {
+      category: "cors_or_mixed_content",
+      message:
+        "Transmissão HTTP bloqueada pelo navegador em contexto seguro HTTPS (Mixed Content).",
+      retryable: false,
+      isDefinitiveCodecDiagnosis: false,
+    };
+  }
+
+  if (input.isCorsError) {
+    return {
+      category: "cors_or_mixed_content",
+      message: "Acesso à transmissão bloqueado por política de segurança (CORS).",
+      retryable: false,
+      isDefinitiveCodecDiagnosis: false,
+    };
+  }
+
+  if (kind === "timeout") {
+    return {
+      category: "timeout",
+      message: "Tempo limite esgotado ao aguardar resposta do servidor de transmissão.",
+      retryable: true,
+      isDefinitiveCodecDiagnosis: false,
+    };
+  }
+
+  const rawHttpStatus =
+    input.httpStatus ??
+    (typeof hlsErrorData?.response?.code === "number"
+      ? hlsErrorData.response.code
+      : typeof hlsErrorData?.networkDetails?.status === "number"
+        ? hlsErrorData.networkDetails.status
+        : undefined);
+
+  if (typeof rawHttpStatus === "number" && rawHttpStatus > 0) {
+    if (rawHttpStatus === 429) {
+      return {
+        category: "rate_limited",
+        message:
+          "Limite de solicitações excedido no provedor (HTTP 429). Aguarde alguns instantes e tente novamente.",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+        httpStatus: 429,
+      };
+    }
+
+    if (rawHttpStatus === 401 || rawHttpStatus === 403) {
+      return {
+        category: "access_restricted",
+        message: "Acesso à transmissão recusado pelo provedor (credenciais ou permissão inválidas).",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+        httpStatus: rawHttpStatus,
+      };
+    }
+
+    if (rawHttpStatus === 404 || rawHttpStatus === 410) {
+      return {
+        category: "source_unavailable",
+        message: "Conteúdo ou transmissão não encontrado no provedor.",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+        httpStatus: rawHttpStatus,
+      };
+    }
+
+    if (rawHttpStatus >= 500) {
+      return {
+        category: "network_error",
+        message: "Servidor de transmissão temporariamente indisponível no provedor.",
+        retryable: true,
+        isDefinitiveCodecDiagnosis: false,
+        httpStatus: rawHttpStatus,
+      };
+    }
+
+    if (rawHttpStatus >= 400) {
+      return {
+        category: "source_unavailable",
+        message: "O provedor recusou a solicitação desta transmissão.",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+        httpStatus: rawHttpStatus,
+      };
+    }
+  }
+
+  if (kind === "hls" && hlsErrorData) {
+    const details = String(hlsErrorData.details || "");
+    const type = String(hlsErrorData.type || "");
+
+    if (
+      details === "manifestLoadTimeOut" ||
+      details === "levelLoadTimeOut" ||
+      details === "fragLoadTimeOut" ||
+      details === "keyLoadTimeOut" ||
+      details === "audioTrackLoadTimeOut" ||
+      details === "subtitleTrackLoadTimeOut"
+    ) {
+      return {
+        category: "timeout",
+        message: "Tempo limite esgotado ao aguardar resposta do servidor de transmissão.",
+        retryable: true,
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    if (
+      details === "manifestIncompatibleCodecsError" ||
+      details === "bufferAddCodecError" ||
+      details === "bufferIncompatibleCodecsError"
+    ) {
+      return {
+        category: "incompatible_container_or_codec",
+        message:
+          "Contêiner ou codec da transmissão incompatível com este dispositivo ou navegador.",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: true,
+      };
+    }
+
+    if (details === "manifestParsingError" || details === "levelParsingError") {
+      return {
+        category: "invalid_manifest",
+        message: "Manifesto de transmissão HLS inválido ou malformado.",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    if (details === "levelEmptyError") {
+      return {
+        category: "source_unavailable",
+        message: "Transmissão sem segmentos de mídia disponíveis no provedor.",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    if (
+      details === "keyLoadError" ||
+      details.startsWith("keySystem")
+    ) {
+      return {
+        category: "access_restricted",
+        message: "Acesso à chave de proteção da transmissão recusado pelo provedor.",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    if (
+      type === "mediaError" ||
+      details === "fragParsingError" ||
+      details === "fragDecryptError" ||
+      details === "bufferAppendError" ||
+      details === "bufferAppendingError" ||
+      details === "bufferStalledError" ||
+      details === "bufferFullError" ||
+      details === "bufferSeekOverHole" ||
+      details === "bufferNudgeOnStall"
+    ) {
+      return {
+        category: "decode_error",
+        message: "Falha ao decodificar o fluxo de áudio ou vídeo durante a reprodução.",
+        retryable: type === "mediaError",
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    if (
+      type === "networkError" ||
+      details === "manifestLoadError" ||
+      details === "levelLoadError" ||
+      details === "fragLoadError"
+    ) {
+      return {
+        category: "network_error",
+        message: "Falha de conexão com o servidor de transmissão.",
+        retryable: true,
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    return {
+      category: "source_unavailable",
+      message: "Não foi possível iniciar ou manter a reprodução desta transmissão.",
+      retryable: false,
+      isDefinitiveCodecDiagnosis: false,
+    };
+  }
+
+  if (kind === "native") {
+    const code = mediaError?.code;
+    const rawDetailMsg = typeof mediaError?.message === "string" ? mediaError.message : "";
+
+    if (code === 1) {
+      return {
+        category: "user_aborted",
+        message: "Reprodução interrompida pelo usuário.",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    if (code === 2) {
+      return {
+        category: "network_error",
+        message: "Falha de rede durante o carregamento da mídia.",
+        retryable: true,
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    if (code === 3) {
+      return {
+        category: "decode_error",
+        message: "Falha ao decodificar o fluxo de mídia neste dispositivo.",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    if (code === 4) {
+      // Check if the underlying media engine explicitly reported a concrete demuxer/codec rejection
+      const hasConcreteCodecEvidence =
+        /DEMUXER_ERROR_NO_SUPPORTED_STREAMS|no supported streams|unsupported codec|codec not supported|audio\/video codec/i.test(
+          rawDetailMsg
+        );
+
+      if (hasConcreteCodecEvidence) {
+        return {
+          category: "incompatible_container_or_codec",
+          message:
+            "Contêiner ou codec de mídia não suportado por este dispositivo ou navegador.",
+          retryable: false,
+          isDefinitiveCodecDiagnosis: true,
+        };
+      }
+
+      // Generic MEDIA_ERR_SRC_NOT_SUPPORTED (code 4) can be caused by unsupported container,
+      // 404/403 HTTP response, or CORS restriction. Never claim definitive codec incompatibility.
+      const nonStandardContainers = new Set([
+        "mpegts",
+        "mkv",
+        "avi",
+        "flv",
+        "wmv",
+        "mov",
+        "3gp",
+        "mpeg",
+        "divx",
+        "xvid",
+        "rmvb",
+      ]);
+
+      if (nonStandardContainers.has(source.container)) {
+        const displayFormat =
+          source.container === "mpegts" ? "MPEG-TS" : source.container.toUpperCase();
+        return {
+          category: "incompatible_container_or_codec",
+          message: `Não foi possível reproduzir esta fonte (formato ${displayFormat} não suportado diretamente pelo navegador ou transmissão indisponível).`,
+          retryable: false,
+          isDefinitiveCodecDiagnosis: false,
+        };
+      }
+
+      return {
+        category: "source_unavailable",
+        message:
+          "Não foi possível carregar esta transmissão (fonte indisponível no provedor, bloqueio de acesso ou formato não suportado).",
+        retryable: false,
+        isDefinitiveCodecDiagnosis: false,
+      };
+    }
+
+    return {
+      category: "source_unavailable",
+      message: "Não foi possível carregar ou reproduzir esta fonte de mídia.",
+      retryable: false,
+      isDefinitiveCodecDiagnosis: false,
+    };
+  }
+
+  return {
+    category: "source_unavailable",
+    message: "Não foi possível reproduzir esta transmissão.",
+    retryable: false,
+    isDefinitiveCodecDiagnosis: false,
+  };
+}
+
+export interface BuildPlaybackAttemptPlanOptions extends IdentifyMediaSourceOptions {
+  allowedOutputFormats?: string[] | string | Record<string, unknown> | null;
+  capabilities: PlaybackEnvironmentCapabilities;
+  isMixedContent?: boolean;
+}
+
+/**
+ * M01 — Builds a bounded playback attempt plan (primary attempt + at most 1 authorized fallback).
+ * - Never fabricates alternative URLs for `direct_source`.
+ * - Never replaces movie/episode specific formats (e.g. `.mkv`, `.avi`) with `.mp4`.
+ * - For conventional Xtream Live URLs, only includes an alternative format when explicitly present in `allowed_output_formats`.
+ */
+export function buildPlaybackAttemptPlan(
+  options: BuildPlaybackAttemptPlanOptions
+): PlaybackAttemptPlan {
+  const primarySource = identifyMediaSource(options);
+
+  if (!primarySource.isValidUrl || !primarySource.isSupportedProtocol) {
+    return {
+      primarySource,
+      attempts: [],
+      validationError: classifyPlaybackError({
+        source: primarySource,
+        kind: "validation",
+        isMixedContent: options.isMixedContent,
+      }),
+    };
+  }
+
+  const primarySelection = selectPlaybackEngine(primarySource, options.capabilities);
+  const attempts: PlaybackAttemptDescriptor[] = [
+    {
+      url: primarySource.url,
+      engine: primarySelection.primaryEngine || "native",
+      source: primarySource,
+      isFallback: false,
+    },
+  ];
+
+  // Priority 1: Authorized alternative format for conventional Xtream Live URLs
+  if (primarySource.isConventionalXtreamLiveUrl && !primarySource.isDirectSource) {
+    const liveMatch = matchConventionalXtreamLiveUrl(
+      primarySource.url,
+      options.credentials,
+      options.directSource
+    );
+    const rawFormats =
+      options.allowedOutputFormats !== undefined
+        ? options.allowedOutputFormats
+        : options.credentials?.allowed_output_formats;
+    const normalizedFormats = normalizeAllowedOutputFormats(rawFormats);
+
+    if (liveMatch && normalizedFormats && normalizedFormats.length > 1) {
+      const altFormat = normalizedFormats.find((fmt) => fmt !== liveMatch.ext);
+      if (altFormat) {
+        const altUrl = `${liveMatch.cleanBase}/live/${liveMatch.userPart}/${liveMatch.passPart}/${liveMatch.streamIdPart}.${encodeURIComponent(altFormat)}`;
+        const altSource = identifyMediaSource({
+          url: altUrl,
+          contentType: primarySource.contentType,
+          credentials: options.credentials,
+        });
+        const altSelection = selectPlaybackEngine(altSource, options.capabilities);
+        if (altSelection.primaryEngine) {
+          attempts.push({
+            url: altUrl,
+            engine: altSelection.primaryEngine,
+            source: altSource,
+            isFallback: true,
+            fallbackKind: "authorized_format",
+          });
+        }
+      }
+    }
+  }
+
+  // Priority 2: Engine switch on the exact same literal URL (when no format alternative was queued)
+  if (attempts.length === 1 && primarySelection.fallbackEngine) {
+    attempts.push({
+      url: primarySource.url,
+      engine: primarySelection.fallbackEngine,
+      source: primarySource,
+      isFallback: true,
+      fallbackKind: "engine_switch",
+    });
+  }
+
+  return {
+    primarySource,
+    attempts,
+    validationError: null,
+  };
+}
+
+/**
+ * M01 — Determines whether a failed primary playback attempt is eligible for the single authorized fallback.
+ * - Never triggers after stable playback has started (`hasStartedPlaying`).
+ * - Never triggers on HTTP 401, 403, 429, Mixed Content/CORS, timeout, or user cancellation.
+ */
+export function shouldAttemptPlaybackFallback(params: {
+  currentAttempt: PlaybackAttemptDescriptor;
+  nextAttempt?: PlaybackAttemptDescriptor | null;
+  errorClassification: PlaybackErrorClassification;
+  hasStartedPlaying: boolean;
+}): boolean {
+  const { currentAttempt, nextAttempt, errorClassification, hasStartedPlaying } = params;
+
+  if (!nextAttempt || currentAttempt.isFallback) {
+    return false;
+  }
+
+  if (hasStartedPlaying) {
+    return false;
+  }
+
+  const { category, httpStatus } = errorClassification;
+
+  // Never use fallback to bypass access restrictions, rate limits, security blocks, timeouts, or user abort
+  if (
+    category === "access_restricted" ||
+    category === "rate_limited" ||
+    category === "cors_or_mixed_content" ||
+    category === "user_aborted" ||
+    category === "invalid_url" ||
+    category === "unsupported_protocol" ||
+    category === "timeout"
+  ) {
+    return false;
+  }
+
+  if (httpStatus === 401 || httpStatus === 403 || httpStatus === 429) {
+    return false;
+  }
+
+  if (nextAttempt.fallbackKind === "authorized_format") {
+    return (
+      category === "incompatible_container_or_codec" ||
+      category === "invalid_manifest" ||
+      category === "source_unavailable" ||
+      category === "decode_error"
+    );
+  }
+
+  if (nextAttempt.fallbackKind === "engine_switch") {
+    // Switching from HLS.js to native on an unknown source: only when manifest parsing or codec fails (not 404/network error)
+    if (currentAttempt.engine === "hls.js" && nextAttempt.engine === "native") {
+      if (httpStatus === 404 || httpStatus === 410) {
+        return false;
+      }
+      return (
+        category === "invalid_manifest" ||
+        category === "incompatible_container_or_codec"
+      );
+    }
+
+    // Switching from HLS.js to native-hls on an HLS source: only when MSE/codec/decode fails
+    if (currentAttempt.engine === "hls.js" && nextAttempt.engine === "native-hls") {
+      return (
+        category === "incompatible_container_or_codec" ||
+        category === "decode_error"
+      );
+    }
+
+    // Switching from native HTMLMediaElement to HLS on an unknown VOD source
+    if (
+      currentAttempt.engine === "native" &&
+      (nextAttempt.engine === "hls.js" || nextAttempt.engine === "native-hls")
+    ) {
+      return (
+        category === "source_unavailable" ||
+        category === "incompatible_container_or_codec"
+      );
+    }
+  }
+
+  return false;
+}
+
+

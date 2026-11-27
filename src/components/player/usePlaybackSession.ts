@@ -17,6 +17,16 @@ import {
   loadExternalSubtitleAsVttUrl,
 } from './trackUtils';
 import { recordPlaybackPosition, AccountIdentity, PlaybackType } from '../../utils/playbackHistory';
+import {
+  identifyMediaSource,
+  buildPlaybackAttemptPlan,
+  shouldAttemptPlaybackFallback,
+  classifyPlaybackError,
+  sanitizePlaybackErrorMessage,
+  MediaSourceIdentification,
+  PlaybackAttemptDescriptor,
+  PlaybackErrorClassification,
+} from '../../utils/mediaUtils';
 
 interface InternalAudioTrackDescriptor extends MediaTrackInfo {
   nativeTrackObj?: any;
@@ -63,6 +73,10 @@ interface UsePlaybackSessionOptions {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   streamUrl: string;
   contentType?: PlayerContentType;
+  containerExtension?: string | null;
+  mimeType?: string | null;
+  allowedOutputFormats?: string[] | null;
+  directSource?: string | null;
   startAt?: number;
   streamId?: string | number;
   credentials?: AccountIdentity | null;
@@ -109,34 +123,6 @@ export function normalizePlayerVolume(raw: unknown, fallback: number = 1): numbe
   return safeFallback;
 }
 
-function validateStreamUrl(rawUrl: string): { valid: boolean; reason?: string } {
-  const trimmed = (rawUrl || '').trim();
-  if (!trimmed) {
-    return { valid: false, reason: 'Endereço de mídia não informado.' };
-  }
-  try {
-    const parsed = new URL(trimmed);
-    const protocol = parsed.protocol.toLowerCase();
-    if (
-      protocol !== 'http:' &&
-      protocol !== 'https:' &&
-      protocol !== 'blob:' &&
-      protocol !== 'data:'
-    ) {
-      return {
-        valid: false,
-        reason: 'Protocolo de mídia não suportado pelo player.',
-      };
-    }
-    return { valid: true };
-  } catch {
-    return {
-      valid: false,
-      reason: 'Endereço de reprodução inválido ou malformado.',
-    };
-  }
-}
-
 function isMixedContentUrl(rawUrl: string): boolean {
   if (typeof window === 'undefined' || !window.location) return false;
   return (
@@ -145,142 +131,50 @@ function isMixedContentUrl(rawUrl: string): boolean {
   );
 }
 
-function extractMediaExtension(rawUrl: string): string {
+function probeNativeHlsSupport(video: HTMLVideoElement | null): boolean {
+  if (!video || typeof video.canPlayType !== 'function') return false;
   try {
-    const parsed = new URL(rawUrl);
-    const pathname = parsed.pathname.toLowerCase();
-    const match = pathname.match(/(\.[a-z0-9]{2,5})$/i);
-    return match ? match[1] : '';
+    const appleMime = video.canPlayType('application/vnd.apple.mpegurl');
+    if (appleMime === 'probably' || appleMime === 'maybe') return true;
+    const mpegUrlMime = video.canPlayType('application/x-mpegurl');
+    return mpegUrlMime === 'probably' || mpegUrlMime === 'maybe';
   } catch {
-    const clean = (rawUrl || '').split(/[?#]/)[0].toLowerCase();
-    const match = clean.match(/(\.[a-z0-9]{2,5})$/i);
-    return match ? match[1] : '';
+    return false;
   }
 }
 
 function classifyNativeMediaError(
   mediaErr: MediaError | null,
-  streamUrl: string
-): string {
-  if (!mediaErr) {
-    return 'Falha ao reproduzir mídia diretamente do provedor.';
-  }
-  if (mediaErr.code === 1) {
-    return 'A reprodução foi interrompida antes de iniciar.';
-  }
-  if (mediaErr.code === 2) {
-    return 'Erro de rede ao conectar à transmissão do provedor.';
-  }
-  if (mediaErr.code === 3) {
-    return 'Erro na decodificação do áudio ou vídeo deste conteúdo (codec incompatível ou fluxo corrompido).';
-  }
-  if (mediaErr.code === 4) {
-    if (isMixedContentUrl(streamUrl)) {
-      return 'Conteúdo HTTP bloqueado pelo navegador em página HTTPS (Mixed Content).';
-    }
-    const ext = extractMediaExtension(streamUrl);
-    if (ext === '.mkv' || ext === '.avi' || ext === '.ts' || ext === '.flv' || ext === '.wmv') {
-      return `Formato ${ext.slice(1).toUpperCase()} ou codec do provedor não suportado nativamente por este navegador.`;
-    }
-    return 'Não foi possível reproduzir esta mídia (formato/codec não suportado pelo navegador, origem indisponível ou bloqueio de CORS).';
-  }
-  return 'Falha ao reproduzir mídia diretamente do provedor.';
+  source: MediaSourceIdentification
+): PlaybackErrorClassification {
+  return classifyPlaybackError({
+    source,
+    kind: 'native',
+    mediaError: mediaErr
+      ? { code: mediaErr.code, message: mediaErr.message }
+      : null,
+    isMixedContent: isMixedContentUrl(source.url),
+  });
 }
 
 function classifyHlsFatalError(
   data: any,
-  streamUrl: string
-): { message: string; retryable: boolean } {
-  const details = data?.details;
-  const responseCode = Number(data?.response?.code) || 0;
+  source: MediaSourceIdentification
+): PlaybackErrorClassification {
+  const responseCode =
+    typeof data?.response?.code === 'number' && data.response.code > 0
+      ? data.response.code
+      : typeof data?.networkDetails?.status === 'number' && data.networkDetails.status > 0
+        ? data.networkDetails.status
+        : undefined;
 
-  if (data?.type === Hls.ErrorTypes.NETWORK_ERROR) {
-    if (responseCode === 401 || responseCode === 403) {
-      return {
-        message: `Acesso negado ou credenciais expiradas no provedor (HTTP ${responseCode}).`,
-        retryable: false,
-      };
-    }
-    if (responseCode === 404 || responseCode === 410) {
-      return {
-        message: `Conteúdo indisponível ou removido no provedor (HTTP ${responseCode}).`,
-        retryable: false,
-      };
-    }
-    if (responseCode >= 500) {
-      return {
-        message: `O servidor do provedor retornou erro interno (HTTP ${responseCode}).`,
-        retryable: true,
-      };
-    }
-    if (responseCode >= 400) {
-      return {
-        message: `O provedor rejeitou a solicitação da transmissão (HTTP ${responseCode}).`,
-        retryable: false,
-      };
-    }
-    if (
-      details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR ||
-      details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR
-    ) {
-      return {
-        message: 'Manifesto HLS inválido ou codecs incompatíveis com este navegador.',
-        retryable: false,
-      };
-    }
-    if (
-      details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
-      details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT ||
-      details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT
-    ) {
-      return {
-        message: 'Tempo esgotado ao carregar o fluxo HLS do provedor.',
-        retryable: true,
-      };
-    }
-    if (isMixedContentUrl(streamUrl)) {
-      return {
-        message: 'Fluxo HLS HTTP bloqueado pelo navegador em página HTTPS (Mixed Content).',
-        retryable: false,
-      };
-    }
-    if (
-      details === Hls.ErrorDetails.FRAG_LOAD_ERROR ||
-      details === Hls.ErrorDetails.LEVEL_LOAD_ERROR
-    ) {
-      return {
-        message:
-          'Falha ao carregar segmentos do fluxo HLS do provedor (origem indisponível, rede instável ou bloqueio de CORS).',
-        retryable: true,
-      };
-    }
-    return {
-      message:
-        'Falha de rede ou bloqueio de CORS ao carregar o manifesto HLS diretamente do provedor.',
-      retryable: true,
-    };
-  }
-
-  if (data?.type === Hls.ErrorTypes.MEDIA_ERROR) {
-    if (
-      details === Hls.ErrorDetails.BUFFER_ADD_CODEC_ERROR ||
-      details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR
-    ) {
-      return {
-        message: 'Codec de áudio ou vídeo incompatível com este navegador.',
-        retryable: false,
-      };
-    }
-    return {
-      message: 'Erro fatal irrecuperável na decodificação de mídia HLS.',
-      retryable: true,
-    };
-  }
-
-  return {
-    message: 'Erro fatal irrecuperável no fluxo HLS.',
-    retryable: false,
-  };
+  return classifyPlaybackError({
+    source,
+    kind: 'hls',
+    hlsErrorData: data,
+    httpStatus: responseCode,
+    isMixedContent: isMixedContentUrl(source.url),
+  });
 }
 
 function extractHlsAudioIdentity(
@@ -482,6 +376,10 @@ export function usePlaybackSession({
   videoRef,
   streamUrl,
   contentType: explicitContentType,
+  containerExtension,
+  mimeType,
+  allowedOutputFormats,
+  directSource,
   startAt = 0,
   streamId,
   credentials,
@@ -588,60 +486,19 @@ export function usePlaybackSession({
 
   const lastRecordedTimeRef = useRef<number>(0);
 
-  // Infer content type if not explicit
-  const inferredContentType: PlayerContentType = (() => {
-    if (explicitContentType) return explicitContentType;
-    const lower = (streamUrl || '').toLowerCase();
-    if (lower.includes('/live/')) return 'live';
-    if (lower.includes('/series/')) return 'episode';
-    if (lower.includes('/movie/')) return 'movie';
-    if (lower.endsWith('.m3u8')) return 'live';
-    return 'movie';
-  })();
+  // M01 — Intelligent source identification (preserves explicit contentType, immune to password/token substrings)
+  const identifiedSource = identifyMediaSource({
+    url: streamUrl || '',
+    contentType: explicitContentType,
+    containerExtension,
+    mimeType,
+    directSource,
+    credentials: (credentials as any) || null,
+  });
 
+  const inferredContentType: PlayerContentType = identifiedSource.contentType;
   const isLive = inferredContentType === 'live';
-
-  // Infer transport (HLS vs progressive file)
-  const inferredTransport: PlayerTransport = (() => {
-    if (!streamUrl) return 'unknown';
-    try {
-      const parsed = new URL(streamUrl);
-      const path = parsed.pathname.toLowerCase();
-      const search = parsed.search.toLowerCase();
-      if (
-        path.endsWith('.m3u8') ||
-        search.includes('.m3u8') ||
-        search.includes('output=m3u8') ||
-        search.includes('format=m3u8')
-      ) {
-        return 'hls';
-      }
-      if (
-        path.endsWith('.ts') ||
-        search.includes('.ts') ||
-        search.includes('output=ts') ||
-        search.includes('format=ts')
-      ) {
-        return 'progressive';
-      }
-      if (
-        path.endsWith('.mp4') ||
-        path.endsWith('.m4v') ||
-        path.endsWith('.webm') ||
-        path.endsWith('.mkv') ||
-        path.endsWith('.avi')
-      ) {
-        return 'progressive';
-      }
-    } catch {
-      // ignore
-    }
-    const lower = streamUrl.toLowerCase();
-    if (lower.includes('.m3u8')) return 'hls';
-    if (lower.endsWith('.ts') || lower.includes('.ts?') || lower.includes('/ts')) return 'progressive';
-    if (isLive && !lower.includes('.ts')) return 'hls';
-    return 'progressive';
-  })();
+  const inferredTransport: PlayerTransport = identifiedSource.transport;
 
   // Update volume & mute directly on HTMLVideoElement without interrupting session
   useEffect(() => {
