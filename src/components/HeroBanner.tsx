@@ -90,6 +90,8 @@ export const HeroBanner = React.memo(function HeroBanner({
   const heroRootRef = useRef<HTMLDivElement | null>(null);
   const [isPlayPending, setIsPlayPending] = useState(false);
   const playPendingRef = useRef(false);
+  const playRequestSeqRef = useRef(0);
+  const activePlayRequestIdRef = useRef<number | null>(null);
   const isMountedRef = useRef(true);
 
   const [isInViewport, setIsInViewport] = useState<boolean>(true);
@@ -103,6 +105,8 @@ export const HeroBanner = React.memo(function HeroBanner({
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      activePlayRequestIdRef.current = null;
+      playPendingRef.current = false;
     };
   }, []);
 
@@ -276,9 +280,10 @@ export const HeroBanner = React.memo(function HeroBanner({
   });
 
   useEffect(() => {
+    activePlayRequestIdRef.current = null;
     playPendingRef.current = false;
     setIsPlayPending(false);
-  }, [currentItem, credentials]);
+  }, [currentItemIdentity, scopeKey, domain]);
 
   useEffect(() => {
     if (!currentItem || !credentials) {
@@ -570,9 +575,15 @@ export const HeroBanner = React.memo(function HeroBanner({
                 if (playPendingRef.current) return;
                 const maybePromise = onPlay(currentItem, activeDetailsResponse);
                 if (maybePromise && typeof (maybePromise as Promise<void>).then === 'function') {
+                  const requestId = ++playRequestSeqRef.current;
+                  activePlayRequestIdRef.current = requestId;
                   playPendingRef.current = true;
                   setIsPlayPending(true);
                   Promise.resolve(maybePromise).finally(() => {
+                    if (activePlayRequestIdRef.current !== requestId) {
+                      return;
+                    }
+                    activePlayRequestIdRef.current = null;
                     playPendingRef.current = false;
                     if (isMountedRef.current) {
                       setIsPlayPending(false);

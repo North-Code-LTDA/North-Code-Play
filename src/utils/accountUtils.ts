@@ -724,6 +724,154 @@ export function safeSaveCredentials(
 }
 
 /**
+ * Returns a deterministic internal identity key for a credential set
+ * (canonical serverUrl + trimmed username + exact password).
+ * Never log or expose this key in UI/DOM.
+ */
+export function getCredentialsIdentityKey(
+  credentials:
+    | Pick<XtreamCredentials, 'serverUrl' | 'username' | 'password'>
+    | null
+    | undefined
+): string {
+  if (!credentials || typeof credentials !== 'object') return '';
+  const normServer =
+    normalizeServerUrl(credentials.serverUrl) || String(credentials.serverUrl || '').trim();
+  const cleanUser = String(credentials.username || '').trim();
+  const pwd = String(credentials.password || '');
+  if (!normServer || !cleanUser || !pwd) return '';
+  return `${normServer}\u0000${cleanUser}\u0000${pwd}`;
+}
+
+/**
+ * Detects legacy persisted sessions from before X01.c–e where `allowed_output_formats: []`
+ * was stored as a fallback default without provider confirmation.
+ * Returns false for:
+ * - sessions already confirmed by Login or reconciliation (`allowed_output_formats_confirmed: true`)
+ * - sessions with non-empty announced formats
+ * - sessions where `allowed_output_formats` is absent (`undefined`)
+ * - sessions already marked as authRejected
+ */
+export function isLegacyAmbiguousOutputFormats(
+  credentials: (XtreamCredentials & { authRejected?: boolean }) | null | undefined
+): boolean {
+  if (!credentials || typeof credentials !== 'object') return false;
+  if (!credentials.serverUrl || !credentials.username || !credentials.password) return false;
+  if (credentials.allowed_output_formats_confirmed === true) return false;
+  if (credentials.authRejected === true) return false;
+
+  const topFormats = normalizeAllowedOutputFormats(credentials.allowed_output_formats);
+  const userInfoFormats = normalizeAllowedOutputFormats(
+    credentials.user_info?.allowed_output_formats
+  );
+
+  if ((topFormats && topFormats.length > 0) || (userInfoFormats && userInfoFormats.length > 0)) {
+    return false;
+  }
+
+  const hasEmptyTop = Array.isArray(topFormats) && topFormats.length === 0;
+  const hasEmptyUserInfo = Array.isArray(userInfoFormats) && userInfoFormats.length === 0;
+  return hasEmptyTop || hasEmptyUserInfo;
+}
+
+/**
+ * Builds updated session credentials from a valid `XtreamService.authenticate()` response,
+ * preserving the three-way distinction between absent formats (`undefined`), announced formats
+ * (non-empty `string[]`), and provider-confirmed empty list (`[]`).
+ */
+export function buildReconciledCredentialsFromAuth(
+  currentCredentials: XtreamCredentials,
+  authResponse: any
+): XtreamCredentials {
+  const normalizedFormats = normalizeAllowedOutputFormats(
+    authResponse?.user_info?.allowed_output_formats
+  );
+  const persistableUserInfo = extractPersistableUserInfo(authResponse?.user_info);
+  const persistableServerInfo = extractPersistableServerInfo(authResponse?.server_info);
+
+  const next: XtreamCredentials = {
+    ...currentCredentials,
+    allowed_output_formats_confirmed: true,
+  };
+
+  if (normalizedFormats !== undefined) {
+    next.allowed_output_formats = normalizedFormats;
+  } else {
+    delete next.allowed_output_formats;
+  }
+
+  if (persistableUserInfo) {
+    next.user_info = persistableUserInfo;
+  } else if (next.user_info) {
+    const cleanedUserInfo: XtreamUserInfo = { ...next.user_info };
+    if (normalizedFormats !== undefined) {
+      cleanedUserInfo.allowed_output_formats = normalizedFormats;
+    } else {
+      delete cleanedUserInfo.allowed_output_formats;
+    }
+    next.user_info = cleanedUserInfo;
+  }
+
+  if (persistableServerInfo) {
+    next.server_info = persistableServerInfo;
+  }
+
+  return next;
+}
+
+/**
+ * Persists reconciled metadata to localStorage ONLY when the currently stored credentials
+ * still belong to the exact same canonical server, username, and password.
+ * Prevents cross-account overwrite after logout or account switches.
+ */
+export function safePersistReconciledCredentials(
+  reconciledCredentials: XtreamCredentials
+): boolean {
+  const targetIdentity = getCredentialsIdentityKey(reconciledCredentials);
+  if (!targetIdentity) return false;
+
+  const readRes = safeReadStorage(CREDENTIALS_KEY);
+  if (!readRes.success || !readRes.value) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(readRes.value);
+    if (!parsed || typeof parsed !== 'object') {
+      return false;
+    }
+    if (getCredentialsIdentityKey(parsed) !== targetIdentity) {
+      return false;
+    }
+
+    const merged: Record<string, any> = {
+      ...parsed,
+      allowed_output_formats_confirmed: true,
+    };
+
+    if (reconciledCredentials.allowed_output_formats !== undefined) {
+      merged.allowed_output_formats = reconciledCredentials.allowed_output_formats;
+    } else {
+      delete merged.allowed_output_formats;
+    }
+
+    if (reconciledCredentials.user_info !== undefined) {
+      merged.user_info = reconciledCredentials.user_info;
+    }
+    if (reconciledCredentials.server_info !== undefined) {
+      merged.server_info = reconciledCredentials.server_info;
+    }
+
+    delete merged.authRejected;
+    delete merged.authError;
+
+    return safeSetStorage(CREDENTIALS_KEY, JSON.stringify(merged));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Safely removes credentials from localStorage on logout.
  */
 export function safeRemoveCredentials(): { success: boolean; error?: string } {

@@ -219,6 +219,7 @@ export function Login() {
 
       const fullCredentials: XtreamCredentials = {
         ...baseCredentials,
+        allowed_output_formats_confirmed: true,
         ...(normalizedFormats !== undefined
           ? { allowed_output_formats: normalizedFormats }
           : {}),

@@ -16,7 +16,10 @@ import {
 } from 'lucide-react';
 import { XtreamCredentials } from '../types';
 import { HeroBanner, fetchOrReuseHeroDetails } from './HeroBanner';
-import { getCachedHeroDetails } from '../services/heroSessionCache';
+import {
+  getCachedHeroDetails,
+  getHeroAccountScopeKey,
+} from '../services/heroSessionCache';
 import { HorizontalRow } from './HorizontalRow';
 import { MovieDetails } from './MovieDetails';
 import { SeriesDetails } from './SeriesDetails';
@@ -779,23 +782,30 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   onSelectLiveChannelRef.current = onSelectLiveChannel;
   const historyRecordsRef = useRef(historyRecords);
   historyRecordsRef.current = historyRecords;
+  const currentAccountScopeKey = getHeroAccountScopeKey(credentials);
   const heroPlaySessionRef = useRef(0);
-  const heroPlayInFlightRef = useRef(false);
+  const heroPlayRequestSeqRef = useRef(0);
+  const heroPlayActiveRequestIdRef = useRef<number | null>(null);
+  const heroPlayAbortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       heroPlaySessionRef.current += 1;
-      heroPlayInFlightRef.current = false;
+      heroPlayActiveRequestIdRef.current = null;
+      heroPlayAbortControllerRef.current?.abort();
+      heroPlayAbortControllerRef.current = null;
     };
   }, []);
 
-  // Invalidate any pending async HeroBanner play resolution if section or account changes
+  // Invalidate any pending async HeroBanner play resolution if section or account scope (server/user/password/epoch) changes
   useEffect(() => {
     heroPlaySessionRef.current += 1;
-    heroPlayInFlightRef.current = false;
-  }, [section, credentials?.serverUrl, credentials?.username]);
+    heroPlayActiveRequestIdRef.current = null;
+    heroPlayAbortControllerRef.current?.abort();
+    heroPlayAbortControllerRef.current = null;
+  }, [section, currentAccountScopeKey]);
 
   // Reset vertical showcase row window when switching sections
   useEffect(() => {
@@ -2539,33 +2549,44 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           return;
         }
 
-        if (heroPlayInFlightRef.current) {
+        const scopeKeyAtClick = getHeroAccountScopeKey(creds);
+
+        if (heroPlayActiveRequestIdRef.current !== null) {
           return;
         }
 
+        const requestId = ++heroPlayRequestSeqRef.current;
         const sessionAtClick = heroPlaySessionRef.current;
         const sectionAtClick = activeSectionRef.current;
-        const serverAtClick = creds.serverUrl;
-        const userAtClick = creds.username;
-        heroPlayInFlightRef.current = true;
+        const abortController =
+          typeof AbortController !== 'undefined' ? new AbortController() : null;
+        heroPlayActiveRequestIdRef.current = requestId;
+        heroPlayAbortControllerRef.current = abortController;
 
         return (async () => {
           try {
             const fetchedDetails = await fetchOrReuseHeroDetails(creds, item, {
+              signal: abortController?.signal,
               requireEpisodes: true,
             });
             if (
               !isMountedRef.current ||
+              abortController?.signal.aborted ||
               heroPlaySessionRef.current !== sessionAtClick ||
+              heroPlayActiveRequestIdRef.current !== requestId ||
               activeSectionRef.current !== sectionAtClick ||
-              credentialsRef.current?.serverUrl !== serverAtClick ||
-              credentialsRef.current?.username !== userAtClick
+              getHeroAccountScopeKey(credentialsRef.current) !== scopeKeyAtClick
             ) {
               return;
             }
             executeConfirmedSeriesPlay(fetchedDetails);
           } finally {
-            heroPlayInFlightRef.current = false;
+            if (heroPlayActiveRequestIdRef.current === requestId) {
+              heroPlayActiveRequestIdRef.current = null;
+            }
+            if (heroPlayAbortControllerRef.current === abortController) {
+              heroPlayAbortControllerRef.current = null;
+            }
           }
         })();
       }

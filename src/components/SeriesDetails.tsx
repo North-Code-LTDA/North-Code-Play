@@ -161,6 +161,21 @@ function escapeSelectorValue(val: string): string {
   return String(val).replace(/["\\]/g, '\\$&');
 }
 
+const UNSEASONED_OPTION_VALUE = '__nc_unseasoned__';
+
+type EpisodeGroupSelection =
+  | { kind: 'season'; seasonKey: string }
+  | { kind: 'unseasoned' };
+
+function isSameEpisodeGroup(
+  a: EpisodeGroupSelection | null,
+  b: EpisodeGroupSelection | null
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.kind !== b.kind) return false;
+  return a.kind === 'unseasoned' || (b.kind === 'season' && a.seasonKey === b.seasonKey);
+}
+
 export const SeriesDetails = React.memo(function SeriesDetails({
   seriesId,
   seriesName,
@@ -178,11 +193,26 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     seriesId: string;
     data: any;
   } | null>(null);
-  const [selectedSeason, setSelectedSeason] = useState<string | null>(null);
+  const [selectedGroupState, setSelectedGroupState] = useState<{
+    scopeKey: string;
+    seriesId: string;
+    group: EpisodeGroupSelection;
+  } | null>(null);
   const [isSeasonMenuOpen, setIsSeasonMenuOpen] = useState(false);
 
   const currentScopeKey = getHeroAccountScopeKey(credentials);
+  const hasCredentials = Boolean(credentials);
+  const credentialsRef = useRef(credentials);
+  credentialsRef.current = credentials;
   const currentSeriesIdStr = String(seriesId);
+  const scopeIdentityRef = useRef<string>(`${currentScopeKey}::${currentSeriesIdStr}`);
+  const scopeGenerationRef = useRef<number>(0);
+  const nextScopeIdentity = `${currentScopeKey}::${currentSeriesIdStr}`;
+  if (scopeIdentityRef.current !== nextScopeIdentity) {
+    scopeIdentityRef.current = nextScopeIdentity;
+    scopeGenerationRef.current += 1;
+  }
+  const playerPresenceKey = scopeGenerationRef.current;
   const seriesInfo =
     seriesState &&
     seriesState.scopeKey === currentScopeKey &&
@@ -190,21 +220,59 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       ? seriesState.data
       : null;
 
-  const [showResumeModal, setShowResumeModal] = useState(false);
-  const [savedProgress, setSavedProgress] = useState(0);
-  const [selectedEpisode, setSelectedEpisode] = useState<any>(null);
-  const [playingEpisodeData, setPlayingEpisodeData] = useState<{
+  const [pendingResumeState, setPendingResumeState] = useState<{
+    scopeKey: string;
+    seriesId: string;
+    episode: any;
+    group: EpisodeGroupSelection | null;
+    savedProgress: number;
+  } | null>(null);
+  const [playingEpisodeState, setPlayingEpisodeState] = useState<{
+    scopeKey: string;
+    seriesId: string;
     url: string;
     title: string;
     startAt: number;
     episode: any;
+    group: EpisodeGroupSelection | null;
     subtitles?: ExternalSubtitleTrackInput[];
   } | null>(null);
-  const [playError, setPlayError] = useState<string | null>(null);
-  const [failedEpisode, setFailedEpisode] = useState<{ episode: any; startAt: number } | null>(
-    null
-  );
+  const [playErrorState, setPlayErrorState] = useState<{
+    scopeKey: string;
+    seriesId: string;
+    message: string;
+    failedEpisode: {
+      episode: any;
+      startAt: number;
+      group: EpisodeGroupSelection | null;
+    } | null;
+  } | null>(null);
   const [favActionError, setFavActionError] = useState<string | null>(null);
+
+  const activeResumeState =
+    pendingResumeState &&
+    pendingResumeState.scopeKey === currentScopeKey &&
+    pendingResumeState.seriesId === currentSeriesIdStr
+      ? pendingResumeState
+      : null;
+  const showResumeModal = Boolean(activeResumeState);
+  const savedProgress = activeResumeState?.savedProgress ?? 0;
+
+  const playingEpisodeData =
+    playingEpisodeState &&
+    playingEpisodeState.scopeKey === currentScopeKey &&
+    playingEpisodeState.seriesId === currentSeriesIdStr
+      ? playingEpisodeState
+      : null;
+
+  const activePlayErrorState =
+    playErrorState &&
+    playErrorState.scopeKey === currentScopeKey &&
+    playErrorState.seriesId === currentSeriesIdStr
+      ? playErrorState
+      : null;
+  const playError = activePlayErrorState?.message ?? null;
+  const failedEpisode = activePlayErrorState?.failedEpisode ?? null;
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const primaryPlayBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -358,10 +426,32 @@ export const SeriesDetails = React.memo(function SeriesDetails({
   const sortedSeasons = normalizedSeriesEpisodes.sortedSeasonKeys;
   const unseasonedEpisodes = normalizedSeriesEpisodes.unseasonedEpisodes;
 
-  const effectiveSelectedSeason =
-    selectedSeason && Object.prototype.hasOwnProperty.call(episodesBySeason, selectedSeason)
-      ? selectedSeason
+  const scopedSelectedGroup: EpisodeGroupSelection | null =
+    selectedGroupState &&
+    selectedGroupState.scopeKey === currentScopeKey &&
+    selectedGroupState.seriesId === currentSeriesIdStr
+      ? selectedGroupState.group
       : null;
+
+  const effectiveSelectedGroup: EpisodeGroupSelection | null = useMemo(() => {
+    if (!scopedSelectedGroup) return null;
+    if (scopedSelectedGroup.kind === 'season') {
+      return Object.prototype.hasOwnProperty.call(
+        episodesBySeason,
+        scopedSelectedGroup.seasonKey
+      )
+        ? scopedSelectedGroup
+        : null;
+    }
+    return unseasonedEpisodes.length > 0 ? scopedSelectedGroup : null;
+  }, [scopedSelectedGroup, episodesBySeason, unseasonedEpisodes.length]);
+
+  const effectiveSelectedGroupKey =
+    effectiveSelectedGroup === null
+      ? null
+      : effectiveSelectedGroup.kind === 'season'
+        ? `season:${effectiveSelectedGroup.seasonKey}`
+        : UNSEASONED_OPTION_VALUE;
 
   // Autofocus primary action when series details finish loading
   useEffect(() => {
@@ -383,10 +473,14 @@ export const SeriesDetails = React.memo(function SeriesDetails({
   useEffect(() => {
     if (!isSeasonMenuOpen || !seasonMenuRef.current) return;
     const selectedOption =
-      (selectedSeason
-        ? seasonMenuRef.current.querySelector<HTMLElement>(
-            `button[data-season-option="${escapeSelectorValue(selectedSeason)}"]`
-          )
+      (effectiveSelectedGroup
+        ? effectiveSelectedGroup.kind === 'season'
+          ? seasonMenuRef.current.querySelector<HTMLElement>(
+              `button[data-season-group-kind="season"][data-season-option="${escapeSelectorValue(effectiveSelectedGroup.seasonKey)}"]`
+            )
+          : seasonMenuRef.current.querySelector<HTMLElement>(
+              'button[data-season-group-kind="unseasoned"]'
+            )
         : null) || seasonMenuRef.current.querySelector<HTMLElement>('button[data-season-option]');
 
     if (selectedOption) {
@@ -396,7 +490,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         selectedOption.focus();
       }
     }
-  }, [isSeasonMenuOpen, selectedSeason]);
+  }, [isSeasonMenuOpen, effectiveSelectedGroup]);
 
   // Close season dropdown on outside click
   useEffect(() => {
@@ -416,10 +510,10 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [isSeasonMenuOpen]);
 
-  // Ensure season changes never leave focus stranded on an unmounted episode node
+  // Ensure season/group changes never leave focus stranded on an unmounted episode node
   useEffect(() => {
     if (
-      !selectedSeason ||
+      !effectiveSelectedGroupKey ||
       loadingInfo ||
       playingEpisodeData ||
       showResumeModal ||
@@ -446,7 +540,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       }
     }
   }, [
-    selectedSeason,
+    effectiveSelectedGroupKey,
     loadingInfo,
     playingEpisodeData,
     showResumeModal,
@@ -485,12 +579,12 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     BACK_PRIORITY.SUB_MODAL,
     () => {
       if (playError) {
-        setPlayError(null);
+        setPlayErrorState(null);
         restoreEpisodeFocus();
         return true;
       }
       if (showResumeModal) {
-        setShowResumeModal(false);
+        setPendingResumeState(null);
         restoreEpisodeFocus();
         return true;
       }
@@ -551,23 +645,22 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     let cancelled = false;
     const abortController =
       typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const fetchScopeKey = getHeroAccountScopeKey(credentials);
-    const fetchSeriesId = String(seriesId);
+    const creds = credentialsRef.current;
+    const fetchScopeKey = currentScopeKey;
+    const fetchSeriesId = currentSeriesIdStr;
 
     setSeriesState(null);
-    setSelectedSeason(null);
+    setSelectedGroupState(null);
     setIsSeasonMenuOpen(false);
-    setShowResumeModal(false);
-    setSelectedEpisode(null);
-    setPlayingEpisodeData(null);
-    setFailedEpisode(null);
-    setPlayError(null);
+    setPendingResumeState(null);
+    setPlayingEpisodeState(null);
+    setPlayErrorState(null);
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
 
     async function fetchInfo() {
-      if (!credentials) {
+      if (!creds) {
         if (!cancelled) setLoadingInfo(false);
         return;
       }
@@ -575,7 +668,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         setLoadingInfo(true);
         setErrorInfo(null);
         const info = await fetchOrReuseHeroDetails(
-          credentials,
+          creds,
           { series_id: seriesId, stream_type: 'series' },
           {
             signal: abortController?.signal,
@@ -602,9 +695,19 @@ export const SeriesDetails = React.memo(function SeriesDetails({
               (s) =>
                 normalizedEpisodes.seasons[s] && normalizedEpisodes.seasons[s].length > 0
             ) || seasons[0];
-          setSelectedSeason(firstWithEpisodes);
+          setSelectedGroupState({
+            scopeKey: fetchScopeKey,
+            seriesId: fetchSeriesId,
+            group: { kind: 'season', seasonKey: firstWithEpisodes },
+          });
+        } else if (normalizedEpisodes.unseasonedEpisodes.length > 0) {
+          setSelectedGroupState({
+            scopeKey: fetchScopeKey,
+            seriesId: fetchSeriesId,
+            group: { kind: 'unseasoned' },
+          });
         } else {
-          setSelectedSeason(null);
+          setSelectedGroupState(null);
         }
       } catch (err: any) {
         if (cancelled || abortController?.signal.aborted || err?.name === 'AbortError') return;
@@ -622,7 +725,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       cancelled = true;
       abortController?.abort();
     };
-  }, [credentials, seriesId]);
+  }, [currentScopeKey, hasCredentials, currentSeriesIdStr]);
 
   const info = seriesInfo?.info || {};
   const displayTitle = info.name || seriesName || 'Série';
@@ -799,13 +902,44 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     };
   }, [allSeriesEpisodes, historyRecords, credentials]);
 
-  const executePlay = (episode: any, startAt: number = 0, seasonOverride?: string | null) => {
-    const activeSeasonForPlay =
-      seasonOverride !== undefined ? seasonOverride : effectiveSelectedSeason;
+  const getEpisodesForGroup = useCallback(
+    (group: EpisodeGroupSelection | null): any[] => {
+      if (!group) return [];
+      if (group.kind === 'season') {
+        const list = episodesBySeason[group.seasonKey];
+        return Array.isArray(list) ? list : [];
+      }
+      return unseasonedEpisodes;
+    },
+    [episodesBySeason, unseasonedEpisodes]
+  );
+
+  const executePlay = (
+    episode: any,
+    startAt: number = 0,
+    groupOverride?: EpisodeGroupSelection | null
+  ) => {
+    const activeGroupForPlay: EpisodeGroupSelection | null =
+      groupOverride !== undefined ? groupOverride : effectiveSelectedGroup;
+    const seasonKeyForTitle =
+      activeGroupForPlay && activeGroupForPlay.kind === 'season'
+        ? activeGroupForPlay.seasonKey
+        : null;
     const epId = getEpisodeId(episode);
     const episodeDirectSource =
       normalizeDirectMediaSource(episode?.direct_source) ||
       normalizeDirectMediaSource(episode?.info?.direct_source);
+
+    if (
+      activeGroupForPlay &&
+      !isSameEpisodeGroup(activeGroupForPlay, effectiveSelectedGroup)
+    ) {
+      setSelectedGroupState({
+        scopeKey: currentScopeKey,
+        seriesId: currentSeriesIdStr,
+        group: activeGroupForPlay,
+      });
+    }
 
     if (epId !== null) {
       lastEpisodeIdRef.current = String(epId);
@@ -815,9 +949,13 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     }
 
     if (epId === null && !episodeDirectSource) {
-      setShowResumeModal(false);
-      setPlayError('Não foi possível reproduzir este episódio: identificador inválido ou ausente.');
-      setFailedEpisode(null);
+      setPendingResumeState(null);
+      setPlayErrorState({
+        scopeKey: currentScopeKey,
+        seriesId: currentSeriesIdStr,
+        message: 'Não foi possível reproduzir este episódio: identificador inválido ou ausente.',
+        failedEpisode: null,
+      });
       return;
     }
 
@@ -836,8 +974,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
 
     if (!credentials) return;
     try {
-      setPlayError(null);
-      setFailedEpisode(null);
+      setPlayErrorState(null);
       const ext = normalizeContainerExtension(episode?.container_extension) || 'mp4';
       const mediaUrl = buildDirectMediaUrl(credentials, {
         type: 'series',
@@ -849,75 +986,77 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       const episodeSubs = extractXtreamSubtitles(episode, credentials.serverUrl);
       const epNumberOrId = episode?.episode_num || epId || 1;
       const playbackTitle =
-        activeSeasonForPlay !== null
-          ? `${displayTitle} - S${activeSeasonForPlay}E${epNumberOrId}`
+        seasonKeyForTitle !== null
+          ? `${displayTitle} - S${seasonKeyForTitle}E${epNumberOrId}`
           : `${displayTitle} - Episódio ${epNumberOrId}`;
 
-      setPlayingEpisodeData({
+      setPlayingEpisodeState({
+        scopeKey: currentScopeKey,
+        seriesId: currentSeriesIdStr,
         url: mediaUrl,
         title: playbackTitle,
         startAt,
         episode,
+        group: activeGroupForPlay,
         subtitles: episodeSubs.length > 0 ? episodeSubs : undefined,
       });
-      setShowResumeModal(false);
+      setPendingResumeState(null);
     } catch (err: any) {
       console.error('Erro ao iniciar episódio:', err);
-      setPlayError(err?.message || 'Falha ao preparar a reprodução do episódio.');
-      setFailedEpisode({ episode, startAt });
+      setPendingResumeState(null);
+      setPlayErrorState({
+        scopeKey: currentScopeKey,
+        seriesId: currentSeriesIdStr,
+        message: err?.message || 'Falha ao preparar a reprodução do episódio.',
+        failedEpisode: { episode, startAt, group: activeGroupForPlay },
+      });
     }
   };
 
-  const currentSeasonEpisodes: any[] = useMemo(() => {
-    if (effectiveSelectedSeason) {
-      const list = episodesBySeason[effectiveSelectedSeason];
-      return Array.isArray(list) ? list : [];
-    }
-    if (sortedSeasons.length === 0 && unseasonedEpisodes.length > 0) {
-      return unseasonedEpisodes;
-    }
-    return [];
-  }, [effectiveSelectedSeason, episodesBySeason, sortedSeasons.length, unseasonedEpisodes]);
+  const currentSeasonEpisodes: any[] = useMemo(
+    () => getEpisodesForGroup(effectiveSelectedGroup),
+    [effectiveSelectedGroup, getEpisodesForGroup]
+  );
 
   const handleNextEpisode = () => {
     if (!playingEpisodeData) return;
-    const episodes = currentSeasonEpisodes;
+    const activeGroup = playingEpisodeData.group ?? effectiveSelectedGroup;
+    const episodes = getEpisodesForGroup(activeGroup);
     if (!Array.isArray(episodes) || episodes.length === 0) return;
     const playingEpId = getEpisodeId(playingEpisodeData.episode);
     if (playingEpId === null) return;
-    const currentIndex = episodes.findIndex(
-      (e: any) => {
-        const candId = getEpisodeId(e);
-        return candId !== null && String(candId) === String(playingEpId);
-      }
-    );
+    const currentIndex = episodes.findIndex((e: any) => {
+      const candId = getEpisodeId(e);
+      return candId !== null && String(candId) === String(playingEpId);
+    });
     if (currentIndex !== -1 && currentIndex < episodes.length - 1) {
-      executePlay(episodes[currentIndex + 1], 0, effectiveSelectedSeason);
+      executePlay(episodes[currentIndex + 1], 0, activeGroup);
     }
   };
 
   const handlePreviousEpisode = () => {
     if (!playingEpisodeData) return;
-    const episodes = currentSeasonEpisodes;
+    const activeGroup = playingEpisodeData.group ?? effectiveSelectedGroup;
+    const episodes = getEpisodesForGroup(activeGroup);
     if (!Array.isArray(episodes) || episodes.length === 0) return;
     const playingEpId = getEpisodeId(playingEpisodeData.episode);
     if (playingEpId === null) return;
-    const currentIndex = episodes.findIndex(
-      (e: any) => {
-        const candId = getEpisodeId(e);
-        return candId !== null && String(candId) === String(playingEpId);
-      }
-    );
+    const currentIndex = episodes.findIndex((e: any) => {
+      const candId = getEpisodeId(e);
+      return candId !== null && String(candId) === String(playingEpId);
+    });
     if (currentIndex > 0) {
-      executePlay(episodes[currentIndex - 1], 0, effectiveSelectedSeason);
+      executePlay(episodes[currentIndex - 1], 0, activeGroup);
     }
   };
 
   const handlePlayEpisodeClick = (
     episode: any,
     fromHeroCta: boolean = false,
-    seasonOverride?: string | null
+    groupOverride?: EpisodeGroupSelection | null
   ) => {
+    const resolvedGroup: EpisodeGroupSelection | null =
+      groupOverride !== undefined ? groupOverride : effectiveSelectedGroup;
     const epId = getEpisodeId(episode);
     lastTriggerWasHeroRef.current = fromHeroCta;
     if (epId !== null) {
@@ -926,34 +1065,46 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     if (scrollContainerRef.current) {
       savedEpisodeScrollTopRef.current = scrollContainerRef.current.scrollTop;
     }
-    if (seasonOverride && seasonOverride !== selectedSeason) {
-      setSelectedSeason(seasonOverride);
+    if (resolvedGroup && !isSameEpisodeGroup(resolvedGroup, effectiveSelectedGroup)) {
+      setSelectedGroupState({
+        scopeKey: currentScopeKey,
+        seriesId: currentSeriesIdStr,
+        group: resolvedGroup,
+      });
     }
     const progress =
       epId !== null
         ? getItemProgress(credentials, 'episode', epId)
         : 0;
     if (progress > 30) {
-      setSavedProgress(progress);
-      setSelectedEpisode(episode);
-      setShowResumeModal(true);
+      setPendingResumeState({
+        scopeKey: currentScopeKey,
+        seriesId: currentSeriesIdStr,
+        episode,
+        group: resolvedGroup,
+        savedProgress: progress,
+      });
     } else {
-      executePlay(episode, 0, seasonOverride);
+      executePlay(episode, 0, resolvedGroup);
     }
   };
 
   const handlePrimaryHeroAction = () => {
     if (!primaryEpisodeTarget) return;
-    handlePlayEpisodeClick(
-      primaryEpisodeTarget.episode,
-      true,
-      primaryEpisodeTarget.seasonKey
-    );
+    const targetGroup: EpisodeGroupSelection =
+      primaryEpisodeTarget.seasonKey !== null
+        ? { kind: 'season', seasonKey: primaryEpisodeTarget.seasonKey }
+        : { kind: 'unseasoned' };
+    handlePlayEpisodeClick(primaryEpisodeTarget.episode, true, targetGroup);
   };
 
-  const handleSelectSeason = (seasonNum: string) => {
+  const handleSelectGroup = (group: EpisodeGroupSelection) => {
     const preservedScrollTop = scrollContainerRef.current?.scrollTop ?? null;
-    setSelectedSeason(seasonNum);
+    setSelectedGroupState({
+      scopeKey: currentScopeKey,
+      seriesId: currentSeriesIdStr,
+      group,
+    });
     setIsSeasonMenuOpen(false);
     if (seasonTriggerBtnRef.current) {
       try {
@@ -1005,7 +1156,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         </div>
       )}
 
-      {showResumeModal && selectedEpisode && (
+      {activeResumeState && (
         <div
           data-focus-scope="modal"
           data-resume-modal="true"
@@ -1026,14 +1177,22 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                 ref={resumeConfirmBtnRef}
                 type="button"
                 data-autofocus="true"
-                onClick={() => executePlay(selectedEpisode, savedProgress)}
+                onClick={() =>
+                  executePlay(
+                    activeResumeState.episode,
+                    activeResumeState.savedProgress,
+                    activeResumeState.group
+                  )
+                }
                 className="w-full py-3.5 bg-white hover:bg-white/90 text-black font-bold rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Play className="w-5 h-5 fill-current" /> Retomar de {savedMinutes} min
               </button>
               <button
                 type="button"
-                onClick={() => executePlay(selectedEpisode, 0)}
+                onClick={() =>
+                  executePlay(activeResumeState.episode, 0, activeResumeState.group)
+                }
                 className="w-full py-3.5 bg-[#2a2a2a] hover:bg-[#363636] text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2 border border-white/15 cursor-pointer"
               >
                 <RotateCcw className="w-5 h-5" /> Assistir do Início
@@ -1041,7 +1200,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
               <button
                 type="button"
                 onClick={() => {
-                  setShowResumeModal(false);
+                  setPendingResumeState(null);
                   restoreEpisodeFocus();
                 }}
                 className="w-full py-2.5 text-[#bcbcbc] hover:text-white text-sm font-medium transition-colors mt-1 cursor-pointer"
@@ -1075,7 +1234,11 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                   type="button"
                   data-autofocus="true"
                   onClick={() =>
-                    executePlay(failedEpisode.episode, failedEpisode.startAt)
+                    executePlay(
+                      failedEpisode.episode,
+                      failedEpisode.startAt,
+                      failedEpisode.group
+                    )
                   }
                   className="flex-1 py-3 bg-white hover:bg-white/90 text-black font-bold rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
@@ -1085,7 +1248,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
               <button
                 type="button"
                 onClick={() => {
-                  setPlayError(null);
+                  setPlayErrorState(null);
                   restoreEpisodeFocus();
                 }}
                 className="flex-1 py-3 bg-[#2a2a2a] hover:bg-[#3a3a3a] text-white font-semibold rounded-lg transition-colors border border-white/15 cursor-pointer"
@@ -1097,19 +1260,22 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         </div>
       )}
 
-      <AnimatePresence>
+      <AnimatePresence key={playerPresenceKey}>
         {playingEpisodeData &&
           (() => {
             let hasNext = false;
             let hasPrev = false;
             const playingEpId = getEpisodeId(playingEpisodeData.episode);
-            if (currentSeasonEpisodes.length > 0 && playingEpId !== null) {
-              const currIdx = currentSeasonEpisodes.findIndex((e: any) => {
+            const activeGroupEpisodes = getEpisodesForGroup(
+              playingEpisodeData.group ?? effectiveSelectedGroup
+            );
+            if (activeGroupEpisodes.length > 0 && playingEpId !== null) {
+              const currIdx = activeGroupEpisodes.findIndex((e: any) => {
                 const candId = getEpisodeId(e);
                 return candId !== null && String(candId) === String(playingEpId);
               });
               if (currIdx !== -1) {
-                if (currIdx < currentSeasonEpisodes.length - 1) hasNext = true;
+                if (currIdx < activeGroupEpisodes.length - 1) hasNext = true;
                 if (currIdx > 0) hasPrev = true;
               }
             }
@@ -1127,7 +1293,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                 streamId={playingEpId ?? undefined}
                 externalSubtitles={playingEpisodeData.subtitles}
                 onBack={() => {
-                  setPlayingEpisodeData(null);
+                  setPlayingEpisodeState(null);
                   restoreEpisodeFocus();
                 }}
                 onNext={hasNext ? handleNextEpisode : undefined}
@@ -1398,74 +1564,115 @@ export const SeriesDetails = React.memo(function SeriesDetails({
             >
               <h2 className="text-lg sm:text-2xl font-bold text-white">Episódios</h2>
 
-              {sortedSeasons.length > 0 && effectiveSelectedSeason && (
-                <div className="relative" data-scroll-block="true">
-                  <div
-                    data-nav-row="true"
-                    data-nav-season-row="true"
-                    data-scroll-block="true"
-                  >
-                    <button
-                      ref={seasonTriggerBtnRef}
-                      type="button"
-                      aria-haspopup="listbox"
-                      aria-expanded={isSeasonMenuOpen}
-                      aria-label={`Selecionar temporada, atual Temporada ${effectiveSelectedSeason}`}
-                      data-season-dropdown-trigger="true"
-                      data-season-selected="true"
-                      onClick={() => setIsSeasonMenuOpen((prev) => !prev)}
-                      className="nc-tv-season-btn min-w-[175px] sm:min-w-[210px] px-4 py-2.5 rounded-md bg-[#242424] hover:bg-[#2f2f2f] text-white font-semibold text-sm sm:text-base border border-white/25 flex items-center justify-between gap-3 transition-colors shadow-md cursor-pointer"
-                    >
-                      <span>Temporada {effectiveSelectedSeason}</span>
-                      <ChevronDown
-                        className={`w-4 h-4 text-white/80 transition-transform duration-200 shrink-0 ${
-                          isSeasonMenuOpen ? 'rotate-180' : ''
-                        }`}
-                      />
-                    </button>
-                  </div>
-
-                  {isSeasonMenuOpen && (
-                    <div
-                      ref={seasonMenuRef}
-                      role="listbox"
-                      aria-label="Temporadas disponíveis"
-                      data-season-dropdown-menu="true"
-                      data-focus-scope="modal"
-                      className="absolute right-0 mt-1.5 min-w-[240px] sm:min-w-[270px] max-h-72 overflow-y-auto rounded-md bg-[#242424] border border-white/25 shadow-[0_16px_48px_rgba(0,0,0,0.92)] py-1.5 z-50 flex flex-col"
-                    >
-                      {sortedSeasons.map((seasonNum) => {
-                        const isSelected = effectiveSelectedSeason === seasonNum;
-                        const epCount = Array.isArray(episodesBySeason[seasonNum])
-                          ? episodesBySeason[seasonNum].length
-                          : 0;
-                        return (
-                          <button
-                            key={seasonNum}
-                            type="button"
-                            role="option"
-                            aria-selected={isSelected}
-                            data-season-option={seasonNum}
-                            data-season-selected={isSelected ? 'true' : 'false'}
-                            data-autofocus={isSelected ? 'true' : undefined}
-                            onClick={() => handleSelectSeason(seasonNum)}
-                            className={`w-full px-4 py-2.5 text-left text-sm sm:text-base flex items-center justify-between gap-3 transition-colors cursor-pointer ${
-                              isSelected
-                                ? 'bg-white/15 text-white font-bold'
-                                : 'text-[#d4d4d4] hover:bg-white/10 hover:text-white font-medium'
+              {(sortedSeasons.length > 0 || unseasonedEpisodes.length > 0) &&
+                effectiveSelectedGroup &&
+                (() => {
+                  const activeGroupLabel =
+                    effectiveSelectedGroup.kind === 'season'
+                      ? `Temporada ${effectiveSelectedGroup.seasonKey}`
+                      : 'Sem temporada';
+                  return (
+                    <div className="relative" data-scroll-block="true">
+                      <div
+                        data-nav-row="true"
+                        data-nav-season-row="true"
+                        data-scroll-block="true"
+                      >
+                        <button
+                          ref={seasonTriggerBtnRef}
+                          type="button"
+                          aria-haspopup="listbox"
+                          aria-expanded={isSeasonMenuOpen}
+                          aria-label={`Selecionar temporada, atual ${activeGroupLabel}`}
+                          data-season-dropdown-trigger="true"
+                          data-season-selected="true"
+                          onClick={() => setIsSeasonMenuOpen((prev) => !prev)}
+                          className="nc-tv-season-btn min-w-[175px] sm:min-w-[210px] px-4 py-2.5 rounded-md bg-[#242424] hover:bg-[#2f2f2f] text-white font-semibold text-sm sm:text-base border border-white/25 flex items-center justify-between gap-3 transition-colors shadow-md cursor-pointer"
+                        >
+                          <span>{activeGroupLabel}</span>
+                          <ChevronDown
+                            className={`w-4 h-4 text-white/80 transition-transform duration-200 shrink-0 ${
+                              isSeasonMenuOpen ? 'rotate-180' : ''
                             }`}
-                          >
-                            <span>Temporada {seasonNum}</span>
-                            <span className="text-xs sm:text-sm text-[#a3a3a3] font-normal shrink-0">
-                              ({epCount} {epCount === 1 ? 'episódio' : 'episódios'})
-                            </span>
-                          </button>
-                        );
-                      })}
+                          />
+                        </button>
+                      </div>
+
+                      {isSeasonMenuOpen && (
+                        <div
+                          ref={seasonMenuRef}
+                          role="listbox"
+                          aria-label="Temporadas disponíveis"
+                          data-season-dropdown-menu="true"
+                          data-focus-scope="modal"
+                          className="absolute right-0 mt-1.5 min-w-[240px] sm:min-w-[270px] max-h-72 overflow-y-auto rounded-md bg-[#242424] border border-white/25 shadow-[0_16px_48px_rgba(0,0,0,0.92)] py-1.5 z-50 flex flex-col"
+                        >
+                          {sortedSeasons.map((seasonNum) => {
+                            const isSelected =
+                              effectiveSelectedGroup.kind === 'season' &&
+                              effectiveSelectedGroup.seasonKey === seasonNum;
+                            const epCount = Array.isArray(episodesBySeason[seasonNum])
+                              ? episodesBySeason[seasonNum].length
+                              : 0;
+                            return (
+                              <button
+                                key={`season:${seasonNum}`}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                data-season-group-kind="season"
+                                data-season-option={seasonNum}
+                                data-season-selected={isSelected ? 'true' : 'false'}
+                                data-autofocus={isSelected ? 'true' : undefined}
+                                onClick={() =>
+                                  handleSelectGroup({ kind: 'season', seasonKey: seasonNum })
+                                }
+                                className={`w-full px-4 py-2.5 text-left text-sm sm:text-base flex items-center justify-between gap-3 transition-colors cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-white/15 text-white font-bold'
+                                    : 'text-[#d4d4d4] hover:bg-white/10 hover:text-white font-medium'
+                                }`}
+                              >
+                                <span>Temporada {seasonNum}</span>
+                                <span className="text-xs sm:text-sm text-[#a3a3a3] font-normal shrink-0">
+                                  ({epCount} {epCount === 1 ? 'episódio' : 'episódios'})
+                                </span>
+                              </button>
+                            );
+                          })}
+                          {unseasonedEpisodes.length > 0 &&
+                            (() => {
+                              const isSelected = effectiveSelectedGroup.kind === 'unseasoned';
+                              const epCount = unseasonedEpisodes.length;
+                              return (
+                                <button
+                                  key={UNSEASONED_OPTION_VALUE}
+                                  type="button"
+                                  role="option"
+                                  aria-selected={isSelected}
+                                  data-season-group-kind="unseasoned"
+                                  data-season-option={UNSEASONED_OPTION_VALUE}
+                                  data-season-selected={isSelected ? 'true' : 'false'}
+                                  data-autofocus={isSelected ? 'true' : undefined}
+                                  onClick={() => handleSelectGroup({ kind: 'unseasoned' })}
+                                  className={`w-full px-4 py-2.5 text-left text-sm sm:text-base flex items-center justify-between gap-3 transition-colors cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-white/15 text-white font-bold'
+                                      : 'text-[#d4d4d4] hover:bg-white/10 hover:text-white font-medium'
+                                  }`}
+                                >
+                                  <span>Sem temporada</span>
+                                  <span className="text-xs sm:text-sm text-[#a3a3a3] font-normal shrink-0">
+                                    ({epCount} {epCount === 1 ? 'episódio' : 'episódios'})
+                                  </span>
+                                </button>
+                              );
+                            })()}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              )}
+                  );
+                })()}
             </div>
 
             {sortedSeasons.length > 0 || unseasonedEpisodes.length > 0 ? (
@@ -1536,12 +1743,22 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                         data-episode-num={String(epNum)}
                         data-scroll-block="true"
                         aria-label={epTitle}
-                        onClick={() => handlePlayEpisodeClick(episode, false)}
+                        onClick={() =>
+                          handlePlayEpisodeClick(
+                            episode,
+                            false,
+                            effectiveSelectedGroup ?? undefined
+                          )
+                        }
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
                             e.stopPropagation();
-                            handlePlayEpisodeClick(episode, false);
+                            handlePlayEpisodeClick(
+                              episode,
+                              false,
+                              effectiveSelectedGroup ?? undefined
+                            );
                           }
                         }}
                         className="nc-tv-episode-card group relative w-full rounded-xl p-3 sm:p-4 flex items-center gap-3.5 sm:gap-5 cursor-pointer border border-transparent hover:bg-white/[0.06] hover:border-white/15 focus:bg-white/[0.08] focus:border-white/80 focus:outline-none transition-colors select-none"

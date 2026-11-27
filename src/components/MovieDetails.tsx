@@ -175,24 +175,40 @@ export const MovieDetails = React.memo(function MovieDetails({
   const { credentials } = useXtreamCredentials();
   const { isFavorite, toggleFavorite, clearFavoriteError } = useFavorites();
 
-  // Internal override state when switching movies via "Títulos semelhantes" in standalone mode
-  const [internalMovie, setInternalMovie] = useState<ActiveMovieSnapshot | null>(null);
+  const currentScopeKey = getHeroAccountScopeKey(credentials);
+  const hasCredentials = Boolean(credentials);
+  const credentialsRef = useRef(credentials);
+  credentialsRef.current = credentials;
+  const baseStreamIdStr = String(streamId);
+
+  // Internal override state when switching movies via "Títulos semelhantes" in standalone mode,
+  // scoped strictly to current account scope + base item so overrides never leak across accounts or items
+  const [internalMovieState, setInternalMovieState] = useState<{
+    scopeKey: string;
+    baseStreamId: string;
+    snapshot: ActiveMovieSnapshot;
+  } | null>(null);
 
   useEffect(() => {
-    setInternalMovie(null);
-  }, [streamId]);
+    setInternalMovieState(null);
+  }, [currentScopeKey, baseStreamIdStr]);
 
-  const activeMovie: ActiveMovieSnapshot = internalMovie || {
-    streamId,
-    streamName,
-    streamIcon,
-    categoryId,
-    categoryName,
-    rating,
-    year,
-    containerExtension,
-    directSource,
-  };
+  const activeMovie: ActiveMovieSnapshot =
+    internalMovieState &&
+    internalMovieState.scopeKey === currentScopeKey &&
+    internalMovieState.baseStreamId === baseStreamIdStr
+      ? internalMovieState.snapshot
+      : {
+          streamId,
+          streamName,
+          streamIcon,
+          categoryId,
+          categoryName,
+          rating,
+          year,
+          containerExtension,
+          directSource,
+        };
 
   const activeStreamId = activeMovie.streamId;
   const activeStreamName = activeMovie.streamName;
@@ -213,14 +229,32 @@ export const MovieDetails = React.memo(function MovieDetails({
   const [error, setError] = useState<string | null>(null);
   const [favActionError, setFavActionError] = useState<string | null>(null);
   const [savedProgress, setSavedProgress] = useState<number>(0);
-  const [showResumePrompt, setShowResumePrompt] = useState(false);
-  const [playError, setPlayError] = useState<string | null>(null);
+  const [resumePromptState, setResumePromptState] = useState<{
+    scopeKey: string;
+    streamId: string;
+  } | null>(null);
+  const [playErrorState, setPlayErrorState] = useState<{
+    scopeKey: string;
+    streamId: string;
+    message: string;
+  } | null>(null);
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
     typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 1280
   );
 
-  const currentScopeKey = getHeroAccountScopeKey(credentials);
   const currentStreamIdStr = String(activeStreamId);
+  const showResumePrompt = Boolean(
+    resumePromptState &&
+      resumePromptState.scopeKey === currentScopeKey &&
+      resumePromptState.streamId === currentStreamIdStr
+  );
+  const playError =
+    playErrorState &&
+    playErrorState.scopeKey === currentScopeKey &&
+    playErrorState.streamId === currentStreamIdStr
+      ? playErrorState.message
+      : null;
+
   const scopedDetails =
     detailsState &&
     detailsState.scopeKey === currentScopeKey &&
@@ -265,7 +299,7 @@ export const MovieDetails = React.memo(function MovieDetails({
     BACK_PRIORITY.SUB_MODAL,
     () => {
       if (showResumePrompt) {
-        setShowResumePrompt(false);
+        setResumePromptState(null);
         setTimeout(() => {
           if (!popFocusMemory() && primaryPlayBtnRef.current) {
             focusElementSafely(primaryPlayBtnRef.current);
@@ -346,18 +380,19 @@ export const MovieDetails = React.memo(function MovieDetails({
     let cancelled = false;
     const abortController =
       typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const fetchScopeKey = getHeroAccountScopeKey(credentials);
-    const fetchStreamId = String(activeStreamId);
+    const creds = credentialsRef.current;
+    const fetchScopeKey = currentScopeKey;
+    const fetchStreamId = currentStreamIdStr;
 
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
     setDetailsState(null);
-    setShowResumePrompt(false);
-    setPlayError(null);
+    setResumePromptState(null);
+    setPlayErrorState(null);
 
     const fetchInfo = async () => {
-      if (!credentials) {
+      if (!creds) {
         if (!cancelled) setLoading(false);
         return;
       }
@@ -365,7 +400,7 @@ export const MovieDetails = React.memo(function MovieDetails({
         setLoading(true);
         setError(null);
         const data = await fetchOrReuseHeroDetails(
-          credentials,
+          creds,
           { stream_id: activeStreamId, stream_type: 'movie' },
           {
             signal: abortController?.signal,
@@ -394,7 +429,7 @@ export const MovieDetails = React.memo(function MovieDetails({
       cancelled = true;
       abortController?.abort();
     };
-  }, [credentials, activeStreamId]);
+  }, [currentScopeKey, hasCredentials, currentStreamIdStr]);
 
   const displayTitle = info.name || movieData.name || activeStreamName || 'Filme';
   const titleId = `movie-details-title-${activeStreamId}`;
@@ -552,26 +587,30 @@ export const MovieDetails = React.memo(function MovieDetails({
       if (onSelectSimilarMovie) {
         onSelectSimilarMovie(movie);
       } else {
-        setInternalMovie({
-          streamId: nextId,
-          streamName: movie.name || movie.title || 'Filme',
-          streamIcon: nextIcon,
-          categoryId: movie.category_id,
-          categoryName: movie.category_name,
-          rating: movie.rating,
-          year: movie.year,
-          containerExtension: movie.container_extension,
-          directSource:
-            typeof movie.direct_source === 'string' ? movie.direct_source : undefined,
+        setInternalMovieState({
+          scopeKey: currentScopeKey,
+          baseStreamId: baseStreamIdStr,
+          snapshot: {
+            streamId: nextId,
+            streamName: movie.name || movie.title || 'Filme',
+            streamIcon: nextIcon,
+            categoryId: movie.category_id,
+            categoryName: movie.category_name,
+            rating: movie.rating,
+            year: movie.year,
+            containerExtension: movie.container_extension,
+            directSource:
+              typeof movie.direct_source === 'string' ? movie.direct_source : undefined,
+          },
         });
       }
     },
-    [onSelectSimilarMovie]
+    [onSelectSimilarMovie, currentScopeKey, baseStreamIdStr]
   );
 
   const startPlayback = (startAt: number) => {
     if (!credentials) return;
-    setShowResumePrompt(false);
+    setResumePromptState(null);
 
     if (startAt === 0) {
       clearItemProgress(credentials, 'movie', activeStreamId);
@@ -596,7 +635,7 @@ export const MovieDetails = React.memo(function MovieDetails({
     });
 
     try {
-      setPlayError(null);
+      setPlayErrorState(null);
       const url = buildDirectMediaUrl(credentials, {
         type: 'movie',
         streamId: activeStreamId,
@@ -620,7 +659,11 @@ export const MovieDetails = React.memo(function MovieDetails({
       );
     } catch (err: any) {
       console.error('Erro ao construir URL de filme:', err.message);
-      setPlayError(err?.message || 'Falha ao iniciar reprodução do filme.');
+      setPlayErrorState({
+        scopeKey: currentScopeKey,
+        streamId: currentStreamIdStr,
+        message: err?.message || 'Falha ao iniciar reprodução do filme.',
+      });
     }
   };
 
@@ -630,7 +673,10 @@ export const MovieDetails = React.memo(function MovieDetails({
       pushFocusMemory(primaryPlayBtnRef.current);
     }
     if (savedProgress > 30) {
-      setShowResumePrompt(true);
+      setResumePromptState({
+        scopeKey: currentScopeKey,
+        streamId: currentStreamIdStr,
+      });
     } else {
       startPlayback(0);
     }
@@ -704,7 +750,7 @@ export const MovieDetails = React.memo(function MovieDetails({
               <button
                 type="button"
                 onClick={() => {
-                  setShowResumePrompt(false);
+                  setResumePromptState(null);
                   setTimeout(() => {
                     if (!popFocusMemory() && primaryPlayBtnRef.current) {
                       focusElementSafely(primaryPlayBtnRef.current);

@@ -9,6 +9,7 @@ export interface XtreamCredentials {
   playlistName?: string;
   avatar?: string;
   allowed_output_formats?: string[];
+  allowed_output_formats_confirmed?: boolean;
   user_info?: XtreamUserInfo;
   server_info?: XtreamServerInfo | Record<string, any>;
 }

@@ -19,7 +19,11 @@ import {
   isAuthenticationRejectedError,
 } from "../services/xtreamService";
 import {
+  buildReconciledCredentialsFromAuth,
+  getCredentialsIdentityKey,
+  isLegacyAmbiguousOutputFormats,
   markCredentialsAuthRejected,
+  safePersistReconciledCredentials,
   safeSaveCredentials,
 } from "../utils/accountUtils";
 import {
@@ -151,6 +155,36 @@ export function XtreamProvider({
   // Session tracking to invalidate work when credentials change
   const sessionRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const credentialsPropRef = useRef<XtreamCredentials | null>(credentials);
+  credentialsPropRef.current = credentials;
+
+  // Live reconciled metadata for legacy sessions (scoped strictly to prop identityKey
+  // so updating metadata updates active consumers immediately WITHOUT restarting catalog effects)
+  const [reconciledCredentialsEntry, setReconciledCredentialsEntry] = useState<{
+    identityKey: string;
+    credentials: XtreamCredentials;
+  } | null>(null);
+  const reconciledEntryRef = useRef<{
+    identityKey: string;
+    credentials: XtreamCredentials;
+  } | null>(null);
+  reconciledEntryRef.current = reconciledCredentialsEntry;
+  const legacyReconcileAttemptedKeyRef = useRef<string | null>(null);
+
+  const propIdentityKey = getCredentialsIdentityKey(credentials);
+  const effectiveCredentials = useMemo<XtreamCredentials | null>(() => {
+    if (!credentials) return null;
+    if (
+      reconciledCredentialsEntry &&
+      propIdentityKey &&
+      reconciledCredentialsEntry.identityKey === propIdentityKey
+    ) {
+      return reconciledCredentialsEntry.credentials;
+    }
+    return credentials;
+  }, [credentials, propIdentityKey, reconciledCredentialsEntry]);
+  const effectiveCredentialsRef = useRef<XtreamCredentials | null>(effectiveCredentials);
+  effectiveCredentialsRef.current = effectiveCredentials;
 
   // Data states
   const [liveCategories, setLiveCategories] = useState<Category[]>([]);
@@ -277,12 +311,30 @@ export function XtreamProvider({
           }
 
           recheckPromise = XtreamService.authenticate(credentials, { signal })
-            .then(() => {
+            .then((authRes) => {
               if (sessionRef.current === currentSession && !signal?.aborted) {
                 lastAuthRecheckRef.current = {
                   session: currentSession,
                   completedAt: Date.now(),
                 };
+                const currentEffective = effectiveCredentialsRef.current;
+                const currentId = getCredentialsIdentityKey(credentialsPropRef.current);
+                if (
+                  currentEffective &&
+                  currentId &&
+                  currentId === getCredentialsIdentityKey(credentials) &&
+                  isLegacyAmbiguousOutputFormats(currentEffective)
+                ) {
+                  const reconciled = buildReconciledCredentialsFromAuth(
+                    currentEffective,
+                    authRes
+                  );
+                  setReconciledCredentialsEntry({
+                    identityKey: currentId,
+                    credentials: reconciled,
+                  });
+                  safePersistReconciledCredentials(reconciled);
+                }
               }
               return { rejected: false };
             })
@@ -708,6 +760,86 @@ export function XtreamProvider({
     };
   }, [credentials, enqueueOperation, registerErrorAndCheckAuth, isAbortedOperation]);
 
+  // One-shot reconciliation restricted strictly to ambiguous legacy sessions where
+  // pre-X01.c–e Login persisted `allowed_output_formats: []` without provider confirmation.
+  useEffect(() => {
+    if (!credentials || !propIdentityKey) {
+      legacyReconcileAttemptedKeyRef.current = null;
+      setReconciledCredentialsEntry(null);
+      return;
+    }
+
+    // Drop stale reconciled entry if switching to a different credential identity
+    if (
+      reconciledEntryRef.current &&
+      reconciledEntryRef.current.identityKey !== propIdentityKey
+    ) {
+      setReconciledCredentialsEntry(null);
+    }
+
+    // If this identity was already reconciled in this provider lifecycle, skip
+    if (reconciledEntryRef.current?.identityKey === propIdentityKey) {
+      return;
+    }
+
+    if (!isLegacyAmbiguousOutputFormats(credentials)) {
+      return;
+    }
+
+    const currentSession = sessionRef.current;
+    const attemptKey = `${currentSession}:${propIdentityKey}`;
+    if (legacyReconcileAttemptedKeyRef.current === attemptKey) {
+      return;
+    }
+    legacyReconcileAttemptedKeyRef.current = attemptKey;
+
+    const controller = new AbortController();
+    const credsSnapshot = credentials;
+
+    XtreamService.authenticate(credsSnapshot, { signal: controller.signal })
+      .then((authResponse) => {
+        if (
+          controller.signal.aborted ||
+          sessionRef.current !== currentSession ||
+          getCredentialsIdentityKey(credentialsPropRef.current) !== propIdentityKey
+        ) {
+          return;
+        }
+        const reconciled = buildReconciledCredentialsFromAuth(
+          credsSnapshot,
+          authResponse
+        );
+        setReconciledCredentialsEntry({
+          identityKey: propIdentityKey,
+          credentials: reconciled,
+        });
+        safePersistReconciledCredentials(reconciled);
+      })
+      .catch((err: any) => {
+        if (
+          controller.signal.aborted ||
+          isAbortedOperation(err, controller.signal) ||
+          sessionRef.current !== currentSession ||
+          getCredentialsIdentityKey(credentialsPropRef.current) !== propIdentityKey
+        ) {
+          return;
+        }
+        if (isAuthenticationRejectedError(err)) {
+          const msg =
+            err?.message || "Usuário ou senha inválidos ou conta desativada.";
+          isAuthRejectedRef.current = true;
+          setIsAuthRejected(true);
+          setAuthError(msg);
+          markCredentialsAuthRejected(msg);
+        }
+        // Transient failures preserve credentials untouched without assuming permissions or retrying automatically
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [credentials, propIdentityKey, isAbortedOperation]);
+
   // Actions for Categories
   const fetchLiveCategories = useCallback(async () => {
     if (!credentials) return;
@@ -1094,14 +1226,60 @@ export function XtreamProvider({
 
     if (isAuthRejectedRef.current) {
       try {
-        await XtreamService.authenticate(credentials, {
+        const authResponse = await XtreamService.authenticate(credentials, {
           signal: abortControllerRef.current?.signal,
         });
         if (sessionRef.current !== currentSession) return;
+        const reconciled = buildReconciledCredentialsFromAuth(
+          effectiveCredentialsRef.current || credentials,
+          authResponse
+        );
         isAuthRejectedRef.current = false;
         setIsAuthRejected(false);
         setAuthError(null);
-        safeSaveCredentials(credentials);
+        const currentId = getCredentialsIdentityKey(credentials);
+        if (currentId) {
+          setReconciledCredentialsEntry({
+            identityKey: currentId,
+            credentials: reconciled,
+          });
+        }
+        safeSaveCredentials(reconciled);
+      } catch (err: any) {
+        if (
+          sessionRef.current !== currentSession ||
+          isAbortedOperation(err, abortControllerRef.current?.signal)
+        ) {
+          return;
+        }
+        if (isAuthenticationRejectedError(err)) {
+          const msg =
+            err?.message || "Usuário ou senha inválidos ou conta desativada.";
+          isAuthRejectedRef.current = true;
+          setIsAuthRejected(true);
+          setAuthError(msg);
+          markCredentialsAuthRejected(msg);
+          return;
+        }
+      }
+    } else if (isLegacyAmbiguousOutputFormats(effectiveCredentialsRef.current)) {
+      try {
+        const authResponse = await XtreamService.authenticate(credentials, {
+          signal: abortControllerRef.current?.signal,
+        });
+        if (sessionRef.current !== currentSession) return;
+        const currentId = getCredentialsIdentityKey(credentials);
+        if (currentId && currentId === getCredentialsIdentityKey(credentialsPropRef.current)) {
+          const reconciled = buildReconciledCredentialsFromAuth(
+            effectiveCredentialsRef.current || credentials,
+            authResponse
+          );
+          setReconciledCredentialsEntry({
+            identityKey: currentId,
+            credentials: reconciled,
+          });
+          safePersistReconciledCredentials(reconciled);
+        }
       } catch (err: any) {
         if (
           sessionRef.current !== currentSession ||
@@ -1182,8 +1360,8 @@ export function XtreamProvider({
     : null;
 
   const credentialsValue = useMemo<XtreamCredentialsContextData>(
-    () => ({ credentials }),
-    [credentials]
+    () => ({ credentials: effectiveCredentials }),
+    [effectiveCredentials]
   );
 
   const sessionValue = useMemo<XtreamSessionContextData>(
