@@ -302,7 +302,6 @@ export function normalizeCatalogArray<T = any>(
 export class XtreamService {
   private static readonly DEFAULT_TIMEOUT_MS = 25000;
   private static readonly CATALOG_TIMEOUT_MS = 90000;
-  private static readonly RATE_LIMIT_MIN_WAIT_MS = 1000;
   private static readonly RATE_LIMIT_MAX_RETRY_AFTER_MS = 15000;
   private static retryDelayMs = 1000;
   private static defaultTimeoutOverrideMs: number | null = null;
@@ -481,13 +480,27 @@ export class XtreamService {
             throw createAbortError();
           }
 
-          await coordCtx.waitForRateLimit();
-
-          if (effectiveSignal.aborted) {
-            throw createAbortError();
+          let slot: { release: () => void };
+          while (true) {
+            await coordCtx.waitForRateLimit();
+            if (effectiveSignal.aborted) {
+              throw createAbortError();
+            }
+            const acquiredSlot = await coordCtx.acquireSlot();
+            if (effectiveSignal.aborted) {
+              acquiredSlot.release();
+              throw createAbortError();
+            }
+            // Revalida imediatamente após adquirir o slot para impedir que requisições
+            // anteriormente enfileiradas iniciem durante uma restrição HTTP 429 ativa.
+            if (coordCtx.hasActiveRateLimit()) {
+              acquiredSlot.release();
+              continue;
+            }
+            slot = acquiredSlot;
+            break;
           }
 
-          const slot = await coordCtx.acquireSlot();
           try {
             const payload = await executeXtreamGetRequest<T>({
               url: targetUrl.toString(),
@@ -498,8 +511,6 @@ export class XtreamService {
             inspectPayloadForAuthError(payload);
             return payload;
           } catch (err: any) {
-            slot.release();
-
             const isAbort = Boolean(
               effectiveSignal.aborted ||
                 err?.isAborted === true ||
@@ -507,6 +518,7 @@ export class XtreamService {
             );
 
             if (isAbort) {
+              slot.release();
               throw createAbortError(
                 err?.cancellationMode || "physical",
                 Boolean(err?.nativeAttemptStillPending)
@@ -545,6 +557,41 @@ export class XtreamService {
               effectiveErr = err as XtreamCategorizedError;
             }
 
+            // Política controlada de HTTP 429 com coordenação compartilhada por provedor:
+            // registrar a restrição ANTES de liberar o slot para que requisições enfileiradas
+            // enxerguem o bloqueio imediatamente ao serem admitidas.
+            if (effectiveErr?.isRateLimited || effectiveErr?.status === 429) {
+              const retryAfterMs = effectiveErr?.retryAfterMs;
+              coordCtx.recordRateLimit(retryAfterMs);
+              slot.release();
+
+              const hasValidRetryAfter =
+                typeof retryAfterMs === "number" &&
+                Number.isFinite(retryAfterMs) &&
+                retryAfterMs >= 0 &&
+                retryAfterMs <= XtreamService.RATE_LIMIT_MAX_RETRY_AFTER_MS;
+
+              const requiredWaitMs = hasValidRetryAfter
+                ? Math.max(getXtreamCoordinatorRateLimitMinWaitMs(), retryAfterMs)
+                : Infinity;
+
+              const canRetryRateLimit =
+                attempt < maxAttempts &&
+                hasValidRetryAfter &&
+                requiredWaitMs <= coordCtx.getRemainingRateLimitBudgetMs();
+
+              if (!canRetryRateLimit) {
+                throw effectiveErr;
+              }
+
+              // A espera respeita o bloqueio compartilhado e consome o orçamento único de 15s da operação.
+              await coordCtx.waitForRateLimit();
+              continue;
+            }
+
+            // Libera o slot antes de retornar erro ou dormir em retentativas transitórias
+            slot.release();
+
             // Nunca repetir rejeições de autenticação, erros HTTP 4xx (exceto 408/429 tratados acima) ou formato inválido/vazio
             if (
               effectiveErr?.isAuthError ||
@@ -554,38 +601,13 @@ export class XtreamService {
               throw effectiveErr;
             }
 
-            // Proteção contra sobreposição nativa (CapacitorHttp):
+            // Proteção contra sobreposição nativa (CapacitorHttp e CatalogFileTransfer):
             // nunca iniciar retentativa automática enquanto a tentativa nativa anterior não tiver encerramento confirmado.
             if (
               effectiveErr?.nativeAttemptStillPending === true ||
               effectiveErr?.disallowAutomaticRetry === true
             ) {
               throw effectiveErr;
-            }
-
-            // Política controlada de HTTP 429 com coordenação compartilhada por provedor:
-            // somente uma nova tentativa quando houver Retry-After válido <= 15s.
-            if (effectiveErr?.isRateLimited || effectiveErr?.status === 429) {
-              const retryAfterMs = effectiveErr?.retryAfterMs;
-              coordCtx.recordRateLimit(retryAfterMs);
-
-              const canRetryRateLimit =
-                attempt < maxAttempts &&
-                typeof retryAfterMs === "number" &&
-                Number.isFinite(retryAfterMs) &&
-                retryAfterMs >= 0 &&
-                retryAfterMs <= XtreamService.RATE_LIMIT_MAX_RETRY_AFTER_MS;
-
-              if (!canRetryRateLimit) {
-                throw effectiveErr;
-              }
-
-              const waitMs = Math.max(
-                getXtreamCoordinatorRateLimitMinWaitMs(),
-                retryAfterMs
-              );
-              await coordCtx.sleep(waitMs);
-              continue;
             }
 
             if (effectiveErr?.isTransient !== true || attempt >= maxAttempts) {

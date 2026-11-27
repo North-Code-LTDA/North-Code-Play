@@ -1,5 +1,8 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import type { TransportError } from './httpTransport';
+import type {
+  TransportCancellationMode,
+  TransportError,
+} from './httpTransport';
 
 function getMonotonicNowMs(): number {
   return typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -279,7 +282,11 @@ function createProviderHttpError(status: number, statusText?: string): Transport
   return httpError;
 }
 
-function createAdapterAbortError(): TransportError {
+function createAdapterAbortError(options?: {
+  cancellationMode?: TransportCancellationMode;
+  nativeAttemptStillPending?: boolean;
+  disallowAutomaticRetry?: boolean;
+}): TransportError {
   const abortError: TransportError = new Error('Operação cancelada pelo usuário.');
   abortError.name = 'AbortError';
   abortError.errorCategory = 'aborted';
@@ -287,19 +294,30 @@ function createAdapterAbortError(): TransportError {
   abortError.isTransient = false;
   abortError.isClientError = false;
   abortError.isFatalFormat = false;
-  abortError.cancellationMode = 'physical';
+  abortError.cancellationMode = options?.cancellationMode ?? 'physical';
+  abortError.nativeAttemptStillPending =
+    options?.nativeAttemptStillPending ?? false;
+  abortError.disallowAutomaticRetry =
+    options?.disallowAutomaticRetry ?? Boolean(options?.nativeAttemptStillPending);
   return abortError;
 }
 
-function createTimeoutError(): TransportError {
+function createTimeoutError(options?: {
+  cancellationMode?: TransportCancellationMode;
+  nativeAttemptStillPending?: boolean;
+  disallowAutomaticRetry?: boolean;
+}): TransportError {
   const timeoutError: TransportError = new Error(
     'Tempo limite esgotado ao aguardar resposta do servidor do provedor.'
   );
   timeoutError.errorCategory = 'timeout';
   timeoutError.isTransient = true;
   timeoutError.isClientError = false;
-  timeoutError.cancellationMode = 'physical';
-  timeoutError.nativeAttemptStillPending = false;
+  timeoutError.cancellationMode = options?.cancellationMode ?? 'physical';
+  timeoutError.nativeAttemptStillPending =
+    options?.nativeAttemptStillPending ?? false;
+  timeoutError.disallowAutomaticRetry =
+    options?.disallowAutomaticRetry ?? Boolean(options?.nativeAttemptStillPending);
   return timeoutError;
 }
 
@@ -402,13 +420,20 @@ export async function executeAndroidTempFileCatalogDownload({
   const readTimeout = timeoutMs;
 
   let queryFinished = false;
-  let nativeTransferSettled = false;
+  // Separa explicitamente o encerramento lógico da promessa JS (downloadWrapperSettled)
+  // do encerramento confirmado da chamada nativa (nativeDownloadSettled).
+  let downloadWrapperSettled = false;
+  let nativeDownloadInvoked = false;
+  let nativeDownloadSettled = false;
   let localReadInProgress = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let onCallerAbort: (() => void) | null = null;
   let localFetchAbortController: AbortController | null = null;
   let acquiredFileId: string | null = null;
   let rejectInterruptPromise: ((err: Error) => void) | null = null;
+
+  const isNativeTransferStillPending = (): boolean =>
+    nativeDownloadInvoked && !nativeDownloadSettled;
 
   const interruptPromise = new Promise<never>((_resolve, reject) => {
     rejectInterruptPromise = reject;
@@ -420,16 +445,26 @@ export async function executeAndroidTempFileCatalogDownload({
     onCallerAbort = () => {
       if (queryFinished) return;
       localFetchAbortController?.abort();
-      if (!nativeTransferSettled) {
+      const stillPending = isNativeTransferStillPending();
+      if (stillPending) {
         requestNativeTransferCancellation(plugin, transferId);
       }
-      rejectInterruptPromise?.(createAdapterAbortError());
+      rejectInterruptPromise?.(
+        createAdapterAbortError({
+          cancellationMode: stillPending ? 'logical' : 'physical',
+          nativeAttemptStillPending: stillPending,
+          disallowAutomaticRetry: stillPending,
+        })
+      );
     };
 
     if (signal) {
       if (signal.aborted) {
-        requestNativeTransferCancellation(plugin, transferId);
-        throw createAdapterAbortError();
+        throw createAdapterAbortError({
+          cancellationMode: 'physical',
+          nativeAttemptStillPending: false,
+          disallowAutomaticRetry: false,
+        });
       }
       signal.addEventListener('abort', onCallerAbort, { once: true });
     }
@@ -439,22 +474,29 @@ export async function executeAndroidTempFileCatalogDownload({
       if (queryFinished) return;
       didTimeout = true;
       localFetchAbortController?.abort();
-      if (!nativeTransferSettled) {
+      const stillPending = isNativeTransferStillPending();
+      if (stillPending) {
         requestNativeTransferCancellation(plugin, transferId);
       }
-      rejectInterruptPromise?.(createTimeoutError());
+      rejectInterruptPromise?.(
+        createTimeoutError({
+          cancellationMode: stillPending ? 'logical' : 'physical',
+          nativeAttemptStillPending: stillPending,
+          disallowAutomaticRetry: stillPending,
+        })
+      );
     }, remainingTimeoutMs);
 
     const downloadResult = await new Promise<DownloadCatalogToTempFileResult>(
       (resolve, reject) => {
-        const settleNativeReject = (err: Error) => {
-          if (nativeTransferSettled) return;
-          nativeTransferSettled = true;
+        const settleWrapperReject = (err: Error) => {
+          if (downloadWrapperSettled) return;
+          downloadWrapperSettled = true;
           reject(err);
         };
 
         interruptPromise.catch((interruptErr: Error) => {
-          settleNativeReject(interruptErr);
+          settleWrapperReject(interruptErr);
         });
 
         const requestOptions: DownloadCatalogToTempFileOptions = {
@@ -467,23 +509,32 @@ export async function executeAndroidTempFileCatalogDownload({
           },
         };
 
+        nativeDownloadInvoked = true;
         plugin
           .downloadCatalogToTempFile(requestOptions)
           .then((res) => {
-            if (nativeTransferSettled || queryFinished) {
-              // Resposta tardia após a promessa nativa já ter encerrado: solicitar exclusão imediata sem bloquear
+            nativeDownloadSettled = true;
+            if (downloadWrapperSettled || queryFinished) {
+              // Resposta tardia após a promessa JS já ter encerrado: solicitar exclusão imediata sem bloquear
               if (res && typeof res.fileId === 'string') {
                 requestNativeFileCleanup(plugin, res.fileId);
               }
               return;
             }
-            nativeTransferSettled = true;
+            downloadWrapperSettled = true;
             resolve(res);
           })
           .catch((err: any) => {
-            if (nativeTransferSettled) return;
+            nativeDownloadSettled = true;
+            if (downloadWrapperSettled) return;
             if (signal?.aborted) {
-              settleNativeReject(createAdapterAbortError());
+              settleWrapperReject(
+                createAdapterAbortError({
+                  cancellationMode: 'physical',
+                  nativeAttemptStillPending: false,
+                  disallowAutomaticRetry: false,
+                })
+              );
               return;
             }
             const msg = String(err?.message || err?.code || err || '').toLowerCase();
@@ -493,14 +544,26 @@ export async function executeAndroidTempFileCatalogDownload({
               msg.includes('timed out') ||
               msg.includes('sockettimeout')
             ) {
-              settleNativeReject(createTimeoutError());
+              settleWrapperReject(
+                createTimeoutError({
+                  cancellationMode: 'physical',
+                  nativeAttemptStillPending: false,
+                  disallowAutomaticRetry: false,
+                })
+              );
               return;
             }
             if (msg.includes('cancel') || msg.includes('abort')) {
-              settleNativeReject(createAdapterAbortError());
+              settleWrapperReject(
+                createAdapterAbortError({
+                  cancellationMode: 'physical',
+                  nativeAttemptStillPending: false,
+                  disallowAutomaticRetry: false,
+                })
+              );
               return;
             }
-            settleNativeReject(createNetworkError());
+            settleWrapperReject(createNetworkError());
           });
       }
     );

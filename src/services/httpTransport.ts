@@ -628,10 +628,14 @@ export async function executeXtreamGetRequest<T = any>({
       './androidCatalogFileAdapter'
     );
     if (signal?.aborted) {
-      throw createAbortError();
+      throw createAbortError('physical', false);
     }
     if (getMonotonicNowMs() >= deadlineAt) {
-      throw createTimeoutError();
+      throw createTimeoutError({
+        cancellationMode: 'physical',
+        nativeAttemptStillPending: false,
+        disallowAutomaticRetry: false,
+      });
     }
     let rawText: string;
     try {
@@ -643,7 +647,9 @@ export async function executeXtreamGetRequest<T = any>({
       });
     } catch (err: any) {
       if (signal?.aborted || err?.isAborted || err?.message === ABORT_ERROR_MESSAGE) {
-        throw createAbortError();
+        const mode = err?.cancellationMode === 'logical' ? 'logical' : 'physical';
+        const stillPending = Boolean(err?.nativeAttemptStillPending);
+        throw createAbortError(mode, stillPending);
       }
       // CatalogFileTransfer não retorna headers HTTP; preserva o status HTTP sem inventar Retry-After.
       if (typeof err?.status === 'number' && !err?.isLocalFileReadError) {
@@ -655,10 +661,14 @@ export async function executeXtreamGetRequest<T = any>({
       throw err;
     }
     if (signal?.aborted) {
-      throw createAbortError();
+      throw createAbortError('physical', false);
     }
     if (getMonotonicNowMs() >= deadlineAt) {
-      throw createTimeoutError();
+      throw createTimeoutError({
+        cancellationMode: 'physical',
+        nativeAttemptStillPending: false,
+        disallowAutomaticRetry: false,
+      });
     }
     return normalizeTransportPayload<T>(rawText, signal, deadlineAt);
   }

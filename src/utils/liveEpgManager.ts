@@ -500,7 +500,8 @@ function buildSnapshotFromRaw(
   streamId: number,
   rawListings: any[],
   status: 'ok' | 'empty' | 'error',
-  nowMs: number
+  nowMs: number,
+  fetchedAtMs: number = nowMs
 ): LiveEpgSnapshot {
   if (status === 'error') {
     return {
@@ -510,17 +511,20 @@ function buildSnapshotFromRaw(
       currentProgram: null,
       timeline: [],
       rawListings: [],
-      fetchedAtMs: nowMs,
-      expiresAtMs: nowMs + DEFAULT_ERROR_TTL_MS,
+      fetchedAtMs,
+      expiresAtMs: fetchedAtMs + DEFAULT_ERROR_TTL_MS,
     };
   }
 
   const { currentProgram, timeline } = resolveRightPaneEpgTimeline(rawListings, nowMs);
   const resolvedStatus: LiveEpgStatus = timeline.length > 0 ? 'ok' : 'empty';
+  const maxExpiresAtMs =
+    fetchedAtMs +
+    (resolvedStatus === 'ok' ? DEFAULT_OK_TTL_MS : DEFAULT_EMPTY_TTL_MS);
   const expiresAtMs =
     currentProgram !== null
-      ? Math.min(currentProgram.endMs, nowMs + DEFAULT_OK_TTL_MS)
-      : nowMs + (resolvedStatus === 'ok' ? DEFAULT_OK_TTL_MS : DEFAULT_EMPTY_TTL_MS);
+      ? Math.min(currentProgram.endMs, maxExpiresAtMs)
+      : maxExpiresAtMs;
 
   return {
     cacheKey,
@@ -529,7 +533,7 @@ function buildSnapshotFromRaw(
     currentProgram,
     timeline,
     rawListings,
-    fetchedAtMs: nowMs,
+    fetchedAtMs,
     expiresAtMs,
   };
 }
@@ -537,7 +541,8 @@ function buildSnapshotFromRaw(
 /**
  * Reads a valid (non-expired) EPG snapshot from cache, re-evaluating temporal bounds against `nowMs`.
  * If the previously active program has just ended (`nowMs >= currentProgram.endMs`), re-evaluates
- * `rawListings` and invalidates if no valid current program remains after expiration.
+ * `rawListings` anchored to the original `fetchedAtMs` (never extending the original TTL)
+ * and invalidates once the original TTL expires or no valid current program remains.
  */
 export function getCachedLiveEpgSnapshot(
   credentials: XtreamCredentials | null | undefined,
@@ -564,10 +569,10 @@ export function getCachedLiveEpgSnapshot(
         existing.streamId,
         existing.rawListings,
         'ok',
-        nowMs
+        nowMs,
+        existing.fetchedAtMs
       );
-      if (refreshed.currentProgram !== null) {
-        refreshed.fetchedAtMs = existing.fetchedAtMs;
+      if (refreshed.currentProgram !== null && nowMs < refreshed.expiresAtMs) {
         lruTouchEpgCache(internalKey, refreshed);
         return refreshed;
       }
@@ -576,19 +581,29 @@ export function getCachedLiveEpgSnapshot(
     return null;
   }
 
-  // Always verify temporal validity of currentProgram against current clock
-  if (
-    existing.currentProgram &&
-    (nowMs < existing.currentProgram.startMs || nowMs >= existing.currentProgram.endMs)
-  ) {
+  // Always verify temporal validity of currentProgram against current clock without extending original TTL
+  const needsTemporalRefresh =
+    existing.status === 'ok' &&
+    ((existing.currentProgram !== null &&
+      (nowMs < existing.currentProgram.startMs ||
+        nowMs >= existing.currentProgram.endMs)) ||
+      (existing.currentProgram === null &&
+        existing.timeline.length > 0 &&
+        existing.timeline[0].startMs <= nowMs));
+
+  if (needsTemporalRefresh) {
     const refreshed = buildSnapshotFromRaw(
       cacheKey,
       existing.streamId,
       existing.rawListings,
-      existing.status === 'error' ? 'error' : 'ok',
-      nowMs
+      'ok',
+      nowMs,
+      existing.fetchedAtMs
     );
-    refreshed.fetchedAtMs = existing.fetchedAtMs;
+    if (nowMs >= refreshed.expiresAtMs) {
+      epgCache.delete(internalKey);
+      return null;
+    }
     lruTouchEpgCache(internalKey, refreshed);
     return refreshed;
   }

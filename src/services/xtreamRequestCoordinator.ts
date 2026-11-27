@@ -459,19 +459,48 @@ function createSharedRateLimitError(
   return err;
 }
 
+export interface OperationRateLimitBudget {
+  waitedMs: number;
+}
+
+export function hasActiveProviderRateLimit(
+  canonicalServer: string,
+  sessionEpoch: number
+): boolean {
+  if (sessionEpoch !== currentSessionEpoch) return false;
+  const scopeKey = buildRateLimitScopeKey(canonicalServer, sessionEpoch);
+  const state = rateLimitStates.get(scopeKey);
+  if (!state || state.sessionEpoch !== sessionEpoch) {
+    return false;
+  }
+  const remainingMs = state.blockedUntilMs - getNowMs();
+  if (remainingMs <= 0) {
+    if (rateLimitStates.get(scopeKey) === state) {
+      rateLimitStates.delete(scopeKey);
+    }
+    return false;
+  }
+  return true;
+}
+
 export async function waitForProviderRateLimitGate(
   canonicalServer: string,
   sessionEpoch: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  budget?: OperationRateLimitBudget
 ): Promise<void> {
   if (signal?.aborted || sessionEpoch !== currentSessionEpoch) {
     throw createAbortError();
   }
 
   const scopeKey = buildRateLimitScopeKey(canonicalServer, sessionEpoch);
-  let totalWaitedMs = 0;
+  const sharedBudget: OperationRateLimitBudget = budget ?? { waitedMs: 0 };
 
-  for (let pass = 0; pass < 3; pass++) {
+  while (true) {
+    if (signal?.aborted || sessionEpoch !== currentSessionEpoch) {
+      throw createAbortError();
+    }
+
     const state = rateLimitStates.get(scopeKey);
     if (!state || state.sessionEpoch !== sessionEpoch) {
       return;
@@ -485,15 +514,19 @@ export async function waitForProviderRateLimitGate(
       return;
     }
 
+    const remainingBudgetMs = config.rateLimitMaxAutoWaitMs - sharedBudget.waitedMs;
     if (
       remainingMs > config.rateLimitMaxAutoWaitMs ||
-      totalWaitedMs + remainingMs > config.rateLimitMaxAutoWaitMs
+      remainingMs > remainingBudgetMs
     ) {
       throw createSharedRateLimitError(remainingMs, state.hasExplicitRetryAfter);
     }
 
-    await sleepWithAbortAndSession(remainingMs, signal, sessionEpoch);
-    totalWaitedMs += remainingMs;
+    const sleepDurationMs = Math.max(1, Math.ceil(remainingMs));
+    const beforeSleepMs = getNowMs();
+    await sleepWithAbortAndSession(sleepDurationMs, signal, sessionEpoch);
+    const actualElapsedMs = Math.max(0, getNowMs() - beforeSleepMs);
+    sharedBudget.waitedMs += Math.max(sleepDurationMs, actualElapsedMs);
   }
 }
 
@@ -617,6 +650,8 @@ export interface CoordinatedExecutionContext {
   signal: AbortSignal;
   sessionEpoch: number;
   acquireSlot: () => Promise<XtreamSlotHandle>;
+  hasActiveRateLimit: () => boolean;
+  getRemainingRateLimitBudgetMs: () => number;
   waitForRateLimit: () => Promise<void>;
   recordRateLimit: (retryAfterMs?: number) => void;
   sleep: (ms: number) => Promise<void>;
@@ -669,6 +704,7 @@ export function runCoordinatedXtreamRequest<T>(
   if (!dedupe) {
     const localController = new AbortController();
     activeNonDedupedControllers.add(localController);
+    const rateLimitBudget: OperationRateLimitBudget = { waitedMs: 0 };
     const onCallerAbort = () => localController.abort();
     if (callerSignal) {
       callerSignal.addEventListener('abort', onCallerAbort, { once: true });
@@ -683,11 +719,16 @@ export function runCoordinatedXtreamRequest<T>(
           sessionEpoch: startEpoch,
           signal: localController.signal,
         }),
+      hasActiveRateLimit: () =>
+        hasActiveProviderRateLimit(canonicalServer, startEpoch),
+      getRemainingRateLimitBudgetMs: () =>
+        Math.max(0, config.rateLimitMaxAutoWaitMs - rateLimitBudget.waitedMs),
       waitForRateLimit: () =>
         waitForProviderRateLimitGate(
           canonicalServer,
           startEpoch,
-          localController.signal
+          localController.signal,
+          rateLimitBudget
         ),
       recordRateLimit: (retryAfterMs) =>
         recordProviderRateLimit(canonicalServer, startEpoch, retryAfterMs),
@@ -724,6 +765,7 @@ export function runCoordinatedXtreamRequest<T>(
     }
   } else {
     const sharedController = new AbortController();
+    const rateLimitBudget: OperationRateLimitBudget = { waitedMs: 0 };
     const createdEntry: CoordinatedInFlightEntry<T> = {
       dedupeKey,
       sessionEpoch: startEpoch,
@@ -749,11 +791,16 @@ export function runCoordinatedXtreamRequest<T>(
             createdEntry.currentSlotWaiter = waiter;
           },
         }),
+      hasActiveRateLimit: () =>
+        hasActiveProviderRateLimit(canonicalServer, startEpoch),
+      getRemainingRateLimitBudgetMs: () =>
+        Math.max(0, config.rateLimitMaxAutoWaitMs - rateLimitBudget.waitedMs),
       waitForRateLimit: () =>
         waitForProviderRateLimitGate(
           canonicalServer,
           startEpoch,
-          sharedController.signal
+          sharedController.signal,
+          rateLimitBudget
         ),
       recordRateLimit: (retryAfterMs) =>
         recordProviderRateLimit(canonicalServer, startEpoch, retryAfterMs),
