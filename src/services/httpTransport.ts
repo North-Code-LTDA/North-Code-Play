@@ -7,11 +7,46 @@ function getMonotonicNowMs(): number {
     : Date.now();
 }
 
+export type TransportKind =
+  | 'web_fetch'
+  | 'capacitor_http'
+  | 'android_catalog_file_transfer';
+
+export interface TransportAttemptTelemetry {
+  transportKind: TransportKind;
+  isFullCatalogRequest: boolean;
+  httpStatus: number | null;
+  ok: boolean;
+  errorCategory?: TransportErrorCategory;
+  isRateLimited?: boolean;
+  retryAfterMs?: number;
+  fetchDurationMs: number;
+  parseDurationMs: number;
+  totalDurationMs: number;
+  /** Tamanho do texto bruto recebido (caracteres UTF-16) antes de JSON.parse, sem re-serializar. */
+  payloadTextChars: number | null;
+  /** Valor do cabeçalho HTTP Content-Length quando exposto ao cliente. */
+  contentLengthHeaderBytes: number | null;
+  contentEncoding: string | null;
+  cacheControl: string | null;
+  ageHeaderSeconds: number | null;
+  etagPresent: boolean;
+  /** Bytes efetivamente transferidos pela rede via Resource Timing (null se restrito por CORS/TAO ou indisponível). */
+  transferSizeBytes: number | null;
+  /** Bytes do corpo codificado (comprimido) via Resource Timing (null se restrito ou indisponível). */
+  encodedBodySizeBytes: number | null;
+  /** Bytes do corpo descomprimido via Resource Timing (null se restrito ou indisponível). */
+  decodedBodySizeBytes: number | null;
+  resourceTimingRestrictedByCors: boolean;
+  fromBrowserHttpCache: boolean | null;
+}
+
 export interface TransportRequestOptions {
   url: string;
   timeoutMs: number;
   signal?: AbortSignal;
   isFullCatalogRequest?: boolean;
+  onTelemetry?: (event: TransportAttemptTelemetry) => void;
 }
 
 export type TransportErrorCategory =
@@ -611,17 +646,122 @@ function createNetworkError(): TransportError {
  *    - Para autenticação, categorias, catálogos filtrados por categoria, EPG, detalhes (ou se o plugin
  *      não estiver disponível antes do início da consulta): utiliza `CapacitorHttp.get`.
  */
+function emitTelemetrySafe(
+  onTelemetry: ((event: TransportAttemptTelemetry) => void) | undefined,
+  event: TransportAttemptTelemetry
+): void {
+  if (!onTelemetry) return;
+  try {
+    onTelemetry(event);
+  } catch {
+    // Instrumentação diagnóstica opcional nunca deve interferir na requisição.
+  }
+}
+
+function parseNonNegativeHeaderInt(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const num = Number(trimmed);
+  return Number.isFinite(num) && num >= 0 ? num : null;
+}
+
+function collectBrowserResourceTiming(
+  url: string,
+  requestStartMs: number,
+  payloadTextChars: number | null
+): {
+  transferSizeBytes: number | null;
+  encodedBodySizeBytes: number | null;
+  decodedBodySizeBytes: number | null;
+  resourceTimingRestrictedByCors: boolean;
+  fromBrowserHttpCache: boolean | null;
+} {
+  const empty = {
+    transferSizeBytes: null,
+    encodedBodySizeBytes: null,
+    decodedBodySizeBytes: null,
+    resourceTimingRestrictedByCors: false,
+    fromBrowserHttpCache: null,
+  };
+  if (
+    typeof performance === 'undefined' ||
+    typeof performance.getEntriesByType !== 'function'
+  ) {
+    return empty;
+  }
+
+  try {
+    const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (!entry || entry.name !== url) continue;
+      if (entry.startTime < requestStartMs - 10) break;
+
+      const transferSize =
+        typeof entry.transferSize === 'number' && Number.isFinite(entry.transferSize)
+          ? entry.transferSize
+          : null;
+      const encodedBodySize =
+        typeof entry.encodedBodySize === 'number' && Number.isFinite(entry.encodedBodySize)
+          ? entry.encodedBodySize
+          : null;
+      const decodedBodySize =
+        typeof entry.decodedBodySize === 'number' && Number.isFinite(entry.decodedBodySize)
+          ? entry.decodedBodySize
+          : null;
+
+      // Cross-origin sem Timing-Allow-Origin zera os três campos na especificação Resource Timing.
+      if (
+        transferSize === 0 &&
+        encodedBodySize === 0 &&
+        decodedBodySize === 0 &&
+        (payloadTextChars === null || payloadTextChars > 0)
+      ) {
+        return {
+          transferSizeBytes: null,
+          encodedBodySizeBytes: null,
+          decodedBodySizeBytes: null,
+          resourceTimingRestrictedByCors: true,
+          fromBrowserHttpCache: null,
+        };
+      }
+
+      const fromCache =
+        transferSize === 0 && decodedBodySize !== null && decodedBodySize > 0
+          ? true
+          : transferSize !== null && transferSize > 0
+            ? false
+            : null;
+
+      return {
+        transferSizeBytes: transferSize,
+        encodedBodySizeBytes: encodedBodySize,
+        decodedBodySizeBytes: decodedBodySize,
+        resourceTimingRestrictedByCors: false,
+        fromBrowserHttpCache: fromCache,
+      };
+    }
+  } catch {
+    // Ignora falhas de acesso à API Resource Timing
+  }
+
+  return empty;
+}
+
 export async function executeXtreamGetRequest<T = any>({
   url,
   timeoutMs,
   signal,
   isFullCatalogRequest = false,
+  onTelemetry,
 }: TransportRequestOptions): Promise<T> {
   if (signal?.aborted) {
     throw createAbortError();
   }
 
   if (isFullCatalogRequest && isAndroidTempFileCatalogTransportAvailable()) {
+    const attemptStartMs = onTelemetry ? getMonotonicNowMs() : 0;
     const deadlineAt = getMonotonicNowMs() + timeoutMs;
     androidAdapterLoadCountForTest++;
     const { executeAndroidTempFileCatalogDownload } = await import(
@@ -638,6 +778,7 @@ export async function executeXtreamGetRequest<T = any>({
       });
     }
     let rawText: string;
+    let fetchDurationMs = 0;
     try {
       rawText = await executeAndroidTempFileCatalogDownload({
         url,
@@ -645,20 +786,51 @@ export async function executeXtreamGetRequest<T = any>({
         deadlineAt,
         signal,
       });
+      if (onTelemetry) {
+        fetchDurationMs = Math.max(0, getMonotonicNowMs() - attemptStartMs);
+      }
     } catch (err: any) {
+      let thrownErr: TransportError;
       if (signal?.aborted || err?.isAborted || err?.message === ABORT_ERROR_MESSAGE) {
         const mode = err?.cancellationMode === 'logical' ? 'logical' : 'physical';
         const stillPending = Boolean(err?.nativeAttemptStillPending);
-        throw createAbortError(mode, stillPending);
+        thrownErr = createAbortError(mode, stillPending);
+      } else if (typeof err?.status === 'number' && !err?.isLocalFileReadError) {
+        // CatalogFileTransfer não retorna headers HTTP; preserva o status HTTP sem inventar Retry-After.
+        thrownErr = createHttpError(err.status);
+      } else {
+        if (err?.isLocalFileReadError && !err?.errorCategory) {
+          err.errorCategory = 'local_file_read';
+        }
+        thrownErr = err;
       }
-      // CatalogFileTransfer não retorna headers HTTP; preserva o status HTTP sem inventar Retry-After.
-      if (typeof err?.status === 'number' && !err?.isLocalFileReadError) {
-        throw createHttpError(err.status);
+      if (onTelemetry) {
+        const elapsed = Math.max(0, getMonotonicNowMs() - attemptStartMs);
+        emitTelemetrySafe(onTelemetry, {
+          transportKind: 'android_catalog_file_transfer',
+          isFullCatalogRequest: true,
+          httpStatus: typeof thrownErr?.status === 'number' ? thrownErr.status : null,
+          ok: false,
+          errorCategory: thrownErr?.errorCategory,
+          isRateLimited: thrownErr?.isRateLimited,
+          retryAfterMs: thrownErr?.retryAfterMs,
+          fetchDurationMs: elapsed,
+          parseDurationMs: 0,
+          totalDurationMs: elapsed,
+          payloadTextChars: null,
+          contentLengthHeaderBytes: null,
+          contentEncoding: null,
+          cacheControl: null,
+          ageHeaderSeconds: null,
+          etagPresent: false,
+          transferSizeBytes: null,
+          encodedBodySizeBytes: null,
+          decodedBodySizeBytes: null,
+          resourceTimingRestrictedByCors: false,
+          fromBrowserHttpCache: null,
+        });
       }
-      if (err?.isLocalFileReadError && !err?.errorCategory) {
-        err.errorCategory = 'local_file_read';
-      }
-      throw err;
+      throw thrownErr;
     }
     if (signal?.aborted) {
       throw createAbortError('physical', false);
@@ -670,24 +842,101 @@ export async function executeXtreamGetRequest<T = any>({
         disallowAutomaticRetry: false,
       });
     }
-    return normalizeTransportPayload<T>(rawText, signal, deadlineAt);
+    const parseStartMs = onTelemetry ? getMonotonicNowMs() : 0;
+    try {
+      const parsed = normalizeTransportPayload<T>(rawText, signal, deadlineAt);
+      if (onTelemetry) {
+        const nowMs = getMonotonicNowMs();
+        emitTelemetrySafe(onTelemetry, {
+          transportKind: 'android_catalog_file_transfer',
+          isFullCatalogRequest: true,
+          httpStatus: 200,
+          ok: true,
+          fetchDurationMs,
+          parseDurationMs: Math.max(0, nowMs - parseStartMs),
+          totalDurationMs: Math.max(0, nowMs - attemptStartMs),
+          payloadTextChars: rawText.length,
+          contentLengthHeaderBytes: null,
+          contentEncoding: null,
+          cacheControl: null,
+          ageHeaderSeconds: null,
+          etagPresent: false,
+          transferSizeBytes: null,
+          encodedBodySizeBytes: null,
+          decodedBodySizeBytes: null,
+          resourceTimingRestrictedByCors: false,
+          fromBrowserHttpCache: null,
+        });
+      }
+      return parsed;
+    } catch (parseErr: any) {
+      if (onTelemetry) {
+        const nowMs = getMonotonicNowMs();
+        emitTelemetrySafe(onTelemetry, {
+          transportKind: 'android_catalog_file_transfer',
+          isFullCatalogRequest: true,
+          httpStatus: 200,
+          ok: false,
+          errorCategory: parseErr?.errorCategory,
+          fetchDurationMs,
+          parseDurationMs: Math.max(0, nowMs - parseStartMs),
+          totalDurationMs: Math.max(0, nowMs - attemptStartMs),
+          payloadTextChars: rawText.length,
+          contentLengthHeaderBytes: null,
+          contentEncoding: null,
+          cacheControl: null,
+          ageHeaderSeconds: null,
+          etagPresent: false,
+          transferSizeBytes: null,
+          encodedBodySizeBytes: null,
+          decodedBodySizeBytes: null,
+          resourceTimingRestrictedByCors: false,
+          fromBrowserHttpCache: null,
+        });
+      }
+      throw parseErr;
+    }
   }
 
   if (isUsingCapacitorNativeTransport()) {
-    return executeCapacitorHttpGet<T>({ url, timeoutMs, signal });
+    return executeCapacitorHttpGet<T>({
+      url,
+      timeoutMs,
+      signal,
+      isFullCatalogRequest,
+      onTelemetry,
+    });
   }
 
-  return executeBrowserFetchGet<T>({ url, timeoutMs, signal });
+  return executeBrowserFetchGet<T>({
+    url,
+    timeoutMs,
+    signal,
+    isFullCatalogRequest,
+    onTelemetry,
+  });
 }
 
 async function executeBrowserFetchGet<T = any>({
   url,
   timeoutMs,
   signal,
+  isFullCatalogRequest = false,
+  onTelemetry,
 }: TransportRequestOptions): Promise<T> {
   const controller = new AbortController();
-  const deadlineAt = getMonotonicNowMs() + timeoutMs;
+  const attemptStartMs = getMonotonicNowMs();
+  const deadlineAt = attemptStartMs + timeoutMs;
   let didTimeout = false;
+  let telemetryEmitted = false;
+  let observedStatus: number | null = null;
+  let observedContentLength: number | null = null;
+  let observedContentEncoding: string | null = null;
+  let observedCacheControl: string | null = null;
+  let observedAgeSeconds: number | null = null;
+  let observedEtagPresent = false;
+  let observedFetchDurationMs = 0;
+  let observedPayloadTextChars: number | null = null;
 
   const isTimedOut = (): boolean => {
     if (didTimeout || getMonotonicNowMs() >= deadlineAt) {
@@ -710,6 +959,44 @@ async function executeBrowserFetchGet<T = any>({
     signal.addEventListener('abort', onCallerAbort, { once: true });
   }
 
+  const emitBrowserTelemetry = (
+    ok: boolean,
+    parseDurationMs: number,
+    err?: TransportError
+  ) => {
+    if (!onTelemetry || telemetryEmitted) return;
+    telemetryEmitted = true;
+    const totalDurationMs = Math.max(0, getMonotonicNowMs() - attemptStartMs);
+    const rt = collectBrowserResourceTiming(
+      url,
+      attemptStartMs,
+      observedPayloadTextChars
+    );
+    emitTelemetrySafe(onTelemetry, {
+      transportKind: 'web_fetch',
+      isFullCatalogRequest,
+      httpStatus: observedStatus ?? (typeof err?.status === 'number' ? err.status : null),
+      ok,
+      errorCategory: err?.errorCategory,
+      isRateLimited: err?.isRateLimited,
+      retryAfterMs: err?.retryAfterMs,
+      fetchDurationMs: observedFetchDurationMs || totalDurationMs,
+      parseDurationMs,
+      totalDurationMs,
+      payloadTextChars: observedPayloadTextChars,
+      contentLengthHeaderBytes: observedContentLength,
+      contentEncoding: observedContentEncoding,
+      cacheControl: observedCacheControl,
+      ageHeaderSeconds: observedAgeSeconds,
+      etagPresent: observedEtagPresent,
+      transferSizeBytes: rt.transferSizeBytes,
+      encodedBodySizeBytes: rt.encodedBodySizeBytes,
+      decodedBodySizeBytes: rt.decodedBodySizeBytes,
+      resourceTimingRestrictedByCors: rt.resourceTimingRestrictedByCors,
+      fromBrowserHttpCache: rt.fromBrowserHttpCache,
+    });
+  };
+
   try {
     let response: Response;
     try {
@@ -719,27 +1006,54 @@ async function executeBrowserFetchGet<T = any>({
       });
     } catch {
       if (signal?.aborted) {
-        throw createAbortError('physical', false);
+        const err = createAbortError('physical', false);
+        emitBrowserTelemetry(false, 0, err);
+        throw err;
       }
       if (isTimedOut()) {
-        throw createTimeoutError({
+        const err = createTimeoutError({
           cancellationMode: 'physical',
           nativeAttemptStillPending: false,
           disallowAutomaticRetry: false,
         });
+        emitBrowserTelemetry(false, 0, err);
+        throw err;
       }
-      throw createNetworkError();
+      const err = createNetworkError();
+      emitBrowserTelemetry(false, 0, err);
+      throw err;
+    }
+
+    if (onTelemetry) {
+      observedStatus = response.status;
+      observedContentLength = parseNonNegativeHeaderInt(
+        extractHeaderCaseInsensitive(response.headers, 'content-length')
+      );
+      observedContentEncoding =
+        extractHeaderCaseInsensitive(response.headers, 'content-encoding') ?? null;
+      observedCacheControl =
+        extractHeaderCaseInsensitive(response.headers, 'cache-control') ?? null;
+      observedAgeSeconds = parseNonNegativeHeaderInt(
+        extractHeaderCaseInsensitive(response.headers, 'age')
+      );
+      observedEtagPresent = Boolean(
+        extractHeaderCaseInsensitive(response.headers, 'etag')
+      );
     }
 
     if (signal?.aborted) {
-      throw createAbortError('physical', false);
+      const err = createAbortError('physical', false);
+      emitBrowserTelemetry(false, 0, err);
+      throw err;
     }
     if (isTimedOut()) {
-      throw createTimeoutError({
+      const err = createTimeoutError({
         cancellationMode: 'physical',
         nativeAttemptStillPending: false,
         disallowAutomaticRetry: false,
       });
+      emitBrowserTelemetry(false, 0, err);
+      throw err;
     }
 
     if (!response.ok) {
@@ -747,7 +1061,9 @@ async function executeBrowserFetchGet<T = any>({
         response.headers,
         'retry-after'
       );
-      throw createHttpError(response.status, response.statusText, retryAfterHeader);
+      const err = createHttpError(response.status, response.statusText, retryAfterHeader);
+      emitBrowserTelemetry(false, 0, err);
+      throw err;
     }
 
     let textData: string;
@@ -755,14 +1071,18 @@ async function executeBrowserFetchGet<T = any>({
       textData = await response.text();
     } catch {
       if (signal?.aborted) {
-        throw createAbortError('physical', false);
+        const err = createAbortError('physical', false);
+        emitBrowserTelemetry(false, 0, err);
+        throw err;
       }
       if (isTimedOut()) {
-        throw createTimeoutError({
+        const err = createTimeoutError({
           cancellationMode: 'physical',
           nativeAttemptStillPending: false,
           disallowAutomaticRetry: false,
         });
+        emitBrowserTelemetry(false, 0, err);
+        throw err;
       }
       const readError: TransportError = new Error(
         'Falha ao ler os dados da resposta do provedor.'
@@ -771,21 +1091,47 @@ async function executeBrowserFetchGet<T = any>({
       readError.isTransient = true;
       readError.isClientError = false;
       readError.status = response.status;
+      emitBrowserTelemetry(false, 0, readError);
       throw readError;
     }
 
+    if (onTelemetry) {
+      observedFetchDurationMs = Math.max(0, getMonotonicNowMs() - attemptStartMs);
+      observedPayloadTextChars = textData.length;
+    }
+
     if (signal?.aborted) {
-      throw createAbortError('physical', false);
+      const err = createAbortError('physical', false);
+      emitBrowserTelemetry(false, 0, err);
+      throw err;
     }
     if (isTimedOut()) {
-      throw createTimeoutError({
+      const err = createTimeoutError({
         cancellationMode: 'physical',
         nativeAttemptStillPending: false,
         disallowAutomaticRetry: false,
       });
+      emitBrowserTelemetry(false, 0, err);
+      throw err;
     }
 
-    return normalizeTransportPayload<T>(textData, signal, deadlineAt);
+    const parseStartMs = onTelemetry ? getMonotonicNowMs() : 0;
+    try {
+      const parsed = normalizeTransportPayload<T>(textData, signal, deadlineAt);
+      if (onTelemetry) {
+        emitBrowserTelemetry(true, Math.max(0, getMonotonicNowMs() - parseStartMs));
+      }
+      return parsed;
+    } catch (parseErr: any) {
+      if (onTelemetry) {
+        emitBrowserTelemetry(
+          false,
+          Math.max(0, getMonotonicNowMs() - parseStartMs),
+          parseErr
+        );
+      }
+      throw parseErr;
+    }
   } finally {
     clearTimeout(timeoutId);
     if (signal) {
@@ -798,10 +1144,13 @@ async function executeCapacitorHttpGet<T = any>({
   url,
   timeoutMs,
   signal,
+  isFullCatalogRequest = false,
+  onTelemetry,
 }: TransportRequestOptions): Promise<T> {
   const connectTimeout = Math.min(timeoutMs, MAX_NATIVE_CONNECT_TIMEOUT_MS);
   const readTimeout = timeoutMs;
-  const deadlineAt = getMonotonicNowMs() + timeoutMs;
+  const attemptStartMs = getMonotonicNowMs();
+  const deadlineAt = attemptStartMs + timeoutMs;
   const httpGetFn =
     capacitorHttpGetOverride ??
     ((opts: HttpOptions) => CapacitorHttp.get(opts));
@@ -810,6 +1159,7 @@ async function executeCapacitorHttpGet<T = any>({
   let nativeInvoked = false;
   let nativeSettled = false;
   let countedPendingLogical = false;
+  let capTelemetryEmitted = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let onCallerAbort: (() => void) | null = null;
 
@@ -917,16 +1267,77 @@ async function executeCapacitorHttpGet<T = any>({
     });
 
     const status = typeof response?.status === 'number' ? response.status : 0;
+    const fetchDurationMs = onTelemetry
+      ? Math.max(0, getMonotonicNowMs() - attemptStartMs)
+      : 0;
+    const payloadTextChars =
+      onTelemetry && typeof response?.data === 'string' ? response.data.length : null;
+    const contentLengthHeaderBytes = onTelemetry
+      ? parseNonNegativeHeaderInt(
+          extractHeaderCaseInsensitive(response?.headers, 'content-length')
+        )
+      : null;
+    const contentEncoding = onTelemetry
+      ? extractHeaderCaseInsensitive(response?.headers, 'content-encoding') ?? null
+      : null;
+    const cacheControl = onTelemetry
+      ? extractHeaderCaseInsensitive(response?.headers, 'cache-control') ?? null
+      : null;
+    const ageHeaderSeconds = onTelemetry
+      ? parseNonNegativeHeaderInt(
+          extractHeaderCaseInsensitive(response?.headers, 'age')
+        )
+      : null;
+    const etagPresent = onTelemetry
+      ? Boolean(extractHeaderCaseInsensitive(response?.headers, 'etag'))
+      : false;
+
+    const emitCapTelemetry = (
+      ok: boolean,
+      parseDurationMs: number,
+      err?: TransportError
+    ) => {
+      if (!onTelemetry || capTelemetryEmitted) return;
+      capTelemetryEmitted = true;
+      const totalDurationMs = Math.max(0, getMonotonicNowMs() - attemptStartMs);
+      emitTelemetrySafe(onTelemetry, {
+        transportKind: 'capacitor_http',
+        isFullCatalogRequest,
+        httpStatus: status || (typeof err?.status === 'number' ? err.status : null),
+        ok,
+        errorCategory: err?.errorCategory,
+        isRateLimited: err?.isRateLimited,
+        retryAfterMs: err?.retryAfterMs,
+        fetchDurationMs: fetchDurationMs || totalDurationMs,
+        parseDurationMs,
+        totalDurationMs,
+        payloadTextChars,
+        contentLengthHeaderBytes,
+        contentEncoding,
+        cacheControl,
+        ageHeaderSeconds,
+        etagPresent,
+        transferSizeBytes: null,
+        encodedBodySizeBytes: null,
+        decodedBodySizeBytes: null,
+        resourceTimingRestrictedByCors: false,
+        fromBrowserHttpCache: null,
+      });
+    };
 
     if (signal?.aborted) {
-      throw createAbortError('physical', false);
+      const err = createAbortError('physical', false);
+      emitCapTelemetry(false, 0, err);
+      throw err;
     }
     if (getMonotonicNowMs() >= deadlineAt) {
-      throw createTimeoutError({
+      const err = createTimeoutError({
         cancellationMode: 'physical',
         nativeAttemptStillPending: false,
         disallowAutomaticRetry: false,
       });
+      emitCapTelemetry(false, 0, err);
+      throw err;
     }
 
     if (status < 200 || status >= 300) {
@@ -934,14 +1345,61 @@ async function executeCapacitorHttpGet<T = any>({
         response?.headers,
         'retry-after'
       );
-      throw createHttpError(
+      const err = createHttpError(
         status || 500,
         status ? `Status ${status}` : 'Erro',
         retryAfterHeader
       );
+      emitCapTelemetry(false, 0, err);
+      throw err;
     }
 
-    return normalizeTransportPayload<T>(response.data, signal, deadlineAt);
+    const parseStartMs = onTelemetry ? getMonotonicNowMs() : 0;
+    try {
+      const parsed = normalizeTransportPayload<T>(response.data, signal, deadlineAt);
+      if (onTelemetry) {
+        emitCapTelemetry(true, Math.max(0, getMonotonicNowMs() - parseStartMs));
+      }
+      return parsed;
+    } catch (parseErr: any) {
+      if (onTelemetry) {
+        emitCapTelemetry(
+          false,
+          Math.max(0, getMonotonicNowMs() - parseStartMs),
+          parseErr
+        );
+      }
+      throw parseErr;
+    }
+  } catch (err: any) {
+    if (onTelemetry && !capTelemetryEmitted) {
+      capTelemetryEmitted = true;
+      const elapsed = Math.max(0, getMonotonicNowMs() - attemptStartMs);
+      emitTelemetrySafe(onTelemetry, {
+        transportKind: 'capacitor_http',
+        isFullCatalogRequest,
+        httpStatus: null,
+        ok: false,
+        errorCategory: err?.errorCategory,
+        isRateLimited: err?.isRateLimited,
+        retryAfterMs: err?.retryAfterMs,
+        fetchDurationMs: elapsed,
+        parseDurationMs: 0,
+        totalDurationMs: elapsed,
+        payloadTextChars: null,
+        contentLengthHeaderBytes: null,
+        contentEncoding: null,
+        cacheControl: null,
+        ageHeaderSeconds: null,
+        etagPresent: false,
+        transferSizeBytes: null,
+        encodedBodySizeBytes: null,
+        decodedBodySizeBytes: null,
+        resourceTimingRestrictedByCors: false,
+        fromBrowserHttpCache: null,
+      });
+    }
+    throw err;
   } finally {
     if (timeoutId !== null) {
       clearTimeout(timeoutId);

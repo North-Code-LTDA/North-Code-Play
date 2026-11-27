@@ -16,6 +16,7 @@ import {
   createAbortError,
   createHttpError,
   executeXtreamGetRequest,
+  type TransportAttemptTelemetry,
   type TransportCancellationMode,
   type TransportErrorCategory,
 } from "./httpTransport";
@@ -27,12 +28,31 @@ import {
   type XtreamRequestPriority,
 } from "./xtreamRequestCoordinator";
 
+export interface XtreamRequestTelemetry {
+  action: string;
+  hasCategoryFilter: boolean;
+  isFullCatalogRequest: boolean;
+  lane: XtreamRequestLane;
+  priority: XtreamRequestPriority;
+  totalDurationMs: number;
+  queueWaitMs: number;
+  rateLimitWaitMs: number;
+  attemptCount: number;
+  retryCount: number;
+  rateLimitHitCount: number;
+  succeeded: boolean;
+  aborted: boolean;
+  errorCategory?: XtreamErrorCategory;
+  attempts: TransportAttemptTelemetry[];
+}
+
 export interface RequestOptions {
   signal?: AbortSignal;
   priority?: XtreamRequestPriority;
   priorityHint?: number;
   lane?: XtreamRequestLane;
   dedupe?: boolean;
+  onTelemetry?: (event: XtreamRequestTelemetry) => void;
 }
 
 export type XtreamAuthErrorReason =
@@ -455,12 +475,22 @@ export class XtreamService {
     }
 
     const callerSignal = options?.signal;
+    const onTelemetry = options?.onTelemetry;
     const isAuthEndpoint = action === undefined;
     const isFullCatalogRequest = XtreamService.isFullCatalogQuery(action, params);
+    const hasCategoryFilter =
+      params?.category_id !== undefined &&
+      params?.category_id !== null &&
+      String(params.category_id).trim() !== "";
     const lane = options?.lane ?? XtreamService.resolveDefaultLane(action);
     const priority =
       options?.priority ?? XtreamService.resolveDefaultPriority(action);
     const maxAttempts = 2;
+
+    const getNowMs = () =>
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
 
     return runCoordinatedXtreamRequest<T>({
       credentials,
@@ -474,154 +504,235 @@ export class XtreamService {
       signal: callerSignal,
       execute: async (coordCtx) => {
         const effectiveSignal = coordCtx.signal;
+        const requestStartMs = onTelemetry ? getNowMs() : 0;
+        const attemptTelemetryList: TransportAttemptTelemetry[] | null = onTelemetry
+          ? []
+          : null;
+        let queueWaitMs = 0;
+        let rateLimitWaitMs = 0;
+        let attemptCount = 0;
+        let rateLimitHitCount = 0;
+        let succeeded = false;
+        let aborted = false;
+        let lastErrorCategory: XtreamErrorCategory | undefined;
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-          if (effectiveSignal.aborted) {
-            throw createAbortError();
-          }
-
-          let slot: { release: () => void };
-          while (true) {
-            await coordCtx.waitForRateLimit();
+        try {
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             if (effectiveSignal.aborted) {
+              aborted = true;
               throw createAbortError();
             }
-            const acquiredSlot = await coordCtx.acquireSlot();
-            if (effectiveSignal.aborted) {
-              acquiredSlot.release();
-              throw createAbortError();
-            }
-            // Revalida imediatamente após adquirir o slot para impedir que requisições
-            // anteriormente enfileiradas iniciem durante uma restrição HTTP 429 ativa.
-            if (coordCtx.hasActiveRateLimit()) {
-              acquiredSlot.release();
-              continue;
-            }
-            slot = acquiredSlot;
-            break;
-          }
 
-          try {
-            const payload = await executeXtreamGetRequest<T>({
-              url: targetUrl.toString(),
-              timeoutMs,
-              signal: effectiveSignal,
-              isFullCatalogRequest,
-            });
-            inspectPayloadForAuthError(payload);
-            return payload;
-          } catch (err: any) {
-            const isAbort = Boolean(
-              effectiveSignal.aborted ||
-                err?.isAborted === true ||
-                err?.message === "Operação cancelada pelo usuário."
-            );
-
-            if (isAbort) {
-              slot.release();
-              throw createAbortError(
-                err?.cancellationMode || "physical",
-                Boolean(err?.nativeAttemptStillPending)
-              );
-            }
-
-            const status = typeof err?.status === "number" ? err.status : undefined;
-            let effectiveErr: XtreamCategorizedError;
-
-            if (status === 401 && !err?.isAuthError) {
-              effectiveErr = isAuthEndpoint
-                ? createXtreamAuthError(
-                    "Acesso recusado pelo servidor do provedor (HTTP 401). Verifique as credenciais ou a situação da conta.",
-                    "http_unauthorized",
-                    401
-                  )
-                : createResourceUnauthorizedError();
-            } else if (status === 403) {
-              effectiveErr = createHttpError(403) as XtreamCategorizedError;
-              effectiveErr.isAuthError = false;
-              effectiveErr.requiresAuthRecheck = false;
-            } else if (status === 408 && err?.errorCategory !== "http_timeout") {
-              effectiveErr = createHttpError(408) as XtreamCategorizedError;
-              effectiveErr.isAuthError = false;
-            } else if (status === 429 && err?.errorCategory !== "http_rate_limited") {
-              effectiveErr = createHttpError(429) as XtreamCategorizedError;
-              effectiveErr.isAuthError = false;
-              if (
-                typeof err?.retryAfterMs === "number" &&
-                Number.isFinite(err.retryAfterMs) &&
-                err.retryAfterMs >= 0
-              ) {
-                effectiveErr.retryAfterMs = err.retryAfterMs;
+            let slot: { release: () => void };
+            while (true) {
+              const rlWaitStart = onTelemetry ? getNowMs() : 0;
+              await coordCtx.waitForRateLimit();
+              if (onTelemetry) {
+                rateLimitWaitMs += Math.max(0, getNowMs() - rlWaitStart);
               }
-            } else {
-              effectiveErr = err as XtreamCategorizedError;
+              if (effectiveSignal.aborted) {
+                aborted = true;
+                throw createAbortError();
+              }
+              const slotWaitStart = onTelemetry ? getNowMs() : 0;
+              const acquiredSlot = await coordCtx.acquireSlot();
+              if (onTelemetry) {
+                queueWaitMs += Math.max(0, getNowMs() - slotWaitStart);
+              }
+              if (effectiveSignal.aborted) {
+                acquiredSlot.release();
+                aborted = true;
+                throw createAbortError();
+              }
+              // Revalida imediatamente após adquirir o slot para impedir que requisições
+              // anteriormente enfileiradas iniciem durante uma restrição HTTP 429 ativa.
+              if (coordCtx.hasActiveRateLimit()) {
+                acquiredSlot.release();
+                continue;
+              }
+              slot = acquiredSlot;
+              break;
             }
 
-            // Política controlada de HTTP 429 com coordenação compartilhada por provedor:
-            // registrar a restrição ANTES de liberar o slot para que requisições enfileiradas
-            // enxerguem o bloqueio imediatamente ao serem admitidas.
-            if (effectiveErr?.isRateLimited || effectiveErr?.status === 429) {
-              const retryAfterMs = effectiveErr?.retryAfterMs;
-              coordCtx.recordRateLimit(retryAfterMs);
+            if (onTelemetry) {
+              attemptCount++;
+            }
+
+            try {
+              const payload = await executeXtreamGetRequest<T>({
+                url: targetUrl.toString(),
+                timeoutMs,
+                signal: effectiveSignal,
+                isFullCatalogRequest,
+                onTelemetry: attemptTelemetryList
+                  ? (ev) => {
+                      attemptTelemetryList.push(ev);
+                    }
+                  : undefined,
+              });
+              inspectPayloadForAuthError(payload);
+              succeeded = true;
+              return payload;
+            } catch (err: any) {
+              const isAbort = Boolean(
+                effectiveSignal.aborted ||
+                  err?.isAborted === true ||
+                  err?.message === "Operação cancelada pelo usuário."
+              );
+
+              if (isAbort) {
+                aborted = true;
+                lastErrorCategory = "aborted";
+                slot.release();
+                throw createAbortError(
+                  err?.cancellationMode || "physical",
+                  Boolean(err?.nativeAttemptStillPending)
+                );
+              }
+
+              const status = typeof err?.status === "number" ? err.status : undefined;
+              let effectiveErr: XtreamCategorizedError;
+
+              if (status === 401 && !err?.isAuthError) {
+                effectiveErr = isAuthEndpoint
+                  ? createXtreamAuthError(
+                      "Acesso recusado pelo servidor do provedor (HTTP 401). Verifique as credenciais ou a situação da conta.",
+                      "http_unauthorized",
+                      401
+                    )
+                  : createResourceUnauthorizedError();
+              } else if (status === 403) {
+                effectiveErr = createHttpError(403) as XtreamCategorizedError;
+                effectiveErr.isAuthError = false;
+                effectiveErr.requiresAuthRecheck = false;
+              } else if (status === 408 && err?.errorCategory !== "http_timeout") {
+                effectiveErr = createHttpError(408) as XtreamCategorizedError;
+                effectiveErr.isAuthError = false;
+              } else if (status === 429 && err?.errorCategory !== "http_rate_limited") {
+                effectiveErr = createHttpError(429) as XtreamCategorizedError;
+                effectiveErr.isAuthError = false;
+                if (
+                  typeof err?.retryAfterMs === "number" &&
+                  Number.isFinite(err.retryAfterMs) &&
+                  err.retryAfterMs >= 0
+                ) {
+                  effectiveErr.retryAfterMs = err.retryAfterMs;
+                }
+              } else {
+                effectiveErr = err as XtreamCategorizedError;
+              }
+
+              lastErrorCategory = effectiveErr?.errorCategory;
+
+              // Política controlada de HTTP 429 com coordenação compartilhada por provedor:
+              // registrar a restrição ANTES de liberar o slot para que requisições enfileiradas
+              // enxerguem o bloqueio imediatamente ao serem admitidas.
+              if (effectiveErr?.isRateLimited || effectiveErr?.status === 429) {
+                if (onTelemetry) {
+                  rateLimitHitCount++;
+                }
+                const retryAfterMs = effectiveErr?.retryAfterMs;
+                coordCtx.recordRateLimit(retryAfterMs);
+                slot.release();
+
+                const hasValidRetryAfter =
+                  typeof retryAfterMs === "number" &&
+                  Number.isFinite(retryAfterMs) &&
+                  retryAfterMs >= 0 &&
+                  retryAfterMs <= XtreamService.RATE_LIMIT_MAX_RETRY_AFTER_MS;
+
+                const requiredWaitMs = hasValidRetryAfter
+                  ? Math.max(getXtreamCoordinatorRateLimitMinWaitMs(), retryAfterMs)
+                  : Infinity;
+
+                const canRetryRateLimit =
+                  attempt < maxAttempts &&
+                  hasValidRetryAfter &&
+                  requiredWaitMs <= coordCtx.getRemainingRateLimitBudgetMs();
+
+                if (!canRetryRateLimit) {
+                  throw effectiveErr;
+                }
+
+                // A espera respeita o bloqueio compartilhado e consome o orçamento único de 15s da operação.
+                const rlRetryWaitStart = onTelemetry ? getNowMs() : 0;
+                await coordCtx.waitForRateLimit();
+                if (onTelemetry) {
+                  rateLimitWaitMs += Math.max(0, getNowMs() - rlRetryWaitStart);
+                }
+                continue;
+              }
+
+              // Libera o slot antes de retornar erro ou dormir em retentativas transitórias
               slot.release();
 
-              const hasValidRetryAfter =
-                typeof retryAfterMs === "number" &&
-                Number.isFinite(retryAfterMs) &&
-                retryAfterMs >= 0 &&
-                retryAfterMs <= XtreamService.RATE_LIMIT_MAX_RETRY_AFTER_MS;
-
-              const requiredWaitMs = hasValidRetryAfter
-                ? Math.max(getXtreamCoordinatorRateLimitMinWaitMs(), retryAfterMs)
-                : Infinity;
-
-              const canRetryRateLimit =
-                attempt < maxAttempts &&
-                hasValidRetryAfter &&
-                requiredWaitMs <= coordCtx.getRemainingRateLimitBudgetMs();
-
-              if (!canRetryRateLimit) {
+              // Nunca repetir rejeições de autenticação, erros HTTP 4xx (exceto 408/429 tratados acima) ou formato inválido/vazio
+              if (
+                effectiveErr?.isAuthError ||
+                effectiveErr?.isClientError ||
+                effectiveErr?.isFatalFormat
+              ) {
                 throw effectiveErr;
               }
 
-              // A espera respeita o bloqueio compartilhado e consome o orçamento único de 15s da operação.
-              await coordCtx.waitForRateLimit();
-              continue;
+              // Proteção contra sobreposição nativa (CapacitorHttp e CatalogFileTransfer):
+              // nunca iniciar retentativa automática enquanto a tentativa nativa anterior não tiver encerramento confirmado.
+              if (
+                effectiveErr?.nativeAttemptStillPending === true ||
+                effectiveErr?.disallowAutomaticRetry === true
+              ) {
+                throw effectiveErr;
+              }
+
+              if (effectiveErr?.isTransient !== true || attempt >= maxAttempts) {
+                throw effectiveErr;
+              }
+
+              // Uma única nova tentativa controlada para falhas transitórias (rede, CORS, timeout físico, HTTP 408 ou 5xx)
+              await coordCtx.sleep(XtreamService.retryDelayMs);
+            } finally {
+              slot.release();
             }
+          }
 
-            // Libera o slot antes de retornar erro ou dormir em retentativas transitórias
-            slot.release();
-
-            // Nunca repetir rejeições de autenticação, erros HTTP 4xx (exceto 408/429 tratados acima) ou formato inválido/vazio
-            if (
-              effectiveErr?.isAuthError ||
-              effectiveErr?.isClientError ||
-              effectiveErr?.isFatalFormat
-            ) {
-              throw effectiveErr;
+          throw new Error("Falha ao comunicar com o servidor do provedor.");
+        } catch (outerErr: any) {
+          if (
+            effectiveSignal.aborted ||
+            outerErr?.isAborted === true ||
+            outerErr?.name === "AbortError"
+          ) {
+            aborted = true;
+            lastErrorCategory = "aborted";
+          } else if (!lastErrorCategory && outerErr?.errorCategory) {
+            lastErrorCategory = outerErr.errorCategory;
+          }
+          throw outerErr;
+        } finally {
+          if (onTelemetry) {
+            try {
+              onTelemetry({
+                action: action ?? "authenticate",
+                hasCategoryFilter,
+                isFullCatalogRequest,
+                lane,
+                priority,
+                totalDurationMs: Math.max(0, getNowMs() - requestStartMs),
+                queueWaitMs,
+                rateLimitWaitMs,
+                attemptCount,
+                retryCount: Math.max(0, attemptCount - 1),
+                rateLimitHitCount,
+                succeeded,
+                aborted,
+                errorCategory: lastErrorCategory,
+                attempts: attemptTelemetryList ?? [],
+              });
+            } catch {
+              // Instrumentação diagnóstica opcional nunca deve interferir na requisição.
             }
-
-            // Proteção contra sobreposição nativa (CapacitorHttp e CatalogFileTransfer):
-            // nunca iniciar retentativa automática enquanto a tentativa nativa anterior não tiver encerramento confirmado.
-            if (
-              effectiveErr?.nativeAttemptStillPending === true ||
-              effectiveErr?.disallowAutomaticRetry === true
-            ) {
-              throw effectiveErr;
-            }
-
-            if (effectiveErr?.isTransient !== true || attempt >= maxAttempts) {
-              throw effectiveErr;
-            }
-
-            // Uma única nova tentativa controlada para falhas transitórias (rede, CORS, timeout físico, HTTP 408 ou 5xx)
-            await coordCtx.sleep(XtreamService.retryDelayMs);
-          } finally {
-            slot.release();
           }
         }
-
-        throw new Error("Falha ao comunicar com o servidor do provedor.");
       },
     });
   }
