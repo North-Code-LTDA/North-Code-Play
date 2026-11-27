@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { Suspense, useEffect, useState, useRef } from 'react';
 import {
   Settings,
   User,
@@ -12,6 +12,7 @@ import {
   Users,
   Gauge,
   Check,
+  Activity,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useXtreamCredentials } from '../context/XtreamContext';
@@ -22,6 +23,11 @@ import {
   PerformanceProfilePreference,
 } from '../platform/performanceProfile';
 import { DisplaySetupModal } from '../components/DisplaySetupModal';
+
+// [TEMPORÁRIO C01.R] Carregamento sob demanda do diagnóstico de catálogos (remover antes do lançamento comercial)
+const CatalogBenchmarkModal = React.lazy(
+  () => import('../../diagnostics/CatalogBenchmarkModal')
+);
 import {
   getNavMode,
   focusElementSafely,
@@ -70,9 +76,12 @@ export const ConfigView = React.memo(function ConfigView({
   const [error, setError] = useState<string | null>(null);
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [modalInitialStep, setModalInitialStep] = useState<'device' | 'tv-calibrate'>('device');
+  // [TEMPORÁRIO C01.R] Estado do modal de diagnóstico de catálogos
+  const [isCatalogDiagnosticOpen, setIsCatalogDiagnosticOpen] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const adjustTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const diagnosticTriggerRef = useRef<HTMLButtonElement | null>(null);
   const hasInitialFocusedRef = useRef(false);
 
   const {
@@ -177,6 +186,27 @@ export const ConfigView = React.memo(function ConfigView({
     }, 0);
   };
 
+  // [TEMPORÁRIO C01.R] Abertura e fechamento do diagnóstico com restauração segura de foco
+  const handleOpenCatalogDiagnostic = (triggerEl: HTMLButtonElement) => {
+    diagnosticTriggerRef.current = triggerEl;
+    setIsCatalogDiagnosticOpen(true);
+  };
+
+  const handleCloseCatalogDiagnostic = () => {
+    setIsCatalogDiagnosticOpen(false);
+    const triggerEl = diagnosticTriggerRef.current;
+    setTimeout(() => {
+      if (triggerEl && document.body.contains(triggerEl)) {
+        focusElementSafely(triggerEl);
+      } else if (containerRef.current) {
+        const fallback = containerRef.current.querySelector<HTMLElement>(
+          '[data-config-catalog-diagnostic-trigger="true"], [data-config-primary="true"]'
+        );
+        if (fallback) focusElementSafely(fallback);
+      }
+    }, 0);
+  };
+
   const rawUsername =
     typeof accountInfo?.username === 'string' && accountInfo.username.trim().length > 0
       ? accountInfo.username.trim()
@@ -203,7 +233,7 @@ export const ConfigView = React.memo(function ConfigView({
         ref={containerRef}
         data-nav-zone="content"
         data-scroll-container="true"
-        inert={isAdjustModalOpen ? true : undefined}
+        inert={isAdjustModalOpen || isCatalogDiagnosticOpen ? true : undefined}
         className="nc-tv-content-pad nc-safe-screen w-full h-full min-w-0 min-h-0 flex flex-col items-center justify-start px-4 py-6 sm:px-6 sm:py-8 md:px-10 md:py-10 overflow-y-auto overflow-x-hidden custom-scrollbar bg-nc-bg"
       >
         <motion.div
@@ -489,6 +519,48 @@ export const ConfigView = React.memo(function ConfigView({
               </div>
             </section>
           )}
+          {/* [TEMPORÁRIO C01.R] 5. Diagnóstico de catálogos (disponível em Web e Android APK) */}
+          <section
+            aria-label="Diagnóstico de catálogos"
+            data-scroll-block="true"
+            data-config-section="catalog-diagnostic"
+            className="bg-nc-bg-card border border-white/10 rounded-2xl p-5 sm:p-6 md:p-7 space-y-4"
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <Activity className="w-5 h-5 text-white/80 shrink-0" aria-hidden="true" />
+                <h2 className="nc-heading-section font-semibold text-white">
+                  Diagnóstico de catálogos
+                </h2>
+              </div>
+              <span className="nc-text-meta text-nc-text-secondary">
+                Ferramenta temporária de desenvolvimento.
+              </span>
+            </div>
+
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <p className="nc-text-subtitle text-nc-text-secondary leading-relaxed max-w-2xl">
+                Compare as estratégias de carregamento de canais, filmes e séries utilizando sua
+                conta atual.
+              </p>
+
+              <div
+                data-nav-row="config-catalog-diagnostic-actions"
+                className="nc-action-group shrink-0"
+              >
+                <button
+                  type="button"
+                  data-nav-item="true"
+                  data-config-catalog-diagnostic-trigger="true"
+                  onClick={(e) => handleOpenCatalogDiagnostic(e.currentTarget)}
+                  className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 py-2.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.15] text-white border border-white/15 font-medium text-sm active:scale-[0.98] transition-all duration-150 whitespace-nowrap cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-white/90"
+                >
+                  <Activity className="w-4 h-4 text-white/85 shrink-0" aria-hidden="true" />
+                  <span>Abrir diagnóstico de catálogos</span>
+                </button>
+              </div>
+            </div>
+          </section>
         </motion.div>
       </div>
 
@@ -499,6 +571,33 @@ export const ConfigView = React.memo(function ConfigView({
         onComplete={handleCloseAdjustModal}
         onCancel={handleCloseAdjustModal}
       />
+
+      {/* [TEMPORÁRIO C01.R] Modal carregado sob demanda apenas quando aberto */}
+      {isCatalogDiagnosticOpen && (
+        <Suspense
+          fallback={
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Carregando diagnóstico de catálogos"
+              className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex items-center justify-center p-4"
+            >
+              <div className="bg-nc-bg-card border border-white/15 rounded-2xl px-6 py-5 flex items-center gap-3 text-white">
+                <Loader2 className="w-5 h-5 animate-spin shrink-0" aria-hidden="true" />
+                <span className="text-sm font-medium">
+                  Carregando diagnóstico de catálogos...
+                </span>
+              </div>
+            </div>
+          }
+        >
+          <CatalogBenchmarkModal
+            isOpen={isCatalogDiagnosticOpen}
+            onClose={handleCloseCatalogDiagnostic}
+            isAccountInfoLoading={loading}
+          />
+        </Suspense>
+      )}
     </>
   );
 });

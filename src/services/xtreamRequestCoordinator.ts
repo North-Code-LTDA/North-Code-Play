@@ -900,6 +900,36 @@ export function resetXtreamCoordinatorForTest(): void {
   invalidateXtreamCoordinatorSession();
 }
 
+export interface XtreamCoordinatorActivitySnapshot {
+  activeGlobal: number;
+  activeByLane: Record<XtreamRequestLane, number>;
+  queuedSlots: number;
+  inFlightCount: number;
+  activeNonDedupedCount: number;
+  hasActiveOperations: boolean;
+}
+
+/**
+ * Snapshot somente-leitura e sanitizado da atividade atual no coordenador X02,
+ * permitindo detectar operações comerciais concorrentes sem expor credenciais/URLs
+ * e sem interferir na sessão global.
+ */
+export function getXtreamCoordinatorActivitySnapshot(): XtreamCoordinatorActivitySnapshot {
+  const hasActiveOperations =
+    activeGlobal > 0 ||
+    slotQueue.length > 0 ||
+    inFlightMap.size > 0 ||
+    activeNonDedupedControllers.size > 0;
+  return {
+    activeGlobal,
+    activeByLane: { ...activeByLane },
+    queuedSlots: slotQueue.length,
+    inFlightCount: inFlightMap.size,
+    activeNonDedupedCount: activeNonDedupedControllers.size,
+    hasActiveOperations,
+  };
+}
+
 export function getXtreamCoordinatorStatsForTest(): {
   sessionEpoch: number;
   activeGlobal: number;
