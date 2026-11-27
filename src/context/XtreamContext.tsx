@@ -19,6 +19,12 @@ import {
   isAuthenticationRejectedError,
 } from "../services/xtreamService";
 import {
+  invalidateXtreamCoordinatorSession,
+  type XtreamRequestPriority,
+} from "../services/xtreamRequestCoordinator";
+import { clearHeroSessionCache } from "../services/heroSessionCache";
+import { clearLiveEpgSessionCache } from "../utils/liveEpgManager";
+import {
   buildReconciledCredentialsFromAuth,
   getCredentialsIdentityKey,
   isLegacyAmbiguousOutputFormats,
@@ -137,12 +143,35 @@ export const XtreamContext = createContext<XtreamContextData | undefined>(
   undefined
 );
 
-interface QueueItem {
-  type: OperationType;
+interface InFlightOperationEntry {
   priority: number;
-  run: (signal: AbortSignal) => Promise<void>;
-  resolve: () => void;
-  reject: (err: any) => void;
+  promise: Promise<void>;
+  elevate?: (priority: XtreamRequestPriority, priorityHint: number) => void;
+}
+
+const OPERATION_TO_ACTION: Record<OperationType, string> = {
+  live_categories: "get_live_categories",
+  vod_categories: "get_vod_categories",
+  series_categories: "get_series_categories",
+  live_catalog: "get_live_streams",
+  vod_catalog: "get_vod_streams",
+  series_catalog: "get_series",
+};
+
+function mapOperationPriorityToCoordinator(priority: number): {
+  priority: XtreamRequestPriority;
+  priorityHint: number;
+} {
+  if (priority >= 100) {
+    return { priority: "user", priorityHint: 10 };
+  }
+  if (priority >= 5) {
+    return { priority: "high", priorityHint: priority };
+  }
+  if (priority >= 3) {
+    return { priority: "normal", priorityHint: priority };
+  }
+  return { priority: "background", priorityHint: priority };
 }
 
 export function XtreamProvider({
@@ -154,6 +183,7 @@ export function XtreamProvider({
 }) {
   // Session tracking to invalidate work when credentials change
   const sessionRef = useRef<number>(0);
+  const activeSessionIdentityRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const credentialsPropRef = useRef<XtreamCredentials | null>(credentials);
   credentialsPropRef.current = credentials;
@@ -310,7 +340,11 @@ export function XtreamProvider({
             return fallbackMsg;
           }
 
-          recheckPromise = XtreamService.authenticate(credentials, { signal })
+          recheckPromise = XtreamService.authenticate(credentials, {
+            signal,
+            lane: "auth",
+            priority: "critical",
+          })
             .then((authRes) => {
               if (sessionRef.current === currentSession && !signal?.aborted) {
                 lastAuthRecheckRef.current = {
@@ -416,16 +450,10 @@ export function XtreamProvider({
   const latestVodCategoryRef = useRef<string | undefined>(undefined);
   const latestSeriesCategoryRef = useRef<string | undefined>(undefined);
 
-  // In-flight operation promises
-  const inFlightPromisesRef = useRef<Map<OperationType, Promise<void>>>(
-    new Map()
-  );
-
-  // Concurrency queue references (Max 2 simultaneous operations)
-  const MAX_CONCURRENT = 2;
-  const activeCountRef = useRef<number>(0);
-  const queueRef = useRef<QueueItem[]>([]);
-  const pendingSetRef = useRef<Set<OperationType>>(new Set());
+  // In-flight domain operation promises (deduplicação de estado React; concorrência e fila delegadas ao coordenador compartilhado)
+  const inFlightOperationsRef = useRef<
+    Map<OperationType, InFlightOperationEntry>
+  >(new Map());
 
   // Helpers to update operation status and errors immediately
   const setOperationStatus = useCallback(
@@ -480,120 +508,120 @@ export function XtreamProvider({
     }
   }, []);
 
-  // Pump queue to execute next available task when slots are free
-  const processQueue = useCallback(() => {
-    const queueSession = sessionRef.current;
-    while (
-      activeCountRef.current < MAX_CONCURRENT &&
-      queueRef.current.length > 0
-    ) {
-      if (sessionRef.current !== queueSession) break;
-      // Sort queue by priority descending (higher priority first)
-      queueRef.current.sort((a, b) => b.priority - a.priority);
-      const nextItem = queueRef.current.shift();
-      if (!nextItem) break;
-
-      activeCountRef.current++;
-      const currentSignal = abortControllerRef.current?.signal;
-
-      (async () => {
-        try {
-          if (currentSignal?.aborted || sessionRef.current !== queueSession) {
-            nextItem.resolve();
-            return;
-          }
-          await nextItem.run(currentSignal || new AbortController().signal);
-          nextItem.resolve();
-        } catch {
-          // Internal catch ensures tasks don't leave unhandled promise rejections
-          nextItem.resolve();
-        } finally {
-          // CRITICAL: Only mutate counters and trigger processQueue if session is still current
-          if (sessionRef.current === queueSession) {
-            activeCountRef.current = Math.max(0, activeCountRef.current - 1);
-            pendingSetRef.current.delete(nextItem.type);
-            inFlightPromisesRef.current.delete(nextItem.type);
-            processQueue();
-          }
-        }
-      })();
-    }
-  }, []);
-
   /**
-   * Enqueues an operation with concurrency coordination and deduplication.
-   * Registers operation as loading immediately upon enqueuing.
+   * Coordena uma operação de catálogo/categoria deduplicada por domínio,
+   * delegando limites de concorrência (2 catálogos / 4 global), prioridade
+   * e rate-limit ao coordenador compartilhado via XtreamService.
    */
   const enqueueOperation = useCallback(
     (
       type: OperationType,
       priority: number,
-      task: (signal: AbortSignal) => Promise<void>
-    ): Promise<void> => {
-      // If already running or pending, return existing promise (and elevate priority if needed)
-      const existingPromise = inFlightPromisesRef.current.get(type);
-      if (existingPromise) {
-        const queued = queueRef.current.find((item) => item.type === type);
-        if (queued && priority > queued.priority) {
-          queued.priority = priority;
-          processQueue();
+      task: (
+        signal: AbortSignal,
+        coordPriority: {
+          priority: XtreamRequestPriority;
+          priorityHint: number;
         }
-        return existingPromise;
+      ) => Promise<void>
+    ): Promise<void> => {
+      const mappedPriority = mapOperationPriorityToCoordinator(priority);
+
+      const existing = inFlightOperationsRef.current.get(type);
+      if (existing) {
+        if (priority > existing.priority) {
+          existing.priority = priority;
+          existing.elevate?.(
+            mappedPriority.priority,
+            mappedPriority.priorityHint
+          );
+        }
+        return existing.promise;
       }
 
       // Mark status as loading and clear error IMMEDIATELY upon enqueuing
       setOperationStatus(type, "loading");
       clearOperationError(type);
-      pendingSetRef.current.add(type);
 
-      let taskResolve!: () => void;
-      let taskReject!: (err: any) => void;
-      const promise = new Promise<void>((resolve, reject) => {
-        taskResolve = resolve;
-        taskReject = reject;
-      });
+      const opSession = sessionRef.current;
+      const currentSignal =
+        abortControllerRef.current?.signal || new AbortController().signal;
+      const credsAtStart = credentialsPropRef.current;
 
-      inFlightPromisesRef.current.set(type, promise);
-
-      queueRef.current.push({
-        type,
+      const entry: InFlightOperationEntry = {
         priority,
-        run: task,
-        resolve: taskResolve,
-        reject: taskReject,
-      });
+        promise: Promise.resolve(),
+        elevate: (nextPriority, nextHint) => {
+          XtreamService.elevateRequestPriority(
+            credsAtStart,
+            OPERATION_TO_ACTION[type],
+            {},
+            nextPriority,
+            nextHint
+          );
+        },
+      };
 
-      // Schedule execution
-      processQueue();
+      const promise = (async () => {
+        try {
+          if (currentSignal.aborted || sessionRef.current !== opSession) {
+            return;
+          }
+          await task(currentSignal, mappedPriority);
+        } catch {
+          // Internal catch ensures tasks don't leave unhandled promise rejections
+        } finally {
+          if (
+            sessionRef.current === opSession &&
+            inFlightOperationsRef.current.get(type) === entry
+          ) {
+            inFlightOperationsRef.current.delete(type);
+          }
+        }
+      })();
+
+      entry.promise = promise;
+      inFlightOperationsRef.current.set(type, entry);
       return promise;
     },
-    [processQueue, setOperationStatus, clearOperationError]
+    [setOperationStatus, clearOperationError]
   );
 
-  // Reset and cancel all work on credentials change or unmount
+  // Limpeza completa de caches/coordenador no unmount do provider (ex.: saída para tela de Login)
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      if (activeSessionIdentityRef.current !== null) {
+        activeSessionIdentityRef.current = null;
+        clearLiveEpgSessionCache();
+        clearHeroSessionCache();
+        invalidateXtreamCoordinatorSession();
+      }
+    };
+  }, []);
+
+  // Reset and cancel all work on credentials change
   useEffect(() => {
     // Invalidate previous session
     sessionRef.current++;
     const currentSession = sessionRef.current;
+    const nextIdentityKey = getCredentialsIdentityKey(credentials);
+    const prevIdentityKey = activeSessionIdentityRef.current;
 
     // Abort active HTTP calls
     abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
 
-    // Clear queue and pending tasks cleanly without emitting unhandled promise rejections
-    queueRef.current.forEach((item) => {
-      try {
-        item.resolve();
-      } catch {
-        // ignore
-      }
-    });
-    queueRef.current = [];
-    pendingSetRef.current.clear();
-    inFlightPromisesRef.current.clear();
+    if (prevIdentityKey !== null && prevIdentityKey !== nextIdentityKey) {
+      clearLiveEpgSessionCache();
+      clearHeroSessionCache();
+      invalidateXtreamCoordinatorSession();
+    }
+    activeSessionIdentityRef.current = nextIdentityKey;
+
+    inFlightOperationsRef.current.clear();
     authRecheckInFlightRef.current = null;
     lastAuthRecheckRef.current = null;
-    activeCountRef.current = 0;
 
     // Reset data
     setLiveCategories([]);
@@ -647,13 +675,16 @@ export function XtreamProvider({
     if (!credentials) return;
 
     // Queue initial category fetches with controlled priority: Live TV first (priority 6), VOD (4), Series (3)
-    enqueueOperation("live_categories", 6, async (signal) => {
+    enqueueOperation("live_categories", 6, async (signal, coordPrio) => {
       if (sessionRef.current !== currentSession || signal.aborted) {
         return;
       }
       try {
         const cats = await XtreamService.getLiveCategories(credentials, {
           signal,
+          lane: "catalog",
+          priority: coordPrio.priority,
+          priorityHint: coordPrio.priorityHint,
         });
         if (sessionRef.current !== currentSession || signal.aborted) {
           return;
@@ -682,13 +713,16 @@ export function XtreamProvider({
       }
     });
 
-    enqueueOperation("vod_categories", 4, async (signal) => {
+    enqueueOperation("vod_categories", 4, async (signal, coordPrio) => {
       if (sessionRef.current !== currentSession || signal.aborted) {
         return;
       }
       try {
         const cats = await XtreamService.getVodCategories(credentials, {
           signal,
+          lane: "catalog",
+          priority: coordPrio.priority,
+          priorityHint: coordPrio.priorityHint,
         });
         if (sessionRef.current !== currentSession || signal.aborted) {
           return;
@@ -717,13 +751,16 @@ export function XtreamProvider({
       }
     });
 
-    enqueueOperation("series_categories", 3, async (signal) => {
+    enqueueOperation("series_categories", 3, async (signal, coordPrio) => {
       if (sessionRef.current !== currentSession || signal.aborted) {
         return;
       }
       try {
         const cats = await XtreamService.getSeriesCategories(credentials, {
           signal,
+          lane: "catalog",
+          priority: coordPrio.priority,
+          priorityHint: coordPrio.priorityHint,
         });
         if (sessionRef.current !== currentSession || signal.aborted) {
           return;
@@ -796,7 +833,11 @@ export function XtreamProvider({
     const controller = new AbortController();
     const credsSnapshot = credentials;
 
-    XtreamService.authenticate(credsSnapshot, { signal: controller.signal })
+    XtreamService.authenticate(credsSnapshot, {
+      signal: controller.signal,
+      lane: "auth",
+      priority: "background",
+    })
       .then((authResponse) => {
         if (
           controller.signal.aborted ||
@@ -844,13 +885,16 @@ export function XtreamProvider({
   const fetchLiveCategories = useCallback(async () => {
     if (!credentials) return;
     const currentSession = sessionRef.current;
-    return enqueueOperation("live_categories", 100, async (signal) => {
+    return enqueueOperation("live_categories", 100, async (signal, coordPrio) => {
       if (sessionRef.current !== currentSession || signal.aborted) {
         return;
       }
       try {
         const cats = await XtreamService.getLiveCategories(credentials, {
           signal,
+          lane: "catalog",
+          priority: coordPrio.priority,
+          priorityHint: coordPrio.priorityHint,
         });
         if (sessionRef.current !== currentSession || signal.aborted) {
           return;
@@ -883,13 +927,16 @@ export function XtreamProvider({
   const fetchVodCategories = useCallback(async () => {
     if (!credentials) return;
     const currentSession = sessionRef.current;
-    return enqueueOperation("vod_categories", 100, async (signal) => {
+    return enqueueOperation("vod_categories", 100, async (signal, coordPrio) => {
       if (sessionRef.current !== currentSession || signal.aborted) {
         return;
       }
       try {
         const cats = await XtreamService.getVodCategories(credentials, {
           signal,
+          lane: "catalog",
+          priority: coordPrio.priority,
+          priorityHint: coordPrio.priorityHint,
         });
         if (sessionRef.current !== currentSession || signal.aborted) {
           return;
@@ -922,13 +969,16 @@ export function XtreamProvider({
   const fetchSeriesCategories = useCallback(async () => {
     if (!credentials) return;
     const currentSession = sessionRef.current;
-    return enqueueOperation("series_categories", 100, async (signal) => {
+    return enqueueOperation("series_categories", 100, async (signal, coordPrio) => {
       if (sessionRef.current !== currentSession || signal.aborted) {
         return;
       }
       try {
         const cats = await XtreamService.getSeriesCategories(credentials, {
           signal,
+          lane: "catalog",
+          priority: coordPrio.priority,
+          priorityHint: coordPrio.priorityHint,
         });
         if (sessionRef.current !== currentSession || signal.aborted) {
           return;
@@ -988,13 +1038,16 @@ export function XtreamProvider({
       const currentSession = sessionRef.current;
       const priority = categoryId ? 100 : 5; // User category request has high priority
 
-      return enqueueOperation("live_catalog", priority, async (signal) => {
+      return enqueueOperation("live_catalog", priority, async (signal, coordPrio) => {
         if (sessionRef.current !== currentSession || signal.aborted) {
           return;
         }
         try {
           const streams = await XtreamService.getLiveStreams(credentials, undefined, {
             signal,
+            lane: "catalog",
+            priority: coordPrio.priority,
+            priorityHint: coordPrio.priorityHint,
           });
           if (sessionRef.current !== currentSession || signal.aborted) {
             return;
@@ -1063,13 +1116,16 @@ export function XtreamProvider({
       const currentSession = sessionRef.current;
       const priority = categoryId ? 100 : 2; // User category request has high priority
 
-      return enqueueOperation("vod_catalog", priority, async (signal) => {
+      return enqueueOperation("vod_catalog", priority, async (signal, coordPrio) => {
         if (sessionRef.current !== currentSession || signal.aborted) {
           return;
         }
         try {
           const streams = await XtreamService.getVodStreams(credentials, undefined, {
             signal,
+            lane: "catalog",
+            priority: coordPrio.priority,
+            priorityHint: coordPrio.priorityHint,
           });
           if (sessionRef.current !== currentSession || signal.aborted) {
             return;
@@ -1138,13 +1194,16 @@ export function XtreamProvider({
       const currentSession = sessionRef.current;
       const priority = categoryId ? 100 : 1; // User category request has high priority
 
-      return enqueueOperation("series_catalog", priority, async (signal) => {
+      return enqueueOperation("series_catalog", priority, async (signal, coordPrio) => {
         if (sessionRef.current !== currentSession || signal.aborted) {
           return;
         }
         try {
           const streams = await XtreamService.getSeries(credentials, undefined, {
             signal,
+            lane: "catalog",
+            priority: coordPrio.priority,
+            priorityHint: coordPrio.priorityHint,
           });
           if (sessionRef.current !== currentSession || signal.aborted) {
             return;
@@ -1228,6 +1287,8 @@ export function XtreamProvider({
       try {
         const authResponse = await XtreamService.authenticate(credentials, {
           signal: abortControllerRef.current?.signal,
+          lane: "auth",
+          priority: "critical",
         });
         if (sessionRef.current !== currentSession) return;
         const reconciled = buildReconciledCredentialsFromAuth(
@@ -1266,6 +1327,8 @@ export function XtreamProvider({
       try {
         const authResponse = await XtreamService.authenticate(credentials, {
           signal: abortControllerRef.current?.signal,
+          lane: "auth",
+          priority: "critical",
         });
         if (sessionRef.current !== currentSession) return;
         const currentId = getCredentialsIdentityKey(credentials);

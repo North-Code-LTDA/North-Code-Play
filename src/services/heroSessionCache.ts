@@ -1,4 +1,5 @@
 import { XtreamService } from './xtreamService';
+import type { XtreamRequestPriority } from './xtreamRequestCoordinator';
 import { normalizeImageSource, normalizeServerUrl } from '../utils/mediaUtils';
 
 const MAX_METADATA_CACHE_ENTRIES = 60;
@@ -10,6 +11,8 @@ interface InFlightDetailsEntry {
   key: string;
   epoch: number;
   scopeKey: string;
+  target: { kind: 'vod' | 'series'; targetId: string };
+  priority: XtreamRequestPriority;
   abortController: AbortController | null;
   activeConsumers: number;
   settled: boolean;
@@ -175,16 +178,27 @@ export function needsHeroDetailsFetch(credentials: any, item: any): boolean {
 }
 
 function createAbortError(): Error {
-  const err = new Error('Operação cancelada pelo usuário.');
+  const err: any = new Error('Operação cancelada pelo usuário.');
   err.name = 'AbortError';
+  err.isAborted = true;
+  err.errorCategory = 'aborted';
   return err;
 }
+
+const HERO_PRIORITY_RANK: Record<XtreamRequestPriority, number> = {
+  background: 0,
+  normal: 1,
+  high: 2,
+  user: 3,
+  critical: 4,
+};
 
 /**
  * Fetches or reuses session-cached / in-flight getVodInfo / getSeriesInfo for an item.
  * Features:
- * - Bounded session LRU cache isolated by account/server/epoch.
+ * - Bounded session LRU cache isolated by account/server/epoch (60 metadata / 3 full series episodes).
  * - Strictly bounded series `episodes` retention (never kept in long-lived metadata cache).
+ * - Coordinated priority forwarding (interactive details/play vs passive HeroBanner enrichment).
  * - Consumer-safe cancellation: cancelling one consumer's AbortSignal only aborts the
  *   underlying network request when zero active consumers remain.
  */
@@ -195,11 +209,14 @@ export function fetchOrReuseHeroDetails(
     signal?: AbortSignal;
     requireEpisodes?: boolean;
     throwOnError?: boolean;
+    priority?: XtreamRequestPriority;
   }
 ): Promise<any> {
   const throwOnError = Boolean(options?.throwOnError);
   const requireEpisodes = Boolean(options?.requireEpisodes);
   const callerSignal = options?.signal;
+  const requestedPriority: XtreamRequestPriority =
+    options?.priority ?? (throwOnError || requireEpisodes ? 'user' : 'background');
 
   if (callerSignal?.aborted) {
     return throwOnError ? Promise.reject(createAbortError()) : Promise.resolve(null);
@@ -223,7 +240,22 @@ export function fetchOrReuseHeroDetails(
   const startEpoch = sessionEpoch;
 
   let entry = inFlightDetailsMap.get(cacheKey);
-  if (!entry) {
+  if (entry && !entry.settled && entry.epoch === startEpoch) {
+    if (HERO_PRIORITY_RANK[requestedPriority] > HERO_PRIORITY_RANK[entry.priority]) {
+      entry.priority = requestedPriority;
+      const action = target.kind === 'vod' ? 'get_vod_info' : 'get_series_info';
+      const params =
+        target.kind === 'vod'
+          ? { vod_id: target.targetId }
+          : { series_id: target.targetId };
+      XtreamService.elevateRequestPriority(
+        credentials,
+        action,
+        params,
+        requestedPriority
+      );
+    }
+  } else {
     const abortController =
       typeof AbortController !== 'undefined' ? new AbortController() : null;
 
@@ -233,9 +265,13 @@ export function fetchOrReuseHeroDetails(
           target.kind === 'vod'
             ? await XtreamService.getVodInfo(credentials, target.targetId, {
                 signal: abortController?.signal,
+                lane: 'details',
+                priority: requestedPriority,
               })
             : await XtreamService.getSeriesInfo(credentials, target.targetId, {
                 signal: abortController?.signal,
+                lane: 'details',
+                priority: requestedPriority,
               });
 
         const isStaleOrAborted =
@@ -282,6 +318,8 @@ export function fetchOrReuseHeroDetails(
       key: cacheKey,
       epoch: startEpoch,
       scopeKey,
+      target,
+      priority: requestedPriority,
       abortController,
       activeConsumers: 0,
       settled: false,
@@ -344,10 +382,23 @@ export function fetchOrReuseHeroDetails(
         if (consumerDone) return;
         consumerDone = true;
         cleanupListener();
+        const isObsoleteOrAborted = Boolean(
+          sessionEpoch !== startEpoch ||
+            callerSignal?.aborted ||
+            err?.isAborted === true ||
+            err?.name === 'AbortError'
+        );
+        if (isObsoleteOrAborted) {
+          if (throwOnError) {
+            reject(createAbortError());
+          } else {
+            resolve(null);
+          }
+          return;
+        }
         if (throwOnError) {
           reject(err);
         } else {
-          console.warn('Failed to fetch details for hero item:', err);
           resolve(null);
         }
       }

@@ -16,11 +16,23 @@ import {
   createAbortError,
   createHttpError,
   executeXtreamGetRequest,
+  type TransportCancellationMode,
   type TransportErrorCategory,
 } from "./httpTransport";
+import {
+  elevateXtreamRequestPriority,
+  getXtreamCoordinatorRateLimitMinWaitMs,
+  runCoordinatedXtreamRequest,
+  type XtreamRequestLane,
+  type XtreamRequestPriority,
+} from "./xtreamRequestCoordinator";
 
 export interface RequestOptions {
   signal?: AbortSignal;
+  priority?: XtreamRequestPriority;
+  priorityHint?: number;
+  lane?: XtreamRequestLane;
+  dedupe?: boolean;
 }
 
 export type XtreamAuthErrorReason =
@@ -45,6 +57,9 @@ export interface XtreamCategorizedError extends Error {
   requiresAuthRecheck?: boolean;
   status?: number;
   authErrorReason?: XtreamAuthErrorReason;
+  cancellationMode?: TransportCancellationMode;
+  nativeAttemptStillPending?: boolean;
+  disallowAutomaticRetry?: boolean;
 }
 
 const EXPLICIT_INACTIVE_STATUSES = new Set([
@@ -290,35 +305,76 @@ export class XtreamService {
   private static readonly RATE_LIMIT_MIN_WAIT_MS = 1000;
   private static readonly RATE_LIMIT_MAX_RETRY_AFTER_MS = 15000;
   private static retryDelayMs = 1000;
+  private static defaultTimeoutOverrideMs: number | null = null;
+  private static catalogTimeoutOverrideMs: number | null = null;
 
   static setRetryDelayMsForTest(ms: number): void {
     XtreamService.retryDelayMs = Math.max(0, ms);
   }
 
-  /**
-   * Helper to delay between attempts, respecting caller cancellation.
-   */
-  private static sleep(ms: number, signal?: AbortSignal): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (signal?.aborted) {
-        return reject(createAbortError());
-      }
-      const timer = setTimeout(() => {
-        if (signal) {
-          signal.removeEventListener("abort", onAbort);
-        }
-        resolve();
-      }, ms);
+  static setTimeoutsForTest(overrides: {
+    defaultTimeoutMs?: number | null;
+    catalogTimeoutMs?: number | null;
+  }): void {
+    if (overrides.defaultTimeoutMs !== undefined) {
+      XtreamService.defaultTimeoutOverrideMs =
+        overrides.defaultTimeoutMs === null
+          ? null
+          : Math.max(1, overrides.defaultTimeoutMs);
+    }
+    if (overrides.catalogTimeoutMs !== undefined) {
+      XtreamService.catalogTimeoutOverrideMs =
+        overrides.catalogTimeoutMs === null
+          ? null
+          : Math.max(1, overrides.catalogTimeoutMs);
+    }
+  }
 
-      const onAbort = () => {
-        clearTimeout(timer);
-        reject(createAbortError());
-      };
+  private static getEffectiveDefaultTimeoutMs(): number {
+    return (
+      XtreamService.defaultTimeoutOverrideMs ?? XtreamService.DEFAULT_TIMEOUT_MS
+    );
+  }
 
-      if (signal) {
-        signal.addEventListener("abort", onAbort, { once: true });
-      }
-    });
+  private static getEffectiveCatalogTimeoutMs(): number {
+    return (
+      XtreamService.catalogTimeoutOverrideMs ?? XtreamService.CATALOG_TIMEOUT_MS
+    );
+  }
+
+  private static resolveDefaultLane(action?: string): XtreamRequestLane {
+    if (!action) return "auth";
+    if (action === "get_short_epg") return "epg";
+    if (action === "get_vod_info" || action === "get_series_info") {
+      return "details";
+    }
+    return "catalog";
+  }
+
+  private static resolveDefaultPriority(
+    action?: string
+  ): XtreamRequestPriority {
+    if (!action) return "user";
+    if (action === "get_vod_info" || action === "get_series_info") {
+      return "user";
+    }
+    return "normal";
+  }
+
+  static elevateRequestPriority(
+    credentials: XtreamCredentials | null | undefined,
+    action: string | undefined,
+    params: Record<string, string | number> | undefined,
+    priority: XtreamRequestPriority,
+    priorityHint: number = 0
+  ): void {
+    elevateXtreamRequestPriority(
+      credentials,
+      action,
+      params,
+      priority,
+      priorityHint
+    );
   }
 
   /**
@@ -402,102 +458,150 @@ export class XtreamService {
     const callerSignal = options?.signal;
     const isAuthEndpoint = action === undefined;
     const isFullCatalogRequest = XtreamService.isFullCatalogQuery(action, params);
+    const lane = options?.lane ?? XtreamService.resolveDefaultLane(action);
+    const priority =
+      options?.priority ?? XtreamService.resolveDefaultPriority(action);
     const maxAttempts = 2;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      if (callerSignal?.aborted) {
-        throw createAbortError();
-      }
+    return runCoordinatedXtreamRequest<T>({
+      credentials,
+      canonicalServer: cleanServerUrl,
+      action,
+      params,
+      lane,
+      priority,
+      priorityHint: options?.priorityHint,
+      dedupe: options?.dedupe ?? true,
+      signal: callerSignal,
+      execute: async (coordCtx) => {
+        const effectiveSignal = coordCtx.signal;
 
-      try {
-        const payload = await executeXtreamGetRequest<T>({
-          url: targetUrl.toString(),
-          timeoutMs,
-          signal: callerSignal,
-          isFullCatalogRequest,
-        });
-        inspectPayloadForAuthError(payload);
-        return payload;
-      } catch (err: any) {
-        const isAbort = Boolean(
-          callerSignal?.aborted ||
-            err?.isAborted === true ||
-            err?.message === "Operação cancelada pelo usuário."
-        );
-
-        if (isAbort) {
-          throw createAbortError();
-        }
-
-        const status = typeof err?.status === "number" ? err.status : undefined;
-        let effectiveErr: XtreamCategorizedError;
-
-        if (status === 401 && !err?.isAuthError) {
-          effectiveErr = isAuthEndpoint
-            ? createXtreamAuthError(
-                "Acesso recusado pelo servidor do provedor (HTTP 401). Verifique as credenciais ou a situação da conta.",
-                "http_unauthorized",
-                401
-              )
-            : createResourceUnauthorizedError();
-        } else if (status === 403) {
-          effectiveErr = createHttpError(403) as XtreamCategorizedError;
-          effectiveErr.isAuthError = false;
-          effectiveErr.requiresAuthRecheck = false;
-        } else if (status === 408 && err?.errorCategory !== "http_timeout") {
-          effectiveErr = createHttpError(408) as XtreamCategorizedError;
-          effectiveErr.isAuthError = false;
-        } else if (status === 429 && err?.errorCategory !== "http_rate_limited") {
-          effectiveErr = createHttpError(429) as XtreamCategorizedError;
-          effectiveErr.isAuthError = false;
-          if (typeof err?.retryAfterMs === "number" && Number.isFinite(err.retryAfterMs) && err.retryAfterMs >= 0) {
-            effectiveErr.retryAfterMs = err.retryAfterMs;
-          }
-        } else {
-          effectiveErr = err as XtreamCategorizedError;
-        }
-
-        // Nunca repetir rejeições de autenticação, erros HTTP 4xx (exceto 408/429 tratados acima) ou formato inválido/vazio
-        if (
-          effectiveErr?.isAuthError ||
-          effectiveErr?.isClientError ||
-          effectiveErr?.isFatalFormat
-        ) {
-          throw effectiveErr;
-        }
-
-        // Política controlada de HTTP 429: somente uma nova tentativa quando houver Retry-After válido <= 15s
-        if (effectiveErr?.isRateLimited || effectiveErr?.status === 429) {
-          const retryAfterMs = effectiveErr?.retryAfterMs;
-          const canRetryRateLimit =
-            attempt < maxAttempts &&
-            typeof retryAfterMs === "number" &&
-            Number.isFinite(retryAfterMs) &&
-            retryAfterMs >= 0 &&
-            retryAfterMs <= XtreamService.RATE_LIMIT_MAX_RETRY_AFTER_MS;
-
-          if (!canRetryRateLimit) {
-            throw effectiveErr;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          if (effectiveSignal.aborted) {
+            throw createAbortError();
           }
 
-          const waitMs = Math.max(
-            XtreamService.RATE_LIMIT_MIN_WAIT_MS,
-            retryAfterMs
-          );
-          await XtreamService.sleep(waitMs, callerSignal);
-          continue;
+          await coordCtx.waitForRateLimit();
+
+          if (effectiveSignal.aborted) {
+            throw createAbortError();
+          }
+
+          const slot = await coordCtx.acquireSlot();
+          try {
+            const payload = await executeXtreamGetRequest<T>({
+              url: targetUrl.toString(),
+              timeoutMs,
+              signal: effectiveSignal,
+              isFullCatalogRequest,
+            });
+            inspectPayloadForAuthError(payload);
+            return payload;
+          } catch (err: any) {
+            slot.release();
+
+            const isAbort = Boolean(
+              effectiveSignal.aborted ||
+                err?.isAborted === true ||
+                err?.message === "Operação cancelada pelo usuário."
+            );
+
+            if (isAbort) {
+              throw createAbortError(
+                err?.cancellationMode || "physical",
+                Boolean(err?.nativeAttemptStillPending)
+              );
+            }
+
+            const status = typeof err?.status === "number" ? err.status : undefined;
+            let effectiveErr: XtreamCategorizedError;
+
+            if (status === 401 && !err?.isAuthError) {
+              effectiveErr = isAuthEndpoint
+                ? createXtreamAuthError(
+                    "Acesso recusado pelo servidor do provedor (HTTP 401). Verifique as credenciais ou a situação da conta.",
+                    "http_unauthorized",
+                    401
+                  )
+                : createResourceUnauthorizedError();
+            } else if (status === 403) {
+              effectiveErr = createHttpError(403) as XtreamCategorizedError;
+              effectiveErr.isAuthError = false;
+              effectiveErr.requiresAuthRecheck = false;
+            } else if (status === 408 && err?.errorCategory !== "http_timeout") {
+              effectiveErr = createHttpError(408) as XtreamCategorizedError;
+              effectiveErr.isAuthError = false;
+            } else if (status === 429 && err?.errorCategory !== "http_rate_limited") {
+              effectiveErr = createHttpError(429) as XtreamCategorizedError;
+              effectiveErr.isAuthError = false;
+              if (
+                typeof err?.retryAfterMs === "number" &&
+                Number.isFinite(err.retryAfterMs) &&
+                err.retryAfterMs >= 0
+              ) {
+                effectiveErr.retryAfterMs = err.retryAfterMs;
+              }
+            } else {
+              effectiveErr = err as XtreamCategorizedError;
+            }
+
+            // Nunca repetir rejeições de autenticação, erros HTTP 4xx (exceto 408/429 tratados acima) ou formato inválido/vazio
+            if (
+              effectiveErr?.isAuthError ||
+              effectiveErr?.isClientError ||
+              effectiveErr?.isFatalFormat
+            ) {
+              throw effectiveErr;
+            }
+
+            // Proteção contra sobreposição nativa (CapacitorHttp):
+            // nunca iniciar retentativa automática enquanto a tentativa nativa anterior não tiver encerramento confirmado.
+            if (
+              effectiveErr?.nativeAttemptStillPending === true ||
+              effectiveErr?.disallowAutomaticRetry === true
+            ) {
+              throw effectiveErr;
+            }
+
+            // Política controlada de HTTP 429 com coordenação compartilhada por provedor:
+            // somente uma nova tentativa quando houver Retry-After válido <= 15s.
+            if (effectiveErr?.isRateLimited || effectiveErr?.status === 429) {
+              const retryAfterMs = effectiveErr?.retryAfterMs;
+              coordCtx.recordRateLimit(retryAfterMs);
+
+              const canRetryRateLimit =
+                attempt < maxAttempts &&
+                typeof retryAfterMs === "number" &&
+                Number.isFinite(retryAfterMs) &&
+                retryAfterMs >= 0 &&
+                retryAfterMs <= XtreamService.RATE_LIMIT_MAX_RETRY_AFTER_MS;
+
+              if (!canRetryRateLimit) {
+                throw effectiveErr;
+              }
+
+              const waitMs = Math.max(
+                getXtreamCoordinatorRateLimitMinWaitMs(),
+                retryAfterMs
+              );
+              await coordCtx.sleep(waitMs);
+              continue;
+            }
+
+            if (effectiveErr?.isTransient !== true || attempt >= maxAttempts) {
+              throw effectiveErr;
+            }
+
+            // Uma única nova tentativa controlada para falhas transitórias (rede, CORS, timeout físico, HTTP 408 ou 5xx)
+            await coordCtx.sleep(XtreamService.retryDelayMs);
+          } finally {
+            slot.release();
+          }
         }
 
-        if (effectiveErr?.isTransient !== true || attempt >= maxAttempts) {
-          throw effectiveErr;
-        }
-
-        // Uma única nova tentativa controlada para falhas transitórias (rede, CORS, timeout, HTTP 408 ou 5xx)
-        await XtreamService.sleep(XtreamService.retryDelayMs, callerSignal);
-      }
-    }
-
-    throw new Error("Falha ao comunicar com o servidor do provedor.");
+        throw new Error("Falha ao comunicar com o servidor do provedor.");
+      },
+    });
   }
 
   /**
@@ -513,8 +617,12 @@ export class XtreamService {
       credentials,
       undefined,
       {},
-      XtreamService.DEFAULT_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveDefaultTimeoutMs(),
+      {
+        lane: "auth",
+        priority: "user",
+        ...options,
+      }
     );
 
     if (!isPlainObject(data) || !isPlainObject(data.user_info)) {
@@ -535,10 +643,13 @@ export class XtreamService {
       data.user_info.allowed_output_formats
     );
     if (normalizedFormats !== undefined) {
-      data.user_info = {
-        ...data.user_info,
-        allowed_output_formats: normalizedFormats,
-      };
+      return {
+        ...data,
+        user_info: {
+          ...data.user_info,
+          allowed_output_formats: normalizedFormats,
+        },
+      } as XtreamAuthResponse;
     }
 
     return data as XtreamAuthResponse;
@@ -555,8 +666,8 @@ export class XtreamService {
       credentials,
       "get_live_categories",
       {},
-      XtreamService.DEFAULT_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveDefaultTimeoutMs(),
+      { lane: "catalog", ...options }
     );
     return normalizeCatalogArray<Category>(
       data,
@@ -577,8 +688,8 @@ export class XtreamService {
       credentials,
       "get_live_streams",
       params,
-      XtreamService.CATALOG_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveCatalogTimeoutMs(),
+      { lane: "catalog", ...options }
     );
     return normalizeCatalogArray<LiveStream>(
       data,
@@ -597,8 +708,8 @@ export class XtreamService {
       credentials,
       "get_vod_categories",
       {},
-      XtreamService.DEFAULT_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveDefaultTimeoutMs(),
+      { lane: "catalog", ...options }
     );
     return normalizeCatalogArray<Category>(
       data,
@@ -619,8 +730,8 @@ export class XtreamService {
       credentials,
       "get_vod_streams",
       params,
-      XtreamService.CATALOG_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveCatalogTimeoutMs(),
+      { lane: "catalog", ...options }
     );
     return normalizeCatalogArray<VodStream>(
       data,
@@ -640,8 +751,8 @@ export class XtreamService {
       credentials,
       "get_vod_info",
       { vod_id: String(vodId) },
-      XtreamService.DEFAULT_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveDefaultTimeoutMs(),
+      { lane: "details", priority: "user", ...options }
     );
   }
 
@@ -656,8 +767,8 @@ export class XtreamService {
       credentials,
       "get_series_categories",
       {},
-      XtreamService.DEFAULT_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveDefaultTimeoutMs(),
+      { lane: "catalog", ...options }
     );
     return normalizeCatalogArray<Category>(
       data,
@@ -678,8 +789,8 @@ export class XtreamService {
       credentials,
       "get_series",
       params,
-      XtreamService.CATALOG_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveCatalogTimeoutMs(),
+      { lane: "catalog", ...options }
     );
     return normalizeCatalogArray<SeriesStream>(
       data,
@@ -699,8 +810,8 @@ export class XtreamService {
       credentials,
       "get_series_info",
       { series_id: String(seriesId) },
-      XtreamService.DEFAULT_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveDefaultTimeoutMs(),
+      { lane: "details", priority: "user", ...options }
     );
   }
 
@@ -720,8 +831,8 @@ export class XtreamService {
         stream_id: String(streamId),
         limit: String(limit),
       },
-      XtreamService.DEFAULT_TIMEOUT_MS,
-      options
+      XtreamService.getEffectiveDefaultTimeoutMs(),
+      { lane: "epg", priority: "normal", ...options }
     );
   }
 }

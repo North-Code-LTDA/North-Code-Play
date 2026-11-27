@@ -279,11 +279,27 @@ function createProviderHttpError(status: number, statusText?: string): Transport
   return httpError;
 }
 
+function createAdapterAbortError(): TransportError {
+  const abortError: TransportError = new Error('Operação cancelada pelo usuário.');
+  abortError.name = 'AbortError';
+  abortError.errorCategory = 'aborted';
+  abortError.isAborted = true;
+  abortError.isTransient = false;
+  abortError.isClientError = false;
+  abortError.isFatalFormat = false;
+  abortError.cancellationMode = 'physical';
+  return abortError;
+}
+
 function createTimeoutError(): TransportError {
   const timeoutError: TransportError = new Error(
     'Tempo limite esgotado ao aguardar resposta do servidor do provedor.'
   );
+  timeoutError.errorCategory = 'timeout';
   timeoutError.isTransient = true;
+  timeoutError.isClientError = false;
+  timeoutError.cancellationMode = 'physical';
+  timeoutError.nativeAttemptStillPending = false;
   return timeoutError;
 }
 
@@ -292,7 +308,9 @@ function createNetworkError(): TransportError {
     'Falha de rede ou bloqueio de CORS ao comunicar diretamente com o provedor. ' +
       'Verifique se o servidor está online e se permite requisições da web.'
   );
+  netError.errorCategory = 'network';
   netError.isTransient = true;
+  netError.isClientError = false;
   return netError;
 }
 
@@ -300,7 +318,9 @@ function createLocalFileReadError(detail?: string): TransportError {
   const localErr: TransportError = new Error(
     detail || 'Falha ao ler o arquivo temporário local do catálogo.'
   );
+  localErr.errorCategory = 'local_file_read';
   localErr.isTransient = true;
+  localErr.isClientError = false;
   localErr.isLocalFileReadError = true;
   return localErr;
 }
@@ -354,7 +374,7 @@ export async function executeAndroidTempFileCatalogDownload({
   signal?: AbortSignal;
 }): Promise<string> {
   if (signal?.aborted) {
-    throw new Error('Operação cancelada pelo usuário.');
+    throw createAdapterAbortError();
   }
 
   const attemptStartMs = getMonotonicNowMs();
@@ -403,13 +423,13 @@ export async function executeAndroidTempFileCatalogDownload({
       if (!nativeTransferSettled) {
         requestNativeTransferCancellation(plugin, transferId);
       }
-      rejectInterruptPromise?.(new Error('Operação cancelada pelo usuário.'));
+      rejectInterruptPromise?.(createAdapterAbortError());
     };
 
     if (signal) {
       if (signal.aborted) {
         requestNativeTransferCancellation(plugin, transferId);
-        throw new Error('Operação cancelada pelo usuário.');
+        throw createAdapterAbortError();
       }
       signal.addEventListener('abort', onCallerAbort, { once: true });
     }
@@ -463,7 +483,7 @@ export async function executeAndroidTempFileCatalogDownload({
           .catch((err: any) => {
             if (nativeTransferSettled) return;
             if (signal?.aborted) {
-              settleNativeReject(new Error('Operação cancelada pelo usuário.'));
+              settleNativeReject(createAdapterAbortError());
               return;
             }
             const msg = String(err?.message || err?.code || err || '').toLowerCase();
@@ -477,7 +497,7 @@ export async function executeAndroidTempFileCatalogDownload({
               return;
             }
             if (msg.includes('cancel') || msg.includes('abort')) {
-              settleNativeReject(new Error('Operação cancelada pelo usuário.'));
+              settleNativeReject(createAdapterAbortError());
               return;
             }
             settleNativeReject(createNetworkError());
@@ -495,7 +515,7 @@ export async function executeAndroidTempFileCatalogDownload({
     }
 
     if (signal?.aborted) {
-      throw new Error('Operação cancelada pelo usuário.');
+      throw createAdapterAbortError();
     }
     if (isDeadlineExpired()) {
       throw createTimeoutError();
@@ -531,7 +551,7 @@ export async function executeAndroidTempFileCatalogDownload({
     }
 
     if (signal?.aborted) {
-      throw new Error('Operação cancelada pelo usuário.');
+      throw createAdapterAbortError();
     }
     if (isDeadlineExpired()) {
       throw createTimeoutError();
@@ -553,7 +573,7 @@ export async function executeAndroidTempFileCatalogDownload({
     } catch {
       localReadInProgress = false;
       if (signal?.aborted) {
-        throw new Error('Operação cancelada pelo usuário.');
+        throw createAdapterAbortError();
       }
       if (isDeadlineExpired()) {
         throw createTimeoutError();
@@ -563,7 +583,7 @@ export async function executeAndroidTempFileCatalogDownload({
 
     if (signal?.aborted) {
       localReadInProgress = false;
-      throw new Error('Operação cancelada pelo usuário.');
+      throw createAdapterAbortError();
     }
     if (isDeadlineExpired()) {
       localReadInProgress = false;
@@ -586,7 +606,7 @@ export async function executeAndroidTempFileCatalogDownload({
     } catch {
       localReadInProgress = false;
       if (signal?.aborted) {
-        throw new Error('Operação cancelada pelo usuário.');
+        throw createAdapterAbortError();
       }
       if (isDeadlineExpired()) {
         throw createTimeoutError();
@@ -597,7 +617,7 @@ export async function executeAndroidTempFileCatalogDownload({
     localReadInProgress = false;
 
     if (signal?.aborted) {
-      throw new Error('Operação cancelada pelo usuário.');
+      throw createAdapterAbortError();
     }
     if (isDeadlineExpired()) {
       throw createTimeoutError();

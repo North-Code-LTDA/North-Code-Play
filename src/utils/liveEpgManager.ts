@@ -1,5 +1,6 @@
 import { XtreamCredentials } from '../types';
 import { XtreamService } from '../services/xtreamService';
+import { normalizeServerUrl } from './mediaUtils';
 import { LiveChannelGroup, ResolutionQuality } from './liveChannelGroups';
 
 export interface ResolvedEpgProgram {
@@ -30,9 +31,11 @@ export interface LiveEpgSnapshot {
 const DEFAULT_OK_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_EMPTY_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_ERROR_TTL_MS = 15 * 1000;
+export const DEFAULT_MAX_EPG_CACHE_ENTRIES = 512;
 
 let customClockFn: (() => number) | null = null;
 let maxConcurrentEpgRequests = 3;
+let maxEpgCacheEntries = DEFAULT_MAX_EPG_CACHE_ENTRIES;
 
 const epgCache = new Map<string, LiveEpgSnapshot>();
 
@@ -43,11 +46,16 @@ interface QueuedSubscriber {
 }
 
 interface EpgTask {
+  internalKey: string;
   cacheKey: string;
   credentials: XtreamCredentials;
   streamId: number;
   priority: 'high' | 'normal';
+  generation: number;
   status: 'queued' | 'running' | 'settled' | 'cancelled';
+  abortController: AbortController | null;
+  slotReleased: boolean;
+  promiseResolved: boolean;
   subscribers: Map<number, QueuedSubscriber>;
   promise: Promise<LiveEpgSnapshot>;
   resolvePromise: (snapshot: LiveEpgSnapshot) => void;
@@ -71,12 +79,73 @@ export function setLiveEpgConcurrencyLimitForTest(limit: number): void {
   maxConcurrentEpgRequests = Math.max(1, Math.floor(limit || 3));
 }
 
-export function resetLiveEpgCacheForTest(): void {
+export function setLiveEpgMaxCacheEntriesForTest(limit: number): void {
+  maxEpgCacheEntries = Math.max(
+    1,
+    Math.floor(limit || DEFAULT_MAX_EPG_CACHE_ENTRIES)
+  );
+  evictEpgCacheToLimit(getLiveEpgNowMs());
+}
+
+function createCancelledTaskSnapshot(
+  cacheKey: string,
+  streamId: number,
+  nowMs: number
+): LiveEpgSnapshot {
+  return {
+    cacheKey,
+    streamId,
+    status: 'idle',
+    currentProgram: null,
+    timeline: [],
+    rawListings: [],
+    fetchedAtMs: nowMs,
+    expiresAtMs: nowMs,
+  };
+}
+
+function resolveTaskOnce(task: EpgTask, snapshot: LiveEpgSnapshot): void {
+  if (task.promiseResolved) return;
+  task.promiseResolved = true;
+  task.resolvePromise(snapshot);
+}
+
+/**
+ * Encerra e limpa todo o cache e a fila de EPG da sessão atual (ex.: logout ou troca de conta),
+ * abortando consultas em execução e resolvendo consumidores pendentes sem vazamento.
+ */
+export function clearLiveEpgSessionCache(): void {
   generationCounter++;
-  epgCache.clear();
+  const nowMs = getLiveEpgNowMs();
+
+  const tasksToAbort = new Set<EpgTask>([
+    ...pendingQueue,
+    ...activeTasks.values(),
+  ]);
+
   pendingQueue.length = 0;
   activeTasks.clear();
+  epgCache.clear();
   runningCount = 0;
+
+  tasksToAbort.forEach((task) => {
+    task.status = 'cancelled';
+    task.slotReleased = true;
+    try {
+      task.abortController?.abort();
+    } catch {
+      // ignore
+    }
+    resolveTaskOnce(
+      task,
+      createCancelledTaskSnapshot(task.cacheKey, task.streamId, nowMs)
+    );
+  });
+}
+
+export function resetLiveEpgCacheForTest(): void {
+  maxEpgCacheEntries = DEFAULT_MAX_EPG_CACHE_ENTRIES;
+  clearLiveEpgSessionCache();
 }
 
 /**
@@ -354,6 +423,78 @@ export function buildLiveEpgCacheKey(
   return `${normalizedServer}|${normalizedUser}|${numericStreamId}`;
 }
 
+function buildInternalEpgTaskKey(
+  credentials: XtreamCredentials | null | undefined,
+  streamId: number | string | null | undefined
+): string {
+  if (!credentials || !credentials.serverUrl || !credentials.username) {
+    return '';
+  }
+  const numericStreamId = Number(streamId);
+  if (!Number.isFinite(numericStreamId) || numericStreamId <= 0) {
+    return '';
+  }
+  const canonicalServer = (
+    normalizeServerUrl(credentials.serverUrl) ||
+    String(credentials.serverUrl).trim().toLowerCase()
+  ).replace(/\/+$/, '');
+  const username = String(credentials.username);
+  const password = String(credentials.password ?? '');
+  // Chave interna isolada por credenciais completas; nunca exposta em snapshot.cacheKey nem em logs
+  return `${canonicalServer}\0${username}\0${password}\0${numericStreamId}`;
+}
+
+function isCacheEntryStrictlyExpired(
+  entry: LiveEpgSnapshot,
+  nowMs: number
+): boolean {
+  if (nowMs < entry.expiresAtMs) {
+    return false;
+  }
+  if (
+    entry.status === 'ok' &&
+    entry.rawListings.length > 0 &&
+    nowMs < entry.fetchedAtMs + DEFAULT_OK_TTL_MS
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function pruneExpiredEpgCache(nowMs: number): void {
+  for (const [key, entry] of epgCache.entries()) {
+    if (isCacheEntryStrictlyExpired(entry, nowMs)) {
+      epgCache.delete(key);
+    }
+  }
+}
+
+function evictEpgCacheToLimit(nowMs: number): void {
+  if (epgCache.size <= maxEpgCacheEntries) return;
+  pruneExpiredEpgCache(nowMs);
+  while (epgCache.size > maxEpgCacheEntries) {
+    const oldestKey = epgCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    epgCache.delete(oldestKey);
+  }
+}
+
+function lruTouchEpgCache(internalKey: string, snapshot: LiveEpgSnapshot): void {
+  if (epgCache.has(internalKey)) {
+    epgCache.delete(internalKey);
+  }
+  epgCache.set(internalKey, snapshot);
+}
+
+function lruSetEpgCache(
+  internalKey: string,
+  snapshot: LiveEpgSnapshot,
+  nowMs: number
+): void {
+  lruTouchEpgCache(internalKey, snapshot);
+  evictEpgCacheToLimit(nowMs);
+}
+
 function buildSnapshotFromRaw(
   cacheKey: string,
   streamId: number,
@@ -403,10 +544,11 @@ export function getCachedLiveEpgSnapshot(
   streamId: number | string | null | undefined,
   nowMs: number = getLiveEpgNowMs()
 ): LiveEpgSnapshot | null {
+  const internalKey = buildInternalEpgTaskKey(credentials, streamId);
   const cacheKey = buildLiveEpgCacheKey(credentials, streamId);
-  if (!cacheKey) return null;
+  if (!internalKey || !cacheKey) return null;
 
-  const existing = epgCache.get(cacheKey);
+  const existing = epgCache.get(internalKey);
   if (!existing) return null;
 
   if (nowMs >= existing.expiresAtMs) {
@@ -426,11 +568,11 @@ export function getCachedLiveEpgSnapshot(
       );
       if (refreshed.currentProgram !== null) {
         refreshed.fetchedAtMs = existing.fetchedAtMs;
-        epgCache.set(cacheKey, refreshed);
+        lruTouchEpgCache(internalKey, refreshed);
         return refreshed;
       }
     }
-    epgCache.delete(cacheKey);
+    epgCache.delete(internalKey);
     return null;
   }
 
@@ -447,10 +589,12 @@ export function getCachedLiveEpgSnapshot(
       nowMs
     );
     refreshed.fetchedAtMs = existing.fetchedAtMs;
-    epgCache.set(cacheKey, refreshed);
+    lruTouchEpgCache(internalKey, refreshed);
     return refreshed;
   }
 
+  // Atualiza posição LRU no acesso válido
+  lruTouchEpgCache(internalKey, existing);
   return existing;
 }
 
@@ -458,16 +602,48 @@ export function isLiveEpgRequestInFlight(
   credentials: XtreamCredentials | null | undefined,
   streamId: number | string | null | undefined
 ): boolean {
-  const cacheKey = buildLiveEpgCacheKey(credentials, streamId);
-  if (!cacheKey) return false;
-  return activeTasks.has(cacheKey);
+  const internalKey = buildInternalEpgTaskKey(credentials, streamId);
+  if (!internalKey) return false;
+  return activeTasks.has(internalKey);
+}
+
+function cancelTaskIfOrphaned(task: EpgTask): void {
+  if (task.subscribers.size > 0) return;
+  if (task.status !== 'queued' && task.status !== 'running') return;
+
+  const wasQueued = task.status === 'queued';
+  task.status = 'cancelled';
+
+  if (wasQueued) {
+    const qIdx = pendingQueue.indexOf(task);
+    if (qIdx !== -1) {
+      pendingQueue.splice(qIdx, 1);
+    }
+  }
+
+  if (activeTasks.get(task.internalKey) === task) {
+    activeTasks.delete(task.internalKey);
+  }
+
+  try {
+    task.abortController?.abort();
+  } catch {
+    // ignore
+  }
+
+  resolveTaskOnce(
+    task,
+    createCancelledTaskSnapshot(task.cacheKey, task.streamId, getLiveEpgNowMs())
+  );
 }
 
 function pumpQueue(): void {
   while (runningCount < maxConcurrentEpgRequests && pendingQueue.length > 0) {
     const nextTask = pendingQueue.shift();
     if (!nextTask) break;
-    if (nextTask.status !== 'queued') continue;
+    if (nextTask.status !== 'queued' || nextTask.generation !== generationCounter) {
+      continue;
+    }
 
     // Check if all subscribers cancelled while waiting in queue
     let activeSubscribers = 0;
@@ -477,7 +653,17 @@ function pumpQueue(): void {
 
     if (activeSubscribers === 0) {
       nextTask.status = 'cancelled';
-      activeTasks.delete(nextTask.cacheKey);
+      if (activeTasks.get(nextTask.internalKey) === nextTask) {
+        activeTasks.delete(nextTask.internalKey);
+      }
+      resolveTaskOnce(
+        nextTask,
+        createCancelledTaskSnapshot(
+          nextTask.cacheKey,
+          nextTask.streamId,
+          getLiveEpgNowMs()
+        )
+      );
       continue;
     }
 
@@ -486,40 +672,119 @@ function pumpQueue(): void {
 }
 
 function executeTask(task: EpgTask): void {
-  const taskGen = generationCounter;
+  const taskGen = task.generation;
   task.status = 'running';
   runningCount++;
 
-  Promise.resolve()
-    .then(() => XtreamService.getShortEpg(task.credentials, task.streamId, 10))
-    .then((data) => {
-      const nowMs = getLiveEpgNowMs();
-      const rawListings = Array.isArray(data?.epg_listings) ? data.epg_listings : [];
-      const snapshot = buildSnapshotFromRaw(
-        task.cacheKey,
-        task.streamId,
-        rawListings,
-        rawListings.length > 0 ? 'ok' : 'empty',
-        nowMs
-      );
-      return snapshot;
-    })
-    .catch(() => {
-      const nowMs = getLiveEpgNowMs();
-      return buildSnapshotFromRaw(task.cacheKey, task.streamId, [], 'error', nowMs);
-    })
-    .then((snapshot) => {
-      runningCount = Math.max(0, runningCount - 1);
-      activeTasks.delete(task.cacheKey);
-      task.status = 'settled';
+  const signal = task.abortController?.signal;
+  const coordinatorPriority = task.priority === 'high' ? 'user' : 'normal';
 
+  Promise.resolve()
+    .then(() => {
+      if (
+        taskGen !== generationCounter ||
+        task.status === 'cancelled' ||
+        signal?.aborted
+      ) {
+        return { aborted: true as const, snapshot: null };
+      }
+      return XtreamService.getShortEpg(task.credentials, task.streamId, 10, {
+        signal,
+        lane: 'epg',
+        priority: coordinatorPriority,
+      }).then((data) => {
+        if (
+          taskGen !== generationCounter ||
+          task.status === 'cancelled' ||
+          signal?.aborted
+        ) {
+          return { aborted: true as const, snapshot: null };
+        }
+        const nowMs = getLiveEpgNowMs();
+        const rawListings = Array.isArray(data?.epg_listings)
+          ? data.epg_listings
+          : [];
+        const snapshot = buildSnapshotFromRaw(
+          task.cacheKey,
+          task.streamId,
+          rawListings,
+          rawListings.length > 0 ? 'ok' : 'empty',
+          nowMs
+        );
+        return { aborted: false as const, snapshot };
+      });
+    })
+    .catch((err: any) => {
+      const isAborted = Boolean(
+        taskGen !== generationCounter ||
+          task.status === 'cancelled' ||
+          signal?.aborted ||
+          err?.isAborted === true ||
+          err?.name === 'AbortError' ||
+          err?.message === 'Operação cancelada pelo usuário.'
+      );
+      if (isAborted) {
+        return { aborted: true as const, snapshot: null };
+      }
+      const nowMs = getLiveEpgNowMs();
+      return {
+        aborted: false as const,
+        snapshot: buildSnapshotFromRaw(
+          task.cacheKey,
+          task.streamId,
+          [],
+          'error',
+          nowMs
+        ),
+      };
+    })
+    .then((outcome) => {
+      // Proteção contra sessão/geração obsoleta: nunca mutar contadores, fila,
+      // activeTasks ou cache pertencentes a uma geração mais nova.
       if (taskGen !== generationCounter) {
-        task.resolvePromise(snapshot);
+        resolveTaskOnce(
+          task,
+          outcome.snapshot ??
+            createCancelledTaskSnapshot(
+              task.cacheKey,
+              task.streamId,
+              getLiveEpgNowMs()
+            )
+        );
+        return;
+      }
+
+      if (!task.slotReleased) {
+        task.slotReleased = true;
+        runningCount = Math.max(0, runningCount - 1);
+      }
+
+      if (activeTasks.get(task.internalKey) === task) {
+        activeTasks.delete(task.internalKey);
+      }
+
+      if (
+        outcome.aborted ||
+        !outcome.snapshot ||
+        task.status === 'cancelled' ||
+        signal?.aborted
+      ) {
+        task.status = 'cancelled';
+        resolveTaskOnce(
+          task,
+          createCancelledTaskSnapshot(
+            task.cacheKey,
+            task.streamId,
+            getLiveEpgNowMs()
+          )
+        );
         pumpQueue();
         return;
       }
 
-      epgCache.set(task.cacheKey, snapshot);
+      const snapshot = outcome.snapshot;
+      task.status = 'settled';
+      lruSetEpgCache(task.internalKey, snapshot, snapshot.fetchedAtMs);
 
       task.subscribers.forEach((sub) => {
         if (sub.cancelled) {
@@ -532,17 +797,17 @@ function executeTask(task: EpgTask): void {
         }
       });
 
-      task.resolvePromise(snapshot);
+      resolveTaskOnce(task, snapshot);
       pumpQueue();
     });
 }
 
 /**
  * Subscribes a caller (channel card or right-pane detail view) to the EPG of `(credentials, streamId)`.
- * - Returns cached snapshot immediately if valid.
+ * - Returns cached snapshot immediately if valid (updating LRU order).
  * - Deduplicates concurrent/queued requests for the same `(credentials, streamId)`.
- * - Enforces concurrency limit (`maxConcurrentEpgRequests`).
- * - Cancels queued requests if all subscribers unsubscribe before execution starts.
+ * - Enforces concurrency limit (`maxConcurrentEpgRequests`) and coordinates via shared Xtream coordinator.
+ * - Cancels queued AND running requests (propagating AbortSignal) when all subscribers unsubscribe.
  */
 export function subscribeLiveChannelEpg(options: {
   credentials: XtreamCredentials | null | undefined;
@@ -561,8 +826,9 @@ export function subscribeLiveChannelEpg(options: {
 
   const numericStreamId = Number(streamId);
   const cacheKey = buildLiveEpgCacheKey(credentials, numericStreamId);
+  const internalKey = buildInternalEpgTaskKey(credentials, numericStreamId);
 
-  if (!cacheKey || !credentials) {
+  if (!cacheKey || !internalKey || !credentials) {
     const emptySnapshot: LiveEpgSnapshot = {
       cacheKey: '',
       streamId: Number.isFinite(numericStreamId) ? numericStreamId : 0,
@@ -592,29 +858,34 @@ export function subscribeLiveChannelEpg(options: {
     cancelled: false,
   };
 
-  const existingTask = activeTasks.get(cacheKey);
-  if (existingTask && (existingTask.status === 'queued' || existingTask.status === 'running')) {
+  const existingTask = activeTasks.get(internalKey);
+  if (
+    existingTask &&
+    existingTask.generation === generationCounter &&
+    (existingTask.status === 'queued' || existingTask.status === 'running')
+  ) {
     existingTask.subscribers.set(subId, subscriber);
-    if (priority === 'high' && existingTask.priority !== 'high' && existingTask.status === 'queued') {
+    if (priority === 'high' && existingTask.priority !== 'high') {
       existingTask.priority = 'high';
-      const qIdx = pendingQueue.indexOf(existingTask);
-      if (qIdx > 0) {
-        pendingQueue.splice(qIdx, 1);
-        pendingQueue.unshift(existingTask);
+      if (existingTask.status === 'queued') {
+        const qIdx = pendingQueue.indexOf(existingTask);
+        if (qIdx > 0) {
+          pendingQueue.splice(qIdx, 1);
+          pendingQueue.unshift(existingTask);
+        }
       }
+      XtreamService.elevateRequestPriority(
+        credentials,
+        'get_short_epg',
+        { stream_id: String(numericStreamId), limit: '10' },
+        'user'
+      );
     }
 
     return () => {
       subscriber.cancelled = true;
       existingTask.subscribers.delete(subId);
-      if (existingTask.status === 'queued' && existingTask.subscribers.size === 0) {
-        existingTask.status = 'cancelled';
-        const qIdx = pendingQueue.indexOf(existingTask);
-        if (qIdx !== -1) {
-          pendingQueue.splice(qIdx, 1);
-        }
-        activeTasks.delete(cacheKey);
-      }
+      cancelTaskIfOrphaned(existingTask);
     };
   }
 
@@ -623,18 +894,26 @@ export function subscribeLiveChannelEpg(options: {
     resolvePromise = resolve;
   });
 
+  const abortController =
+    typeof AbortController !== 'undefined' ? new AbortController() : null;
+
   const newTask: EpgTask = {
+    internalKey,
     cacheKey,
     credentials,
     streamId: numericStreamId,
     priority,
+    generation: generationCounter,
     status: 'queued',
+    abortController,
+    slotReleased: false,
+    promiseResolved: false,
     subscribers: new Map([[subId, subscriber]]),
     promise,
     resolvePromise,
   };
 
-  activeTasks.set(cacheKey, newTask);
+  activeTasks.set(internalKey, newTask);
   if (priority === 'high') {
     pendingQueue.unshift(newTask);
   } else {
@@ -646,13 +925,6 @@ export function subscribeLiveChannelEpg(options: {
   return () => {
     subscriber.cancelled = true;
     newTask.subscribers.delete(subId);
-    if (newTask.status === 'queued' && newTask.subscribers.size === 0) {
-      newTask.status = 'cancelled';
-      const qIdx = pendingQueue.indexOf(newTask);
-      if (qIdx !== -1) {
-        pendingQueue.splice(qIdx, 1);
-      }
-      activeTasks.delete(cacheKey);
-    }
+    cancelTaskIfOrphaned(newTask);
   };
 }

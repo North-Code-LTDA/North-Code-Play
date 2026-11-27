@@ -28,6 +28,8 @@ export type TransportErrorCategory =
   | 'empty_response'
   | 'local_file_read';
 
+export type TransportCancellationMode = 'physical' | 'logical';
+
 export interface TransportError extends Error {
   errorCategory?: TransportErrorCategory;
   isTransient?: boolean;
@@ -38,6 +40,9 @@ export interface TransportError extends Error {
   isRateLimited?: boolean;
   retryAfterMs?: number;
   status?: number;
+  cancellationMode?: TransportCancellationMode;
+  nativeAttemptStillPending?: boolean;
+  disallowAutomaticRetry?: boolean;
 }
 
 export type TransportMode = 'auto' | 'web' | 'capacitor';
@@ -52,6 +57,8 @@ let capacitorHttpGetOverride:
   | null = null;
 let androidCatalogPluginAvailableOverride: boolean | null = null;
 let androidAdapterLoadCountForTest = 0;
+let pendingLogicalNativeRequests = 0;
+let discardedLateNativeResponses = 0;
 
 /**
  * Permite selecionar explicitamente o modo de transporte ('web' ou 'capacitor'),
@@ -80,6 +87,21 @@ export function getAndroidCatalogAdapterLoadCountForTest(): number {
 
 export function resetAndroidCatalogAdapterLoadCountForTest(): void {
   androidAdapterLoadCountForTest = 0;
+}
+
+export function getTransportCancellationStatsForTest(): {
+  pendingLogicalNativeRequests: number;
+  discardedLateNativeResponses: number;
+} {
+  return {
+    pendingLogicalNativeRequests,
+    discardedLateNativeResponses,
+  };
+}
+
+export function resetTransportCancellationStatsForTest(): void {
+  pendingLogicalNativeRequests = 0;
+  discardedLateNativeResponses = 0;
 }
 
 export function isUsingCapacitorNativeTransport(): boolean {
@@ -124,13 +146,22 @@ export function isAndroidTempFileCatalogTransportAvailable(): boolean {
   }
 }
 
-export function createAbortError(): TransportError {
+export function createAbortError(
+  cancellationMode: TransportCancellationMode = 'physical',
+  nativeAttemptStillPending: boolean = false
+): TransportError {
   const abortError: TransportError = new Error(ABORT_ERROR_MESSAGE);
+  abortError.name = 'AbortError';
   abortError.errorCategory = 'aborted';
   abortError.isAborted = true;
   abortError.isTransient = false;
   abortError.isClientError = false;
   abortError.isFatalFormat = false;
+  abortError.cancellationMode = cancellationMode;
+  if (nativeAttemptStillPending) {
+    abortError.nativeAttemptStillPending = true;
+    abortError.disallowAutomaticRetry = true;
+  }
   return abortError;
 }
 
@@ -417,6 +448,13 @@ export function normalizeTransportPayload<T = any>(
       );
     }
 
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+    if (typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) && getMonotonicNowMs() >= deadlineAt) {
+      throw createTimeoutError();
+    }
+
     if (parsed === null || parsed === undefined) {
       throw createEmptyResponseError(
         'O provedor retornou uma resposta JSON nula ou vazia.'
@@ -524,13 +562,26 @@ export function createHttpError(
   return httpError;
 }
 
-function createTimeoutError(): TransportError {
+function createTimeoutError(options?: {
+  cancellationMode?: TransportCancellationMode;
+  nativeAttemptStillPending?: boolean;
+  disallowAutomaticRetry?: boolean;
+}): TransportError {
   const timeoutError: TransportError = new Error(
     'Tempo limite esgotado ao aguardar resposta do servidor do provedor.'
   );
   timeoutError.errorCategory = 'timeout';
   timeoutError.isTransient = true;
   timeoutError.isClientError = false;
+  if (options?.cancellationMode) {
+    timeoutError.cancellationMode = options.cancellationMode;
+  }
+  if (options?.nativeAttemptStillPending !== undefined) {
+    timeoutError.nativeAttemptStillPending = options.nativeAttemptStillPending;
+  }
+  if (options?.disallowAutomaticRetry !== undefined) {
+    timeoutError.disallowAutomaticRetry = options.disallowAutomaticRetry;
+  }
   return timeoutError;
 }
 
@@ -625,7 +676,16 @@ async function executeBrowserFetchGet<T = any>({
   signal,
 }: TransportRequestOptions): Promise<T> {
   const controller = new AbortController();
+  const deadlineAt = getMonotonicNowMs() + timeoutMs;
   let didTimeout = false;
+
+  const isTimedOut = (): boolean => {
+    if (didTimeout || getMonotonicNowMs() >= deadlineAt) {
+      didTimeout = true;
+      return true;
+    }
+    return false;
+  };
 
   const timeoutId = setTimeout(() => {
     didTimeout = true;
@@ -649,16 +709,27 @@ async function executeBrowserFetchGet<T = any>({
       });
     } catch {
       if (signal?.aborted) {
-        throw createAbortError();
+        throw createAbortError('physical', false);
       }
-      if (didTimeout) {
-        throw createTimeoutError();
+      if (isTimedOut()) {
+        throw createTimeoutError({
+          cancellationMode: 'physical',
+          nativeAttemptStillPending: false,
+          disallowAutomaticRetry: false,
+        });
       }
       throw createNetworkError();
     }
 
     if (signal?.aborted) {
-      throw createAbortError();
+      throw createAbortError('physical', false);
+    }
+    if (isTimedOut()) {
+      throw createTimeoutError({
+        cancellationMode: 'physical',
+        nativeAttemptStillPending: false,
+        disallowAutomaticRetry: false,
+      });
     }
 
     if (!response.ok) {
@@ -674,10 +745,14 @@ async function executeBrowserFetchGet<T = any>({
       textData = await response.text();
     } catch {
       if (signal?.aborted) {
-        throw createAbortError();
+        throw createAbortError('physical', false);
       }
-      if (didTimeout) {
-        throw createTimeoutError();
+      if (isTimedOut()) {
+        throw createTimeoutError({
+          cancellationMode: 'physical',
+          nativeAttemptStillPending: false,
+          disallowAutomaticRetry: false,
+        });
       }
       const readError: TransportError = new Error(
         'Falha ao ler os dados da resposta do provedor.'
@@ -690,10 +765,17 @@ async function executeBrowserFetchGet<T = any>({
     }
 
     if (signal?.aborted) {
-      throw createAbortError();
+      throw createAbortError('physical', false);
+    }
+    if (isTimedOut()) {
+      throw createTimeoutError({
+        cancellationMode: 'physical',
+        nativeAttemptStillPending: false,
+        disallowAutomaticRetry: false,
+      });
     }
 
-    return normalizeTransportPayload<T>(textData, signal);
+    return normalizeTransportPayload<T>(textData, signal, deadlineAt);
   } finally {
     clearTimeout(timeoutId);
     if (signal) {
@@ -709,26 +791,54 @@ async function executeCapacitorHttpGet<T = any>({
 }: TransportRequestOptions): Promise<T> {
   const connectTimeout = Math.min(timeoutMs, MAX_NATIVE_CONNECT_TIMEOUT_MS);
   const readTimeout = timeoutMs;
+  const deadlineAt = getMonotonicNowMs() + timeoutMs;
   const httpGetFn =
     capacitorHttpGetOverride ??
     ((opts: HttpOptions) => CapacitorHttp.get(opts));
 
   let settled = false;
+  let nativeInvoked = false;
+  let nativeSettled = false;
+  let countedPendingLogical = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let onCallerAbort: (() => void) | null = null;
+
+  const markLogicalPendingIfNeeded = (): boolean => {
+    if (nativeInvoked && !nativeSettled) {
+      if (!countedPendingLogical) {
+        countedPendingLogical = true;
+        pendingLogicalNativeRequests++;
+      }
+      return true;
+    }
+    return false;
+  };
+
+  const clearLogicalPendingCounter = (): void => {
+    if (countedPendingLogical) {
+      countedPendingLogical = false;
+      pendingLogicalNativeRequests = Math.max(0, pendingLogicalNativeRequests - 1);
+    }
+  };
 
   try {
     const response = await new Promise<HttpResponse>((resolve, reject) => {
       onCallerAbort = () => {
         if (settled) return;
         settled = true;
-        reject(createAbortError());
+        const stillPending = markLogicalPendingIfNeeded();
+        reject(
+          createAbortError(
+            stillPending ? 'logical' : 'physical',
+            stillPending
+          )
+        );
       };
 
       if (signal) {
         if (signal.aborted) {
           settled = true;
-          reject(createAbortError());
+          reject(createAbortError('physical', false));
           return;
         }
         signal.addEventListener('abort', onCallerAbort, { once: true });
@@ -737,7 +847,14 @@ async function executeCapacitorHttpGet<T = any>({
       timeoutId = setTimeout(() => {
         if (settled) return;
         settled = true;
-        reject(createTimeoutError());
+        const stillPending = markLogicalPendingIfNeeded();
+        reject(
+          createTimeoutError({
+            cancellationMode: stillPending ? 'logical' : 'physical',
+            nativeAttemptStillPending: stillPending,
+            disallowAutomaticRetry: stillPending,
+          })
+        );
       }, timeoutMs);
 
       const requestOptions: HttpOptions = {
@@ -750,25 +867,39 @@ async function executeCapacitorHttpGet<T = any>({
         },
       };
 
+      nativeInvoked = true;
       httpGetFn(requestOptions)
         .then((res) => {
+          nativeSettled = true;
+          clearLogicalPendingCounter();
           if (settled) {
             // Resposta tardia após cancelamento lógico ou timeout: descartada sem processamento
+            discardedLateNativeResponses++;
             return;
           }
           settled = true;
           resolve(res);
         })
         .catch((err: any) => {
-          if (settled) return;
+          nativeSettled = true;
+          clearLogicalPendingCounter();
+          if (settled) {
+            return;
+          }
           settled = true;
           if (signal?.aborted) {
-            reject(createAbortError());
+            reject(createAbortError('physical', false));
             return;
           }
           const msg = String(err?.message || err || '').toLowerCase();
           if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('sockettimeout')) {
-            reject(createTimeoutError());
+            reject(
+              createTimeoutError({
+                cancellationMode: 'physical',
+                nativeAttemptStillPending: false,
+                disallowAutomaticRetry: false,
+              })
+            );
             return;
           }
           reject(createNetworkError());
@@ -778,7 +909,14 @@ async function executeCapacitorHttpGet<T = any>({
     const status = typeof response?.status === 'number' ? response.status : 0;
 
     if (signal?.aborted) {
-      throw createAbortError();
+      throw createAbortError('physical', false);
+    }
+    if (getMonotonicNowMs() >= deadlineAt) {
+      throw createTimeoutError({
+        cancellationMode: 'physical',
+        nativeAttemptStillPending: false,
+        disallowAutomaticRetry: false,
+      });
     }
 
     if (status < 200 || status >= 300) {
@@ -793,7 +931,7 @@ async function executeCapacitorHttpGet<T = any>({
       );
     }
 
-    return normalizeTransportPayload<T>(response.data, signal);
+    return normalizeTransportPayload<T>(response.data, signal, deadlineAt);
   } finally {
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
