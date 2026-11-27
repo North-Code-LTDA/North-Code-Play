@@ -381,23 +381,127 @@ export function normalizeContainerExtension(rawExt: unknown): string | null {
   return cleaned;
 }
 
+/**
+ * Known image file extensions used EXCLUSIVELY to distinguish relative image filenames
+ * (e.g. "logo.png", "cover.jfif", "poster.HEIC") from schemeless domains in `isSchemelessDomain()`.
+ * NEVER used as a rendering whitelist.
+ */
 const COMMON_IMAGE_EXTENSIONS = new Set([
   "png",
   "jpg",
   "jpeg",
+  "jpe",
+  "jfif",
+  "pjpeg",
+  "pjp",
   "webp",
   "gif",
+  "apng",
   "svg",
+  "svgz",
   "ico",
+  "cur",
   "bmp",
+  "dib",
+  "tif",
   "tiff",
   "avif",
+  "heic",
+  "heif",
+  "jxl",
+  "jp2",
+  "j2k",
 ]);
+
+/**
+ * Common server-side script extensions used exclusively to distinguish relative dynamic
+ * image endpoints (e.g. "image.php?id=123") from schemeless domains in `isSchemelessDomain()`.
+ */
+const COMMON_RELATIVE_SCRIPT_EXTENSIONS = new Set([
+  "php",
+  "asp",
+  "aspx",
+  "jsp",
+  "cgi",
+  "cfm",
+]);
+
+function hasAsciiControlChars(str: string): boolean {
+  return /[\u0000-\u001f\u007f]/.test(str);
+}
+
+function isValidImageDataUri(str: string): boolean {
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(str)) {
+    return false;
+  }
+  const match =
+    /^data:image\/([a-z0-9.+-]+)((?:;[a-z0-9.+-]+(?:=[a-z0-9.+-]+)?)*)(;base64)?,(.*)$/is.exec(
+      str
+    );
+  if (!match) {
+    return false;
+  }
+  return match[4].length > 0;
+}
+
+function isValidBlobImageUrl(str: string): boolean {
+  if (/[\u0000-\u001f\u007f\s]/.test(str)) {
+    return false;
+  }
+  if (!/^blob:/i.test(str)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(str);
+    if (parsed.protocol !== "blob:") {
+      return false;
+    }
+    const rest = str.slice(5);
+    return /^(?:https?:\/\/[^\s/]+\/\S+|capacitor:\/\/[^\s/]+\/\S+|ionic:\/\/[^\s/]+\/\S+|null\/\S+)$/i.test(
+      rest
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isValidAbsoluteHttpImageUrl(str: string): boolean {
+  if (hasAsciiControlChars(str)) {
+    return false;
+  }
+  if (!/^https?:\/\/[^/\s?#]+/i.test(str)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(str);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      Boolean(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks whether a string starts with an explicit URI scheme (e.g. javascript:, file:, ftp:,
+ * rtmp:, rtsp:, ws:, mailto:, tel:, vbscript:, malformed http:...) that is NOT a valid
+ * schemeless host:port domain.
+ */
+function hasExplicitNonImageScheme(str: string): boolean {
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(str)) {
+    return false;
+  }
+  if (isSchemelessDomain(str)) {
+    return false;
+  }
+  return true;
+}
 
 /**
  * Checks whether a string represents a schemeless domain with path
  * (e.g. "image.tmdb.org/t/p/w500/..." or "images.provider.tv/ch1.png")
- * as opposed to a relative filename/path (e.g. "logo.png", "covers/123.jpg", "./img.png").
+ * as opposed to a relative filename/path (e.g. "logo.png", "logo.jfif", "image.php?id=1", "./img.png").
  */
 export function isSchemelessDomain(str: string): boolean {
   if (
@@ -409,22 +513,27 @@ export function isSchemelessDomain(str: string): boolean {
     return false;
   }
 
-  // Extract host part before first slash or query string
+  // Extract host part before first slash, query string, or fragment
   const firstSlash = str.indexOf("/");
   const firstQuestion = str.indexOf("?");
+  const firstHash = str.indexOf("#");
   let endOfHost = str.length;
   if (firstSlash !== -1) endOfHost = firstSlash;
   if (firstQuestion !== -1 && firstQuestion < endOfHost) endOfHost = firstQuestion;
+  if (firstHash !== -1 && firstHash < endOfHost) endOfHost = firstHash;
 
   const hostPart = str.slice(0, endOfHost).trim();
   const hostWithoutPort = hostPart.split(":")[0].toLowerCase();
 
-  // If host ends with a known image extension (e.g. "logo.png", "ch1.jpg"),
-  // it is definitely a relative file name, NOT a domain!
+  // If host ends with a known image or relative script extension (e.g. "logo.png", "logo.jfif",
+  // "image.php?id=1"), it is a relative filename/endpoint, NOT a domain!
   const lastDot = hostWithoutPort.lastIndexOf(".");
   if (lastDot !== -1) {
     const ext = hostWithoutPort.slice(lastDot + 1);
-    if (COMMON_IMAGE_EXTENSIONS.has(ext)) {
+    if (
+      COMMON_IMAGE_EXTENSIONS.has(ext) ||
+      COMMON_RELATIVE_SCRIPT_EXTENSIONS.has(ext)
+    ) {
       return false;
     }
   }
@@ -477,11 +586,12 @@ export function extractLegacyProxyUrl(urlStr: string): { innerUrl: string; legac
  * Standardized URL resolution for channel logos, movie posters, series covers, and backdrops.
  * Separated from loading state:
  * 1. Preserves valid absolute HTTP/HTTPS URLs literally (including query strings, signatures, casing, ports).
- * 2. Preserves data: and blob: URLs.
- * 3. Resolves protocol-relative URLs (//domain/...).
- * 4. Resolves schemeless domain URLs with appropriate scheme.
- * 5. Resolves relative paths against the provider serverUrl base.
- * 6. Returns null when source is empty, invalid, or unresolvable (never returns a fallback SVG).
+ * 2. Preserves valid `data:image/...` URIs and valid `blob:` URLs (rejecting non-image data URIs).
+ * 3. Rejects explicit non-image schemes (`javascript:`, `file:`, `ftp:`, `rtmp:`, `rtsp:`, `ws:`, etc.).
+ * 4. Resolves protocol-relative URLs (//domain/...).
+ * 5. Resolves schemeless domain URLs with appropriate scheme.
+ * 6. Resolves relative paths against the provider serverUrl base.
+ * 7. Returns null when source is empty, invalid, or unresolvable (never returns a fallback SVG).
  */
 export function buildDirectImageUrl(
   rawUrl?: unknown,
@@ -504,14 +614,17 @@ export function buildDirectImageUrl(
     }
   }
 
-  // 2. Preserve data and blob URIs directly
-  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
-    return trimmed;
+  // 2. Preserve ONLY valid data:image/... URIs and valid blob: URLs
+  if (/^data:/i.test(trimmed)) {
+    return isValidImageDataUri(trimmed) ? trimmed : null;
+  }
+  if (/^blob:/i.test(trimmed)) {
+    return isValidBlobImageUrl(trimmed) ? trimmed : null;
   }
 
-  // 3. Preserve valid absolute HTTP/HTTPS URLs as-is (CRITICAL: preserve queries, signatures, ports)
+  // 3. Preserve valid absolute HTTP/HTTPS URLs literally (CRITICAL: preserve queries, signatures, ports, casing)
   if (/^https?:\/\//i.test(trimmed)) {
-    return trimmed;
+    return isValidAbsoluteHttpImageUrl(trimmed) ? trimmed : null;
   }
 
   // 4. Protocol-relative URL: //domain.com/path
@@ -521,30 +634,44 @@ export function buildDirectImageUrl(
       : typeof window !== "undefined" && window.location.protocol === "https:"
       ? "https:"
       : "http:";
-    return `${scheme}${trimmed}`;
+    const candidate = `${scheme}${trimmed}`;
+    return isValidAbsoluteHttpImageUrl(candidate) ? candidate : null;
   }
 
-  // 5. Schemeless domain URL (e.g. image.tmdb.org/...)
+  // 5. Block explicit non-image or malformed URI schemes (never treat as relative paths)
+  if (hasExplicitNonImageScheme(trimmed)) {
+    return null;
+  }
+
+  // 6. Schemeless domain URL (e.g. image.tmdb.org/...)
   if (isSchemelessDomain(trimmed)) {
     const scheme = effectiveBase?.startsWith("https://")
       ? "https://"
       : typeof window !== "undefined" && window.location.protocol === "https:"
       ? "https://"
       : "http://";
-    return `${scheme}${trimmed}`;
+    const candidate = `${scheme}${trimmed}`;
+    return isValidAbsoluteHttpImageUrl(candidate) ? candidate : null;
   }
 
-  // 6. Relative path (e.g. "logo.png", "/logos/1.png", "./ch.png", "../ch.png")
+  // 7. Relative path (e.g. "logo.png", "logo.jfif", "image.php?id=1", "/logos/1.png", "./ch.png")
+  if (hasAsciiControlChars(trimmed)) {
+    return null;
+  }
   if (effectiveBase) {
     const cleanBase = normalizeServerUrl(effectiveBase);
     if (!cleanBase) return null;
     try {
       const baseWithSlash = cleanBase.endsWith("/") ? cleanBase : `${cleanBase}/`;
       const resolved = new URL(trimmed, baseWithSlash);
+      if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+        return null;
+      }
       return resolved.href;
     } catch {
       const relativePart = trimmed.replace(/^\/+/, "");
-      return `${cleanBase}/${relativePart}`;
+      const candidate = `${cleanBase}/${relativePart}`;
+      return isValidAbsoluteHttpImageUrl(candidate) ? candidate : null;
     }
   }
 

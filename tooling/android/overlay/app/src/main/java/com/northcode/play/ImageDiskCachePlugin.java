@@ -63,11 +63,12 @@ public class ImageDiskCachePlugin extends Plugin {
     public static final String IMAGE_CACHE_SUBDIR_NAME = "nc_image_cache";
     private static final String INDEX_FILE_NAME = "index_v1.json";
     private static final int STREAM_BUFFER_SIZE = 16384;
+    private static final int HEADER_INSPECTION_BYTES = 1024;
     private static final int MAX_NO_STORE_INLINE_BYTES = 5 * 1024 * 1024;
     private static final long DEFAULT_MAX_BYTES = 120L * 1024L * 1024L;
     private static final long MIN_MAX_BYTES = 1024L;
     private static final Pattern SAFE_IMAGE_FILE_NAME_PATTERN = Pattern.compile(
-        "^img_[a-f0-9]{64}\\.(?:jpg|png|webp|gif|bmp|ico|avif|svg|bin)$"
+        "^img_[a-f0-9]{64}\\.(?:jpg|png|webp|gif|bmp|ico|avif)$"
     );
     private static final Pattern MAX_AGE_PATTERN = Pattern.compile(
         "max-age\\s*=\\s*(\\d+)",
@@ -122,7 +123,7 @@ public class ImageDiskCachePlugin extends Plugin {
             this.key = key;
             this.fileName = fileName;
             this.byteSize = byteSize;
-            this.contentType = contentType != null ? contentType : "image/jpeg";
+            this.contentType = normalizedMimeForFileName(fileName, contentType);
             this.etag = etag;
             this.lastModified = lastModified;
             this.cacheControl = cacheControl;
@@ -246,62 +247,390 @@ public class ImageDiskCachePlugin extends Plugin {
         }
     }
 
-    private static String extensionForContentType(String contentType, byte[] headerBytes, int headerLen) {
-        if (headerLen >= 3 && (headerBytes[0] & 0xFF) == 0xFF && (headerBytes[1] & 0xFF) == 0xD8 && (headerBytes[2] & 0xFF) == 0xFF) {
-            return "jpg";
-        }
-        if (
-            headerLen >= 8 &&
-            (headerBytes[0] & 0xFF) == 0x89 &&
-            headerBytes[1] == 0x50 &&
-            headerBytes[2] == 0x4E &&
-            headerBytes[3] == 0x47
+    /**
+     * Resultado centralizado da identificação real de formato de imagem por inspeção
+     * limitada de cabeçalho (magic bytes / ISO BMFF ftyp / prólogo XML de SVG).
+     */
+    static final class IdentifiedImageFormat {
+        final String format;
+        final String extension;
+        final String mimeType;
+        final boolean persistentEligible;
+        final boolean directFallbackEligible;
+        final String bypassReason;
+
+        private IdentifiedImageFormat(
+            String format,
+            String extension,
+            String mimeType,
+            boolean persistentEligible,
+            boolean directFallbackEligible,
+            String bypassReason
         ) {
-            return "png";
+            this.format = format;
+            this.extension = extension;
+            this.mimeType = mimeType;
+            this.persistentEligible = persistentEligible;
+            this.directFallbackEligible = directFallbackEligible;
+            this.bypassReason = bypassReason;
         }
-        if (
-            headerLen >= 12 &&
-            headerBytes[0] == 'R' &&
-            headerBytes[1] == 'I' &&
-            headerBytes[2] == 'F' &&
-            headerBytes[3] == 'F' &&
-            headerBytes[8] == 'W' &&
-            headerBytes[9] == 'E' &&
-            headerBytes[10] == 'B' &&
-            headerBytes[11] == 'P'
-        ) {
-            return "webp";
+
+        static IdentifiedImageFormat persistent(String format, String extension, String mimeType) {
+            return new IdentifiedImageFormat(format, extension, mimeType, true, false, null);
         }
-        if (
-            headerLen >= 6 &&
-            headerBytes[0] == 'G' &&
-            headerBytes[1] == 'I' &&
-            headerBytes[2] == 'F' &&
-            headerBytes[3] == '8'
-        ) {
-            return "gif";
+
+        static IdentifiedImageFormat directOnly(String format, String mimeType, String bypassReason) {
+            return new IdentifiedImageFormat(format, null, mimeType, false, true, bypassReason);
         }
-        String lower = contentType != null ? contentType.toLowerCase(Locale.ROOT) : "";
-        if (lower.contains("jpeg") || lower.contains("jpg")) return "jpg";
-        if (lower.contains("png")) return "png";
-        if (lower.contains("webp")) return "webp";
-        if (lower.contains("gif")) return "gif";
-        if (lower.contains("avif")) return "avif";
-        if (lower.contains("bmp")) return "bmp";
-        if (lower.contains("svg")) return "svg";
-        if (lower.contains("icon") || lower.contains("ico")) return "ico";
-        return "jpg";
+
+        static IdentifiedImageFormat invalid() {
+            return new IdentifiedImageFormat("INVALID", null, null, false, false, null);
+        }
+    }
+
+    private static String normalizedMimeForFileName(String fileName, String fallbackContentType) {
+        if (fileName != null) {
+            String lowerName = fileName.toLowerCase(Locale.ROOT);
+            if (lowerName.endsWith(".jpg")) return "image/jpeg";
+            if (lowerName.endsWith(".png")) return "image/png";
+            if (lowerName.endsWith(".webp")) return "image/webp";
+            if (lowerName.endsWith(".gif")) return "image/gif";
+            if (lowerName.endsWith(".bmp")) return "image/bmp";
+            if (lowerName.endsWith(".ico")) return "image/x-icon";
+            if (lowerName.endsWith(".avif")) return "image/avif";
+        }
+        if (fallbackContentType != null && !fallbackContentType.trim().isEmpty()) {
+            return fallbackContentType.split(";")[0].trim().toLowerCase(Locale.ROOT);
+        }
+        return "image/jpeg";
+    }
+
+    private static boolean isLegacySvgEntry(String fileName, String contentType) {
+        if (fileName != null) {
+            String lowerName = fileName.toLowerCase(Locale.ROOT);
+            if (lowerName.endsWith(".svg") || lowerName.endsWith(".svgz")) {
+                return true;
+            }
+        }
+        if (contentType != null && contentType.toLowerCase(Locale.ROOT).contains("svg")) {
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isValidBmpDibHeaderSize(int dibSize) {
+        return (
+            dibSize == 12 ||
+            dibSize == 16 ||
+            dibSize == 40 ||
+            dibSize == 52 ||
+            dibSize == 56 ||
+            dibSize == 64 ||
+            dibSize == 108 ||
+            dibSize == 124
+        );
+    }
+
+    private static String asciiFourCC(byte[] bytes, int offset) {
+        return new String(bytes, offset, 4, StandardCharsets.US_ASCII);
+    }
+
+    private static boolean isAvifBrand(String brand) {
+        return "avif".equals(brand) || "avis".equals(brand);
+    }
+
+    private static boolean isHeifImageBrand(String brand) {
+        return (
+            "heic".equals(brand) ||
+            "heix".equals(brand) ||
+            "hevc".equals(brand) ||
+            "hevx".equals(brand) ||
+            "heim".equals(brand) ||
+            "heis".equals(brand) ||
+            "hevm".equals(brand) ||
+            "hevs".equals(brand)
+        );
+    }
+
+    private static boolean isVideoContainerBrand(String brand) {
+        return (
+            "isom".equals(brand) ||
+            "iso2".equals(brand) ||
+            "mp41".equals(brand) ||
+            "mp42".equals(brand) ||
+            "avc1".equals(brand) ||
+            "M4V ".equals(brand) ||
+            "M4A ".equals(brand) ||
+            "qt  ".equals(brand) ||
+            "3gp4".equals(brand) ||
+            "3gp5".equals(brand) ||
+            "dash".equals(brand)
+        );
     }
 
     /**
-     * Verifica se os primeiros bytes correspondem a um formato real de imagem (magic bytes)
-     * e rejeita páginas HTML, JSON de erro ou texto plano disfarçados de HTTP 200.
+     * Classifica estritamente a box `ftyp` ISO BMFF no cabeçalho limitado:
+     * - Aceita AVIF apenas quando `major_brand` é `avif`/`avis`, ou quando `major_brand` é
+     *   `mif1`/`msf1` com `compatible_brands` contendo `avif`/`avis`.
+     * - Mantém HEIF/HEIC fora do cache persistente, permitindo fallback direto de renderização.
+     * - Rejeita MP4 e outros contêineres de vídeo/desconhecidos.
      */
-    private static boolean hasValidImageSignature(byte[] header, int len, String contentType) {
-        if (header == null || len < 4) {
+    private static IdentifiedImageFormat classifyIsoBmffHeader(byte[] header, int len) {
+        if (len < 16) {
+            return IdentifiedImageFormat.invalid();
+        }
+        long boxSize =
+            (((long) (header[0] & 0xFF)) << 24) |
+            (((long) (header[1] & 0xFF)) << 16) |
+            (((long) (header[2] & 0xFF)) << 8) |
+            ((long) (header[3] & 0xFF));
+        if (boxSize < 16L || boxSize > 4096L || (boxSize % 4L) != 0L) {
+            return IdentifiedImageFormat.invalid();
+        }
+
+        String majorBrand = asciiFourCC(header, 8);
+        if (isAvifBrand(majorBrand)) {
+            return IdentifiedImageFormat.persistent("AVIF", "avif", "image/avif");
+        }
+
+        int inspectLimit = (int) Math.min((long) len, boxSize);
+        boolean hasAvifCompat = false;
+        boolean hasHeifCompat = false;
+        boolean hasVideoCompat = false;
+
+        for (int pos = 16; pos + 4 <= inspectLimit; pos += 4) {
+            String compat = asciiFourCC(header, pos);
+            if (isAvifBrand(compat)) {
+                hasAvifCompat = true;
+            } else if (isHeifImageBrand(compat)) {
+                hasHeifCompat = true;
+            } else if (isVideoContainerBrand(compat)) {
+                hasVideoCompat = true;
+            }
+        }
+
+        boolean isMiafContainer = "mif1".equals(majorBrand) || "msf1".equals(majorBrand);
+        if (isMiafContainer && hasAvifCompat) {
+            return IdentifiedImageFormat.persistent("AVIF", "avif", "image/avif");
+        }
+        if (isHeifImageBrand(majorBrand) || (isMiafContainer && hasHeifCompat && !hasVideoCompat)) {
+            return IdentifiedImageFormat.directOnly("HEIF", "image/heif", "unrecognized_format");
+        }
+        return IdentifiedImageFormat.invalid();
+    }
+
+    /**
+     * Inspeciona um cabeçalho textual/XML limitado para distinguir SVG válido
+     * (incluindo UTF-8 BOM, `<?xml ...?>`, comentários XML e `<!DOCTYPE svg ...>`)
+     * de HTML, JSON ou mensagens XML de erro.
+     */
+    private static boolean isValidSvgHeader(byte[] header, int startOffset, int len) {
+        if (header == null || startOffset >= len) {
             return false;
         }
+        int snippetLen = Math.min(len - startOffset, HEADER_INSPECTION_BYTES);
+        String text = new String(header, startOffset, snippetLen, StandardCharsets.UTF_8);
+        String lower = text.toLowerCase(Locale.ROOT);
+        int pos = 0;
+        int n = lower.length();
+
+        for (int step = 0; step < 16 && pos < n; step++) {
+            while (pos < n && Character.isWhitespace(lower.charAt(pos))) {
+                pos++;
+            }
+            if (pos >= n || lower.charAt(pos) != '<') {
+                return false;
+            }
+            if (lower.startsWith("<?", pos)) {
+                int endPi = lower.indexOf("?>", pos + 2);
+                if (endPi < 0) return false;
+                pos = endPi + 2;
+                continue;
+            }
+            if (lower.startsWith("<!--", pos)) {
+                int endComment = lower.indexOf("-->", pos + 4);
+                if (endComment < 0) return false;
+                pos = endComment + 3;
+                continue;
+            }
+            if (lower.startsWith("<!doctype", pos)) {
+                int endDoctype = lower.indexOf('>', pos + 9);
+                if (endDoctype < 0) return false;
+                String doctypeBody = lower.substring(pos + 9, endDoctype).trim();
+                if (!doctypeBody.startsWith("svg")) {
+                    return false;
+                }
+                pos = endDoctype + 1;
+                continue;
+            }
+            if (lower.startsWith("<svg", pos)) {
+                int nextIdx = pos + 4;
+                if (nextIdx >= n) {
+                    return true;
+                }
+                char nextChar = lower.charAt(nextIdx);
+                return (
+                    Character.isWhitespace(nextChar) ||
+                    nextChar == '>' ||
+                    nextChar == '/'
+                );
+            }
+            return false;
+        }
+        return false;
+    }
+
+    /**
+     * Classificador centralizado de formato de imagem a partir de buffer limitado de cabeçalho.
+     * Prioriza assinaturas binárias reais sobre o `Content-Type` informado pelo provedor:
+     * - Imagens raster reconhecidas (JPEG, PNG/APNG, WebP, GIF, BMP, ICO, AVIF) são elegíveis ao
+     *   cache persistente mesmo com Content-Type ausente, genérico ou divergente.
+     * - SVG e formatos de imagem menos comuns (TIFF, HEIF/HEIC, JPEG XL) não entram no cache
+     *   persistente, mas permitem fallback direto seguro pelo elemento `<img>`.
+     * - HTML, JSON, MP4, texto plano ou bytes desconhecidos são rejeitados mesmo se o servidor
+     *   enviar `Content-Type: image/*`.
+     */
+    static IdentifiedImageFormat identifyImageFormat(byte[] header, int len, String contentType) {
+        if (header == null || len <= 0) {
+            return IdentifiedImageFormat.invalid();
+        }
+
+        // 1. JPEG: FF D8 FF
+        if (
+            len >= 3 &&
+            (header[0] & 0xFF) == 0xFF &&
+            (header[1] & 0xFF) == 0xD8 &&
+            (header[2] & 0xFF) == 0xFF
+        ) {
+            return IdentifiedImageFormat.persistent("JPEG", "jpg", "image/jpeg");
+        }
+
+        // 2. PNG / APNG: 89 50 4E 47 0D 0A 1A 0A (preserva bytes intactos)
+        if (
+            len >= 8 &&
+            (header[0] & 0xFF) == 0x89 &&
+            header[1] == 0x50 &&
+            header[2] == 0x4E &&
+            header[3] == 0x47 &&
+            header[4] == 0x0D &&
+            header[5] == 0x0A &&
+            header[6] == 0x1A &&
+            header[7] == 0x0A
+        ) {
+            return IdentifiedImageFormat.persistent("PNG", "png", "image/png");
+        }
+
+        // 3. WebP (estático ou animado): RIFF....WEBP
+        if (
+            len >= 12 &&
+            header[0] == 'R' &&
+            header[1] == 'I' &&
+            header[2] == 'F' &&
+            header[3] == 'F' &&
+            header[8] == 'W' &&
+            header[9] == 'E' &&
+            header[10] == 'B' &&
+            header[11] == 'P'
+        ) {
+            return IdentifiedImageFormat.persistent("WEBP", "webp", "image/webp");
+        }
+
+        // 4. GIF (estático ou animado): GIF87a ou GIF89a
+        if (
+            len >= 6 &&
+            header[0] == 'G' &&
+            header[1] == 'I' &&
+            header[2] == 'F' &&
+            header[3] == '8' &&
+            (header[4] == '7' || header[4] == '9') &&
+            header[5] == 'a'
+        ) {
+            return IdentifiedImageFormat.persistent("GIF", "gif", "image/gif");
+        }
+
+        // 5. BMP: 'B','M' + cabeçalho mínimo válido (bytes reservados 6..9 zerados + DIB size válido)
+        if (
+            len >= 14 &&
+            header[0] == 'B' &&
+            header[1] == 'M' &&
+            header[6] == 0 &&
+            header[7] == 0 &&
+            header[8] == 0 &&
+            header[9] == 0
+        ) {
+            if (len < 18) {
+                return IdentifiedImageFormat.persistent("BMP", "bmp", "image/bmp");
+            }
+            int dibSize =
+                (header[14] & 0xFF) |
+                ((header[15] & 0xFF) << 8) |
+                ((header[16] & 0xFF) << 16) |
+                ((header[17] & 0xFF) << 24);
+            if (isValidBmpDibHeaderSize(dibSize)) {
+                return IdentifiedImageFormat.persistent("BMP", "bmp", "image/bmp");
+            }
+        }
+
+        // 6. ICO: 00 00 01 00 + contagem de ícones > 0
+        if (
+            len >= 6 &&
+            header[0] == 0x00 &&
+            header[1] == 0x00 &&
+            header[2] == 0x01 &&
+            header[3] == 0x00 &&
+            (header[4] != 0 || header[5] != 0)
+        ) {
+            return IdentifiedImageFormat.persistent("ICO", "ico", "image/x-icon");
+        }
+
+        // 7. ISO BMFF (AVIF elegível; HEIF/HEIC fallback direto; MP4 rejeitado)
+        if (
+            len >= 16 &&
+            header[4] == 'f' &&
+            header[5] == 't' &&
+            header[6] == 'y' &&
+            header[7] == 'p'
+        ) {
+            return classifyIsoBmffHeader(header, len);
+        }
+
+        // 8. Formatos menos comuns: TIFF e JPEG XL (nunca persistidos, fallback direto permitido)
+        if (
+            len >= 4 &&
+            ((header[0] == 'I' && header[1] == 'I' && header[2] == 0x2A && header[3] == 0x00) ||
+                (header[0] == 'M' && header[1] == 'M' && header[2] == 0x00 && header[3] == 0x2A))
+        ) {
+            return IdentifiedImageFormat.directOnly("TIFF", "image/tiff", "unrecognized_format");
+        }
+        if (
+            (len >= 2 && (header[0] & 0xFF) == 0xFF && (header[1] & 0xFF) == 0x0A) ||
+            (len >= 12 &&
+                header[0] == 0x00 &&
+                header[1] == 0x00 &&
+                header[2] == 0x00 &&
+                header[3] == 0x0C &&
+                header[4] == 'J' &&
+                header[5] == 'X' &&
+                header[6] == 'L' &&
+                header[7] == ' ' &&
+                header[8] == 0x0D &&
+                header[9] == 0x0A &&
+                (header[10] & 0xFF) == 0x87 &&
+                header[11] == 0x0A)
+        ) {
+            return IdentifiedImageFormat.directOnly("JXL", "image/jxl", "unrecognized_format");
+        }
+
+        // 9. Inspeção textual/XML para SVG válido (nunca persistido no cache em disco)
         int offset = 0;
+        if (
+            len >= 3 &&
+            (header[0] & 0xFF) == 0xEF &&
+            (header[1] & 0xFF) == 0xBB &&
+            (header[2] & 0xFF) == 0xBF
+        ) {
+            offset = 3;
+        }
         while (
             offset < len &&
             (header[offset] == ' ' ||
@@ -314,106 +643,32 @@ public class ImageDiskCachePlugin extends Plugin {
         if (offset < len) {
             byte firstNonWs = header[offset];
             if (firstNonWs == '{' || firstNonWs == '[') {
-                return false;
+                return IdentifiedImageFormat.invalid();
             }
-            if (firstNonWs == '<') {
-                String snippet = new String(
-                    header,
-                    offset,
-                    Math.min(len - offset, 64),
-                    StandardCharsets.UTF_8
-                ).toLowerCase(Locale.ROOT);
-                String lowerCt = contentType != null ? contentType.toLowerCase(Locale.ROOT) : "";
-                if (lowerCt.contains("svg") && snippet.contains("<svg")) {
-                    return true;
-                }
-                return false;
+            if (firstNonWs == '<' && isValidSvgHeader(header, offset, len)) {
+                return IdentifiedImageFormat.directOnly("SVG", "image/svg+xml", "svg_direct");
             }
         }
 
-        // JPEG: FF D8 FF
-        if ((header[0] & 0xFF) == 0xFF && (header[1] & 0xFF) == 0xD8 && (header[2] & 0xFF) == 0xFF) {
-            return true;
-        }
-        // PNG: 89 50 4E 47 0D 0A 1A 0A
-        if (
-            len >= 8 &&
-            (header[0] & 0xFF) == 0x89 &&
-            header[1] == 0x50 &&
-            header[2] == 0x4E &&
-            header[3] == 0x47 &&
-            header[4] == 0x0D &&
-            header[5] == 0x0A &&
-            header[6] == 0x1A &&
-            header[7] == 0x0A
-        ) {
-            return true;
-        }
-        // WebP: RIFF....WEBP
-        if (
-            len >= 12 &&
-            header[0] == 'R' &&
-            header[1] == 'I' &&
-            header[2] == 'F' &&
-            header[3] == 'F' &&
-            header[8] == 'W' &&
-            header[9] == 'E' &&
-            header[10] == 'B' &&
-            header[11] == 'P'
-        ) {
-            return true;
-        }
-        // GIF: GIF87a ou GIF89a
-        if (
-            len >= 6 &&
-            header[0] == 'G' &&
-            header[1] == 'I' &&
-            header[2] == 'F' &&
-            header[3] == '8' &&
-            (header[4] == '7' || header[4] == '9') &&
-            header[5] == 'a'
-        ) {
-            return true;
-        }
-        // BMP: BM
-        if (header[0] == 'B' && header[1] == 'M') {
-            return true;
-        }
-        // ICO: 00 00 01 00
-        if (header[0] == 0x00 && header[1] == 0x00 && header[2] == 0x01 && header[3] == 0x00) {
-            return true;
-        }
-        // AVIF / HEIC ISO BMFF: ....ftyp
-        if (
-            len >= 12 &&
-            header[4] == 'f' &&
-            header[5] == 't' &&
-            header[6] == 'y' &&
-            header[7] == 'p'
-        ) {
-            return true;
-        }
-        return false;
+        return IdentifiedImageFormat.invalid();
     }
 
-    private static boolean isAllowedImageContentType(String contentType) {
+    /**
+     * Rejeita antecipadamente apenas Content-Types explicitamente incompatíveis com imagens
+     * (HTML, JSON, JavaScript, XHTML). Content-Type ausente, genérico ou divergente é permitido
+     * nesta etapa para ser decidido estritamente pela assinatura binária/SVG real.
+     */
+    private static boolean isExplicitlyRejectedContentType(String contentType) {
         if (contentType == null || contentType.trim().isEmpty()) {
-            return true;
-        }
-        String lower = contentType.toLowerCase(Locale.ROOT).trim();
-        if (
-            lower.startsWith("text/html") ||
-            lower.startsWith("text/plain") ||
-            lower.startsWith("application/json") ||
-            lower.startsWith("application/xml") ||
-            lower.startsWith("text/xml")
-        ) {
             return false;
         }
+        String lower = contentType.split(";")[0].toLowerCase(Locale.ROOT).trim();
         return (
-            lower.startsWith("image/") ||
-            lower.startsWith("application/octet-stream") ||
-            lower.startsWith("binary/octet-stream")
+            lower.equals("text/html") ||
+            lower.equals("application/json") ||
+            lower.equals("text/javascript") ||
+            lower.equals("application/javascript") ||
+            lower.equals("application/xhtml+xml")
         );
     }
 
@@ -494,9 +749,11 @@ public class ImageDiskCachePlugin extends Plugin {
                                     if (item == null) continue;
                                     String key = item.optString("key", "");
                                     String fileName = item.optString("fileName", "");
+                                    String rawContentType = item.optString("contentType", "");
                                     long byteSize = item.optLong("byteSize", 0L);
                                     if (
                                         key.length() != 64 ||
+                                        isLegacySvgEntry(fileName, rawContentType) ||
                                         !SAFE_IMAGE_FILE_NAME_PATTERN.matcher(fileName).matches() ||
                                         byteSize <= 0L
                                     ) {
@@ -521,7 +778,7 @@ public class ImageDiskCachePlugin extends Plugin {
                                         key,
                                         fileName,
                                         actualLength,
-                                        item.optString("contentType", "image/jpeg"),
+                                        normalizedMimeForFileName(fileName, rawContentType),
                                         item.isNull("etag") ? null : item.optString("etag", null),
                                         item.isNull("lastModified")
                                             ? null
@@ -905,6 +1162,23 @@ public class ImageDiskCachePlugin extends Plugin {
             }
 
             CacheEntry cachedEntry = entriesByKey.get(key);
+            if (cachedEntry != null && isLegacySvgEntry(cachedEntry.fileName, cachedEntry.contentType)) {
+                synchronized (indexLock) {
+                    CacheEntry removedLegacy = entriesByKey.remove(key);
+                    if (removedLegacy != null) {
+                        totalStoredBytes.addAndGet(-removedLegacy.byteSize);
+                        if (totalStoredBytes.get() < 0L) totalStoredBytes.set(0L);
+                        try {
+                            File cacheDir = getPersistentImageCacheDir();
+                            safeDeleteFile(new File(cacheDir, removedLegacy.fileName));
+                        } catch (Exception ignored) {
+                            // Ignora falha ao remover SVG legado
+                        }
+                        persistIndexLocked();
+                    }
+                }
+                cachedEntry = null;
+            }
             boolean expiredOrMustRevalidate =
                 cachedEntry != null && needsHttpRevalidation(cachedEntry, System.currentTimeMillis());
 
@@ -918,6 +1192,7 @@ public class ImageDiskCachePlugin extends Plugin {
                         hitResult.put("hit", true);
                         hitResult.put("revalidated304", false);
                         hitResult.put("bypassedNoStore", false);
+                        hitResult.put("bypassedCache", false);
                         hitResult.put("key", key);
                         hitResult.put("fileName", cachedEntry.fileName);
                         hitResult.put("filePath", imgFile.getPath());
@@ -1111,7 +1386,7 @@ public class ImageDiskCachePlugin extends Plugin {
             String lastModified = getHeaderIgnoreCase(connection, "Last-Modified");
             Long declaredLength = parseContentLength(connection);
 
-            if (!isAllowedImageContentType(contentType)) {
+            if (isExplicitlyRejectedContentType(contentType)) {
                 rejectAllWaiting(
                     inflight,
                     "Content-Type inválido para imagem: " + contentType,
@@ -1121,10 +1396,10 @@ public class ImageDiskCachePlugin extends Plugin {
             }
 
             // Se o servidor exigir Cache-Control: no-store, ler em memória e retornar Data URI
-            // sem persistir arquivo em disco e sem causar segundo GET pela tag <img>
+            // com MIME real identificado (apenas formatos raster) sem persistir arquivo em disco
             if (hasNoStoreDirective(cacheControl)) {
                 ByteArrayOutputStream memOut = new ByteArrayOutputStream();
-                byte[] headerBytes = new byte[64];
+                byte[] headerBytes = new byte[HEADER_INSPECTION_BYTES];
                 int headerLen = 0;
                 long bytesReadTotal = 0L;
                 boolean exceededInlineCap = false;
@@ -1164,15 +1439,39 @@ public class ImageDiskCachePlugin extends Plugin {
                     rejectAllWaiting(inflight, "Download no-store truncado.", "TRUNCATED_BODY");
                     return;
                 }
-                if (!hasValidImageSignature(headerBytes, headerLen, contentType)) {
+
+                IdentifiedImageFormat identified = identifyImageFormat(headerBytes, headerLen, contentType);
+                if (!identified.persistentEligible) {
+                    if (identified.directFallbackEligible) {
+                        JSObject directRes = new JSObject();
+                        directRes.put("hit", false);
+                        directRes.put("revalidated304", false);
+                        directRes.put("bypassedNoStore", true);
+                        directRes.put("bypassedCache", true);
+                        directRes.put(
+                            "bypassReason",
+                            identified.bypassReason != null ? identified.bypassReason : "unrecognized_format"
+                        );
+                        directRes.put("key", key);
+                        directRes.put("fileName", JSONObject.NULL);
+                        directRes.put("filePath", JSONObject.NULL);
+                        directRes.put("inlineDataUrl", JSONObject.NULL);
+                        directRes.put("byteSize", bytesReadTotal);
+                        directRes.put(
+                            "contentType",
+                            identified.mimeType != null ? identified.mimeType : JSONObject.NULL
+                        );
+                        directRes.put("totalBytes", totalStoredBytes.get());
+                        directRes.put("storedEntriesCount", entriesByKey.size());
+                        directRes.put("evictedEntriesCount", evictedEntriesCount.get());
+                        resolveAllWaiting(inflight, directRes);
+                        return;
+                    }
                     rejectAllWaiting(inflight, "Assinatura binária inválida em resposta no-store.", "INVALID_IMAGE_SIGNATURE");
                     return;
                 }
 
-                String effectiveMime = (contentType != null && !contentType.trim().isEmpty())
-                    ? contentType.split(";")[0].trim()
-                    : ("image/" + extensionForContentType(contentType, headerBytes, headerLen));
-
+                String effectiveMime = identified.mimeType;
                 String inlineDataUrl = null;
                 if (!exceededInlineCap) {
                     String b64 = Base64.encodeToString(memOut.toByteArray(), Base64.NO_WRAP);
@@ -1183,6 +1482,7 @@ public class ImageDiskCachePlugin extends Plugin {
                 bypassRes.put("hit", false);
                 bypassRes.put("revalidated304", false);
                 bypassRes.put("bypassedNoStore", true);
+                bypassRes.put("bypassedCache", false);
                 bypassRes.put("key", key);
                 bypassRes.put("fileName", JSONObject.NULL);
                 bypassRes.put("filePath", JSONObject.NULL);
@@ -1205,7 +1505,7 @@ public class ImageDiskCachePlugin extends Plugin {
                 "tmp_" + key + "_" + Thread.currentThread().getId() + ".tmp"
             );
 
-            byte[] headerBytes = new byte[64];
+            byte[] headerBytes = new byte[HEADER_INSPECTION_BYTES];
             int headerLen = 0;
             long bytesWritten = 0L;
 
@@ -1252,8 +1552,48 @@ public class ImageDiskCachePlugin extends Plugin {
                 return;
             }
 
-            if (!hasValidImageSignature(headerBytes, headerLen, contentType)) {
+            IdentifiedImageFormat identified = identifyImageFormat(headerBytes, headerLen, contentType);
+            if (!identified.persistentEligible) {
                 safeDeleteFile(tempFile);
+                if (identified.directFallbackEligible) {
+                    synchronized (indexLock) {
+                        CacheEntry staleEntry = entriesByKey.remove(key);
+                        if (staleEntry != null) {
+                            totalStoredBytes.addAndGet(-staleEntry.byteSize);
+                            if (totalStoredBytes.get() < 0L) totalStoredBytes.set(0L);
+                            try {
+                                File oldFile = resolveValidatedImageFile(staleEntry.fileName);
+                                safeDeleteFile(oldFile);
+                            } catch (Exception ignored) {
+                                // Ignora falha ao remover arquivo anterior
+                            }
+                            persistIndexLocked();
+                        }
+                    }
+                    JSObject directRes = new JSObject();
+                    directRes.put("hit", false);
+                    directRes.put("revalidated304", false);
+                    directRes.put("bypassedNoStore", false);
+                    directRes.put("bypassedCache", true);
+                    directRes.put(
+                        "bypassReason",
+                        identified.bypassReason != null ? identified.bypassReason : "unrecognized_format"
+                    );
+                    directRes.put("key", key);
+                    directRes.put("fileName", JSONObject.NULL);
+                    directRes.put("filePath", JSONObject.NULL);
+                    directRes.put("inlineDataUrl", JSONObject.NULL);
+                    directRes.put("byteSize", bytesWritten);
+                    directRes.put(
+                        "contentType",
+                        identified.mimeType != null ? identified.mimeType : JSONObject.NULL
+                    );
+                    directRes.put("totalBytes", totalStoredBytes.get());
+                    directRes.put("storedEntriesCount", entriesByKey.size());
+                    directRes.put("evictedEntriesCount", evictedEntriesCount.get());
+                    resolveAllWaiting(inflight, directRes);
+                    return;
+                }
                 rejectAllWaiting(
                     inflight,
                     "Assinatura binária inválida (resposta não é uma imagem íntegra).",
@@ -1262,7 +1602,8 @@ public class ImageDiskCachePlugin extends Plugin {
                 return;
             }
 
-            String ext = extensionForContentType(contentType, headerBytes, headerLen);
+            String ext = identified.extension;
+            String normalizedMime = identified.mimeType;
             String finalFileName = "img_" + key + "." + ext;
             File finalFile = resolveValidatedImageFile(finalFileName);
             if (finalFile == null) {
@@ -1303,7 +1644,7 @@ public class ImageDiskCachePlugin extends Plugin {
                     key,
                     finalFileName,
                     bytesWritten,
-                    contentType != null ? contentType : ("image/" + ext),
+                    normalizedMime,
                     etag,
                     lastModified,
                     cacheControl,
@@ -1330,12 +1671,13 @@ public class ImageDiskCachePlugin extends Plugin {
             successRes.put("hit", false);
             successRes.put("revalidated304", false);
             successRes.put("bypassedNoStore", false);
+            successRes.put("bypassedCache", false);
             successRes.put("key", key);
             successRes.put("fileName", finalFileName);
             successRes.put("filePath", verifiedFinal.getPath());
             successRes.put("cacheDir", cacheDir.getPath());
             successRes.put("byteSize", bytesWritten);
-            successRes.put("contentType", contentType != null ? contentType : ("image/" + ext));
+            successRes.put("contentType", normalizedMime);
             successRes.put("etag", etag != null ? etag : JSONObject.NULL);
             successRes.put("lastModified", lastModified != null ? lastModified : JSONObject.NULL);
             successRes.put("cacheControl", cacheControl != null ? cacheControl : JSONObject.NULL);

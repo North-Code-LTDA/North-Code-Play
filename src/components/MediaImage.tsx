@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { buildDirectImageUrl } from '../utils/mediaUtils';
 import {
   isAndroidPersistentImageCacheAvailable,
+  isEligibleForAndroidImageDiskCache,
   getInstantCachedImageSrc,
   acquireCachedImage,
   recoverFromCorruptedLocalImage,
@@ -840,7 +841,11 @@ function MediaImageInner({
 }: MediaImageProps) {
   // Resolve direct provider URL without proxy
   const resolvedUrl = buildDirectImageUrl(src, serverUrl);
-  const useAndroidDiskCache = Boolean(resolvedUrl && isAndroidPersistentImageCacheAvailable());
+  const useAndroidDiskCache = Boolean(
+    resolvedUrl &&
+      isAndroidPersistentImageCacheAvailable() &&
+      isEligibleForAndroidImageDiskCache(resolvedUrl)
+  );
   const instantLocalSrc = useAndroidDiskCache ? getInstantCachedImageSrc(resolvedUrl) : null;
   const isCachedLoaded = Boolean(
     resolvedUrl && (loadedImageUrlsCache.has(resolvedUrl) || Boolean(instantLocalSrc))
@@ -888,14 +893,11 @@ function MediaImageInner({
     setAttempt(0);
     const nextAuthorized = Boolean(resolvedUrl && shouldAuthorizeNow);
     setLatchedAuthorizedKey(nextAuthorized ? currentKey : null);
-    const nextInstantLocal =
-      resolvedUrl && isAndroidPersistentImageCacheAvailable()
-        ? getInstantCachedImageSrc(resolvedUrl)
-        : null;
+    const nextInstantLocal = useAndroidDiskCache ? getInstantCachedImageSrc(resolvedUrl) : null;
     setEffectiveImgSrc(
       !resolvedUrl
         ? null
-        : isAndroidPersistentImageCacheAvailable()
+        : useAndroidDiskCache
           ? nextInstantLocal
           : resolvedUrl
     );
@@ -970,7 +972,13 @@ function MediaImageInner({
     })
       .then((outcome) => {
         if (cancelled) return;
-        rememberLoadedImageUrl(resolvedUrl);
+        if (
+          outcome.fromCache ||
+          outcome.isLocalFile ||
+          (outcome.bypassedNoStore && outcome.src.startsWith('data:'))
+        ) {
+          rememberLoadedImageUrl(resolvedUrl);
+        }
         setEffectiveImgSrc(outcome.src);
         if (outcome.fromCache) {
           setStatus('loaded');

@@ -19,7 +19,7 @@ function getMonotonicNowMs(): number {
 }
 
 const SAFE_IMAGE_FILE_NAME_REGEX =
-  /^img_[a-f0-9]{64}\.(?:jpg|png|webp|gif|bmp|ico|avif|svg|bin)$/;
+  /^img_[a-f0-9]{64}\.(?:jpg|png|webp|gif|bmp|ico|avif)$/;
 const DEDICATED_ANDROID_IMAGE_CACHE_DIR_REGEX =
   /^\/data\/(?:user(?:_de)?\/\d+|data)\/com\.northcode\.play\/files\/nc_image_cache$/;
 const CAPACITOR_FILE_PATH_PREFIX = '/_capacitor_file_';
@@ -61,6 +61,8 @@ export interface AcquireImageNativeResult {
   hit: boolean;
   revalidated304?: boolean;
   bypassedNoStore?: boolean;
+  bypassedCache?: boolean;
+  bypassReason?: string | null;
   deduplicated?: boolean;
   key?: string;
   fileName?: string | null;
@@ -148,6 +150,7 @@ export interface AcquireCachedImageOutcome {
   fromCache: boolean;
   isLocalFile: boolean;
   bypassedNoStore: boolean;
+  bypassedCache?: boolean;
   byteSize: number;
 }
 
@@ -189,6 +192,60 @@ const resolvedUrlToEntryMap = new Map<string, InMemoryResolvedEntry>();
 const shaKeyToUrlMap = new Map<string, string>();
 const inFlightTasksByUrl = new Map<string, QueuedAcquireTask>();
 const pendingQueue: QueuedAcquireTask[] = [];
+
+const MAX_DIRECT_ONLY_CACHE_URLS = 2500;
+const directOnlyImageUrls = new Set<string>();
+
+function rememberDirectOnlyImageUrl(url: string): void {
+  const trimmed = url.trim();
+  if (!trimmed) return;
+  if (directOnlyImageUrls.has(trimmed)) {
+    directOnlyImageUrls.delete(trimmed);
+    directOnlyImageUrls.add(trimmed);
+    return;
+  }
+  if (directOnlyImageUrls.size >= MAX_DIRECT_ONLY_CACHE_URLS) {
+    const oldest = directOnlyImageUrls.values().next().value;
+    if (oldest !== undefined) {
+      directOnlyImageUrls.delete(oldest);
+    }
+  }
+  directOnlyImageUrls.add(trimmed);
+}
+
+/**
+ * Verifica se uma URL já resolvida é elegível para o cache persistente em disco no Android.
+ * Exclui:
+ * - URIs em memória (`data:`, `blob:`) ou qualquer esquema diferente de `http:` / `https:`;
+ * - SVGs claramente identificáveis pela extensão do caminho (`.svg`, `.svgz`), que devem ser
+ *   renderizados diretamente pelo elemento `<img>` sem armazenamento persistente na origem local;
+ * - URLs já marcadas deterministicamente nesta sessão como diretas (ex.: resposta SVG sem extensão
+ *   ou formato não elegível ao cache persistente), evitando novas tentativas de download nativo.
+ */
+export function isEligibleForAndroidImageDiskCache(
+  resolvedUrl: string | null | undefined
+): boolean {
+  if (!resolvedUrl || typeof resolvedUrl !== 'string') return false;
+  const trimmed = resolvedUrl.trim();
+  if (!trimmed) return false;
+  if (/^(?:data:|blob:)/i.test(trimmed)) return false;
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  if (directOnlyImageUrls.has(trimmed)) return false;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return false;
+    }
+    const pathname = parsed.pathname.toLowerCase();
+    if (pathname.endsWith('.svg') || pathname.endsWith('.svgz')) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 let activeWorkersCount = 0;
 let currentSessionEpoch = 1;
@@ -552,6 +609,7 @@ export async function ensureAndroidImageCacheHydrated(): Promise<void> {
           !item ||
           typeof item.key !== 'string' ||
           item.key.length !== 64 ||
+          (typeof item.contentType === 'string' && item.contentType.toLowerCase().includes('svg')) ||
           !isValidPersistentImageFileReference(item.fileName, item.filePath)
         ) {
           continue;
@@ -609,7 +667,12 @@ export async function ensureAndroidImageCacheHydrated(): Promise<void> {
 export function getInstantCachedImageSrc(
   resolvedRemoteUrl: string | null | undefined
 ): string | null {
-  if (!resolvedRemoteUrl || !isAndroidPersistentImageCacheAvailable() || activeLogoutClearPromise) {
+  if (
+    !resolvedRemoteUrl ||
+    !isAndroidPersistentImageCacheAvailable() ||
+    activeLogoutClearPromise ||
+    !isEligibleForAndroidImageDiskCache(resolvedRemoteUrl)
+  ) {
     return null;
   }
   const trimmed = resolvedRemoteUrl.trim();
@@ -782,15 +845,37 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       applyEvictedKeysToInMemoryIndex(nativeRes.evictedKeys);
     }
 
+    // Caso o plugin tenha identificado formato não elegível ao cache persistente (ex.: SVG, HEIF, TIFF, JXL),
+    // registra a URL como direta na sessão para evitar novas tentativas nativas e faz fallback direto para <img>
+    if (nativeRes?.bypassedCache) {
+      const shaKey = nativeRes?.key || computeDeterministicUrlSha256Hex(url);
+      hydratedByShaKeyMap.delete(shaKey);
+      resolvedUrlToEntryMap.delete(url);
+      rememberDirectOnlyImageUrl(url);
+      settleTaskResolvers(
+        task,
+        {
+          src: url,
+          fromCache: false,
+          isLocalFile: false,
+          bypassedNoStore: Boolean(nativeRes.bypassedNoStore),
+          bypassedCache: true,
+          byteSize: typeof nativeRes?.byteSize === 'number' ? nativeRes.byteSize : 0,
+        },
+        null
+      );
+      return;
+    }
+
     // Caso o servidor tenha retornado Cache-Control: no-store, usa inlineDataUrl (1 único GET) sem persistir no disco
     if (nativeRes?.bypassedNoStore) {
       const shaKey = nativeRes?.key || computeDeterministicUrlSha256Hex(url);
       hydratedByShaKeyMap.delete(shaKey);
       resolvedUrlToEntryMap.delete(url);
-      const inlineSrc =
-        typeof nativeRes.inlineDataUrl === 'string' && nativeRes.inlineDataUrl.startsWith('data:')
-          ? nativeRes.inlineDataUrl
-          : url;
+      const isSafeRasterInlineDataUrl =
+        typeof nativeRes.inlineDataUrl === 'string' &&
+        /^data:image\/(?!svg)/i.test(nativeRes.inlineDataUrl);
+      const inlineSrc = isSafeRasterInlineDataUrl ? (nativeRes.inlineDataUrl as string) : url;
       settleTaskResolvers(
         task,
         {
@@ -798,6 +883,7 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
           fromCache: false,
           isLocalFile: false,
           bypassedNoStore: true,
+          bypassedCache: false,
           byteSize: typeof nativeRes?.byteSize === 'number' ? nativeRes.byteSize : 0,
         },
         null
@@ -971,12 +1057,13 @@ export async function acquireCachedImage(
     throw new Error('Requisição de imagem cancelada.');
   }
 
-  if (!isAndroidPersistentImageCacheAvailable()) {
+  if (!isAndroidPersistentImageCacheAvailable() || !isEligibleForAndroidImageDiskCache(trimmed)) {
     return {
       src: trimmed,
       fromCache: false,
       isLocalFile: false,
       bypassedNoStore: false,
+      bypassedCache: !isEligibleForAndroidImageDiskCache(trimmed),
       byteSize: 0,
     };
   }
@@ -1049,12 +1136,17 @@ export async function recoverFromCorruptedLocalImage(
   resolvedRemoteUrl: string
 ): Promise<AcquireCachedImageOutcome> {
   const trimmed = String(resolvedRemoteUrl || '').trim();
-  if (!trimmed || !isAndroidPersistentImageCacheAvailable()) {
+  if (
+    !trimmed ||
+    !isAndroidPersistentImageCacheAvailable() ||
+    !isEligibleForAndroidImageDiskCache(trimmed)
+  ) {
     return {
       src: trimmed,
       fromCache: false,
       isLocalFile: false,
       bypassedNoStore: false,
+      bypassedCache: Boolean(trimmed && !isEligibleForAndroidImageDiskCache(trimmed)),
       byteSize: 0,
     };
   }
@@ -1118,6 +1210,7 @@ export async function clearImageCacheOnLogout(): Promise<void> {
   resolvedUrlToEntryMap.clear();
   hydratedByShaKeyMap.clear();
   shaKeyToUrlMap.clear();
+  directOnlyImageUrls.clear();
   pendingTouchedKeys.splice(0, pendingTouchedKeys.length);
   isHydrated = false;
   hydrationPromise = null;
@@ -1352,7 +1445,7 @@ export function buildHomeStartupImagePlan(params: {
   const seenPriority = new Set<string>();
 
   const pushUnique = (url: string | null, bucket: string[]) => {
-    if (!url) return;
+    if (!url || !isEligibleForAndroidImageDiskCache(url)) return;
     if (!seenPriority.has(url)) {
       seenPriority.add(url);
       bucket.push(url);
@@ -1541,7 +1634,10 @@ export async function executeHomeStartupImagePreparation(
     onProgress?: (preparedCount: number, totalCount: number) => void;
   }
 ): Promise<StartupImagePreparationResult> {
-  const totalTargetCount = plan.priorityUrls.length;
+  const eligiblePriorityUrls = plan.priorityUrls.filter((u) =>
+    isEligibleForAndroidImageDiskCache(u)
+  );
+  const totalTargetCount = eligiblePriorityUrls.length;
 
   if (totalTargetCount === 0 || !isAndroidPersistentImageCacheAvailable()) {
     return {
@@ -1559,7 +1655,7 @@ export async function executeHomeStartupImagePreparation(
 
   // Verificar quais URLs prioritárias já estão disponíveis sincronicamente no cache local
   const alreadyOnDiskSet = new Set<string>();
-  for (const url of plan.priorityUrls) {
+  for (const url of eligiblePriorityUrls) {
     if (getInstantCachedImageSrc(url)) {
       alreadyOnDiskSet.add(url);
     }
@@ -1591,7 +1687,7 @@ export async function executeHomeStartupImagePreparation(
 
   const enqueueTier = (urls: string[], priority: ImagePreloadPriority) =>
     urls
-      .filter((url) => !alreadyOnDiskSet.has(url))
+      .filter((url) => isEligibleForAndroidImageDiskCache(url) && !alreadyOnDiskSet.has(url))
       .map((url) =>
         acquireCachedImage(url, { priority })
           .then(() => {
@@ -1680,7 +1776,7 @@ export function scheduleBackgroundLowPriorityPreload(urls: string[]): void {
     if (currentLowPriorityQueued >= MAX_LOW_PRIORITY_PENDING_TASKS) {
       break;
     }
-    if (!url || getInstantCachedImageSrc(url)) continue;
+    if (!url || !isEligibleForAndroidImageDiskCache(url) || getInstantCachedImageSrc(url)) continue;
     if (inFlightTasksByUrl.has(url.trim())) continue;
     currentLowPriorityQueued++;
     void acquireCachedImage(url, { priority: 'low' }).catch(() => {
@@ -1697,6 +1793,7 @@ export function resetAndroidImageCacheForTest(): void {
   resolvedUrlToEntryMap.clear();
   hydratedByShaKeyMap.clear();
   shaKeyToUrlMap.clear();
+  directOnlyImageUrls.clear();
   pendingTouchedKeys.splice(0, pendingTouchedKeys.length);
   inFlightTasksByUrl.clear();
   pendingQueue.splice(0, pendingQueue.length);
@@ -1765,30 +1862,140 @@ function encodeUint8ArrayToBase64(bytes: Uint8Array): string {
   return out;
 }
 
-function hasValidSimulatedImageSignature(bytes: Uint8Array, contentType: string): boolean {
-  if (!bytes || bytes.length < 4) return false;
-  // Rejeitar JSON ou HTML disfarçados
-  let offset = 0;
-  while (
-    offset < bytes.length &&
-    (bytes[offset] === 0x20 || bytes[offset] === 0x09 || bytes[offset] === 0x0a || bytes[offset] === 0x0d)
-  ) {
-    offset++;
-  }
-  if (offset < bytes.length) {
-    const first = bytes[offset];
-    if (first === 0x7b /* { */ || first === 0x5b /* [ */) return false;
-    if (first === 0x3c /* < */) {
-      return contentType.toLowerCase().includes('svg');
+interface SimulatedIdentifiedImageFormat {
+  format: string;
+  extension: string | null;
+  mimeType: string | null;
+  persistentEligible: boolean;
+  directFallbackEligible: boolean;
+  bypassReason: string | null;
+}
+
+const SIMULATED_BMP_DIB_SIZES = new Set([12, 16, 40, 52, 56, 64, 108, 124]);
+const SIMULATED_HEIF_BRANDS = new Set([
+  'heic',
+  'heix',
+  'hevc',
+  'hevx',
+  'heim',
+  'heis',
+  'hevm',
+  'hevs',
+]);
+const SIMULATED_VIDEO_BRANDS = new Set([
+  'isom',
+  'iso2',
+  'mp41',
+  'mp42',
+  'avc1',
+  'M4V ',
+  'M4A ',
+  'qt  ',
+  '3gp4',
+  '3gp5',
+  'dash',
+]);
+
+function readAsciiFourCC(bytes: Uint8Array, offset: number): string {
+  return String.fromCharCode(
+    bytes[offset],
+    bytes[offset + 1],
+    bytes[offset + 2],
+    bytes[offset + 3]
+  );
+}
+
+function isSimulatedValidSvgHeader(bytes: Uint8Array, startOffset: number): boolean {
+  const sliceLen = Math.min(bytes.length - startOffset, 1024);
+  if (sliceLen <= 0) return false;
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(
+    bytes.subarray(startOffset, startOffset + sliceLen)
+  );
+  const lower = text.toLowerCase();
+  let pos = 0;
+  const n = lower.length;
+
+  for (let step = 0; step < 16 && pos < n; step++) {
+    while (pos < n && /\s/.test(lower[pos])) pos++;
+    if (pos >= n || lower[pos] !== '<') return false;
+    if (lower.startsWith('<?', pos)) {
+      const endPi = lower.indexOf('?>', pos + 2);
+      if (endPi < 0) return false;
+      pos = endPi + 2;
+      continue;
     }
+    if (lower.startsWith('<!--', pos)) {
+      const endComment = lower.indexOf('-->', pos + 4);
+      if (endComment < 0) return false;
+      pos = endComment + 3;
+      continue;
+    }
+    if (lower.startsWith('<!doctype', pos)) {
+      const endDoc = lower.indexOf('>', pos + 9);
+      if (endDoc < 0) return false;
+      const body = lower.slice(pos + 9, endDoc).trim();
+      if (!body.startsWith('svg')) return false;
+      pos = endDoc + 1;
+      continue;
+    }
+    if (lower.startsWith('<svg', pos)) {
+      const next = pos + 4;
+      if (next >= n) return true;
+      const ch = lower[next];
+      return /\s/.test(ch) || ch === '>' || ch === '/';
+    }
+    return false;
   }
+  return false;
+}
+
+function identifySimulatedImageFormat(bytes: Uint8Array): SimulatedIdentifiedImageFormat {
+  const invalid: SimulatedIdentifiedImageFormat = {
+    format: 'INVALID',
+    extension: null,
+    mimeType: null,
+    persistentEligible: false,
+    directFallbackEligible: false,
+    bypassReason: null,
+  };
+  if (!bytes || bytes.length === 0) return invalid;
+  const len = Math.min(bytes.length, 1024);
+
   // JPEG
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true;
-  // PNG
-  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return true;
+  if (len >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return {
+      format: 'JPEG',
+      extension: 'jpg',
+      mimeType: 'image/jpeg',
+      persistentEligible: true,
+      directFallbackEligible: false,
+      bypassReason: null,
+    };
+  }
+  // PNG / APNG
+  if (
+    len >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return {
+      format: 'PNG',
+      extension: 'png',
+      mimeType: 'image/png',
+      persistentEligible: true,
+      directFallbackEligible: false,
+      bypassReason: null,
+    };
+  }
   // WebP
   if (
-    bytes.length >= 12 &&
+    len >= 12 &&
     bytes[0] === 0x52 &&
     bytes[1] === 0x49 &&
     bytes[2] === 0x46 &&
@@ -1798,11 +2005,212 @@ function hasValidSimulatedImageSignature(bytes: Uint8Array, contentType: string)
     bytes[10] === 0x42 &&
     bytes[11] === 0x50
   ) {
-    return true;
+    return {
+      format: 'WEBP',
+      extension: 'webp',
+      mimeType: 'image/webp',
+      persistentEligible: true,
+      directFallbackEligible: false,
+      bypassReason: null,
+    };
   }
   // GIF
-  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return true;
-  return false;
+  if (
+    len >= 6 &&
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38 &&
+    (bytes[4] === 0x37 || bytes[4] === 0x39) &&
+    bytes[5] === 0x61
+  ) {
+    return {
+      format: 'GIF',
+      extension: 'gif',
+      mimeType: 'image/gif',
+      persistentEligible: true,
+      directFallbackEligible: false,
+      bypassReason: null,
+    };
+  }
+  // BMP
+  if (
+    len >= 14 &&
+    bytes[0] === 0x42 &&
+    bytes[1] === 0x4d &&
+    bytes[6] === 0 &&
+    bytes[7] === 0 &&
+    bytes[8] === 0 &&
+    bytes[9] === 0
+  ) {
+    if (len < 18) {
+      return {
+        format: 'BMP',
+        extension: 'bmp',
+        mimeType: 'image/bmp',
+        persistentEligible: true,
+        directFallbackEligible: false,
+        bypassReason: null,
+      };
+    }
+    const dibSize =
+      bytes[14] | (bytes[15] << 8) | (bytes[16] << 16) | ((bytes[17] << 24) >>> 0);
+    if (SIMULATED_BMP_DIB_SIZES.has(dibSize)) {
+      return {
+        format: 'BMP',
+        extension: 'bmp',
+        mimeType: 'image/bmp',
+        persistentEligible: true,
+        directFallbackEligible: false,
+        bypassReason: null,
+      };
+    }
+  }
+  // ICO
+  if (
+    len >= 6 &&
+    bytes[0] === 0x00 &&
+    bytes[1] === 0x00 &&
+    bytes[2] === 0x01 &&
+    bytes[3] === 0x00 &&
+    (bytes[4] !== 0 || bytes[5] !== 0)
+  ) {
+    return {
+      format: 'ICO',
+      extension: 'ico',
+      mimeType: 'image/x-icon',
+      persistentEligible: true,
+      directFallbackEligible: false,
+      bypassReason: null,
+    };
+  }
+  // ISO BMFF (AVIF / HEIF / MP4)
+  if (
+    len >= 16 &&
+    bytes[4] === 0x66 &&
+    bytes[5] === 0x74 &&
+    bytes[6] === 0x79 &&
+    bytes[7] === 0x70
+  ) {
+    const boxSize =
+      ((bytes[0] << 24) >>> 0) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+    if (boxSize < 16 || boxSize > 4096 || boxSize % 4 !== 0) {
+      return invalid;
+    }
+    const majorBrand = readAsciiFourCC(bytes, 8);
+    if (majorBrand === 'avif' || majorBrand === 'avis') {
+      return {
+        format: 'AVIF',
+        extension: 'avif',
+        mimeType: 'image/avif',
+        persistentEligible: true,
+        directFallbackEligible: false,
+        bypassReason: null,
+      };
+    }
+    const inspectLimit = Math.min(len, boxSize);
+    let hasAvifCompat = false;
+    let hasHeifCompat = false;
+    let hasVideoCompat = false;
+    for (let pos = 16; pos + 4 <= inspectLimit; pos += 4) {
+      const compat = readAsciiFourCC(bytes, pos);
+      if (compat === 'avif' || compat === 'avis') hasAvifCompat = true;
+      else if (SIMULATED_HEIF_BRANDS.has(compat)) hasHeifCompat = true;
+      else if (SIMULATED_VIDEO_BRANDS.has(compat)) hasVideoCompat = true;
+    }
+    const isMiaf = majorBrand === 'mif1' || majorBrand === 'msf1';
+    if (isMiaf && hasAvifCompat) {
+      return {
+        format: 'AVIF',
+        extension: 'avif',
+        mimeType: 'image/avif',
+        persistentEligible: true,
+        directFallbackEligible: false,
+        bypassReason: null,
+      };
+    }
+    if (SIMULATED_HEIF_BRANDS.has(majorBrand) || (isMiaf && hasHeifCompat && !hasVideoCompat)) {
+      return {
+        format: 'HEIF',
+        extension: null,
+        mimeType: 'image/heif',
+        persistentEligible: false,
+        directFallbackEligible: true,
+        bypassReason: 'unrecognized_format',
+      };
+    }
+    return invalid;
+  }
+  // TIFF
+  if (
+    len >= 4 &&
+    ((bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2a && bytes[3] === 0x00) ||
+      (bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[2] === 0x00 && bytes[3] === 0x2a))
+  ) {
+    return {
+      format: 'TIFF',
+      extension: null,
+      mimeType: 'image/tiff',
+      persistentEligible: false,
+      directFallbackEligible: true,
+      bypassReason: 'unrecognized_format',
+    };
+  }
+  // JPEG XL
+  if (
+    (len >= 2 && bytes[0] === 0xff && bytes[1] === 0x0a) ||
+    (len >= 12 &&
+      bytes[0] === 0x00 &&
+      bytes[1] === 0x00 &&
+      bytes[2] === 0x00 &&
+      bytes[3] === 0x0c &&
+      bytes[4] === 0x4a &&
+      bytes[5] === 0x58 &&
+      bytes[6] === 0x4c &&
+      bytes[7] === 0x20 &&
+      bytes[8] === 0x0d &&
+      bytes[9] === 0x0a &&
+      bytes[10] === 0x87 &&
+      bytes[11] === 0x0a)
+  ) {
+    return {
+      format: 'JXL',
+      extension: null,
+      mimeType: 'image/jxl',
+      persistentEligible: false,
+      directFallbackEligible: true,
+      bypassReason: 'unrecognized_format',
+    };
+  }
+  // Textual / XML SVG check
+  let offset = 0;
+  if (len >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    offset = 3;
+  }
+  while (
+    offset < len &&
+    (bytes[offset] === 0x20 ||
+      bytes[offset] === 0x09 ||
+      bytes[offset] === 0x0a ||
+      bytes[offset] === 0x0d)
+  ) {
+    offset++;
+  }
+  if (offset < len) {
+    const first = bytes[offset];
+    if (first === 0x7b || first === 0x5b) return invalid;
+    if (first === 0x3c && isSimulatedValidSvgHeader(bytes, offset)) {
+      return {
+        format: 'SVG',
+        extension: null,
+        mimeType: 'image/svg+xml',
+        persistentEligible: false,
+        directFallbackEligible: true,
+        bypassReason: 'svg_direct',
+      };
+    }
+  }
+  return invalid;
 }
 
 /**
@@ -1893,7 +2301,12 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
     async getHydratedIndex() {
       const entries: HydratedImageCacheEntry[] = [];
       for (const [k, rec] of Array.from(persistentDiskFiles.entries())) {
-        if (!rec.bytes || rec.bytes.byteLength === 0) {
+        if (
+          !rec.bytes ||
+          rec.bytes.byteLength === 0 ||
+          !SAFE_IMAGE_FILE_NAME_REGEX.test(rec.fileName) ||
+          rec.contentType.toLowerCase().includes('svg')
+        ) {
           persistentDiskFiles.delete(k);
           continue;
         }
@@ -2066,12 +2479,13 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
       }
 
       const contentType = customCfg?.contentType ?? 'image/jpeg';
-      const lowerCt = contentType.toLowerCase();
+      const lowerCt = contentType.split(';')[0].toLowerCase().trim();
       if (
-        lowerCt.startsWith('text/html') ||
-        lowerCt.startsWith('text/plain') ||
-        lowerCt.startsWith('application/json') ||
-        (!lowerCt.startsWith('image/') && !lowerCt.startsWith('application/octet-stream'))
+        lowerCt === 'text/html' ||
+        lowerCt === 'application/json' ||
+        lowerCt === 'text/javascript' ||
+        lowerCt === 'application/javascript' ||
+        lowerCt === 'application/xhtml+xml'
       ) {
         throw new Error(`INVALID_CONTENT_TYPE: ${contentType}`);
       }
@@ -2086,7 +2500,32 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
       ) {
         throw new Error('TRUNCATED_BODY');
       }
-      if (!hasValidSimulatedImageSignature(bodyBytes, contentType)) {
+
+      const identified = identifySimulatedImageFormat(bodyBytes);
+      const cacheControl = customCfg?.cacheControl ?? 'public, max-age=86400';
+      const isNoStore = cacheControl.toLowerCase().includes('no-store');
+
+      if (!identified.persistentEligible) {
+        if (identified.directFallbackEligible) {
+          persistentDiskFiles.delete(key);
+          return {
+            hit: false,
+            revalidated304: false,
+            bypassedNoStore: isNoStore,
+            bypassedCache: true,
+            bypassReason: identified.bypassReason ?? 'unrecognized_format',
+            key,
+            fileName: null,
+            filePath: null,
+            inlineDataUrl: null,
+            cacheDir,
+            byteSize: bodyBytes.byteLength,
+            contentType: identified.mimeType ?? undefined,
+            totalBytes: getTotalDiskBytes(),
+            storedEntriesCount: persistentDiskFiles.size,
+            evictedEntriesCount,
+          };
+        }
         throw new Error('INVALID_IMAGE_SIGNATURE');
       }
 
@@ -2094,28 +2533,31 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
         throw new Error('SESSION_CLEARED');
       }
 
-      const cacheControl = customCfg?.cacheControl ?? 'public, max-age=86400';
-      if (cacheControl.toLowerCase().includes('no-store')) {
+      const effectiveMime = identified.mimeType as string;
+      const effectiveExt = identified.extension as string;
+
+      if (isNoStore) {
         persistentDiskFiles.delete(key);
-        const inlineDataUrl = `data:${contentType};base64,${encodeUint8ArrayToBase64(bodyBytes)}`;
+        const inlineDataUrl = `data:${effectiveMime};base64,${encodeUint8ArrayToBase64(bodyBytes)}`;
         return {
           hit: false,
           revalidated304: false,
           bypassedNoStore: true,
+          bypassedCache: false,
           key,
           fileName: null,
           filePath: null,
           inlineDataUrl,
           cacheDir,
           byteSize: bodyBytes.byteLength,
-          contentType,
+          contentType: effectiveMime,
           totalBytes: getTotalDiskBytes(),
           storedEntriesCount: persistentDiskFiles.size,
           evictedEntriesCount,
         };
       }
 
-      const fileName = `img_${key}.jpg`;
+      const fileName = `img_${key}.${effectiveExt}`;
       const filePath = `${cacheDir}/${fileName}`;
       const nowWallMs = Date.now();
       const nowAccess = ++accessClock;
@@ -2126,7 +2568,7 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
         fileName,
         filePath,
         bytes: bodyBytes,
-        contentType,
+        contentType: effectiveMime,
         etag: customCfg?.etag ?? null,
         lastModified: customCfg?.lastModified ?? null,
         cacheControl,
@@ -2146,12 +2588,13 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
         hit: false,
         revalidated304: false,
         bypassedNoStore: false,
+        bypassedCache: false,
         key,
         fileName,
         filePath,
         cacheDir,
         byteSize: bodyBytes.byteLength,
-        contentType,
+        contentType: effectiveMime,
         etag: saved.etag,
         lastModified: saved.lastModified,
         cacheControl: saved.cacheControl,
