@@ -1,4 +1,10 @@
 import type React from 'react';
+import type {
+  PlaybackSourceOrigin,
+  PlaybackSourceMetadata,
+} from '../../utils/mediaUtils';
+
+export type { PlaybackSourceOrigin, PlaybackSourceMetadata };
 
 export type PlayerContentType = 'live' | 'movie' | 'episode';
 export type PlayerTransport = 'hls' | 'progressive' | 'unknown';
@@ -23,6 +29,20 @@ export interface ExternalSubtitleTrackInput {
   isDefault?: boolean;
   forced?: boolean;
 }
+
+export type OnPlayMediaHandler = (
+  url: string,
+  title: string,
+  startAt?: number,
+  streamId?: string | number,
+  contentType?: PlayerContentType,
+  channelName?: string,
+  programTitle?: string,
+  onNext?: () => void,
+  onPrevious?: () => void,
+  externalSubtitles?: ExternalSubtitleTrackInput[],
+  sourceMetadata?: PlaybackSourceMetadata
+) => void;
 
 export interface MediaTrackInfo {
   id: number;
@@ -62,6 +82,8 @@ export interface VideoPlayerProps {
   mimeType?: string | null;
   allowedOutputFormats?: string[] | null;
   directSource?: string | null;
+  sourceOrigin?: PlaybackSourceOrigin;
+  sourceMetadata?: PlaybackSourceMetadata | null;
   channelName?: string;
   programTitle?: string;
   onBack: () => void;

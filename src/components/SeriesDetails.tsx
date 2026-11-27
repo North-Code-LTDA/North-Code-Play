@@ -20,13 +20,15 @@ import { VideoPlayer } from './VideoPlayer';
 import { ExternalSubtitleTrackInput } from './player/types';
 import { extractXtreamSubtitles } from './player/trackUtils';
 import {
-  buildDirectMediaUrl,
+  extractExplicitMediaMimeType,
   getEpisodeId,
   normalizeContainerExtension,
   normalizeDirectMediaSource,
   normalizeEpisodesBySeason,
   normalizeImageSource,
   normalizeMetadataText,
+  preparePlaybackMediaSource,
+  PlaybackSourceMetadata,
 } from '../utils/mediaUtils';
 import { MediaImage } from './MediaImage';
 import { DetailsModalShell } from './DetailsModalShell';
@@ -236,6 +238,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     episode: any;
     group: EpisodeGroupSelection | null;
     subtitles?: ExternalSubtitleTrackInput[];
+    sourceMetadata?: PlaybackSourceMetadata;
   } | null>(null);
   const [playErrorState, setPlayErrorState] = useState<{
     scopeKey: string;
@@ -975,11 +978,14 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     if (!credentials) return;
     try {
       setPlayErrorState(null);
-      const ext = normalizeContainerExtension(episode?.container_extension) || 'mp4';
-      const mediaUrl = buildDirectMediaUrl(credentials, {
+      const declaredExt = normalizeContainerExtension(episode?.container_extension);
+      const episodeMimeType =
+        extractExplicitMediaMimeType(episode) || extractExplicitMediaMimeType(episode?.info);
+      const prepared = preparePlaybackMediaSource(credentials, {
         type: 'series',
         streamId: epId ?? '',
-        containerExtension: ext,
+        containerExtension: declaredExt,
+        mimeType: episodeMimeType,
         directSource: episodeDirectSource ?? undefined,
       });
 
@@ -993,12 +999,13 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       setPlayingEpisodeState({
         scopeKey: currentScopeKey,
         seriesId: currentSeriesIdStr,
-        url: mediaUrl,
+        url: prepared.url,
         title: playbackTitle,
         startAt,
         episode,
         group: activeGroupForPlay,
         subtitles: episodeSubs.length > 0 ? episodeSubs : undefined,
+        sourceMetadata: prepared.metadata,
       });
       setPendingResumeState(null);
     } catch (err: any) {
@@ -1289,6 +1296,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                     : undefined
                 }
                 contentType="episode"
+                sourceMetadata={playingEpisodeData.sourceMetadata}
                 startAt={playingEpisodeData.startAt}
                 streamId={playingEpId ?? undefined}
                 externalSubtitles={playingEpisodeData.subtitles}

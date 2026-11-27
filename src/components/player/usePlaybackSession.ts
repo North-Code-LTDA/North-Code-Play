@@ -17,15 +17,18 @@ import {
   loadExternalSubtitleAsVttUrl,
 } from './trackUtils';
 import { recordPlaybackPosition, AccountIdentity, PlaybackType } from '../../utils/playbackHistory';
+import { getAccountKey } from '../../utils/accountUtils';
 import {
   identifyMediaSource,
   buildPlaybackAttemptPlan,
-  shouldAttemptPlaybackFallback,
+  selectPlaybackFallbackAttempt,
   classifyPlaybackError,
   sanitizePlaybackErrorMessage,
   MediaSourceIdentification,
   PlaybackAttemptDescriptor,
   PlaybackErrorClassification,
+  PlaybackSourceOrigin,
+  PlaybackSourceMetadata,
 } from '../../utils/mediaUtils';
 
 interface InternalAudioTrackDescriptor extends MediaTrackInfo {
@@ -73,6 +76,8 @@ interface UsePlaybackSessionOptions {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   streamUrl: string;
   contentType?: PlayerContentType;
+  sourceOrigin?: PlaybackSourceOrigin;
+  sourceMetadata?: PlaybackSourceMetadata | null;
   containerExtension?: string | null;
   mimeType?: string | null;
   allowedOutputFormats?: string[] | null;
@@ -129,6 +134,35 @@ function isMixedContentUrl(rawUrl: string): boolean {
     window.location.protocol === 'https:' &&
     /^http:\/\//i.test((rawUrl || '').trim())
   );
+}
+
+/**
+ * Computes a deterministic, non-reversible session identity signature for the active account/credentials.
+ * - Stable across object reference churn or unrelated metadata updates (e.g. user_info/server_info).
+ * - Changes on account switch, logout, or credential rotation even if a direct_source URL stays identical.
+ * - Never stores, exposes, or logs raw passwords.
+ */
+function computeCredentialSessionKey(credentials?: AccountIdentity | null): string {
+  if (!credentials || typeof credentials !== 'object') return '';
+  const accountKey = getAccountKey(credentials.serverUrl, credentials.username);
+  const rawPwd =
+    typeof (credentials as { password?: unknown }).password === 'string'
+      ? (credentials as { password: string }).password
+      : '';
+
+  if (!accountKey && !rawPwd) return '';
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < rawPwd.length; i++) {
+    const code = rawPwd.charCodeAt(i);
+    h1 ^= code;
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
+    h2 ^= code ^ (i + 1);
+    h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
+  }
+
+  return `${accountKey}|${rawPwd.length}:${h1.toString(16)}:${h2.toString(16)}`;
 }
 
 function probeNativeHlsSupport(video: HTMLVideoElement | null): boolean {
@@ -376,6 +410,8 @@ export function usePlaybackSession({
   videoRef,
   streamUrl,
   contentType: explicitContentType,
+  sourceOrigin,
+  sourceMetadata,
   containerExtension,
   mimeType,
   allowedOutputFormats,
@@ -390,11 +426,30 @@ export function usePlaybackSession({
   suppressLivePreviewVisualMetrics = false,
   externalSubtitles,
 }: UsePlaybackSessionOptions) {
+  const effectiveContentType = explicitContentType ?? sourceMetadata?.contentType;
+  const effectiveSourceOrigin = sourceOrigin ?? sourceMetadata?.sourceOrigin;
+  const effectiveContainerExtension =
+    containerExtension ??
+    sourceMetadata?.declaredContainerExtension ??
+    sourceMetadata?.resolvedContainerExtension;
+  const effectiveMimeType = mimeType ?? sourceMetadata?.mimeType;
+  const effectiveDirectSource = directSource ?? sourceMetadata?.directSource;
+  const effectiveStreamId = streamId ?? sourceMetadata?.streamId ?? undefined;
+  const effectiveAllowedOutputFormats =
+    allowedOutputFormats !== undefined
+      ? allowedOutputFormats
+      : sourceMetadata?.allowedOutputFormats;
+  const accountIdentityKey = computeCredentialSessionKey(credentials);
+
   const activeAccountRef = useRef<AccountIdentity | null>(credentials || null);
   const credentialsRef = useRef<AccountIdentity | null>(credentials || null);
   credentialsRef.current = credentials || null;
-  const allowedOutputFormatsRef = useRef<string[] | null | undefined>(allowedOutputFormats);
-  allowedOutputFormatsRef.current = allowedOutputFormats;
+  const allowedOutputFormatsRef = useRef<string[] | null | undefined>(
+    effectiveAllowedOutputFormats
+  );
+  allowedOutputFormatsRef.current = effectiveAllowedOutputFormats;
+  const sourceMetadataRef = useRef<PlaybackSourceMetadata | null>(sourceMetadata ?? null);
+  sourceMetadataRef.current = sourceMetadata ?? null;
 
   const onPlaybackSuccessRef = useRef(onPlaybackSuccess);
   onPlaybackSuccessRef.current = onPlaybackSuccess;
@@ -490,13 +545,15 @@ export function usePlaybackSession({
 
   const lastRecordedTimeRef = useRef<number>(0);
 
-  // M01 — Intelligent source identification (preserves explicit contentType, immune to password/token substrings)
+  // M01 — Intelligent source identification (preserves explicit contentType & origin, immune to password/token substrings)
   const identifiedSource = identifyMediaSource({
     url: streamUrl || '',
-    contentType: explicitContentType,
-    containerExtension,
-    mimeType,
-    directSource,
+    contentType: effectiveContentType,
+    sourceOrigin: effectiveSourceOrigin,
+    sourceMetadata: sourceMetadata ?? null,
+    containerExtension: effectiveContainerExtension,
+    mimeType: effectiveMimeType,
+    directSource: effectiveDirectSource,
     credentials: (credentials as any) || null,
   });
 
@@ -720,11 +777,14 @@ export function usePlaybackSession({
 
     const attemptPlan = buildPlaybackAttemptPlan({
       url: streamUrl,
-      contentType: explicitContentType,
-      containerExtension,
-      mimeType,
+      streamId: effectiveStreamId,
+      contentType: effectiveContentType,
+      sourceOrigin: effectiveSourceOrigin,
+      sourceMetadata: sourceMetadataRef.current,
+      containerExtension: effectiveContainerExtension,
+      mimeType: effectiveMimeType,
       allowedOutputFormats: allowedOutputFormatsRef.current,
-      directSource,
+      directSource: effectiveDirectSource,
       credentials: (latestCredentials as any) || null,
       capabilities: {
         hlsJsSupported,
@@ -758,14 +818,23 @@ export function usePlaybackSession({
     let mediaRecoveryAttempts = 0;
     let networkRecoveryAttempts = 0;
     let seekApplied = false;
-    let currentAttemptIndex = 0;
+    let fallbackUsed = false;
     let activeEngineAttemptToken = 0;
     let activeAttempt: PlaybackAttemptDescriptor = attemptPlan.attempts[0];
     let isTransitioningEngine = false;
+    let detachNativeAttemptListeners: (() => void) | null = null;
+    let pendingNativeErrorGraceTimer: ReturnType<typeof setTimeout> | null = null;
 
-    // Helper to apply startAt seek once metadata is available
+    const clearPendingNativeErrorGraceTimer = () => {
+      if (pendingNativeErrorGraceTimer !== null) {
+        clearTimeout(pendingNativeErrorGraceTimer);
+        pendingNativeErrorGraceTimer = null;
+      }
+    };
+
+    // Helper to apply startAt seek only when media metadata/readyState is ready (M01.b 8.1)
     const applyStartAt = () => {
-      if (!seekApplied && startAt > 0 && !isLive) {
+      if (!seekApplied && startAt > 0 && !isLive && video.readyState >= 1) {
         seekApplied = true;
         try {
           video.currentTime = startAt;
@@ -795,7 +864,20 @@ export function usePlaybackSession({
       }
     };
 
+    // M01.b 8.2 — Invalidate active attempt token BEFORE any teardown/cleanup operation
     const cleanupEngineAttempt = (resetVideoElement: boolean) => {
+      activeEngineAttemptToken += 1;
+      clearPendingNativeErrorGraceTimer();
+
+      if (detachNativeAttemptListeners) {
+        try {
+          detachNativeAttemptListeners();
+        } catch {
+          // ignore
+        }
+        detachNativeAttemptListeners = null;
+      }
+
       recoveryTimersRef.current.forEach((t) => clearTimeout(t));
       recoveryTimersRef.current = [];
       pendingAudioRequestRef.current = null;
@@ -826,10 +908,12 @@ export function usePlaybackSession({
       }
     };
 
+    // M01.b 8.3 — Controlled teardown of video source on terminal error without remounting <video>
     const finalizeFatalError = (classified: PlaybackErrorClassification) => {
-      cleanupEngineAttempt(false);
+      cleanupEngineAttempt(true);
       const safeMsg = sanitizePlaybackErrorMessage(classified.message);
       setError(safeMsg);
+      setIsPlaying(false);
       setIsLoading(false);
       setIsBuffering(false);
       reportFinalError(safeMsg);
@@ -843,24 +927,23 @@ export function usePlaybackSession({
     ) => {
       if (
         sessionIdRef.current !== currentSessionId ||
-        attemptToken !== activeEngineAttemptToken
+        attemptToken !== activeEngineAttemptToken ||
+        hasReportedFinalError
       ) {
         return;
       }
 
-      const nextAttempt = attemptPlan.attempts[currentAttemptIndex + 1] || null;
-      if (
-        nextAttempt &&
-        nextAttempt.url === activeAttempt.url &&
-        shouldAttemptPlaybackFallback({
-          currentAttempt: activeAttempt,
-          nextAttempt,
-          errorClassification: classified,
-          hasStartedPlaying: hasReportedSuccess,
-        })
-      ) {
+      const nextAttempt = selectPlaybackFallbackAttempt({
+        plan: attemptPlan,
+        currentAttempt: activeAttempt,
+        errorClassification: classified,
+        hasStartedPlaying: hasReportedSuccess,
+        fallbackAlreadyUsed: fallbackUsed,
+      });
+
+      if (nextAttempt) {
+        fallbackUsed = true;
         cleanupEngineAttempt(true);
-        currentAttemptIndex += 1;
         activeAttempt = nextAttempt;
         mediaRecoveryAttempts = 0;
         networkRecoveryAttempts = 0;
@@ -881,152 +964,6 @@ export function usePlaybackSession({
       }
 
       finalizeFatalError(classified);
-    };
-
-    // Named video element event listeners for clean disposal
-    const handlePlaying = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      setIsPlaying(true);
-      setIsLoading(false);
-      setIsBuffering(false);
-      reportSuccess();
-    };
-
-    const handlePlay = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      setIsPlaying(true);
-    };
-
-    const handlePause = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      setIsPlaying(false);
-      if (!shouldPublishControlsRef.current && !suppressLivePreviewVisualMetricsRef.current) {
-        syncVisualControlsStateFromVideo();
-      }
-      // Save progress on pause for VOD/series
-      if (!isLive && streamId && video.currentTime > 5) {
-        const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
-        const recorded = recordPlaybackPosition(activeAccountRef.current, {
-          id: streamId,
-          type: playbackType,
-          positionSec: video.currentTime,
-        });
-        if (recorded) {
-          lastRecordedTimeRef.current = video.currentTime;
-        }
-      }
-    };
-
-    const handleWaiting = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      setIsBuffering(true);
-    };
-
-    const handleTimeUpdate = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      const cur = video.currentTime;
-      currentTimeRef.current = cur;
-
-      // Save progress periodically (at most once every 5 seconds) for VOD/series
-      if (!isLive && streamId && cur > 5) {
-        if (Math.abs(cur - lastRecordedTimeRef.current) >= 5) {
-          const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
-          const recorded = recordPlaybackPosition(activeAccountRef.current, {
-            id: streamId,
-            type: playbackType,
-            positionSec: cur,
-          });
-          if (recorded) {
-            lastRecordedTimeRef.current = cur;
-          }
-        }
-      }
-
-      // Live latency ref tracking (always kept fresh for live edge calculations)
-      let liveSyncPos: number | null = null;
-      let liveDist = 0;
-      if (isLive && hlsRef.current) {
-        const syncPos = hlsRef.current.liveSyncPosition;
-        if (syncPos !== null && syncPos !== undefined && syncPos > 0) {
-          liveSyncPos = syncPos;
-          liveDist = Math.max(0, syncPos - cur);
-          liveSyncPositionRef.current = syncPos;
-          liveEdgeDistanceRef.current = liveDist;
-        }
-      }
-
-      if (suppressLivePreviewVisualMetricsRef.current || !shouldPublishControlsRef.current) {
-        return;
-      }
-
-      setCurrentTime(cur);
-
-      // Update buffered stats dynamically only when controls are visible
-      const { ranges, ahead } = calculateBufferStats(video);
-      setBufferedRanges(ranges);
-      setBufferedAhead(ahead);
-
-      if (liveSyncPos !== null) {
-        setLiveSyncPosition(liveSyncPos);
-        setLiveEdgeDistance(liveDist);
-      }
-    };
-
-    const handleDurationChange = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      const dur = video.duration;
-      const normalizedDur = isFinite(dur) && !isNaN(dur) && dur > 0 ? dur : 0;
-      durationRef.current = normalizedDur;
-      if (!suppressLivePreviewVisualMetricsRef.current && shouldPublishControlsRef.current) {
-        setDuration(normalizedDur);
-      }
-    };
-
-    const handleLoadedMetadata = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      setIsLoading(false);
-      handleDurationChange();
-      applyStartAt();
-      video.play().catch(() => {
-        if (sessionIdRef.current === currentSessionId) {
-          setIsPlaying(false);
-        }
-      });
-    };
-
-    const handleProgress = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      if (suppressLivePreviewVisualMetricsRef.current || !shouldPublishControlsRef.current) {
-        return;
-      }
-      const { ranges, ahead } = calculateBufferStats(video);
-      setBufferedRanges(ranges);
-      setBufferedAhead(ahead);
-    };
-
-    const handleVolumeChange = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      const safeVol = normalizePlayerVolume(video.volume, volumeRef.current);
-      setVolumeState(safeVol);
-      setIsMuted(video.muted);
-      try {
-        localStorage.setItem('nc_player_volume', String(safeVol));
-      } catch {}
-    };
-
-    const handleRateChange = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
-      setPlaybackRateState(video.playbackRate);
-    };
-
-    const handleError = () => {
-      if (sessionIdRef.current !== currentSessionId || isTransitioningEngine) return;
-      // Ignore empty-src teardown errors or MSE errors actively managed by HLS.js
-      if (activeAttempt.engine === 'hls.js' && hlsRef.current) return;
-      if (!video.currentSrc && !video.getAttribute('src') && !hlsRef.current) return;
-      const mediaErr = video.error;
-      const classified = classifyNativeMediaError(mediaErr, activeAttempt.source);
-      handleAttemptFailure(classified, activeEngineAttemptToken);
     };
 
     // Unified Audio Track discovery (HLS.js -> Native HTMLMediaElement.audioTracks)
@@ -1346,37 +1283,17 @@ export function usePlaybackSession({
 
     syncSubtitleTracksFnRef.current = syncSubtitleTracks;
 
-    const handleLoadedMetadataWithTracks = () => {
-      handleLoadedMetadata();
-      if (sessionIdRef.current !== currentSessionId) return;
-      syncAudioTracks();
-      syncSubtitleTracks();
-    };
-
-    // Attach listeners to video element
-    video.addEventListener('playing', handlePlaying);
-    video.addEventListener('play', handlePlay);
-    video.addEventListener('pause', handlePause);
-    video.addEventListener('waiting', handleWaiting);
-    video.addEventListener('timeupdate', handleTimeUpdate);
-    video.addEventListener('durationchange', handleDurationChange);
-    video.addEventListener('loadedmetadata', handleLoadedMetadataWithTracks);
-    video.addEventListener('progress', handleProgress);
-    video.addEventListener('volumechange', handleVolumeChange);
-    video.addEventListener('ratechange', handleRateChange);
-    video.addEventListener('error', handleError);
-
     // Native textTracks & audioTracks dynamic event listeners
     const textTrackList = video.textTracks;
     const nativeAudioList = (video as any).audioTracks;
 
     const handleNativeTextTracksChange = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
+      if (sessionIdRef.current !== currentSessionId || isTransitioningEngine) return;
       syncSubtitleTracks();
     };
 
     const handleNativeAudioTracksChange = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
+      if (sessionIdRef.current !== currentSessionId || isTransitioningEngine) return;
       syncAudioTracks();
     };
 
@@ -1392,9 +1309,235 @@ export function usePlaybackSession({
       nativeAudioList.addEventListener('change', handleNativeAudioTracksChange);
     }
 
+    // M01.b 8.3 — Per-attempt HTMLMediaElement listeners protected by sessionId, attemptToken, and source provenance
+    const bindNativeListenersForAttempt = (
+      attempt: PlaybackAttemptDescriptor,
+      attemptToken: number,
+      getExpectedHlsInstance: () => Hls | null
+    ): (() => void) => {
+      const isAttemptStillActive = (): boolean => {
+        if (
+          sessionIdRef.current !== currentSessionId ||
+          attemptToken !== activeEngineAttemptToken ||
+          isTransitioningEngine ||
+          hasReportedFinalError
+        ) {
+          return false;
+        }
+        if (attempt.engine === 'hls.js') {
+          const expectedHls = getExpectedHlsInstance();
+          return Boolean(expectedHls && hlsRef.current === expectedHls);
+        }
+        return video.getAttribute('src') === attempt.url;
+      };
+
+      const handlePlaying = () => {
+        if (!isAttemptStillActive()) return;
+        clearPendingNativeErrorGraceTimer();
+        setIsPlaying(true);
+        setIsLoading(false);
+        setIsBuffering(false);
+        reportSuccess();
+      };
+
+      const handlePlay = () => {
+        if (!isAttemptStillActive()) return;
+        setIsPlaying(true);
+      };
+
+      const handlePause = () => {
+        if (!isAttemptStillActive()) return;
+        setIsPlaying(false);
+        if (!shouldPublishControlsRef.current && !suppressLivePreviewVisualMetricsRef.current) {
+          syncVisualControlsStateFromVideo();
+        }
+        // M01.b 8.1 — Save progress on pause only after playback genuinely started
+        if (hasReportedSuccess && !isLive && effectiveStreamId && video.currentTime > 5) {
+          const playbackType: PlaybackType =
+            inferredContentType === 'episode' ? 'episode' : 'movie';
+          const recorded = recordPlaybackPosition(activeAccountRef.current, {
+            id: effectiveStreamId,
+            type: playbackType,
+            positionSec: video.currentTime,
+          });
+          if (recorded) {
+            lastRecordedTimeRef.current = video.currentTime;
+          }
+        }
+      };
+
+      const handleWaiting = () => {
+        if (!isAttemptStillActive()) return;
+        setIsBuffering(true);
+      };
+
+      const handleTimeUpdate = () => {
+        if (!isAttemptStillActive()) return;
+        const cur = video.currentTime;
+        currentTimeRef.current = cur;
+
+        // M01.b 8.1 — Save progress periodically only after playback genuinely started
+        if (hasReportedSuccess && !isLive && effectiveStreamId && cur > 5) {
+          if (Math.abs(cur - lastRecordedTimeRef.current) >= 5) {
+            const playbackType: PlaybackType =
+              inferredContentType === 'episode' ? 'episode' : 'movie';
+            const recorded = recordPlaybackPosition(activeAccountRef.current, {
+              id: effectiveStreamId,
+              type: playbackType,
+              positionSec: cur,
+            });
+            if (recorded) {
+              lastRecordedTimeRef.current = cur;
+            }
+          }
+        }
+
+        let liveSyncPos: number | null = null;
+        let liveDist = 0;
+        if (isLive && hlsRef.current) {
+          const syncPos = hlsRef.current.liveSyncPosition;
+          if (syncPos !== null && syncPos !== undefined && syncPos > 0) {
+            liveSyncPos = syncPos;
+            liveDist = Math.max(0, syncPos - cur);
+            liveSyncPositionRef.current = syncPos;
+            liveEdgeDistanceRef.current = liveDist;
+          }
+        }
+
+        if (suppressLivePreviewVisualMetricsRef.current || !shouldPublishControlsRef.current) {
+          return;
+        }
+
+        setCurrentTime(cur);
+
+        const { ranges, ahead } = calculateBufferStats(video);
+        setBufferedRanges(ranges);
+        setBufferedAhead(ahead);
+
+        if (liveSyncPos !== null) {
+          setLiveSyncPosition(liveSyncPos);
+          setLiveEdgeDistance(liveDist);
+        }
+      };
+
+      const handleDurationChange = () => {
+        if (!isAttemptStillActive()) return;
+        const dur = video.duration;
+        const normalizedDur = isFinite(dur) && !isNaN(dur) && dur > 0 ? dur : 0;
+        durationRef.current = normalizedDur;
+        if (!suppressLivePreviewVisualMetricsRef.current && shouldPublishControlsRef.current) {
+          setDuration(normalizedDur);
+        }
+      };
+
+      const handleLoadedMetadataWithTracks = () => {
+        if (!isAttemptStillActive()) return;
+        setIsLoading(false);
+        handleDurationChange();
+        applyStartAt();
+        video.play().catch(() => {
+          if (isAttemptStillActive()) {
+            setIsPlaying(false);
+          }
+        });
+        syncAudioTracks();
+        syncSubtitleTracks();
+      };
+
+      const handleProgress = () => {
+        if (!isAttemptStillActive()) return;
+        if (suppressLivePreviewVisualMetricsRef.current || !shouldPublishControlsRef.current) {
+          return;
+        }
+        const { ranges, ahead } = calculateBufferStats(video);
+        setBufferedRanges(ranges);
+        setBufferedAhead(ahead);
+      };
+
+      const handleVolumeChange = () => {
+        if (
+          sessionIdRef.current !== currentSessionId ||
+          attemptToken !== activeEngineAttemptToken ||
+          isTransitioningEngine
+        ) {
+          return;
+        }
+        const safeVol = normalizePlayerVolume(video.volume, volumeRef.current);
+        setVolumeState(safeVol);
+        setIsMuted(video.muted);
+        try {
+          localStorage.setItem('nc_player_volume', String(safeVol));
+        } catch {}
+      };
+
+      const handleRateChange = () => {
+        if (
+          sessionIdRef.current !== currentSessionId ||
+          attemptToken !== activeEngineAttemptToken ||
+          isTransitioningEngine
+        ) {
+          return;
+        }
+        setPlaybackRateState(video.playbackRate);
+      };
+
+      const handleError = () => {
+        if (!isAttemptStillActive()) return;
+        const mediaErr = video.error;
+        if (!mediaErr) return;
+
+        if (attempt.engine === 'hls.js') {
+          // M01.b 8.3 — Do not blindly ignore real HTMLMediaElement errors during HLS.js:
+          // allow HLS.js a brief guarded grace window to emit Hls.Events.ERROR; if it does not,
+          // classify and handle the real element error instead of leaving the player stuck.
+          clearPendingNativeErrorGraceTimer();
+          const capturedErr = mediaErr;
+          pendingNativeErrorGraceTimer = setTimeout(() => {
+            pendingNativeErrorGraceTimer = null;
+            if (!isAttemptStillActive()) return;
+            const activeErr = video.error || capturedErr;
+            const classified = classifyNativeMediaError(activeErr, attempt.source);
+            handleAttemptFailure(classified, attemptToken);
+          }, 250);
+          return;
+        }
+
+        const classified = classifyNativeMediaError(mediaErr, attempt.source);
+        handleAttemptFailure(classified, attemptToken);
+      };
+
+      video.addEventListener('playing', handlePlaying);
+      video.addEventListener('play', handlePlay);
+      video.addEventListener('pause', handlePause);
+      video.addEventListener('waiting', handleWaiting);
+      video.addEventListener('timeupdate', handleTimeUpdate);
+      video.addEventListener('durationchange', handleDurationChange);
+      video.addEventListener('loadedmetadata', handleLoadedMetadataWithTracks);
+      video.addEventListener('progress', handleProgress);
+      video.addEventListener('volumechange', handleVolumeChange);
+      video.addEventListener('ratechange', handleRateChange);
+      video.addEventListener('error', handleError);
+
+      return () => {
+        video.removeEventListener('playing', handlePlaying);
+        video.removeEventListener('play', handlePlay);
+        video.removeEventListener('pause', handlePause);
+        video.removeEventListener('waiting', handleWaiting);
+        video.removeEventListener('timeupdate', handleTimeUpdate);
+        video.removeEventListener('durationchange', handleDurationChange);
+        video.removeEventListener('loadedmetadata', handleLoadedMetadataWithTracks);
+        video.removeEventListener('progress', handleProgress);
+        video.removeEventListener('volumechange', handleVolumeChange);
+        video.removeEventListener('ratechange', handleRateChange);
+        video.removeEventListener('error', handleError);
+      };
+    };
+
     // Engine attachment helper: HLS.js vs Native HTML5 / Native HLS (isolated by session + attemptToken)
     const attachAttempt = (attempt: PlaybackAttemptDescriptor) => {
       if (sessionIdRef.current !== currentSessionId) return;
+      // M01.b 8.1 — Reset seek state for each attempt so startAt applies cleanly after fallback
+      seekApplied = false;
       const attemptToken = ++activeEngineAttemptToken;
 
       if (attempt.engine === 'hls.js' && Hls.isSupported()) {
@@ -1407,16 +1550,24 @@ export function usePlaybackSession({
         });
         hlsRef.current = hls;
 
+        detachNativeAttemptListeners = bindNativeListenersForAttempt(
+          attempt,
+          attemptToken,
+          () => hls
+        );
+
         hls.loadSource(attempt.url);
         hls.attachMedia(video);
 
         hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
           if (
             sessionIdRef.current !== currentSessionId ||
-            attemptToken !== activeEngineAttemptToken
+            attemptToken !== activeEngineAttemptToken ||
+            hlsRef.current !== hls
           ) {
             return;
           }
+          clearPendingNativeErrorGraceTimer();
           setIsLoading(false);
           setError(null);
 
@@ -1441,7 +1592,9 @@ export function usePlaybackSession({
           video.play().catch(() => {
             if (
               sessionIdRef.current === currentSessionId &&
-              attemptToken === activeEngineAttemptToken
+              attemptToken === activeEngineAttemptToken &&
+              hlsRef.current === hls &&
+              !isTransitioningEngine
             ) {
               setIsPlaying(false);
             }
@@ -1451,7 +1604,8 @@ export function usePlaybackSession({
         hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
           if (
             sessionIdRef.current !== currentSessionId ||
-            attemptToken !== activeEngineAttemptToken
+            attemptToken !== activeEngineAttemptToken ||
+            hlsRef.current !== hls
           ) {
             return;
           }
@@ -1461,7 +1615,8 @@ export function usePlaybackSession({
         hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
           if (
             sessionIdRef.current !== currentSessionId ||
-            attemptToken !== activeEngineAttemptToken
+            attemptToken !== activeEngineAttemptToken ||
+            hlsRef.current !== hls
           ) {
             return;
           }
@@ -1471,7 +1626,8 @@ export function usePlaybackSession({
         hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
           if (
             sessionIdRef.current !== currentSessionId ||
-            attemptToken !== activeEngineAttemptToken
+            attemptToken !== activeEngineAttemptToken ||
+            hlsRef.current !== hls
           ) {
             return;
           }
@@ -1485,7 +1641,8 @@ export function usePlaybackSession({
         hls.on(Hls.Events.AUDIO_TRACK_SWITCHING, (_event, data) => {
           if (
             sessionIdRef.current !== currentSessionId ||
-            attemptToken !== activeEngineAttemptToken
+            attemptToken !== activeEngineAttemptToken ||
+            hlsRef.current !== hls
           ) {
             return;
           }
@@ -1502,7 +1659,8 @@ export function usePlaybackSession({
         hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
           if (
             sessionIdRef.current !== currentSessionId ||
-            attemptToken !== activeEngineAttemptToken
+            attemptToken !== activeEngineAttemptToken ||
+            hlsRef.current !== hls
           ) {
             return;
           }
@@ -1532,7 +1690,8 @@ export function usePlaybackSession({
         hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
           if (
             sessionIdRef.current !== currentSessionId ||
-            attemptToken !== activeEngineAttemptToken
+            attemptToken !== activeEngineAttemptToken ||
+            hlsRef.current !== hls
           ) {
             return;
           }
@@ -1560,10 +1719,13 @@ export function usePlaybackSession({
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (
             sessionIdRef.current !== currentSessionId ||
-            attemptToken !== activeEngineAttemptToken
+            attemptToken !== activeEngineAttemptToken ||
+            hlsRef.current !== hls
           ) {
             return;
           }
+
+          clearPendingNativeErrorGraceTimer();
 
           // Non-fatal audio track loading failures must not kill playback or falsely confirm the switch
           if (
@@ -1661,6 +1823,11 @@ export function usePlaybackSession({
         });
       } else {
         // Native HTML5 progressive playback or native environment HLS
+        detachNativeAttemptListeners = bindNativeListenersForAttempt(
+          attempt,
+          attemptToken,
+          () => null
+        );
         video.src = attempt.url;
         video.load();
       }
@@ -1670,19 +1837,25 @@ export function usePlaybackSession({
     attachAttempt(activeAttempt);
 
     return () => {
-      activeEngineAttemptToken += 1;
+      // M01.b 8.1 — Save progress on exit only if VOD/series actually started playing
+      if (
+        !isLive &&
+        effectiveStreamId &&
+        hasReportedSuccess &&
+        !isTransitioningEngine &&
+        video.currentTime > 5
+      ) {
+        const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
+        recordPlaybackPosition(activeAccountRef.current, {
+          id: effectiveStreamId,
+          type: playbackType,
+          positionSec: video.currentTime,
+        });
+      }
+
+      // M01.b 8.2 — Invalidate active attempt token BEFORE detaching/cleaning up
       attachAttemptRef = null;
-      video.removeEventListener('playing', handlePlaying);
-      video.removeEventListener('play', handlePlay);
-      video.removeEventListener('pause', handlePause);
-      video.removeEventListener('waiting', handleWaiting);
-      video.removeEventListener('timeupdate', handleTimeUpdate);
-      video.removeEventListener('durationchange', handleDurationChange);
-      video.removeEventListener('loadedmetadata', handleLoadedMetadataWithTracks);
-      video.removeEventListener('progress', handleProgress);
-      video.removeEventListener('volumechange', handleVolumeChange);
-      video.removeEventListener('ratechange', handleRateChange);
-      video.removeEventListener('error', handleError);
+      cleanupEngineAttempt(false);
 
       if (textTrackList && typeof textTrackList.removeEventListener === 'function') {
         textTrackList.removeEventListener('addtrack', handleNativeTextTracksChange);
@@ -1696,30 +1869,22 @@ export function usePlaybackSession({
         nativeAudioList.removeEventListener('change', handleNativeAudioTracksChange);
       }
 
-      // Save progress on exit if VOD/series
-      if (!isLive && streamId && video.currentTime > 5) {
-        const playbackType: PlaybackType = inferredContentType === 'episode' ? 'episode' : 'movie';
-        recordPlaybackPosition(activeAccountRef.current, {
-          id: streamId,
-          type: playbackType,
-          positionSec: video.currentTime,
-        });
-      }
-
       cleanup();
     };
   }, [
     streamUrl,
     retryTrigger,
+    accountIdentityKey,
     cleanup,
     isLive,
-    streamId,
+    effectiveStreamId,
     startAt,
     inferredTransport,
-    explicitContentType,
-    containerExtension,
-    mimeType,
-    directSource,
+    effectiveContentType,
+    effectiveSourceOrigin,
+    effectiveContainerExtension,
+    effectiveMimeType,
+    effectiveDirectSource,
     calculateBufferStats,
     syncVisualControlsStateFromVideo,
   ]);

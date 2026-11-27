@@ -5,20 +5,10 @@ import {
   useXtreamSession,
 } from '../context/XtreamContext';
 import { CatalogShowcaseView } from '../components/CatalogShowcaseView';
+import { OnPlayMediaHandler } from '../components/player/types';
 
 export interface MoviesViewProps {
-  onPlay: (
-    url: string,
-    title: string,
-    startAt?: number,
-    streamId?: string | number,
-    contentType?: 'live' | 'movie' | 'episode',
-    channelName?: string,
-    programTitle?: string,
-    onNext?: () => void,
-    onPrevious?: () => void,
-    externalSubtitles?: any[]
-  ) => void;
+  onPlay: OnPlayMediaHandler;
   searchQuery?: string;
   isPaused?: boolean;
 }

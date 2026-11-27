@@ -18,13 +18,14 @@ import {
   clearItemProgress,
 } from '../utils/playbackHistory';
 import {
-  buildDirectMediaUrl,
+  extractExplicitMediaMimeType,
   normalizeContainerExtension,
   normalizeDirectMediaSource,
   normalizeImageSource,
   normalizeMetadataText,
+  preparePlaybackMediaSource,
 } from '../utils/mediaUtils';
-import { ExternalSubtitleTrackInput } from './player/types';
+import { OnPlayMediaHandler } from './player/types';
 import { extractXtreamSubtitles } from './player/trackUtils';
 import { MediaImage } from './MediaImage';
 import { DetailsModalShell } from './DetailsModalShell';
@@ -50,18 +51,7 @@ export interface MovieDetailsProps {
   catalogMovies?: any[];
   onSelectSimilarMovie?: (movie: any) => void;
   onClose: () => void;
-  onPlay: (
-    url: string,
-    title: string,
-    startAt?: number,
-    streamId?: string | number,
-    contentType?: 'live' | 'movie' | 'episode',
-    channelName?: string,
-    programTitle?: string,
-    onNext?: () => void,
-    onPrevious?: () => void,
-    externalSubtitles?: ExternalSubtitleTrackInput[]
-  ) => void;
+  onPlay: OnPlayMediaHandler;
 }
 
 interface ActiveMovieSnapshot {
@@ -622,11 +612,12 @@ export const MovieDetails = React.memo(function MovieDetails({
       normalizeDirectMediaSource(info?.direct_source) ||
       normalizeDirectMediaSource(activeDirectSourceProp);
 
-    const containerExt =
+    const declaredContainerExt =
       normalizeContainerExtension(movieData?.container_extension) ||
       normalizeContainerExtension(info?.container_extension) ||
-      normalizeContainerExtension(activeContainerExtProp) ||
-      'mp4';
+      normalizeContainerExtension(activeContainerExtProp);
+    const explicitMimeType =
+      extractExplicitMediaMimeType(movieData) || extractExplicitMediaMimeType(info);
 
     recordPlaybackPosition(credentials, {
       id: activeStreamId,
@@ -636,17 +627,18 @@ export const MovieDetails = React.memo(function MovieDetails({
 
     try {
       setPlayErrorState(null);
-      const url = buildDirectMediaUrl(credentials, {
+      const prepared = preparePlaybackMediaSource(credentials, {
         type: 'movie',
         streamId: activeStreamId,
-        containerExtension: containerExt,
+        containerExtension: declaredContainerExt,
+        mimeType: explicitMimeType,
         directSource: resolvedDirectSource ?? undefined,
       });
       const extractedSubs = validatedDetails
         ? extractXtreamSubtitles(validatedDetails, credentials.serverUrl)
         : [];
       onPlay(
-        url,
+        prepared.url,
         displayTitle,
         startAt,
         activeStreamId,
@@ -655,7 +647,8 @@ export const MovieDetails = React.memo(function MovieDetails({
         undefined,
         undefined,
         undefined,
-        extractedSubs.length > 0 ? extractedSubs : undefined
+        extractedSubs.length > 0 ? extractedSubs : undefined,
+        prepared.metadata
       );
     } catch (err: any) {
       console.error('Erro ao construir URL de filme:', err.message);

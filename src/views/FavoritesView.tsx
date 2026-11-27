@@ -6,7 +6,12 @@ import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { HorizontalRow } from '../components/HorizontalRow';
 import { MediaImage } from '../components/MediaImage';
-import { buildDirectMediaUrl, normalizeImageSource } from '../utils/mediaUtils';
+import {
+  extractExplicitMediaMimeType,
+  normalizeImageSource,
+  preparePlaybackMediaSource,
+} from '../utils/mediaUtils';
+import { OnPlayMediaHandler } from '../components/player/types';
 import { recordPlaybackPosition } from '../utils/playbackHistory';
 import { useVirtualWindow } from '../hooks/useVirtualWindow';
 import {
@@ -20,18 +25,7 @@ import {
 export type FavoritesFilterType = 'all' | 'live' | 'movie' | 'series';
 
 interface FavoritesViewProps {
-  onPlay: (
-    url: string,
-    title: string,
-    startAt?: number,
-    streamId?: string | number,
-    contentType?: 'live' | 'movie' | 'episode',
-    channelName?: string,
-    programTitle?: string,
-    onNext?: () => void,
-    onPrevious?: () => void,
-    externalSubtitles?: any[]
-  ) => void;
+  onPlay: OnPlayMediaHandler;
   searchQuery?: string;
 }
 
@@ -529,13 +523,27 @@ export const FavoritesView = React.memo(function FavoritesView({
           });
           setFavPlayError(null);
           setFailedFav(null);
-          const url = buildDirectMediaUrl(credentials, {
+          const prepared = preparePlaybackMediaSource(credentials, {
             type: 'live',
             streamId: fav.id,
+            containerExtension: fav.extraData?.container_extension,
+            mimeType: extractExplicitMediaMimeType(fav.extraData),
             allowedOutputFormats: credentials.allowed_output_formats,
             directSource: fav.extraData?.direct_source,
           });
-          onPlay(url, fav.name, 0, fav.id, 'live', fav.name);
+          onPlay(
+            prepared.url,
+            fav.name,
+            0,
+            fav.id,
+            'live',
+            fav.name,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            prepared.metadata
+          );
         } catch (err: any) {
           console.error('Erro ao iniciar canal favorito:', err.message);
           setFavPlayError(err?.message || 'Falha ao iniciar canal favorito.');

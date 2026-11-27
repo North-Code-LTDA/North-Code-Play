@@ -4,6 +4,7 @@ import { StartupLoadingScreen } from '../components/StartupLoadingScreen';
 import { X, AlertCircle, RefreshCw, KeyRound } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
 import { VideoPlayer } from '../components/VideoPlayer';
+import { PlaybackSourceMetadata } from '../components/player/types';
 import { TopHeader, MainSectionId, PrimaryNavSectionId } from '../components/TopHeader';
 
 import { HomeView } from '../views/HomeView';
@@ -260,6 +261,7 @@ function HomeContent({ credentials }: { credentials: any }) {
     onNext?: () => void;
     onPrevious?: () => void;
     externalSubtitles?: any[];
+    sourceMetadata?: PlaybackSourceMetadata;
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const debouncedSearchQuery = useDebounce(searchQuery, 500);
@@ -635,7 +637,8 @@ function HomeContent({ credentials }: { credentials: any }) {
       programTitle?: string,
       onNext?: () => void,
       onPrevious?: () => void,
-      externalSubtitles?: any[]
+      externalSubtitles?: any[],
+      sourceMetadata?: PlaybackSourceMetadata
     ) => {
       pushFocusMemory();
       setActiveVideo({
@@ -649,6 +652,7 @@ function HomeContent({ credentials }: { credentials: any }) {
         onNext,
         onPrevious,
         externalSubtitles,
+        sourceMetadata,
       });
     },
     []
@@ -835,6 +839,7 @@ function HomeContent({ credentials }: { credentials: any }) {
               streamUrl={activeVideo.url}
               title={activeVideo.title}
               contentType={activeVideo.contentType}
+              sourceMetadata={activeVideo.sourceMetadata}
               channelName={activeVideo.channelName}
               programTitle={activeVideo.programTitle}
               onBack={handleClosePlayer}

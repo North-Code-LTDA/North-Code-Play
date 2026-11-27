@@ -20,9 +20,11 @@ import { MediaImage, observeContainerVisibility, notifyContainerScrollForFallbac
 import { useFavorites } from '../hooks/useFavorites';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 import {
-  buildDirectMediaUrl,
+  extractExplicitMediaMimeType,
   getValidMediaId,
   normalizeDirectMediaSource,
+  preparePlaybackMediaSource,
+  PlaybackSourceMetadata,
 } from '../utils/mediaUtils';
 import { setLiveTvPreviewPlaybackActiveForImagePreload } from '../services/androidImageCache';
 import {
@@ -2410,32 +2412,46 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
   onNextChannel,
   onPreviousChannel,
 }: LiveTvRightPaneProps) {
-  const { url: activeStreamUrl, error: streamUrlError } = useMemo<{
+  const {
+    url: activeStreamUrl,
+    sourceMetadata: activeSourceMetadata,
+    error: streamUrlError,
+  } = useMemo<{
     url: string;
+    sourceMetadata: PlaybackSourceMetadata | null;
     error: string | null;
   }>(() => {
-    if (!credentials || !selectedChannel) return { url: '', error: null };
+    if (!credentials || !selectedChannel) {
+      return { url: '', sourceMetadata: null, error: null };
+    }
     const sId =
       getValidMediaId(selectedChannel.stream_id) ?? getValidMediaId(selectedChannel.id);
     const validDirect = normalizeDirectMediaSource(selectedChannel.direct_source);
     if (sId === null && !validDirect) {
       return {
         url: '',
+        sourceMetadata: null,
         error: 'Identificador do canal inválido ou ausente para reprodução.',
       };
     }
     try {
-      const builtUrl = buildDirectMediaUrl(credentials, {
+      const prepared = preparePlaybackMediaSource(credentials, {
         type: 'live',
         streamId: sId ?? '',
         containerExtension: selectedChannel.container_extension,
+        mimeType: extractExplicitMediaMimeType(selectedChannel),
         allowedOutputFormats: credentials.allowed_output_formats,
         directSource: selectedChannel.direct_source,
       });
-      return { url: builtUrl, error: null };
+      return {
+        url: prepared.url,
+        sourceMetadata: prepared.metadata,
+        error: null,
+      };
     } catch (err: any) {
       return {
         url: '',
+        sourceMetadata: null,
         error:
           err?.message ||
           'Não foi possível preparar o endereço de reprodução deste canal.',
@@ -2797,6 +2813,7 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
                 streamUrl={activeStreamUrl}
                 title={selectedGroup.displayName}
                 contentType="live"
+                sourceMetadata={activeSourceMetadata}
                 channelName={selectedGroup.displayName}
                 programTitle={currentEpgProgram?.title}
                 streamId={selectedChannel.stream_id ?? selectedChannel.id}

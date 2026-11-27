@@ -35,15 +35,17 @@ import {
   getHeroBannerItems,
 } from '../utils/catalogIndex';
 import {
-  buildDirectMediaUrl,
   buildDirectImageUrl,
+  extractExplicitMediaMimeType,
   getEpisodeId,
   getValidMediaId,
   normalizeContainerExtension,
   normalizeDirectMediaSource,
   normalizeEpisodesBySeason,
   normalizeImageSource,
+  preparePlaybackMediaSource,
 } from '../utils/mediaUtils';
+import { OnPlayMediaHandler } from './player/types';
 import {
   recordVisitedShowcaseCategory,
   scheduleBackgroundLowPriorityPreload,
@@ -210,18 +212,7 @@ export interface CatalogShowcaseViewProps {
   credentials: XtreamCredentials | null;
   searchQuery?: string;
   isPaused?: boolean;
-  onPlay: (
-    url: string,
-    title: string,
-    startAt?: number,
-    streamId?: string | number,
-    contentType?: 'live' | 'movie' | 'episode',
-    channelName?: string,
-    programTitle?: string,
-    onNext?: () => void,
-    onPrevious?: () => void,
-    externalSubtitles?: any[]
-  ) => void;
+  onPlay: OnPlayMediaHandler;
   onSelectLiveChannel?: (stream: any) => void;
 
   // Live domain (used in 'inicio')
@@ -2805,16 +2796,20 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                       ? `${item.name || item.title} - S${String(foundSeasonKey).padStart(2, '0')}E${epNum} - ${epLabel}`
                       : `${item.name || item.title} - ${epLabel}`;
                   try {
-                    const directUrl = buildDirectMediaUrl(creds, {
+                    const epMimeType =
+                      extractExplicitMediaMimeType(foundEp) ||
+                      extractExplicitMediaMimeType(foundEp.info);
+                    const prepared = preparePlaybackMediaSource(creds, {
                       type: 'series',
                       streamId: epId ?? latestEpisodeRecord.id,
-                      containerExtension: confirmedExt || 'mp4',
+                      containerExtension: confirmedExt,
+                      mimeType: epMimeType,
                       directSource: epDirectSource ?? undefined,
                     });
-                    if (directUrl) {
+                    if (prepared.url) {
                       const epSubs = extractXtreamSubtitles(foundEp, creds.serverUrl);
                       playFn(
-                        directUrl,
+                        prepared.url,
                         epTitle,
                         latestEpisodeRecord.positionSec,
                         epId ?? latestEpisodeRecord.id,
@@ -2823,7 +2818,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                         undefined,
                         undefined,
                         undefined,
-                        epSubs.length > 0 ? epSubs : undefined
+                        epSubs.length > 0 ? epSubs : undefined,
+                        prepared.metadata
                       );
                       return;
                     }
@@ -2851,15 +2847,19 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               normalizeDirectMediaSource(firstEp.direct_source) ||
               normalizeDirectMediaSource(firstEp.info?.direct_source);
             if (epId !== null || epDirectSource) {
-              const epExt = normalizeContainerExtension(firstEp.container_extension) || 'mp4';
+              const declaredEpExt = normalizeContainerExtension(firstEp.container_extension);
+              const firstEpMimeType =
+                extractExplicitMediaMimeType(firstEp) ||
+                extractExplicitMediaMimeType(firstEp.info);
               try {
-                const directUrl = buildDirectMediaUrl(creds, {
+                const prepared = preparePlaybackMediaSource(creds, {
                   type: 'series',
                   streamId: epId ?? '',
-                  containerExtension: epExt,
+                  containerExtension: declaredEpExt,
+                  mimeType: firstEpMimeType,
                   directSource: epDirectSource ?? undefined,
                 });
-                if (directUrl) {
+                if (prepared.url) {
                   const epNum = String(firstEp.episode_num || 1).padStart(2, '0');
                   const epLabel = firstEp.title || 'Episódio 1';
                   const epTitle =
@@ -2868,7 +2868,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                       : `${item.name || item.title} - ${epLabel}`;
                   const epSubs = extractXtreamSubtitles(firstEp, creds.serverUrl);
                   playFn(
-                    directUrl,
+                    prepared.url,
                     epTitle,
                     0,
                     epId ?? undefined,
@@ -2877,7 +2877,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                     undefined,
                     undefined,
                     undefined,
-                    epSubs.length > 0 ? epSubs : undefined
+                    epSubs.length > 0 ? epSubs : undefined,
+                    prepared.metadata
                   );
                   return;
                 }
@@ -2981,20 +2982,25 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
             ? normalizeDirectMediaSource(detailMovieData?.direct_source) ||
               normalizeDirectMediaSource(validatedMovieDetails?.info?.direct_source)
             : null) || normalizeDirectMediaSource(item.direct_source);
-        const ext =
+        const declaredExt =
           (validatedMovieDetails
-            ? normalizeContainerExtension(detailMovieData?.container_extension)
-            : null) ||
-          normalizeContainerExtension(item.container_extension) ||
-          'mp4';
+            ? normalizeContainerExtension(detailMovieData?.container_extension) ||
+              normalizeContainerExtension(validatedMovieDetails?.info?.container_extension)
+            : null) || normalizeContainerExtension(item.container_extension);
+        const movieMimeType =
+          (validatedMovieDetails
+            ? extractExplicitMediaMimeType(detailMovieData) ||
+              extractExplicitMediaMimeType(validatedMovieDetails?.info)
+            : null) || extractExplicitMediaMimeType(item);
         try {
-          const directUrl = buildDirectMediaUrl(creds, {
+          const prepared = preparePlaybackMediaSource(creds, {
             type: 'movie',
             streamId: movieId,
-            containerExtension: ext,
+            containerExtension: declaredExt,
+            mimeType: movieMimeType,
             directSource: movieDirectSource ?? undefined,
           });
-          if (directUrl) {
+          if (prepared.url) {
             const savedSec = getItemProgress(creds, 'movie', movieId);
             const recordSec =
               records.find((r) => r.type === 'movie' && String(r.id) === String(movieId))
@@ -3005,7 +3011,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               creds.serverUrl
             );
             playFn(
-              directUrl,
+              prepared.url,
               item.name || item.title || 'Filme',
               resumeSec > 30 ? resumeSec : 0,
               movieId,
@@ -3014,7 +3020,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               undefined,
               undefined,
               undefined,
-              movieSubs.length > 0 ? movieSubs : undefined
+              movieSubs.length > 0 ? movieSubs : undefined,
+              prepared.metadata
             );
             return;
           }
@@ -3051,12 +3058,13 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       return;
     }
     const liveExt = normalizeContainerExtension(stream.container_extension) || undefined;
-    let url = '';
+    let prepared: ReturnType<typeof preparePlaybackMediaSource> | null = null;
     try {
-      url = buildDirectMediaUrl(creds, {
+      prepared = preparePlaybackMediaSource(creds, {
         type: 'live',
         streamId: liveStreamId ?? '',
         containerExtension: liveExt,
+        mimeType: extractExplicitMediaMimeType(stream),
         allowedOutputFormats: creds.allowed_output_formats,
         directSource: liveDirectSource,
       });
@@ -3067,7 +3075,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       );
       return;
     }
-    if (!url) {
+    if (!prepared || !prepared.url) {
       setPlayError(
         `Não foi possível reproduzir "${stream.name || 'Canal'}": dados de conexão ou ID ausentes.`
       );
@@ -3075,12 +3083,17 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     }
     setPlayError(null);
     onPlayRef.current(
-      url,
+      prepared.url,
       stream.name || stream.title || 'Canal ao Vivo',
       0,
-      stream.stream_id,
+      liveStreamId ?? stream.stream_id,
       'live',
-      stream.name || stream.title
+      stream.name || stream.title,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      prepared.metadata
     );
   }, []);
 
