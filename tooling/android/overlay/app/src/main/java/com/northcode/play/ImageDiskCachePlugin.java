@@ -750,10 +750,14 @@ public class ImageDiskCachePlugin extends Plugin {
                                     String key = item.optString("key", "");
                                     String fileName = item.optString("fileName", "");
                                     String rawContentType = item.optString("contentType", "");
+                                    String rawCacheControl = item.isNull("cacheControl")
+                                        ? null
+                                        : item.optString("cacheControl", null);
                                     long byteSize = item.optLong("byteSize", 0L);
                                     if (
                                         key.length() != 64 ||
                                         isLegacySvgEntry(fileName, rawContentType) ||
+                                        hasNoStoreDirective(rawCacheControl) ||
                                         !SAFE_IMAGE_FILE_NAME_PATTERN.matcher(fileName).matches() ||
                                         byteSize <= 0L
                                     ) {
@@ -783,9 +787,7 @@ public class ImageDiskCachePlugin extends Plugin {
                                         item.isNull("lastModified")
                                             ? null
                                             : item.optString("lastModified", null),
-                                        item.isNull("cacheControl")
-                                            ? null
-                                            : item.optString("cacheControl", null),
+                                        rawCacheControl,
                                         item.optLong("createdAtMs", System.currentTimeMillis()),
                                         lastAcc
                                     );
@@ -1042,6 +1044,66 @@ public class ImageDiskCachePlugin extends Plugin {
         });
     }
 
+    /**
+     * Remove seletivamente uma única entrada persistente do cache nativo (memória, disco e índice),
+     * validando identidade da chave, época da sessão e referência esperada (quando fornecida) para
+     * nunca remover uma entrada mais recente de outra sessão/operação nem contabilizar corrupção.
+     * Operação idempotente.
+     */
+    private boolean invalidatePersistentEntryByKey(
+        String key,
+        int expectedEpoch,
+        CacheEntry expectedEntryOrNull,
+        long maxCreatedAtMsOrZero
+    ) {
+        if (key == null || key.length() != 64) {
+            return false;
+        }
+        synchronized (indexLock) {
+            if (expectedEpoch > 0 && sessionEpoch.get() != expectedEpoch) {
+                return false;
+            }
+            CacheEntry current = entriesByKey.get(key);
+            if (current == null) {
+                return false;
+            }
+            if (expectedEntryOrNull != null && current != expectedEntryOrNull) {
+                return false;
+            }
+            if (expectedEntryOrNull == null && maxCreatedAtMsOrZero > 0L && current.createdAtMs > maxCreatedAtMsOrZero) {
+                return false;
+            }
+            entriesByKey.remove(key);
+            totalStoredBytes.addAndGet(-current.byteSize);
+            if (totalStoredBytes.get() < 0L) {
+                totalStoredBytes.set(0L);
+            }
+            try {
+                File validatedFile = resolveValidatedImageFile(current.fileName);
+                if (validatedFile != null) {
+                    safeDeleteFile(validatedFile);
+                } else if (isLegacySvgEntry(current.fileName, current.contentType)) {
+                    File cacheDir = getPersistentImageCacheDir();
+                    if (
+                        current.fileName != null &&
+                        !current.fileName.contains("/") &&
+                        !current.fileName.contains("\\") &&
+                        !current.fileName.contains("..")
+                    ) {
+                        File legacyCandidate = new File(cacheDir, current.fileName).getCanonicalFile();
+                        if (cacheDir.equals(legacyCandidate.getParentFile())) {
+                            safeDeleteFile(legacyCandidate);
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+                // Ignora falha ao deletar arquivo individual
+            }
+            persistIndexLocked();
+            return true;
+        }
+    }
+
     @PluginMethod
     public void invalidateImage(final PluginCall call) {
         final String urlString = call.getString("url", "");
@@ -1052,28 +1114,12 @@ public class ImageDiskCachePlugin extends Plugin {
         final String key = (rawKey != null && rawKey.length() == 64)
             ? rawKey
             : computeSha256Hex(urlString != null ? urlString.trim() : "");
+        final int requestEpoch = sessionEpoch.get();
 
         downloadExecutor.execute(() -> {
             ensureInitialized();
-            boolean removed = false;
-            synchronized (indexLock) {
-                CacheEntry existing = entriesByKey.remove(key);
-                if (existing != null) {
-                    removed = true;
-                    totalStoredBytes.addAndGet(-existing.byteSize);
-                    if (totalStoredBytes.get() < 0L) {
-                        totalStoredBytes.set(0L);
-                    }
-                    try {
-                        File f = resolveValidatedImageFile(existing.fileName);
-                        safeDeleteFile(f);
-                    } catch (Exception ignored) {
-                        // Ignora falha ao deletar arquivo inválido
-                    }
-                    persistIndexLocked();
-                }
-            }
-            if (isCorruptionRecovery) {
+            boolean removed = invalidatePersistentEntryByKey(key, requestEpoch, null, 0L);
+            if (isCorruptionRecovery && sessionEpoch.get() == requestEpoch) {
                 corruptedRecoveriesCount.incrementAndGet();
             }
             JSObject ret = new JSObject();
@@ -1162,21 +1208,12 @@ public class ImageDiskCachePlugin extends Plugin {
             }
 
             CacheEntry cachedEntry = entriesByKey.get(key);
-            if (cachedEntry != null && isLegacySvgEntry(cachedEntry.fileName, cachedEntry.contentType)) {
-                synchronized (indexLock) {
-                    CacheEntry removedLegacy = entriesByKey.remove(key);
-                    if (removedLegacy != null) {
-                        totalStoredBytes.addAndGet(-removedLegacy.byteSize);
-                        if (totalStoredBytes.get() < 0L) totalStoredBytes.set(0L);
-                        try {
-                            File cacheDir = getPersistentImageCacheDir();
-                            safeDeleteFile(new File(cacheDir, removedLegacy.fileName));
-                        } catch (Exception ignored) {
-                            // Ignora falha ao remover SVG legado
-                        }
-                        persistIndexLocked();
-                    }
-                }
+            if (
+                cachedEntry != null &&
+                (isLegacySvgEntry(cachedEntry.fileName, cachedEntry.contentType) ||
+                    hasNoStoreDirective(cachedEntry.cacheControl))
+            ) {
+                invalidatePersistentEntryByKey(key, requestEpoch, cachedEntry, 0L);
                 cachedEntry = null;
             }
             boolean expiredOrMustRevalidate =
@@ -1260,6 +1297,9 @@ public class ImageDiskCachePlugin extends Plugin {
     ) {
         CapacitorHttpUrlConnection connection = null;
         File tempFile = null;
+        final long fetchStartedAtMs = System.currentTimeMillis();
+        boolean isNoStoreResponse = false;
+        boolean invalidatedPreviousEntry = false;
 
         try {
             if (sessionEpoch.get() != inflight.epochAtStart) {
@@ -1326,9 +1366,39 @@ public class ImageDiskCachePlugin extends Plugin {
 
             // Revalidação condicional HTTP 304 Not Modified com entrada local íntegra
             if (statusCode == 304 && previousEntry != null) {
+                String newCacheControl = getHeaderIgnoreCase(connection, "Cache-Control");
+                String effectiveCacheControl = (newCacheControl != null && !newCacheControl.isEmpty())
+                    ? newCacheControl
+                    : previousEntry.cacheControl;
+
+                if (hasNoStoreDirective(effectiveCacheControl)) {
+                    boolean invalidatedPrev304 = invalidatePersistentEntryByKey(
+                        key,
+                        inflight.epochAtStart,
+                        previousEntry,
+                        fetchStartedAtMs
+                    );
+                    JSObject noStore304Res = new JSObject();
+                    noStore304Res.put("hit", false);
+                    noStore304Res.put("revalidated304", true);
+                    noStore304Res.put("bypassedNoStore", true);
+                    noStore304Res.put("bypassedCache", false);
+                    noStore304Res.put("invalidatedPreviousEntry", invalidatedPrev304);
+                    noStore304Res.put("key", key);
+                    noStore304Res.put("fileName", JSONObject.NULL);
+                    noStore304Res.put("filePath", JSONObject.NULL);
+                    noStore304Res.put("inlineDataUrl", JSONObject.NULL);
+                    noStore304Res.put("byteSize", 0L);
+                    noStore304Res.put("contentType", JSONObject.NULL);
+                    noStore304Res.put("totalBytes", totalStoredBytes.get());
+                    noStore304Res.put("storedEntriesCount", entriesByKey.size());
+                    noStore304Res.put("evictedEntriesCount", evictedEntriesCount.get());
+                    resolveAllWaiting(inflight, noStore304Res);
+                    return;
+                }
+
                 File prevFile = resolveValidatedImageFile(previousEntry.fileName);
                 if (prevFile != null && prevFile.exists() && prevFile.length() > 0L) {
-                    String newCacheControl = getHeaderIgnoreCase(connection, "Cache-Control");
                     String newEtag = getHeaderIgnoreCase(connection, "ETag");
                     String newLastMod = getHeaderIgnoreCase(connection, "Last-Modified");
                     long nowMs = System.currentTimeMillis();
@@ -1352,6 +1422,8 @@ public class ImageDiskCachePlugin extends Plugin {
                     res304.put("hit", true);
                     res304.put("revalidated304", true);
                     res304.put("bypassedNoStore", false);
+                    res304.put("bypassedCache", false);
+                    res304.put("invalidatedPreviousEntry", false);
                     res304.put("key", key);
                     res304.put("fileName", previousEntry.fileName);
                     res304.put("filePath", prevFile.getPath());
@@ -1386,18 +1458,37 @@ public class ImageDiskCachePlugin extends Plugin {
             String lastModified = getHeaderIgnoreCase(connection, "Last-Modified");
             Long declaredLength = parseContentLength(connection);
 
+            isNoStoreResponse = hasNoStoreDirective(cacheControl);
+            if (isNoStoreResponse) {
+                invalidatedPreviousEntry = invalidatePersistentEntryByKey(
+                    key,
+                    inflight.epochAtStart,
+                    previousEntry,
+                    fetchStartedAtMs
+                );
+            }
+
+            JSObject noStoreRejectionData = null;
+            if (isNoStoreResponse) {
+                noStoreRejectionData = new JSObject();
+                noStoreRejectionData.put("key", key);
+                noStoreRejectionData.put("bypassedNoStore", true);
+                noStoreRejectionData.put("invalidatedPreviousEntry", invalidatedPreviousEntry);
+            }
+
             if (isExplicitlyRejectedContentType(contentType)) {
                 rejectAllWaiting(
                     inflight,
                     "Content-Type inválido para imagem: " + contentType,
-                    "INVALID_CONTENT_TYPE"
+                    "INVALID_CONTENT_TYPE",
+                    noStoreRejectionData
                 );
                 return;
             }
 
             // Se o servidor exigir Cache-Control: no-store, ler em memória e retornar Data URI
             // com MIME real identificado (apenas formatos raster) sem persistir arquivo em disco
-            if (hasNoStoreDirective(cacheControl)) {
+            if (isNoStoreResponse) {
                 ByteArrayOutputStream memOut = new ByteArrayOutputStream();
                 byte[] headerBytes = new byte[HEADER_INSPECTION_BYTES];
                 int headerLen = 0;
@@ -1427,7 +1518,12 @@ public class ImageDiskCachePlugin extends Plugin {
                 }
 
                 if (bytesReadTotal <= 0L) {
-                    rejectAllWaiting(inflight, "Corpo da imagem no-store vazio.", "EMPTY_BODY");
+                    rejectAllWaiting(
+                        inflight,
+                        "Corpo da imagem no-store vazio.",
+                        "EMPTY_BODY",
+                        noStoreRejectionData
+                    );
                     return;
                 }
                 if (
@@ -1436,7 +1532,12 @@ public class ImageDiskCachePlugin extends Plugin {
                     declaredLength > 0L &&
                     bytesReadTotal != declaredLength
                 ) {
-                    rejectAllWaiting(inflight, "Download no-store truncado.", "TRUNCATED_BODY");
+                    rejectAllWaiting(
+                        inflight,
+                        "Download no-store truncado.",
+                        "TRUNCATED_BODY",
+                        noStoreRejectionData
+                    );
                     return;
                 }
 
@@ -1448,6 +1549,7 @@ public class ImageDiskCachePlugin extends Plugin {
                         directRes.put("revalidated304", false);
                         directRes.put("bypassedNoStore", true);
                         directRes.put("bypassedCache", true);
+                        directRes.put("invalidatedPreviousEntry", invalidatedPreviousEntry);
                         directRes.put(
                             "bypassReason",
                             identified.bypassReason != null ? identified.bypassReason : "unrecognized_format"
@@ -1467,7 +1569,12 @@ public class ImageDiskCachePlugin extends Plugin {
                         resolveAllWaiting(inflight, directRes);
                         return;
                     }
-                    rejectAllWaiting(inflight, "Assinatura binária inválida em resposta no-store.", "INVALID_IMAGE_SIGNATURE");
+                    rejectAllWaiting(
+                        inflight,
+                        "Assinatura binária inválida em resposta no-store.",
+                        "INVALID_IMAGE_SIGNATURE",
+                        noStoreRejectionData
+                    );
                     return;
                 }
 
@@ -1483,6 +1590,7 @@ public class ImageDiskCachePlugin extends Plugin {
                 bypassRes.put("revalidated304", false);
                 bypassRes.put("bypassedNoStore", true);
                 bypassRes.put("bypassedCache", false);
+                bypassRes.put("invalidatedPreviousEntry", invalidatedPreviousEntry);
                 bypassRes.put("key", key);
                 bypassRes.put("fileName", JSONObject.NULL);
                 bypassRes.put("filePath", JSONObject.NULL);
@@ -1556,25 +1664,18 @@ public class ImageDiskCachePlugin extends Plugin {
             if (!identified.persistentEligible) {
                 safeDeleteFile(tempFile);
                 if (identified.directFallbackEligible) {
-                    synchronized (indexLock) {
-                        CacheEntry staleEntry = entriesByKey.remove(key);
-                        if (staleEntry != null) {
-                            totalStoredBytes.addAndGet(-staleEntry.byteSize);
-                            if (totalStoredBytes.get() < 0L) totalStoredBytes.set(0L);
-                            try {
-                                File oldFile = resolveValidatedImageFile(staleEntry.fileName);
-                                safeDeleteFile(oldFile);
-                            } catch (Exception ignored) {
-                                // Ignora falha ao remover arquivo anterior
-                            }
-                            persistIndexLocked();
-                        }
-                    }
+                    boolean invalidatedPrevDirect = invalidatePersistentEntryByKey(
+                        key,
+                        inflight.epochAtStart,
+                        previousEntry,
+                        fetchStartedAtMs
+                    );
                     JSObject directRes = new JSObject();
                     directRes.put("hit", false);
                     directRes.put("revalidated304", false);
                     directRes.put("bypassedNoStore", false);
                     directRes.put("bypassedCache", true);
+                    directRes.put("invalidatedPreviousEntry", invalidatedPrevDirect);
                     directRes.put(
                         "bypassReason",
                         identified.bypassReason != null ? identified.bypassReason : "unrecognized_format"
@@ -1694,13 +1795,28 @@ public class ImageDiskCachePlugin extends Plugin {
             resolveAllWaiting(inflight, successRes);
         } catch (SocketTimeoutException timeoutEx) {
             safeDeleteFile(tempFile);
-            rejectAllWaiting(inflight, "Tempo limite esgotado ao baixar imagem.", "TIMEOUT");
+            JSObject errData = null;
+            if (isNoStoreResponse) {
+                errData = new JSObject();
+                errData.put("key", key);
+                errData.put("bypassedNoStore", true);
+                errData.put("invalidatedPreviousEntry", invalidatedPreviousEntry);
+            }
+            rejectAllWaiting(inflight, "Tempo limite esgotado ao baixar imagem.", "TIMEOUT", errData);
         } catch (Exception ex) {
             safeDeleteFile(tempFile);
+            JSObject errData = null;
+            if (isNoStoreResponse) {
+                errData = new JSObject();
+                errData.put("key", key);
+                errData.put("bypassedNoStore", true);
+                errData.put("invalidatedPreviousEntry", invalidatedPreviousEntry);
+            }
             rejectAllWaiting(
                 inflight,
                 "Falha de rede ao baixar imagem: " + (ex.getMessage() != null ? ex.getMessage() : "erro"),
-                "NETWORK_ERROR"
+                "NETWORK_ERROR",
+                errData
             );
         } finally {
             if (connection != null) {
@@ -1735,6 +1851,15 @@ public class ImageDiskCachePlugin extends Plugin {
     }
 
     private void rejectAllWaiting(InFlightDownload inflight, String message, String code) {
+        rejectAllWaiting(inflight, message, code, null);
+    }
+
+    private void rejectAllWaiting(
+        InFlightDownload inflight,
+        String message,
+        String code,
+        JSObject errorData
+    ) {
         List<PluginCall> calls;
         synchronized (inFlightByKey) {
             inflight.finished = true;
@@ -1744,7 +1869,15 @@ public class ImageDiskCachePlugin extends Plugin {
         }
         for (PluginCall c : calls) {
             try {
-                c.reject(message, code);
+                if (errorData != null) {
+                    try {
+                        c.reject(message, code, new JSObject(errorData.toString()));
+                    } catch (Exception copyEx) {
+                        c.reject(message, code, errorData);
+                    }
+                } else {
+                    c.reject(message, code);
+                }
             } catch (Exception ignored) {
                 // Ignora erro ao rejeitar chamada individual
             }

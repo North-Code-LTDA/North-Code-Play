@@ -3,6 +3,7 @@ import { buildDirectImageUrl } from '../utils/mediaUtils';
 import {
   isAndroidPersistentImageCacheAvailable,
   isEligibleForAndroidImageDiskCache,
+  isDeterministicImageCacheIneligibilityError,
   getInstantCachedImageSrc,
   acquireCachedImage,
   recoverFromCorruptedLocalImage,
@@ -29,6 +30,14 @@ export interface MediaImageProps extends Omit<React.ImgHTMLAttributes<HTMLImageE
 }
 
 type ImageStatus = 'empty' | 'loading' | 'loaded' | 'retrying' | 'failed';
+type EffectiveImageProvenance = 'none' | 'local_file' | 'remote_direct' | 'data_uri' | 'blob_url';
+
+function inferDirectSourceProvenance(url: string | null): EffectiveImageProvenance {
+  if (!url) return 'none';
+  if (/^data:/i.test(url)) return 'data_uri';
+  if (/^blob:/i.test(url)) return 'blob_url';
+  return 'remote_direct';
+}
 
 const MAX_LOADED_URL_CACHE_SIZE = 2500;
 const loadedImageUrlsCache = new Set<string>();
@@ -851,31 +860,16 @@ function MediaImageInner({
     resolvedUrl && (loadedImageUrlsCache.has(resolvedUrl) || Boolean(instantLocalSrc))
   );
 
-  // Track identity of current source independently of visibility/authorization
+  // Track identity and monotonic generation independently of visibility/authorization
   const currentKey = `${itemId ?? ''}_${resolvedUrl ?? ''}`;
   const prevKeyRef = useRef(currentKey);
+  const activeKeyRef = useRef(currentKey);
+  const generationRef = useRef<number>(1);
+  const isMountedRef = useRef<boolean>(true);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeRecoveryAbortRef = useRef<AbortController | null>(null);
   const localRecoveryAttemptedRef = useRef<boolean>(false);
-
-  // Authorization is strictly controlled by `active` (independent of priority hints and loadedImageUrlsCache)
-  const shouldAuthorizeNow = Boolean(active);
-  const [latchedAuthorizedKey, setLatchedAuthorizedKey] = useState<string | null>(() =>
-    resolvedUrl && shouldAuthorizeNow ? currentKey : null
-  );
-
-  // Effective image source resolved by Android persistent disk cache (or direct remote URL on Web)
-  const [effectiveImgSrc, setEffectiveImgSrc] = useState<string | null>(() => {
-    if (!resolvedUrl) return null;
-    if (!useAndroidDiskCache) return resolvedUrl;
-    return instantLocalSrc;
-  });
-
-  // Status & retry count state (loadedImageUrlsCache / instantLocalSrc preserves visual state once authorized)
-  const [status, setStatus] = useState<ImageStatus>(() => {
-    if (!resolvedUrl) return 'empty';
-    return isCachedLoaded ? 'loaded' : 'loading';
-  });
-  const [attempt, setAttempt] = useState(0);
+  const nativeCacheBypassedForIdentityRef = useRef<boolean>(false);
 
   const clearScheduledRetryTimer = () => {
     if (retryTimerRef.current !== null) {
@@ -885,10 +879,51 @@ function MediaImageInner({
     }
   };
 
-  // Synchronously reset retry state ONLY when image identity (source or server) changes
+  const cancelActiveRecovery = () => {
+    if (activeRecoveryAbortRef.current !== null) {
+      activeRecoveryAbortRef.current.abort();
+      activeRecoveryAbortRef.current = null;
+    }
+  };
+
+  const isCurrentOperationValid = (capturedKey: string, capturedGeneration: number): boolean =>
+    isMountedRef.current &&
+    activeKeyRef.current === capturedKey &&
+    generationRef.current === capturedGeneration;
+
+  // Authorization is strictly controlled by `active` (independent of priority hints and loadedImageUrlsCache)
+  const shouldAuthorizeNow = Boolean(active);
+  const [latchedAuthorizedKey, setLatchedAuthorizedKey] = useState<string | null>(() =>
+    resolvedUrl && shouldAuthorizeNow ? currentKey : null
+  );
+
+  // Effective image source and explicit provenance (local_file vs remote_direct vs data_uri vs blob_url)
+  const [effectiveImgSrc, setEffectiveImgSrc] = useState<string | null>(() => {
+    if (!resolvedUrl) return null;
+    if (!useAndroidDiskCache) return resolvedUrl;
+    return instantLocalSrc;
+  });
+  const [effectiveImgProvenance, setEffectiveImgProvenance] = useState<EffectiveImageProvenance>(() => {
+    if (!resolvedUrl) return 'none';
+    if (!useAndroidDiskCache) return inferDirectSourceProvenance(resolvedUrl);
+    return instantLocalSrc ? 'local_file' : 'none';
+  });
+
+  // Status & retry count state (loadedImageUrlsCache / instantLocalSrc preserves visual state once authorized)
+  const [status, setStatus] = useState<ImageStatus>(() => {
+    if (!resolvedUrl) return 'empty';
+    return isCachedLoaded ? 'loaded' : 'loading';
+  });
+  const [attempt, setAttempt] = useState(0);
+
+  // Synchronously advance generation and reset state ONLY when image identity (source or server) changes
   if (prevKeyRef.current !== currentKey) {
     prevKeyRef.current = currentKey;
+    activeKeyRef.current = currentKey;
+    generationRef.current += 1;
     localRecoveryAttemptedRef.current = false;
+    nativeCacheBypassedForIdentityRef.current = false;
+    cancelActiveRecovery();
     clearScheduledRetryTimer();
     setAttempt(0);
     const nextAuthorized = Boolean(resolvedUrl && shouldAuthorizeNow);
@@ -900,6 +935,15 @@ function MediaImageInner({
         : useAndroidDiskCache
           ? nextInstantLocal
           : resolvedUrl
+    );
+    setEffectiveImgProvenance(
+      !resolvedUrl
+        ? 'none'
+        : useAndroidDiskCache
+          ? nextInstantLocal
+            ? 'local_file'
+            : 'none'
+          : inferDirectSourceProvenance(resolvedUrl)
     );
     setStatus(
       !resolvedUrl
@@ -913,26 +957,35 @@ function MediaImageInner({
     setLatchedAuthorizedKey(currentKey);
     if (instantLocalSrc && effectiveImgSrc !== instantLocalSrc) {
       setEffectiveImgSrc(instantLocalSrc);
+      setEffectiveImgProvenance('local_file');
     }
     if (isCachedLoaded && status === 'loading') {
       setStatus('loaded');
     }
   } else if (
     useAndroidDiskCache &&
+    !nativeCacheBypassedForIdentityRef.current &&
     instantLocalSrc &&
     effectiveImgSrc !== instantLocalSrc &&
     !localRecoveryAttemptedRef.current
   ) {
     // Synchronously adopt local file URL if it became available via preload or sibling card
     setEffectiveImgSrc(instantLocalSrc);
+    setEffectiveImgProvenance('local_file');
     if (status === 'loading') {
       setStatus('loaded');
     }
   }
 
-  // Cancel any scheduled retry timer on unmount
+  const renderGeneration = generationRef.current;
+
+  // Cancel any scheduled retry timer or active recovery and invalidate generation on unmount
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
+      generationRef.current += 1;
+      cancelActiveRecovery();
       clearScheduledRetryTimer();
     };
   }, []);
@@ -946,14 +999,19 @@ function MediaImageInner({
     if (!isAuthorized || !resolvedUrl) {
       return;
     }
-    if (!useAndroidDiskCache) {
+    if (!useAndroidDiskCache || nativeCacheBypassedForIdentityRef.current) {
       return;
     }
 
+    const opKey = currentKey;
+    const opGeneration = generationRef.current;
+
     const syncHit = getInstantCachedImageSrc(resolvedUrl);
     if (syncHit && !localRecoveryAttemptedRef.current) {
+      if (!isCurrentOperationValid(opKey, opGeneration)) return;
       rememberLoadedImageUrl(resolvedUrl);
       setEffectiveImgSrc(syncHit);
+      setEffectiveImgProvenance('local_file');
       setStatus('loaded');
       return;
     }
@@ -971,81 +1029,193 @@ function MediaImageInner({
       signal: abortCtrl?.signal,
     })
       .then((outcome) => {
-        if (cancelled) return;
+        if (cancelled || !isCurrentOperationValid(opKey, opGeneration)) return;
+        const nextProvenance: EffectiveImageProvenance = outcome.isLocalFile
+          ? 'local_file'
+          : inferDirectSourceProvenance(outcome.src);
+        if (outcome.bypassedCache) {
+          nativeCacheBypassedForIdentityRef.current = true;
+        }
         if (
           outcome.fromCache ||
           outcome.isLocalFile ||
-          (outcome.bypassedNoStore && outcome.src.startsWith('data:'))
+          (outcome.bypassedNoStore && nextProvenance === 'data_uri')
         ) {
           rememberLoadedImageUrl(resolvedUrl);
         }
         setEffectiveImgSrc(outcome.src);
+        setEffectiveImgProvenance(nextProvenance);
         if (outcome.fromCache) {
           setStatus('loaded');
         }
       })
-      .catch(() => {
-        if (cancelled || abortCtrl?.signal.aborted) return;
+      .catch((err) => {
+        if (cancelled || abortCtrl?.signal.aborted || !isCurrentOperationValid(opKey, opGeneration)) {
+          return;
+        }
+        if (isDeterministicImageCacheIneligibilityError(err)) {
+          nativeCacheBypassedForIdentityRef.current = true;
+        }
         // Fallback to direct provider URL so standard single-retry error flow in MediaImage handles it
         setEffectiveImgSrc(resolvedUrl);
+        setEffectiveImgProvenance(inferDirectSourceProvenance(resolvedUrl));
       });
 
     return () => {
       cancelled = true;
       abortCtrl?.abort();
     };
-  }, [isAuthorized, resolvedUrl, useAndroidDiskCache, priority, fetchPriority, attempt]);
+  }, [isAuthorized, currentKey, resolvedUrl, useAndroidDiskCache, priority, fetchPriority, attempt]);
 
   // Simulate automatic error trigger in test environment when a local file is explicitly marked corrupted
   useEffect(() => {
     if (
       useAndroidDiskCache &&
+      effectiveImgProvenance === 'local_file' &&
       effectiveImgSrc &&
       effectiveImgSrc.includes('?corrupted=1') &&
-      !localRecoveryAttemptedRef.current
+      !localRecoveryAttemptedRef.current &&
+      resolvedUrl
     ) {
       localRecoveryAttemptedRef.current = true;
+      const opKey = currentKey;
+      const opGeneration = generationRef.current;
       let cancelled = false;
-      recoverFromCorruptedLocalImage(resolvedUrl!)
+      cancelActiveRecovery();
+      const recoveryCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      activeRecoveryAbortRef.current = recoveryCtrl;
+
+      recoverFromCorruptedLocalImage(resolvedUrl, { signal: recoveryCtrl?.signal })
         .then((recovered) => {
-          if (cancelled) return;
-          rememberLoadedImageUrl(resolvedUrl);
+          if (activeRecoveryAbortRef.current === recoveryCtrl) {
+            activeRecoveryAbortRef.current = null;
+          }
+          if (
+            cancelled ||
+            recoveryCtrl?.signal.aborted ||
+            !isCurrentOperationValid(opKey, opGeneration)
+          ) {
+            return;
+          }
+          const nextProvenance: EffectiveImageProvenance = recovered.isLocalFile
+            ? 'local_file'
+            : inferDirectSourceProvenance(recovered.src);
+          if (recovered.bypassedCache) {
+            nativeCacheBypassedForIdentityRef.current = true;
+          }
+          if (
+            recovered.fromCache ||
+            recovered.isLocalFile ||
+            (recovered.bypassedNoStore && nextProvenance === 'data_uri')
+          ) {
+            rememberLoadedImageUrl(resolvedUrl);
+          }
           setEffectiveImgSrc(recovered.src);
+          setEffectiveImgProvenance(nextProvenance);
           setStatus('loaded');
         })
-        .catch(() => {
-          if (cancelled) return;
+        .catch((err) => {
+          if (activeRecoveryAbortRef.current === recoveryCtrl) {
+            activeRecoveryAbortRef.current = null;
+          }
+          if (
+            cancelled ||
+            recoveryCtrl?.signal.aborted ||
+            !isCurrentOperationValid(opKey, opGeneration)
+          ) {
+            return;
+          }
+          if (isDeterministicImageCacheIneligibilityError(err)) {
+            nativeCacheBypassedForIdentityRef.current = true;
+          }
           setEffectiveImgSrc(resolvedUrl);
+          setEffectiveImgProvenance(inferDirectSourceProvenance(resolvedUrl));
         });
       return () => {
         cancelled = true;
+        recoveryCtrl?.abort();
+        if (activeRecoveryAbortRef.current === recoveryCtrl) {
+          activeRecoveryAbortRef.current = null;
+        }
       };
     }
-  }, [useAndroidDiskCache, effectiveImgSrc, resolvedUrl]);
+  }, [useAndroidDiskCache, effectiveImgProvenance, effectiveImgSrc, currentKey, resolvedUrl]);
 
-  const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+  const handleImageError = (
+    e: React.SyntheticEvent<HTMLImageElement, Event>,
+    eventKey: string,
+    eventGeneration: number
+  ) => {
+    if (!isCurrentOperationValid(eventKey, eventGeneration)) {
+      return;
+    }
+
     if (resolvedUrl) {
       loadedImageUrlsCache.delete(resolvedUrl);
     }
 
-    // If a cached local file failed to decode or was deleted on disk, invalidate and re-acquire once on demand
+    // Only trigger local disk corruption recovery when the failed <img> was genuinely backed by a
+    // persistent local file — NEVER for Data URIs (e.g. Cache-Control: no-store), Blob URLs, or direct URLs.
     if (
+      effectiveImgProvenance === 'local_file' &&
       useAndroidDiskCache &&
       resolvedUrl &&
       effectiveImgSrc &&
-      effectiveImgSrc !== resolvedUrl &&
       !localRecoveryAttemptedRef.current
     ) {
       localRecoveryAttemptedRef.current = true;
       setStatus('loading');
-      recoverFromCorruptedLocalImage(resolvedUrl)
+      const opKey = eventKey;
+      const opGeneration = eventGeneration;
+      cancelActiveRecovery();
+      const recoveryCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      activeRecoveryAbortRef.current = recoveryCtrl;
+
+      recoverFromCorruptedLocalImage(resolvedUrl, { signal: recoveryCtrl?.signal })
         .then((recovered) => {
-          rememberLoadedImageUrl(resolvedUrl);
+          if (activeRecoveryAbortRef.current === recoveryCtrl) {
+            activeRecoveryAbortRef.current = null;
+          }
+          if (
+            recoveryCtrl?.signal.aborted ||
+            !isCurrentOperationValid(opKey, opGeneration)
+          ) {
+            return;
+          }
+          const nextProvenance: EffectiveImageProvenance = recovered.isLocalFile
+            ? 'local_file'
+            : inferDirectSourceProvenance(recovered.src);
+          if (recovered.bypassedCache) {
+            nativeCacheBypassedForIdentityRef.current = true;
+          }
+          if (
+            recovered.fromCache ||
+            recovered.isLocalFile ||
+            (recovered.bypassedNoStore && nextProvenance === 'data_uri')
+          ) {
+            rememberLoadedImageUrl(resolvedUrl);
+          }
           setEffectiveImgSrc(recovered.src);
-          setStatus('loaded');
+          setEffectiveImgProvenance(nextProvenance);
+          if (recovered.isLocalFile || recovered.fromCache) {
+            setStatus('loaded');
+          }
         })
-        .catch(() => {
+        .catch((err) => {
+          if (activeRecoveryAbortRef.current === recoveryCtrl) {
+            activeRecoveryAbortRef.current = null;
+          }
+          if (
+            recoveryCtrl?.signal.aborted ||
+            !isCurrentOperationValid(opKey, opGeneration)
+          ) {
+            return;
+          }
+          if (isDeterministicImageCacheIneligibilityError(err)) {
+            nativeCacheBypassedForIdentityRef.current = true;
+          }
           setEffectiveImgSrc(resolvedUrl);
+          setEffectiveImgProvenance(inferDirectSourceProvenance(resolvedUrl));
         });
       return;
     }
@@ -1057,9 +1227,14 @@ function MediaImageInner({
 
       clearScheduledRetryTimer();
       activeRetryTimersCount++;
+      const timerKey = eventKey;
+      const timerGeneration = eventGeneration;
       retryTimerRef.current = setTimeout(() => {
         retryTimerRef.current = null;
         activeRetryTimersCount = Math.max(0, activeRetryTimersCount - 1);
+        if (!isCurrentOperationValid(timerKey, timerGeneration)) {
+          return;
+        }
         setAttempt(1);
         setStatus('loading');
       }, mediaImageRetryDelayMs);
@@ -1071,7 +1246,14 @@ function MediaImageInner({
     onError?.(e);
   };
 
-  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+  const handleImageLoad = (
+    e: React.SyntheticEvent<HTMLImageElement, Event>,
+    eventKey: string,
+    eventGeneration: number
+  ) => {
+    if (!isCurrentOperationValid(eventKey, eventGeneration)) {
+      return;
+    }
     rememberLoadedImageUrl(resolvedUrl);
     setStatus('loaded');
     onLoad?.(e);
@@ -1113,15 +1295,15 @@ function MediaImageInner({
 
   return (
     <img
-      key={`${currentKey}_attempt_${attempt}`}
+      key={`${currentKey}_gen_${renderGeneration}_attempt_${attempt}`}
       src={effectiveImgSrc}
       alt={alt}
       loading={effectiveLoading}
       decoding={effectiveDecoding}
       fetchPriority={effectiveFetchPriority}
       className={`${className} ${status === 'loaded' ? 'opacity-100' : 'opacity-0'} transition-opacity duration-200`}
-      onError={handleImageError}
-      onLoad={handleImageLoad}
+      onError={(e) => handleImageError(e, currentKey, renderGeneration)}
+      onLoad={(e) => handleImageLoad(e, currentKey, renderGeneration)}
       {...rest}
     />
   );

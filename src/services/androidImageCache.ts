@@ -62,6 +62,7 @@ export interface AcquireImageNativeResult {
   revalidated304?: boolean;
   bypassedNoStore?: boolean;
   bypassedCache?: boolean;
+  invalidatedPreviousEntry?: boolean;
   bypassReason?: string | null;
   deduplicated?: boolean;
   key?: string;
@@ -151,7 +152,101 @@ export interface AcquireCachedImageOutcome {
   isLocalFile: boolean;
   bypassedNoStore: boolean;
   bypassedCache?: boolean;
+  invalidatedPreviousEntry?: boolean;
   byteSize: number;
+}
+
+export interface ImageCacheErrorData {
+  key?: string;
+  bypassedNoStore?: boolean;
+  invalidatedPreviousEntry?: boolean;
+}
+
+export interface ImageCacheError extends Error {
+  code?: string;
+  data?: ImageCacheErrorData;
+}
+
+const DETERMINISTIC_CACHE_INELIGIBLE_CODES = new Set([
+  'INVALID_IMAGE_SIGNATURE',
+  'INVALID_CONTENT_TYPE',
+  'INVALID_PROTOCOL',
+  'INVALID_URL',
+]);
+
+const DETERMINISTIC_REJECTION_COOLDOWN_MS = 60_000;
+const MAX_NO_STORE_INLINE_BYTES = 5 * 1024 * 1024;
+
+function createImageCacheError(
+  message: string,
+  code?: string,
+  data?: ImageCacheErrorData
+): ImageCacheError {
+  const err = new Error(message) as ImageCacheError;
+  if (code) {
+    err.code = code;
+  }
+  if (data) {
+    err.data = data;
+  }
+  return err;
+}
+
+export function extractImageCacheErrorCode(err: unknown): string | null {
+  if (!err) return null;
+  if (typeof err === 'object') {
+    const rawCode = (err as { code?: unknown }).code;
+    if (typeof rawCode === 'string' && rawCode.trim()) {
+      return rawCode.trim().toUpperCase();
+    }
+    const rawMsg = (err as { message?: unknown }).message;
+    if (typeof rawMsg === 'string') {
+      const m = /^([A-Z][A-Z0-9_]{2,})(?:$|:|\s)/.exec(rawMsg.trim());
+      if (m) return m[1];
+    }
+  }
+  if (typeof err === 'string') {
+    const m = /^([A-Z][A-Z0-9_]{2,})(?:$|:|\s)/.exec(err.trim());
+    if (m) return m[1];
+  }
+  return null;
+}
+
+function normalizeImageCacheError(err: unknown, fallbackMessage = 'Falha no cache de imagem'): ImageCacheError {
+  if (err instanceof Error) {
+    const typed = err as ImageCacheError;
+    const code = extractImageCacheErrorCode(typed);
+    if (code && !typed.code) {
+      typed.code = code;
+    }
+    return typed;
+  }
+  if (err && typeof err === 'object') {
+    const obj = err as { message?: unknown; code?: unknown; data?: unknown };
+    const message =
+      typeof obj.message === 'string' && obj.message.trim()
+        ? obj.message.trim()
+        : fallbackMessage;
+    const code = extractImageCacheErrorCode(obj) ?? undefined;
+    const data =
+      obj.data && typeof obj.data === 'object' ? (obj.data as ImageCacheErrorData) : undefined;
+    return createImageCacheError(message, code, data);
+  }
+  const msg = typeof err === 'string' && err.trim() ? err.trim() : fallbackMessage;
+  const code = extractImageCacheErrorCode(msg) ?? undefined;
+  return createImageCacheError(msg, code);
+}
+
+/**
+ * Classifica se um erro retornado pelo plugin nativo representa inelegibilidade determinística
+ * para o cache persistente (assinatura/formato incompatível ou Content-Type não imagem),
+ * distinguindo-o de falhas transitórias ou de acesso (timeout, rede, HTTP 401/403/429/5xx,
+ * corpo truncado/vazio, cancelamento ou encerramento de sessão).
+ */
+export function isDeterministicImageCacheIneligibilityError(err: unknown): boolean {
+  const code = extractImageCacheErrorCode(err);
+  if (!code) return false;
+  return DETERMINISTIC_CACHE_INELIGIBLE_CODES.has(code);
 }
 
 let registeredPlugin: ImageDiskCacheNativePlugin | null = null;
@@ -194,23 +289,39 @@ const inFlightTasksByUrl = new Map<string, QueuedAcquireTask>();
 const pendingQueue: QueuedAcquireTask[] = [];
 
 const MAX_DIRECT_ONLY_CACHE_URLS = 2500;
-const directOnlyImageUrls = new Set<string>();
+/**
+ * Mapa limitado de URLs inelegíveis ao cache persistente na sessão atual:
+ * - Valor `Infinity`: formatos inequivocamente diretos (ex.: SVG, HEIF, TIFF, JXL), válidos durante toda a sessão.
+ * - Valor finito (timestamp monotônico): rejeições determinísticas por assinatura/MIME inválido,
+ *   evitando rajadas nativas repetitivas sem bloquear permanentemente uma URL que volte a servir imagem válida.
+ * Limpo integralmente no logout (`clearImageCacheOnLogout`).
+ */
+const directOnlyImageUrls = new Map<string, number>();
 
-function rememberDirectOnlyImageUrl(url: string): void {
+function rememberDirectOnlyImageUrl(url: string, ttlMs?: number): void {
   const trimmed = url.trim();
   if (!trimmed) return;
+  const expiresAt =
+    typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0
+      ? getMonotonicNowMs() + ttlMs
+      : Infinity;
+  const existing = directOnlyImageUrls.get(trimmed);
+  if (existing === Infinity && expiresAt !== Infinity) {
+    // Nunca rebaixa um formato inequivocamente direto para temporário
+    return;
+  }
   if (directOnlyImageUrls.has(trimmed)) {
     directOnlyImageUrls.delete(trimmed);
-    directOnlyImageUrls.add(trimmed);
+    directOnlyImageUrls.set(trimmed, expiresAt);
     return;
   }
   if (directOnlyImageUrls.size >= MAX_DIRECT_ONLY_CACHE_URLS) {
-    const oldest = directOnlyImageUrls.values().next().value;
+    const oldest = directOnlyImageUrls.keys().next().value;
     if (oldest !== undefined) {
       directOnlyImageUrls.delete(oldest);
     }
   }
-  directOnlyImageUrls.add(trimmed);
+  directOnlyImageUrls.set(trimmed, expiresAt);
 }
 
 /**
@@ -219,8 +330,8 @@ function rememberDirectOnlyImageUrl(url: string): void {
  * - URIs em memória (`data:`, `blob:`) ou qualquer esquema diferente de `http:` / `https:`;
  * - SVGs claramente identificáveis pela extensão do caminho (`.svg`, `.svgz`), que devem ser
  *   renderizados diretamente pelo elemento `<img>` sem armazenamento persistente na origem local;
- * - URLs já marcadas deterministicamente nesta sessão como diretas (ex.: resposta SVG sem extensão
- *   ou formato não elegível ao cache persistente), evitando novas tentativas de download nativo.
+ * - URLs já marcadas na sessão como diretas (permanentes na sessão para formatos exclusivamente diretos
+ *   ou proteção temporária após rejeição determinística), evitando novas tentativas de download nativo.
  */
 export function isEligibleForAndroidImageDiskCache(
   resolvedUrl: string | null | undefined
@@ -230,7 +341,14 @@ export function isEligibleForAndroidImageDiskCache(
   if (!trimmed) return false;
   if (/^(?:data:|blob:)/i.test(trimmed)) return false;
   if (!/^https?:\/\//i.test(trimmed)) return false;
-  if (directOnlyImageUrls.has(trimmed)) return false;
+
+  const directExpiresAt = directOnlyImageUrls.get(trimmed);
+  if (directExpiresAt !== undefined) {
+    if (directExpiresAt === Infinity || getMonotonicNowMs() < directExpiresAt) {
+      return false;
+    }
+    directOnlyImageUrls.delete(trimmed);
+  }
 
   try {
     const parsed = new URL(trimmed);
@@ -553,23 +671,40 @@ export function computeDeterministicUrlSha256Hex(url: string): string {
  */
 const hydratedByShaKeyMap = new Map<string, InMemoryResolvedEntry>();
 
+function purgeInMemoryCacheEntry(url: string, shaKey?: string): void {
+  const trimmed = url ? url.trim() : '';
+  const effectiveKey =
+    shaKey && shaKey.length === 64
+      ? shaKey
+      : trimmed
+        ? computeDeterministicUrlSha256Hex(trimmed)
+        : '';
+  if (trimmed) {
+    resolvedUrlToEntryMap.delete(trimmed);
+  }
+  if (effectiveKey) {
+    const existing = hydratedByShaKeyMap.get(effectiveKey);
+    hydratedByShaKeyMap.delete(effectiveKey);
+    if (existing?.url) {
+      resolvedUrlToEntryMap.delete(existing.url);
+    }
+    const mappedUrl = shaKeyToUrlMap.get(effectiveKey);
+    if (mappedUrl) {
+      resolvedUrlToEntryMap.delete(mappedUrl);
+    }
+    shaKeyToUrlMap.delete(effectiveKey);
+    const pendingIdx = pendingTouchedKeys.indexOf(effectiveKey);
+    if (pendingIdx >= 0) {
+      pendingTouchedKeys.splice(pendingIdx, 1);
+    }
+  }
+}
+
 function applyEvictedKeysToInMemoryIndex(evictedKeys: string[] | undefined): void {
   if (!Array.isArray(evictedKeys) || evictedKeys.length === 0) return;
   for (const key of evictedKeys) {
     if (!key) continue;
-    const entry = hydratedByShaKeyMap.get(key);
-    hydratedByShaKeyMap.delete(key);
-    if (entry?.url) {
-      resolvedUrlToEntryMap.delete(entry.url);
-    }
-    const mappedUrl = shaKeyToUrlMap.get(key);
-    if (mappedUrl) {
-      resolvedUrlToEntryMap.delete(mappedUrl);
-    }
-    const pendingIdx = pendingTouchedKeys.indexOf(key);
-    if (pendingIdx >= 0) {
-      pendingTouchedKeys.splice(pendingIdx, 1);
-    }
+    purgeInMemoryCacheEntry('', key);
   }
 }
 
@@ -610,6 +745,8 @@ export async function ensureAndroidImageCacheHydrated(): Promise<void> {
           typeof item.key !== 'string' ||
           item.key.length !== 64 ||
           (typeof item.contentType === 'string' && item.contentType.toLowerCase().includes('svg')) ||
+          (typeof item.cacheControl === 'string' &&
+            item.cacheControl.toLowerCase().includes('no-store')) ||
           !isValidPersistentImageFileReference(item.fileName, item.filePath)
         ) {
           continue;
@@ -807,7 +944,25 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
     await ensureAndroidImageCacheHydrated();
 
     if (currentSessionEpoch !== epochAtEnqueue) {
-      throw new Error('Sessão de imagens reiniciada (logout).');
+      throw createImageCacheError('Sessão de imagens reiniciada (logout).', 'SESSION_CLEARED');
+    }
+
+    // Revalidar elegibilidade imediatamente antes da execução nativa para evitar downloads
+    // desnecessários de tarefas que se tornaram inelegíveis enquanto aguardavam na fila
+    if (!isEligibleForAndroidImageDiskCache(url)) {
+      settleTaskResolvers(
+        task,
+        {
+          src: url,
+          fromCache: false,
+          isLocalFile: false,
+          bypassedNoStore: false,
+          bypassedCache: true,
+          byteSize: 0,
+        },
+        null
+      );
+      return;
     }
 
     if (!forceRefresh && !revalidate) {
@@ -838,19 +993,22 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
     });
 
     if (currentSessionEpoch !== epochAtEnqueue) {
-      throw new Error('Sessão de imagens encerrada após transferência.');
+      throw createImageCacheError('Sessão de imagens encerrada após transferência.', 'SESSION_CLEARED');
     }
 
     if (Array.isArray(nativeRes?.evictedKeys) && nativeRes.evictedKeys.length > 0) {
       applyEvictedKeysToInMemoryIndex(nativeRes.evictedKeys);
     }
 
+    const shaKey = nativeRes?.key || computeDeterministicUrlSha256Hex(url);
+    if (nativeRes?.invalidatedPreviousEntry) {
+      purgeInMemoryCacheEntry(url, shaKey);
+    }
+
     // Caso o plugin tenha identificado formato não elegível ao cache persistente (ex.: SVG, HEIF, TIFF, JXL),
     // registra a URL como direta na sessão para evitar novas tentativas nativas e faz fallback direto para <img>
     if (nativeRes?.bypassedCache) {
-      const shaKey = nativeRes?.key || computeDeterministicUrlSha256Hex(url);
-      hydratedByShaKeyMap.delete(shaKey);
-      resolvedUrlToEntryMap.delete(url);
+      purgeInMemoryCacheEntry(url, shaKey);
       rememberDirectOnlyImageUrl(url);
       settleTaskResolvers(
         task,
@@ -860,6 +1018,7 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
           isLocalFile: false,
           bypassedNoStore: Boolean(nativeRes.bypassedNoStore),
           bypassedCache: true,
+          invalidatedPreviousEntry: Boolean(nativeRes.invalidatedPreviousEntry),
           byteSize: typeof nativeRes?.byteSize === 'number' ? nativeRes.byteSize : 0,
         },
         null
@@ -867,11 +1026,11 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       return;
     }
 
-    // Caso o servidor tenha retornado Cache-Control: no-store, usa inlineDataUrl (1 único GET) sem persistir no disco
+    // Caso o servidor tenha retornado Cache-Control: no-store (HTTP 200 ou HTTP 304),
+    // remove qualquer referência persistente anterior em memória e utiliza Data URI inline (quando raster <= 5 MB)
+    // ou fallback direto para a URL original, sem tratar no-store como incompatibilidade permanente de formato.
     if (nativeRes?.bypassedNoStore) {
-      const shaKey = nativeRes?.key || computeDeterministicUrlSha256Hex(url);
-      hydratedByShaKeyMap.delete(shaKey);
-      resolvedUrlToEntryMap.delete(url);
+      purgeInMemoryCacheEntry(url, shaKey);
       const isSafeRasterInlineDataUrl =
         typeof nativeRes.inlineDataUrl === 'string' &&
         /^data:image\/(?!svg)/i.test(nativeRes.inlineDataUrl);
@@ -884,6 +1043,7 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
           isLocalFile: false,
           bypassedNoStore: true,
           bypassedCache: false,
+          invalidatedPreviousEntry: Boolean(nativeRes.invalidatedPreviousEntry),
           byteSize: typeof nativeRes?.byteSize === 'number' ? nativeRes.byteSize : 0,
         },
         null
@@ -894,12 +1054,14 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
     const fileName = nativeRes?.fileName ?? null;
     const filePath = nativeRes?.filePath ?? null;
     if (!isValidPersistentImageFileReference(fileName, filePath)) {
-      throw new Error('Referência de arquivo de imagem persistente inválida.');
+      throw createImageCacheError(
+        'Referência de arquivo de imagem persistente inválida.',
+        'INVALID_FILE_NAME'
+      );
     }
 
     const validFilePath = filePath as string;
     const convertedSrc = convertImageFilePathToWebViewUrl(validFilePath);
-    const shaKey = nativeRes?.key || computeDeterministicUrlSha256Hex(url);
     const byteSize = typeof nativeRes?.byteSize === 'number' ? nativeRes.byteSize : 0;
     const stamp = nextLogicalAccessStamp();
     if (typeof nativeRes?.lastAccessedAtMs === 'number' && nativeRes.lastAccessedAtMs > logicalAccessClock) {
@@ -950,8 +1112,19 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       },
       null
     );
-  } catch (err: any) {
-    const errorObj = err instanceof Error ? err : new Error(String(err || 'Falha no cache de imagem'));
+  } catch (err: unknown) {
+    const errorObj = normalizeImageCacheError(err);
+    if (currentSessionEpoch === epochAtEnqueue) {
+      // Sincroniza invalidação nativa ocorrida sob Cache-Control: no-store mesmo quando a resposta terminou em erro
+      if (errorObj.data?.invalidatedPreviousEntry || errorObj.data?.bypassedNoStore) {
+        purgeInMemoryCacheEntry(url, errorObj.data?.key);
+      }
+      // Proteção temporária (não permanente) para rejeições determinísticas de assinatura/MIME,
+      // evitando novas tentativas nativas repetitivas sem penalizar falhas transitórias
+      if (isDeterministicImageCacheIneligibilityError(errorObj)) {
+        rememberDirectOnlyImageUrl(url, DETERMINISTIC_REJECTION_COOLDOWN_MS);
+      }
+    }
     settleTaskResolvers(task, null, errorObj);
   }
 }
@@ -968,16 +1141,9 @@ async function reconcileInMemoryEntriesWithNativeIndex(expectedEpoch: number): P
         validKeys.add(e.key);
       }
     }
-    for (const [k, entry] of Array.from(hydratedByShaKeyMap.entries())) {
+    for (const [k] of Array.from(hydratedByShaKeyMap.entries())) {
       if (!validKeys.has(k)) {
-        hydratedByShaKeyMap.delete(k);
-        if (entry.url) {
-          resolvedUrlToEntryMap.delete(entry.url);
-        }
-        const mappedUrl = shaKeyToUrlMap.get(k);
-        if (mappedUrl) {
-          resolvedUrlToEntryMap.delete(mappedUrl);
-        }
+        purgeInMemoryCacheEntry('', k);
       }
     }
   } catch {
@@ -990,13 +1156,15 @@ function settleTaskResolvers(
   outcome: AcquireCachedImageOutcome | null,
   error: Error | null
 ): void {
-  inFlightTasksByUrl.delete(task.url);
+  if (inFlightTasksByUrl.get(task.url) === task) {
+    inFlightTasksByUrl.delete(task.url);
+  }
   for (const r of task.resolvers) {
     r.cleanupAbort?.();
     if (outcome) {
       r.resolve(outcome);
     } else {
-      r.reject(error || new Error('Falha ao adquirir imagem.'));
+      r.reject(error || createImageCacheError('Falha ao adquirir imagem.', 'UNKNOWN_ERROR'));
     }
   }
 }
@@ -1051,10 +1219,10 @@ export async function acquireCachedImage(
 ): Promise<AcquireCachedImageOutcome> {
   const trimmed = String(resolvedRemoteUrl || '').trim();
   if (!trimmed) {
-    throw new Error('URL de imagem vazia.');
+    throw createImageCacheError('URL de imagem vazia.', 'INVALID_URL');
   }
   if (options?.signal?.aborted) {
-    throw new Error('Requisição de imagem cancelada.');
+    throw createImageCacheError('Requisição de imagem cancelada.', 'ABORTED');
   }
 
   if (!isAndroidPersistentImageCacheAvailable() || !isEligibleForAndroidImageDiskCache(trimmed)) {
@@ -1131,10 +1299,20 @@ export async function acquireCachedImage(
  * Quando um arquivo local falha ao decodificar/renderizar no `<img>` (arquivo truncado,
  * removido externamente ou corrompido), invalida imediatamente a entrada no índice em memória
  * e no disco nativo e baixa novamente da URL original do provedor sob demanda.
+ * Suporta cancelamento lógico via `AbortSignal` opcional e isolamento por época de sessão,
+ * impedindo novas aquisições ou publicação de resultados obsoletos após troca/desmontagem/logout.
  */
 export async function recoverFromCorruptedLocalImage(
-  resolvedRemoteUrl: string
+  resolvedRemoteUrl: string,
+  options?: {
+    signal?: AbortSignal;
+  }
 ): Promise<AcquireCachedImageOutcome> {
+  const signal = options?.signal;
+  if (signal?.aborted) {
+    throw createImageCacheError('Recuperação de imagem cancelada.', 'ABORTED');
+  }
+
   const trimmed = String(resolvedRemoteUrl || '').trim();
   if (
     !trimmed ||
@@ -1151,9 +1329,13 @@ export async function recoverFromCorruptedLocalImage(
     };
   }
 
+  const epochAtStart = currentSessionEpoch;
+  if (activeLogoutClearPromise) {
+    throw createImageCacheError('Sessão encerrada durante recuperação de imagem.', 'SESSION_CLEARED');
+  }
+
   const shaKey = computeDeterministicUrlSha256Hex(trimmed);
-  resolvedUrlToEntryMap.delete(trimmed);
-  hydratedByShaKeyMap.delete(shaKey);
+  purgeInMemoryCacheEntry(trimmed, shaKey);
 
   try {
     const plugin = getNativeImageCachePlugin();
@@ -1163,13 +1345,40 @@ export async function recoverFromCorruptedLocalImage(
       corruptedRecovery: true,
     });
   } catch {
-    // Ignora falha na invalidação prévia; segue para reaquisição forçada
+    // Ignora falha na invalidação prévia; verifica cancelamento/época antes de prosseguir
   }
 
-  return acquireCachedImage(trimmed, {
+  if (signal?.aborted) {
+    throw createImageCacheError('Recuperação de imagem cancelada.', 'ABORTED');
+  }
+  if (currentSessionEpoch !== epochAtStart || activeLogoutClearPromise) {
+    throw createImageCacheError('Sessão encerrada durante recuperação de imagem.', 'SESSION_CLEARED');
+  }
+  if (!isEligibleForAndroidImageDiskCache(trimmed)) {
+    return {
+      src: trimmed,
+      fromCache: false,
+      isLocalFile: false,
+      bypassedNoStore: false,
+      bypassedCache: true,
+      byteSize: 0,
+    };
+  }
+
+  const outcome = await acquireCachedImage(trimmed, {
     priority: 'critical',
     forceRefresh: true,
+    signal,
   });
+
+  if (signal?.aborted) {
+    throw createImageCacheError('Recuperação de imagem cancelada.', 'ABORTED');
+  }
+  if (currentSessionEpoch !== epochAtStart || activeLogoutClearPromise) {
+    throw createImageCacheError('Sessão encerrada após recuperação de imagem.', 'SESSION_CLEARED');
+  }
+
+  return outcome;
 }
 
 /**
@@ -2305,7 +2514,8 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
           !rec.bytes ||
           rec.bytes.byteLength === 0 ||
           !SAFE_IMAGE_FILE_NAME_REGEX.test(rec.fileName) ||
-          rec.contentType.toLowerCase().includes('svg')
+          rec.contentType.toLowerCase().includes('svg') ||
+          Boolean(rec.cacheControl && rec.cacheControl.toLowerCase().includes('no-store'))
         ) {
           persistentDiskFiles.delete(k);
           continue;
@@ -2430,18 +2640,42 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
       }
 
       if (diskEpoch !== epochAtCall) {
-        throw new Error('SESSION_CLEARED');
+        throw createImageCacheError('SESSION_CLEARED', 'SESSION_CLEARED');
       }
 
       totalNetworkFetches++;
       networkFetchCounterByUrl.set(trimmed, (networkFetchCounterByUrl.get(trimmed) ?? 0) + 1);
 
       if (customCfg?.networkError) {
-        throw new Error('NETWORK_ERROR');
+        throw createImageCacheError('NETWORK_ERROR', 'NETWORK_ERROR');
       }
 
       const status = customCfg?.status ?? 200;
       if (status === 304 && existing && existing.bytes.byteLength > 0) {
+        const effective304CacheControl =
+          customCfg?.cacheControl !== undefined ? customCfg.cacheControl : existing.cacheControl;
+        if (
+          effective304CacheControl &&
+          effective304CacheControl.toLowerCase().includes('no-store')
+        ) {
+          const invalidatedPrev304 = persistentDiskFiles.delete(key);
+          return {
+            hit: false,
+            revalidated304: true,
+            bypassedNoStore: true,
+            bypassedCache: false,
+            invalidatedPreviousEntry: invalidatedPrev304,
+            key,
+            fileName: null,
+            filePath: null,
+            inlineDataUrl: null,
+            cacheDir,
+            byteSize: 0,
+            totalBytes: getTotalDiskBytes(),
+            storedEntriesCount: persistentDiskFiles.size,
+            evictedEntriesCount,
+          };
+        }
         existing.createdAtMs = Date.now();
         existing.lastAccessedAtMs = ++accessClock;
         if (customCfg?.cacheControl !== undefined) {
@@ -2457,6 +2691,8 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
           hit: true,
           revalidated304: true,
           bypassedNoStore: false,
+          bypassedCache: false,
+          invalidatedPreviousEntry: false,
           key,
           fileName: existing.fileName,
           filePath: existing.filePath,
@@ -2475,10 +2711,17 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
       }
 
       if (status !== 200) {
-        throw new Error(`HTTP_${status}`);
+        throw createImageCacheError(`HTTP_${status}`, `HTTP_${status}`);
       }
 
       const contentType = customCfg?.contentType ?? 'image/jpeg';
+      const cacheControl = customCfg?.cacheControl ?? 'public, max-age=86400';
+      const isNoStore = cacheControl.toLowerCase().includes('no-store');
+      const invalidatedPreviousEntry = isNoStore ? persistentDiskFiles.delete(key) : false;
+      const noStoreErrorData: ImageCacheErrorData | undefined = isNoStore
+        ? { key, bypassedNoStore: true, invalidatedPreviousEntry }
+        : undefined;
+
       const lowerCt = contentType.split(';')[0].toLowerCase().trim();
       if (
         lowerCt === 'text/html' ||
@@ -2487,32 +2730,35 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
         lowerCt === 'application/javascript' ||
         lowerCt === 'application/xhtml+xml'
       ) {
-        throw new Error(`INVALID_CONTENT_TYPE: ${contentType}`);
+        throw createImageCacheError(
+          `INVALID_CONTENT_TYPE: ${contentType}`,
+          'INVALID_CONTENT_TYPE',
+          noStoreErrorData
+        );
       }
 
       const bodyBytes = customCfg?.bodyBytes ?? createValidTestJpegBytes(defaultByteSize);
       if (bodyBytes.byteLength === 0) {
-        throw new Error('EMPTY_BODY');
+        throw createImageCacheError('EMPTY_BODY', 'EMPTY_BODY', noStoreErrorData);
       }
       if (
         typeof customCfg?.declaredContentLength === 'number' &&
         customCfg.declaredContentLength !== bodyBytes.byteLength
       ) {
-        throw new Error('TRUNCATED_BODY');
+        throw createImageCacheError('TRUNCATED_BODY', 'TRUNCATED_BODY', noStoreErrorData);
       }
 
       const identified = identifySimulatedImageFormat(bodyBytes);
-      const cacheControl = customCfg?.cacheControl ?? 'public, max-age=86400';
-      const isNoStore = cacheControl.toLowerCase().includes('no-store');
 
       if (!identified.persistentEligible) {
         if (identified.directFallbackEligible) {
-          persistentDiskFiles.delete(key);
+          const invalidatedDirect = invalidatedPreviousEntry || persistentDiskFiles.delete(key);
           return {
             hit: false,
             revalidated304: false,
             bypassedNoStore: isNoStore,
             bypassedCache: true,
+            invalidatedPreviousEntry: invalidatedDirect,
             bypassReason: identified.bypassReason ?? 'unrecognized_format',
             key,
             fileName: null,
@@ -2526,24 +2772,31 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
             evictedEntriesCount,
           };
         }
-        throw new Error('INVALID_IMAGE_SIGNATURE');
+        throw createImageCacheError(
+          'INVALID_IMAGE_SIGNATURE',
+          'INVALID_IMAGE_SIGNATURE',
+          noStoreErrorData
+        );
       }
 
       if (diskEpoch !== epochAtCall) {
-        throw new Error('SESSION_CLEARED');
+        throw createImageCacheError('SESSION_CLEARED', 'SESSION_CLEARED', noStoreErrorData);
       }
 
       const effectiveMime = identified.mimeType as string;
       const effectiveExt = identified.extension as string;
 
       if (isNoStore) {
-        persistentDiskFiles.delete(key);
-        const inlineDataUrl = `data:${effectiveMime};base64,${encodeUint8ArrayToBase64(bodyBytes)}`;
+        const inlineDataUrl =
+          bodyBytes.byteLength <= MAX_NO_STORE_INLINE_BYTES
+            ? `data:${effectiveMime};base64,${encodeUint8ArrayToBase64(bodyBytes)}`
+            : null;
         return {
           hit: false,
           revalidated304: false,
           bypassedNoStore: true,
           bypassedCache: false,
+          invalidatedPreviousEntry,
           key,
           fileName: null,
           filePath: null,
@@ -2677,6 +2930,37 @@ export function createSimulatedPersistentImageDiskHarness(options?: {
     hasPhysicalFileForUrl(url: string): boolean {
       const key = computeDeterministicUrlSha256Hex(url.trim());
       return persistentDiskFiles.has(key);
+    },
+    getCorruptedRecoveriesCount(): number {
+      return corruptedRecoveriesCount;
+    },
+    seedLegacyDiskEntryForTest(
+      url: string,
+      entry: {
+        fileName?: string;
+        contentType?: string;
+        cacheControl?: string | null;
+        bytes?: Uint8Array;
+      }
+    ) {
+      const trimmed = url.trim();
+      const key = computeDeterministicUrlSha256Hex(trimmed);
+      const bytes = entry.bytes ?? createValidTestJpegBytes(defaultByteSize);
+      const fileName = entry.fileName ?? `img_${key}.jpg`;
+      persistentDiskFiles.set(key, {
+        key,
+        url: trimmed,
+        fileName,
+        filePath: `${cacheDir}/${fileName}`,
+        bytes,
+        contentType: entry.contentType ?? 'image/jpeg',
+        etag: null,
+        lastModified: null,
+        cacheControl: entry.cacheControl ?? null,
+        createdAtMs: Date.now(),
+        lastAccessedAtMs: ++accessClock,
+        corruptedOnDisk: false,
+      });
     },
   };
 }
