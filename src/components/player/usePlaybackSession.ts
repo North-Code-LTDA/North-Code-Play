@@ -391,6 +391,10 @@ export function usePlaybackSession({
   externalSubtitles,
 }: UsePlaybackSessionOptions) {
   const activeAccountRef = useRef<AccountIdentity | null>(credentials || null);
+  const credentialsRef = useRef<AccountIdentity | null>(credentials || null);
+  credentialsRef.current = credentials || null;
+  const allowedOutputFormatsRef = useRef<string[] | null | undefined>(allowedOutputFormats);
+  allowedOutputFormatsRef.current = allowedOutputFormats;
 
   const onPlaybackSuccessRef = useRef(onPlaybackSuccess);
   onPlaybackSuccessRef.current = onPlaybackSuccess;
@@ -706,13 +710,37 @@ export function usePlaybackSession({
 
     const currentSessionId = ++sessionIdRef.current;
     const activeAttemptId = retryTrigger;
-    activeAccountRef.current = credentials || null;
+    const latestCredentials = credentialsRef.current;
+    activeAccountRef.current = latestCredentials;
     cleanup();
     resetSessionMetrics();
 
-    const urlValidation = validateStreamUrl(streamUrl);
-    if (!urlValidation.valid) {
-      const invalidMsg = urlValidation.reason || 'Endereço de reprodução inválido.';
+    const nativeHlsSupported = probeNativeHlsSupport(video);
+    const hlsJsSupported = Hls.isSupported();
+
+    const attemptPlan = buildPlaybackAttemptPlan({
+      url: streamUrl,
+      contentType: explicitContentType,
+      containerExtension,
+      mimeType,
+      allowedOutputFormats: allowedOutputFormatsRef.current,
+      directSource,
+      credentials: (latestCredentials as any) || null,
+      capabilities: {
+        hlsJsSupported,
+        nativeHlsSupported,
+        canPlayType:
+          typeof video.canPlayType === 'function'
+            ? (mime) => video.canPlayType(mime)
+            : undefined,
+      },
+      isMixedContent: isMixedContentUrl(streamUrl),
+    });
+
+    if (attemptPlan.validationError || attemptPlan.attempts.length === 0) {
+      const invalidMsg = sanitizePlaybackErrorMessage(
+        attemptPlan.validationError?.message || 'Endereço de reprodução inválido.'
+      );
       setError(invalidMsg);
       setIsLoading(false);
       setIsBuffering(false);
@@ -730,6 +758,10 @@ export function usePlaybackSession({
     let mediaRecoveryAttempts = 0;
     let networkRecoveryAttempts = 0;
     let seekApplied = false;
+    let currentAttemptIndex = 0;
+    let activeEngineAttemptToken = 0;
+    let activeAttempt: PlaybackAttemptDescriptor = attemptPlan.attempts[0];
+    let isTransitioningEngine = false;
 
     // Helper to apply startAt seek once metadata is available
     const applyStartAt = () => {
@@ -761,6 +793,94 @@ export function usePlaybackSession({
         hasReportedFinalError = true;
         onPlaybackFinalErrorRef.current?.(msg, activeAttemptId);
       }
+    };
+
+    const cleanupEngineAttempt = (resetVideoElement: boolean) => {
+      recoveryTimersRef.current.forEach((t) => clearTimeout(t));
+      recoveryTimersRef.current = [];
+      pendingAudioRequestRef.current = null;
+      setPendingAudioTrack(-1);
+
+      if (hlsRef.current) {
+        try {
+          hlsRef.current.stopLoad();
+          hlsRef.current.detachMedia();
+          hlsRef.current.destroy();
+        } catch {
+          // ignore
+        }
+        hlsRef.current = null;
+      }
+
+      if (resetVideoElement) {
+        isTransitioningEngine = true;
+        try {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+        } catch {
+          // ignore
+        } finally {
+          isTransitioningEngine = false;
+        }
+      }
+    };
+
+    const finalizeFatalError = (classified: PlaybackErrorClassification) => {
+      cleanupEngineAttempt(false);
+      const safeMsg = sanitizePlaybackErrorMessage(classified.message);
+      setError(safeMsg);
+      setIsLoading(false);
+      setIsBuffering(false);
+      reportFinalError(safeMsg);
+    };
+
+    let attachAttemptRef: ((attempt: PlaybackAttemptDescriptor) => void) | null = null;
+
+    const handleAttemptFailure = (
+      classified: PlaybackErrorClassification,
+      attemptToken: number
+    ) => {
+      if (
+        sessionIdRef.current !== currentSessionId ||
+        attemptToken !== activeEngineAttemptToken
+      ) {
+        return;
+      }
+
+      const nextAttempt = attemptPlan.attempts[currentAttemptIndex + 1] || null;
+      if (
+        nextAttempt &&
+        nextAttempt.url === activeAttempt.url &&
+        shouldAttemptPlaybackFallback({
+          currentAttempt: activeAttempt,
+          nextAttempt,
+          errorClassification: classified,
+          hasStartedPlaying: hasReportedSuccess,
+        })
+      ) {
+        cleanupEngineAttempt(true);
+        currentAttemptIndex += 1;
+        activeAttempt = nextAttempt;
+        mediaRecoveryAttempts = 0;
+        networkRecoveryAttempts = 0;
+        setQualities([]);
+        setCurrentQuality(-1);
+        setAudioTracks([]);
+        audioTracksRef.current = [];
+        setCurrentAudioTrack(-1);
+        setPendingAudioTrack(-1);
+        setAudioTrackFeedback(null);
+        lastConfirmedHlsAudioTrackRef.current = null;
+        failedHlsAudioTrackRef.current = null;
+        setError(null);
+        setIsLoading(true);
+        setIsBuffering(false);
+        attachAttemptRef?.(activeAttempt);
+        return;
+      }
+
+      finalizeFatalError(classified);
     };
 
     // Named video element event listeners for clean disposal
@@ -900,13 +1020,13 @@ export function usePlaybackSession({
     };
 
     const handleError = () => {
-      if (sessionIdRef.current !== currentSessionId) return;
+      if (sessionIdRef.current !== currentSessionId || isTransitioningEngine) return;
+      // Ignore empty-src teardown errors or MSE errors actively managed by HLS.js
+      if (activeAttempt.engine === 'hls.js' && hlsRef.current) return;
+      if (!video.currentSrc && !video.getAttribute('src') && !hlsRef.current) return;
       const mediaErr = video.error;
-      const msg = classifyNativeMediaError(mediaErr, streamUrl);
-      setError(msg);
-      setIsLoading(false);
-      setIsBuffering(false);
-      reportFinalError(msg);
+      const classified = classifyNativeMediaError(mediaErr, activeAttempt.source);
+      handleAttemptFailure(classified, activeEngineAttemptToken);
     };
 
     // Unified Audio Track discovery (HLS.js -> Native HTMLMediaElement.audioTracks)
@@ -1272,244 +1392,286 @@ export function usePlaybackSession({
       nativeAudioList.addEventListener('change', handleNativeAudioTracksChange);
     }
 
-    // Engine attachment: HLS.js vs Native
-    if (inferredTransport === 'hls' && Hls.isSupported()) {
-      const profileCfg = BUFFER_PROFILES[bufferProfileRef.current];
-      const hls = new Hls({
-        ...profileCfg.hlsOptions,
-        xhrSetup: (xhr) => {
-          xhr.withCredentials = false;
-        },
-      });
-      hlsRef.current = hls;
+    // Engine attachment helper: HLS.js vs Native HTML5 / Native HLS (isolated by session + attemptToken)
+    const attachAttempt = (attempt: PlaybackAttemptDescriptor) => {
+      if (sessionIdRef.current !== currentSessionId) return;
+      const attemptToken = ++activeEngineAttemptToken;
 
-      hls.loadSource(streamUrl);
-      hls.attachMedia(video);
-
-      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
-        if (sessionIdRef.current !== currentSessionId) return;
-        setIsLoading(false);
-        setError(null);
-
-        // Map real HLS quality levels
-        if (data.levels && data.levels.length > 0) {
-          const mappedQualities: QualityLevel[] = data.levels.map((lvl, idx) => ({
-            id: idx,
-            height: lvl.height,
-            width: lvl.width,
-            bitrate: lvl.bitrate,
-            name: lvl.height
-              ? `${lvl.height}p (${Math.round(lvl.bitrate / 1000)} kbps)`
-              : `Nível ${idx + 1}`,
-          }));
-          setQualities(mappedQualities);
-        }
-
-        syncAudioTracks();
-        syncSubtitleTracks();
-
-        applyStartAt();
-        video.play().catch(() => {
-          if (sessionIdRef.current === currentSessionId) {
-            setIsPlaying(false);
-          }
+      if (attempt.engine === 'hls.js' && Hls.isSupported()) {
+        const profileCfg = BUFFER_PROFILES[bufferProfileRef.current];
+        const hls = new Hls({
+          ...profileCfg.hlsOptions,
+          xhrSetup: (xhr) => {
+            xhr.withCredentials = false;
+          },
         });
-      });
+        hlsRef.current = hls;
 
-      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
-        if (sessionIdRef.current !== currentSessionId) return;
-        syncAudioTracks();
-      });
+        hls.loadSource(attempt.url);
+        hls.attachMedia(video);
 
-      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
-        if (sessionIdRef.current !== currentSessionId) return;
-        syncSubtitleTracks();
-      });
-
-      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
-        if (sessionIdRef.current !== currentSessionId) return;
-        if (hls.autoLevelEnabled) {
-          setCurrentQuality(-1);
-        } else {
-          setCurrentQuality(data.level);
-        }
-      });
-
-      hls.on(Hls.Events.AUDIO_TRACK_SWITCHING, (_event, data) => {
-        if (sessionIdRef.current !== currentSessionId) return;
-        const matched = resolveAudioTrackFromEventPayload(data, audioTracksRef.current);
-        if (!matched) return;
-        const activePending = pendingAudioRequestRef.current;
-        if (activePending && !doesDescriptorMatchIdentity(matched, activePending)) {
-          // Ignore stale/out-of-order switching event from an older request
-          return;
-        }
-        setPendingAudioTrack(matched.id);
-      });
-
-      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
-        if (sessionIdRef.current !== currentSessionId) return;
-        const matched = resolveAudioTrackFromEventPayload(data, audioTracksRef.current);
-        const activePending = pendingAudioRequestRef.current;
-
-        if (activePending) {
-          if (!matched || !doesDescriptorMatchIdentity(matched, activePending)) {
-            // Delayed/out-of-order confirmation for an older track MUST NOT complete a newer request
-            return;
-          }
-          activePending.confirmed = true;
-          pendingAudioRequestRef.current = null;
-        }
-
-        if (!matched) {
-          return;
-        }
-
-        failedHlsAudioTrackRef.current = null;
-        lastConfirmedHlsAudioTrackRef.current = extractHlsAudioIdentity(matched);
-        setPendingAudioTrack(-1);
-        setAudioTrackFeedback(null);
-        setCurrentAudioTrack(matched.id);
-      });
-
-      hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
-        if (sessionIdRef.current !== currentSessionId) return;
-        if (data.id === -1) {
-          const activeCustom = subtitleTracksRef.current.find(
-            (t) =>
-              t.id === selectedSubtitleTrackIdRef.current &&
-              (t.source === 'external' || t.source === 'native')
-          );
-          if (activeCustom) {
-            return;
-          }
-          selectedSubtitleTrackIdRef.current = -1;
-          setCurrentSubtitleTrack(-1);
-          return;
-        }
-        const matched = subtitleTracksRef.current.find(
-          (t) => t.source === 'hls' && (t.hlsTrackId === data.id || t.id === data.id)
-        );
-        const resolvedId = matched ? matched.id : data.id;
-        selectedSubtitleTrackIdRef.current = resolvedId;
-        setCurrentSubtitleTrack(resolvedId);
-      });
-
-      const finalizeFatalHlsError = (msg: string) => {
-        recoveryTimersRef.current.forEach((t) => clearTimeout(t));
-        recoveryTimersRef.current = [];
-        pendingAudioRequestRef.current = null;
-        setPendingAudioTrack(-1);
-        setError(msg);
-        setIsLoading(false);
-        setIsBuffering(false);
-        reportFinalError(msg);
-        try {
-          hls.destroy();
-        } catch {}
-        hlsRef.current = null;
-      };
-
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (sessionIdRef.current !== currentSessionId) return;
-
-        // Non-fatal audio track loading failures must not kill playback or falsely confirm the switch
-        if (
-          !data.fatal &&
-          (data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_ERROR ||
-            data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_TIMEOUT)
-        ) {
-          const activePending = pendingAudioRequestRef.current;
-          const errorUrl =
-            (typeof (data as any)?.url === 'string' && (data as any).url) ||
-            (typeof (data as any)?.context?.url === 'string' && (data as any).context.url) ||
-            (typeof (data as any)?.frag?.url === 'string' && (data as any).frag.url) ||
-            '';
-
-          // If a newer pending request is in flight and this error explicitly identifies an older track URL, ignore it
+        hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
           if (
-            activePending &&
-            errorUrl &&
-            activePending.hlsUrl &&
-            errorUrl !== activePending.hlsUrl &&
-            audioTracksRef.current.some((t) => t.hlsUrl === errorUrl)
+            sessionIdRef.current !== currentSessionId ||
+            attemptToken !== activeEngineAttemptToken
           ) {
             return;
           }
+          setIsLoading(false);
+          setError(null);
+
+          // Map real HLS quality levels
+          if (data.levels && data.levels.length > 0) {
+            const mappedQualities: QualityLevel[] = data.levels.map((lvl, idx) => ({
+              id: idx,
+              height: lvl.height,
+              width: lvl.width,
+              bitrate: lvl.bitrate,
+              name: lvl.height
+                ? `${lvl.height}p (${Math.round(lvl.bitrate / 1000)} kbps)`
+                : `Nível ${idx + 1}`,
+            }));
+            setQualities(mappedQualities);
+          }
+
+          syncAudioTracks();
+          syncSubtitleTracks();
+
+          applyStartAt();
+          video.play().catch(() => {
+            if (
+              sessionIdRef.current === currentSessionId &&
+              attemptToken === activeEngineAttemptToken
+            ) {
+              setIsPlaying(false);
+            }
+          });
+        });
+
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+          if (
+            sessionIdRef.current !== currentSessionId ||
+            attemptToken !== activeEngineAttemptToken
+          ) {
+            return;
+          }
+          syncAudioTracks();
+        });
+
+        hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
+          if (
+            sessionIdRef.current !== currentSessionId ||
+            attemptToken !== activeEngineAttemptToken
+          ) {
+            return;
+          }
+          syncSubtitleTracks();
+        });
+
+        hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+          if (
+            sessionIdRef.current !== currentSessionId ||
+            attemptToken !== activeEngineAttemptToken
+          ) {
+            return;
+          }
+          if (hls.autoLevelEnabled) {
+            setCurrentQuality(-1);
+          } else {
+            setCurrentQuality(data.level);
+          }
+        });
+
+        hls.on(Hls.Events.AUDIO_TRACK_SWITCHING, (_event, data) => {
+          if (
+            sessionIdRef.current !== currentSessionId ||
+            attemptToken !== activeEngineAttemptToken
+          ) {
+            return;
+          }
+          const matched = resolveAudioTrackFromEventPayload(data, audioTracksRef.current);
+          if (!matched) return;
+          const activePending = pendingAudioRequestRef.current;
+          if (activePending && !doesDescriptorMatchIdentity(matched, activePending)) {
+            // Ignore stale/out-of-order switching event from an older request
+            return;
+          }
+          setPendingAudioTrack(matched.id);
+        });
+
+        hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
+          if (
+            sessionIdRef.current !== currentSessionId ||
+            attemptToken !== activeEngineAttemptToken
+          ) {
+            return;
+          }
+          const matched = resolveAudioTrackFromEventPayload(data, audioTracksRef.current);
+          const activePending = pendingAudioRequestRef.current;
 
           if (activePending) {
-            failedHlsAudioTrackRef.current = {
-              index: activePending.targetIndex,
-              hlsTrackId: activePending.hlsTrackId,
-              hlsGroupId: activePending.hlsGroupId,
-              hlsUrl: activePending.hlsUrl,
-              rawName: activePending.rawName,
-              lang: activePending.lang,
-            };
+            if (!matched || !doesDescriptorMatchIdentity(matched, activePending)) {
+              // Delayed/out-of-order confirmation for an older track MUST NOT complete a newer request
+              return;
+            }
+            activePending.confirmed = true;
             pendingAudioRequestRef.current = null;
           }
 
-          setPendingAudioTrack(-1);
-          setAudioTrackFeedback('Não foi possível carregar a faixa de áudio selecionada.');
-
-          // Reflect real engine state honestly: only keep previous track confirmed if hls.audioTrack still matches it
-          const engineIndex = typeof hls.audioTrack === 'number' ? hls.audioTrack : -1;
-          const engineTrack = audioTracksRef.current.find(
-            (t) => t.source === 'hls' && t.hlsTrackIndex === engineIndex
-          );
-          const prevConfirmed = lastConfirmedHlsAudioTrackRef.current;
-          if (
-            engineTrack &&
-            prevConfirmed &&
-            doesDescriptorMatchIdentity(engineTrack, prevConfirmed)
-          ) {
-            setCurrentAudioTrack(engineTrack.id);
-          } else {
-            lastConfirmedHlsAudioTrackRef.current = null;
-            setCurrentAudioTrack(-1);
+          if (!matched) {
+            return;
           }
-          return;
-        }
 
-        if (data.fatal) {
-          const classified = classifyHlsFatalError(data, streamUrl);
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              if (classified.retryable && networkRecoveryAttempts < 3) {
-                networkRecoveryAttempts++;
-                const delayMs = networkRecoveryAttempts * 1000;
-                const timer = setTimeout(() => {
-                  if (sessionIdRef.current === currentSessionId && hlsRef.current) {
-                    hlsRef.current.startLoad();
-                  }
-                }, delayMs);
-                recoveryTimersRef.current.push(timer);
-              } else {
-                finalizeFatalHlsError(classified.message);
+          failedHlsAudioTrackRef.current = null;
+          lastConfirmedHlsAudioTrackRef.current = extractHlsAudioIdentity(matched);
+          setPendingAudioTrack(-1);
+          setAudioTrackFeedback(null);
+          setCurrentAudioTrack(matched.id);
+        });
+
+        hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_event, data) => {
+          if (
+            sessionIdRef.current !== currentSessionId ||
+            attemptToken !== activeEngineAttemptToken
+          ) {
+            return;
+          }
+          if (data.id === -1) {
+            const activeCustom = subtitleTracksRef.current.find(
+              (t) =>
+                t.id === selectedSubtitleTrackIdRef.current &&
+                (t.source === 'external' || t.source === 'native')
+            );
+            if (activeCustom) {
+              return;
+            }
+            selectedSubtitleTrackIdRef.current = -1;
+            setCurrentSubtitleTrack(-1);
+            return;
+          }
+          const matched = subtitleTracksRef.current.find(
+            (t) => t.source === 'hls' && (t.hlsTrackId === data.id || t.id === data.id)
+          );
+          const resolvedId = matched ? matched.id : data.id;
+          selectedSubtitleTrackIdRef.current = resolvedId;
+          setCurrentSubtitleTrack(resolvedId);
+        });
+
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (
+            sessionIdRef.current !== currentSessionId ||
+            attemptToken !== activeEngineAttemptToken
+          ) {
+            return;
+          }
+
+          // Non-fatal audio track loading failures must not kill playback or falsely confirm the switch
+          if (
+            !data.fatal &&
+            (data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_ERROR ||
+              data.details === Hls.ErrorDetails.AUDIO_TRACK_LOAD_TIMEOUT)
+          ) {
+            const activePending = pendingAudioRequestRef.current;
+            const errorUrl =
+              (typeof (data as any)?.url === 'string' && (data as any).url) ||
+              (typeof (data as any)?.context?.url === 'string' && (data as any).context.url) ||
+              (typeof (data as any)?.frag?.url === 'string' && (data as any).frag.url) ||
+              '';
+
+            // If a newer pending request is in flight and this error explicitly identifies an older track URL, ignore it
+            if (
+              activePending &&
+              errorUrl &&
+              activePending.hlsUrl &&
+              errorUrl !== activePending.hlsUrl &&
+              audioTracksRef.current.some((t) => t.hlsUrl === errorUrl)
+            ) {
+              return;
+            }
+
+            if (activePending) {
+              failedHlsAudioTrackRef.current = {
+                index: activePending.targetIndex,
+                hlsTrackId: activePending.hlsTrackId,
+                hlsGroupId: activePending.hlsGroupId,
+                hlsUrl: activePending.hlsUrl,
+                rawName: activePending.rawName,
+                lang: activePending.lang,
+              };
+              pendingAudioRequestRef.current = null;
+            }
+
+            setPendingAudioTrack(-1);
+            setAudioTrackFeedback('Não foi possível carregar a faixa de áudio selecionada.');
+
+            // Reflect real engine state honestly: only keep previous track confirmed if hls.audioTrack still matches it
+            const engineIndex = typeof hls.audioTrack === 'number' ? hls.audioTrack : -1;
+            const engineTrack = audioTracksRef.current.find(
+              (t) => t.source === 'hls' && t.hlsTrackIndex === engineIndex
+            );
+            const prevConfirmed = lastConfirmedHlsAudioTrackRef.current;
+            if (
+              engineTrack &&
+              prevConfirmed &&
+              doesDescriptorMatchIdentity(engineTrack, prevConfirmed)
+            ) {
+              setCurrentAudioTrack(engineTrack.id);
+            } else {
+              lastConfirmedHlsAudioTrackRef.current = null;
+              setCurrentAudioTrack(-1);
+            }
+            return;
+          }
+
+          if (data.fatal) {
+            const classified = classifyHlsFatalError(data, attempt.source);
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                if (classified.retryable && networkRecoveryAttempts < 3) {
+                  networkRecoveryAttempts++;
+                  const delayMs = networkRecoveryAttempts * 1000;
+                  const timer = setTimeout(() => {
+                    if (
+                      sessionIdRef.current === currentSessionId &&
+                      attemptToken === activeEngineAttemptToken &&
+                      hlsRef.current === hls
+                    ) {
+                      hlsRef.current.startLoad();
+                    }
+                  }, delayMs);
+                  recoveryTimersRef.current.push(timer);
+                } else {
+                  handleAttemptFailure(classified, attemptToken);
+                }
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                if (classified.retryable && mediaRecoveryAttempts < 2) {
+                  mediaRecoveryAttempts++;
+                  hls.recoverMediaError();
+                } else {
+                  handleAttemptFailure(classified, attemptToken);
+                }
+                break;
+              default: {
+                handleAttemptFailure(classified, attemptToken);
+                break;
               }
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              if (classified.retryable && mediaRecoveryAttempts < 2) {
-                mediaRecoveryAttempts++;
-                hls.recoverMediaError();
-              } else {
-                finalizeFatalHlsError(classified.message);
-              }
-              break;
-            default: {
-              finalizeFatalHlsError(classified.message);
-              break;
             }
           }
-        }
-      });
-    } else {
-      // Native progressive playback (or Safari native HLS)
-      video.src = streamUrl;
-      video.load();
-    }
+        });
+      } else {
+        // Native HTML5 progressive playback or native environment HLS
+        video.src = attempt.url;
+        video.load();
+      }
+    };
+
+    attachAttemptRef = attachAttempt;
+    attachAttempt(activeAttempt);
 
     return () => {
+      activeEngineAttemptToken += 1;
+      attachAttemptRef = null;
       video.removeEventListener('playing', handlePlaying);
       video.removeEventListener('play', handlePlay);
       video.removeEventListener('pause', handlePause);
@@ -1554,6 +1716,10 @@ export function usePlaybackSession({
     streamId,
     startAt,
     inferredTransport,
+    explicitContentType,
+    containerExtension,
+    mimeType,
+    directSource,
     calculateBufferStats,
     syncVisualControlsStateFromVideo,
   ]);

@@ -792,7 +792,7 @@ export function buildDirectMediaUrl(
 // ============================================================================
 
 export type PlaybackContentType = "live" | "movie" | "episode";
-export type PlaybackTransportProtocol = "http" | "https" | "unsupported" | "invalid";
+export type PlaybackTransportProtocol = "http" | "https" | "blob" | "data" | "unsupported" | "invalid";
 export type PlaybackTransportMode = "hls" | "progressive" | "unknown";
 export type PlaybackEngineKind = "hls.js" | "native-hls" | "native";
 export type PlaybackDetectionSource =
@@ -1084,16 +1084,6 @@ function extractSafePathnameExtension(
   const rawLeaf = segments[segments.length - 1] || "";
   if (!rawLeaf) return null;
 
-  // If this looks like a truncated Xtream path (/live/user/pass without the 4th stream segment),
-  // rawLeaf is the password segment, never a media filename.
-  const nonEmptySegments = segments.filter(Boolean);
-  if (
-    nonEmptySegments.length === 3 &&
-    /^(live|movie|series)$/i.test(nonEmptySegments[0])
-  ) {
-    return null;
-  }
-
   let leaf = rawLeaf;
   try {
     leaf = decodeURIComponent(rawLeaf);
@@ -1275,7 +1265,11 @@ export function identifyMediaSource(
     };
   }
 
-  if (!parsed.hostname) {
+  const rawScheme = parsed.protocol.replace(/:$/, "").toLowerCase();
+  const isHttpOrHttps = rawScheme === "http" || rawScheme === "https";
+  const isBlobOrData = rawScheme === "blob" || rawScheme === "data";
+
+  if (isHttpOrHttps && !parsed.hostname) {
     return {
       url: rawUrl,
       isValidUrl: false,
@@ -1293,34 +1287,39 @@ export function identifyMediaSource(
     };
   }
 
-  const rawScheme = parsed.protocol.replace(/:$/, "").toLowerCase();
-  const isHttpOrHttps = rawScheme === "http" || rawScheme === "https";
-  const protocol: PlaybackTransportProtocol = isHttpOrHttps
-    ? (rawScheme as "http" | "https")
+  const isSupportedProtocol = isHttpOrHttps || isBlobOrData;
+  const protocol: PlaybackTransportProtocol = isSupportedProtocol
+    ? (rawScheme as "http" | "https" | "blob" | "data")
     : "unsupported";
 
   const resolvedContentType: PlaybackContentType = (() => {
     if (explicitContentType) return explicitContentType;
     const pathLower = parsed.pathname.toLowerCase();
-    if (pathLower.startsWith("/live/")) return "live";
-    if (pathLower.startsWith("/series/")) return "episode";
-    if (pathLower.startsWith("/movie/")) return "movie";
+    if (/(?:^|\/)live\//.test(pathLower)) return "live";
+    if (/(?:^|\/)series\//.test(pathLower)) return "episode";
+    if (/(?:^|\/)movie\//.test(pathLower)) return "movie";
     return "movie";
   })();
 
   const conventionalLiveMatch =
-    resolvedContentType === "live"
+    resolvedContentType === "live" && isHttpOrHttps
       ? matchConventionalXtreamLiveUrl(rawUrl, options.credentials, options.directSource)
       : null;
 
-  // Priority 1: Explicit MIME type
-  if (declaredMime) {
-    const classified = classifyTokenAsTransportAndContainer(declaredMime);
+  const dataUrlMime =
+    rawScheme === "data"
+      ? rawUrl.match(/^data:([^;,]+)[;,]/i)?.[1]?.trim().toLowerCase() || null
+      : null;
+  const effectiveMime = declaredMime || dataUrlMime;
+
+  // Priority 1: Explicit MIME type (or data: URI MIME header)
+  if (effectiveMime) {
+    const classified = classifyTokenAsTransportAndContainer(effectiveMime);
     if (classified) {
       return {
         url: rawUrl,
         isValidUrl: true,
-        isSupportedProtocol: isHttpOrHttps,
+        isSupportedProtocol,
         protocol,
         rawScheme,
         transport: classified.transport,
@@ -1328,7 +1327,7 @@ export function identifyMediaSource(
         contentType: resolvedContentType,
         detectionSource: "mime_type",
         detectedExtension: classified.normalizedToken,
-        detectedMimeType: declaredMime,
+        detectedMimeType: effectiveMime,
         isDirectSource,
         isConventionalXtreamLiveUrl: Boolean(conventionalLiveMatch),
       };
@@ -1336,14 +1335,15 @@ export function identifyMediaSource(
   }
 
   // Priority 2: Safe leaf pathname extension
-  const pathExt = extractSafePathnameExtension(parsed.pathname, declaredExt);
+  const pathExt =
+    rawScheme === "data" ? null : extractSafePathnameExtension(parsed.pathname, declaredExt);
   if (pathExt) {
     const classified = classifyTokenAsTransportAndContainer(pathExt);
     if (classified) {
       return {
         url: rawUrl,
         isValidUrl: true,
-        isSupportedProtocol: isHttpOrHttps,
+        isSupportedProtocol,
         protocol,
         rawScheme,
         transport: classified.transport,
@@ -1359,14 +1359,15 @@ export function identifyMediaSource(
   }
 
   // Priority 3: Recognized format query parameters
-  const queryFormat = extractFormatFromQueryParams(parsed.searchParams, declaredExt);
+  const queryFormat =
+    rawScheme === "data" ? null : extractFormatFromQueryParams(parsed.searchParams, declaredExt);
   if (queryFormat) {
     const classified = classifyTokenAsTransportAndContainer(queryFormat);
     if (classified) {
       return {
         url: rawUrl,
         isValidUrl: true,
-        isSupportedProtocol: isHttpOrHttps,
+        isSupportedProtocol,
         protocol,
         rawScheme,
         transport: classified.transport,
@@ -1388,7 +1389,7 @@ export function identifyMediaSource(
       return {
         url: rawUrl,
         isValidUrl: true,
-        isSupportedProtocol: isHttpOrHttps,
+        isSupportedProtocol,
         protocol,
         rawScheme,
         transport: classified.transport,
@@ -1407,7 +1408,7 @@ export function identifyMediaSource(
   return {
     url: rawUrl,
     isValidUrl: true,
-    isSupportedProtocol: isHttpOrHttps,
+    isSupportedProtocol,
     protocol,
     rawScheme,
     transport: "unknown",
@@ -1857,10 +1858,9 @@ export interface BuildPlaybackAttemptPlanOptions extends IdentifyMediaSourceOpti
 }
 
 /**
- * M01 — Builds a bounded playback attempt plan (primary attempt + at most 1 authorized fallback).
- * - Never fabricates alternative URLs for `direct_source`.
- * - Never replaces movie/episode specific formats (e.g. `.mkv`, `.avi`) with `.mp4`.
- * - For conventional Xtream Live URLs, only includes an alternative format when explicitly present in `allowed_output_formats`.
+ * M01.a — Builds a bounded playback attempt plan on the exact same original URL
+ * (primary engine + at most 1 complementary engine fallback when technically justified).
+ * Alternative Live format URL generation is intentionally deferred to M01.b.
  */
 export function buildPlaybackAttemptPlan(
   options: BuildPlaybackAttemptPlanOptions
@@ -1889,44 +1889,11 @@ export function buildPlaybackAttemptPlan(
     },
   ];
 
-  // Priority 1: Authorized alternative format for conventional Xtream Live URLs
-  if (primarySource.isConventionalXtreamLiveUrl && !primarySource.isDirectSource) {
-    const liveMatch = matchConventionalXtreamLiveUrl(
-      primarySource.url,
-      options.credentials,
-      options.directSource
-    );
-    const rawFormats =
-      options.allowedOutputFormats !== undefined
-        ? options.allowedOutputFormats
-        : options.credentials?.allowed_output_formats;
-    const normalizedFormats = normalizeAllowedOutputFormats(rawFormats);
-
-    if (liveMatch && normalizedFormats && normalizedFormats.length > 1) {
-      const altFormat = normalizedFormats.find((fmt) => fmt !== liveMatch.ext);
-      if (altFormat) {
-        const altUrl = `${liveMatch.cleanBase}/live/${liveMatch.userPart}/${liveMatch.passPart}/${liveMatch.streamIdPart}.${encodeURIComponent(altFormat)}`;
-        const altSource = identifyMediaSource({
-          url: altUrl,
-          contentType: primarySource.contentType,
-          credentials: options.credentials,
-        });
-        const altSelection = selectPlaybackEngine(altSource, options.capabilities);
-        if (altSelection.primaryEngine) {
-          attempts.push({
-            url: altUrl,
-            engine: altSelection.primaryEngine,
-            source: altSource,
-            isFallback: true,
-            fallbackKind: "authorized_format",
-          });
-        }
-      }
-    }
-  }
-
-  // Priority 2: Engine switch on the exact same literal URL (when no format alternative was queued)
-  if (attempts.length === 1 && primarySelection.fallbackEngine) {
+  // Same-URL complementary engine attempt only (max 1 fallback)
+  if (
+    primarySelection.fallbackEngine &&
+    primarySelection.fallbackEngine !== attempts[0].engine
+  ) {
     attempts.push({
       url: primarySource.url,
       engine: primarySelection.fallbackEngine,
