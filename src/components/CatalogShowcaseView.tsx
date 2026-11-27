@@ -237,11 +237,16 @@ export interface CatalogShowcaseViewProps {
   allVodStreams?: any[];
   loadingVod?: boolean;
   vodError?: string | null;
+  vodCategoryError?: string | null;
   vodCategoriesStatus?: string;
   vodCatalogStatus?: string;
+  vodCategoryStatus?: string;
   vodCategoriesError?: string | null;
   fetchVodCategories?: () => Promise<void>;
   fetchVodStreams?: (categoryId?: string) => Promise<void>;
+  isVodCategoryLoaded?: (categoryId: string) => boolean;
+  getVodCategoryStreams?: (categoryId: string) => any[];
+  getPartialVodStreamsForSearch?: () => any[];
 
   // Series domain (used in 'inicio' and 'series')
   seriesCategories?: any[];
@@ -249,13 +254,18 @@ export interface CatalogShowcaseViewProps {
   allSeriesStreams?: any[];
   loadingSeries?: boolean;
   seriesError?: string | null;
+  seriesCategoryError?: string | null;
   seriesCategoriesStatus?: string;
   seriesCatalogStatus?: string;
+  seriesCategoryStatus?: string;
   seriesCategoriesError?: string | null;
   fetchSeriesCategories?: () => Promise<void>;
   fetchSeriesStreams?: (categoryId?: string) => Promise<void>;
+  isSeriesCategoryLoaded?: (categoryId: string) => boolean;
+  getSeriesCategoryStreams?: (categoryId: string) => any[];
+  getPartialSeriesStreamsForSearch?: () => any[];
 
-  // Session readiness (used in 'inicio')
+  // Session readiness (used in 'inicio', 'movies', 'series')
   sessionReady?: boolean;
 }
 
@@ -676,21 +686,31 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   allVodStreams = EMPTY_ARRAY,
   loadingVod = false,
   vodError = null,
+  vodCategoryError = null,
   vodCategoriesStatus = 'ready',
   vodCatalogStatus = 'ready',
+  vodCategoryStatus = 'idle',
   vodCategoriesError = null,
   fetchVodCategories,
   fetchVodStreams,
+  isVodCategoryLoaded,
+  getVodCategoryStreams,
+  getPartialVodStreamsForSearch,
   seriesCategories = EMPTY_ARRAY,
   seriesStreams = EMPTY_ARRAY,
   allSeriesStreams = EMPTY_ARRAY,
   loadingSeries = false,
   seriesError = null,
+  seriesCategoryError = null,
   seriesCategoriesStatus = 'ready',
   seriesCatalogStatus = 'ready',
+  seriesCategoryStatus = 'idle',
   seriesCategoriesError = null,
   fetchSeriesCategories,
   fetchSeriesStreams,
+  isSeriesCategoryLoaded,
+  getSeriesCategoryStreams,
+  getPartialSeriesStreamsForSearch,
   sessionReady = true,
 }: CatalogShowcaseViewProps) {
   const { favorites } = useFavorites();
@@ -827,16 +847,54 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     }
   }, [playError]);
 
-  // Trigger initial catalog fetch in 'inicio' if idle
+  const normalizedQueryForEffect = searchQuery.trim().toLowerCase();
+  const hasSearchForEffect = normalizedQueryForEffect.length > 0;
+
+  // Immediate global coverage trigger when user requests Global Search or "Ver todos"
   useEffect(() => {
-    if (section === 'inicio' && credentials && sessionReady) {
-      if (liveCatalogStatus === 'idle' && fetchLiveStreams) {
-        fetchLiveStreams().catch(() => {});
+    if (!credentials || !sessionReady) return;
+    if (hasSearchForEffect) {
+      if (section === 'inicio') {
+        if (
+          (liveCatalogStatus === 'idle' || liveCatalogStatus === 'loading') &&
+          fetchLiveStreams
+        ) {
+          fetchLiveStreams().catch(() => {});
+        }
+        if (
+          (vodCatalogStatus === 'idle' || vodCatalogStatus === 'loading') &&
+          fetchVodStreams
+        ) {
+          fetchVodStreams().catch(() => {});
+        }
+        if (
+          (seriesCatalogStatus === 'idle' || seriesCatalogStatus === 'loading') &&
+          fetchSeriesStreams
+        ) {
+          fetchSeriesStreams().catch(() => {});
+        }
+      } else if (section === 'movies') {
+        if (
+          (vodCatalogStatus === 'idle' || vodCatalogStatus === 'loading') &&
+          fetchVodStreams
+        ) {
+          fetchVodStreams().catch(() => {});
+        }
+      } else if (section === 'series') {
+        if (
+          (seriesCatalogStatus === 'idle' || seriesCatalogStatus === 'loading') &&
+          fetchSeriesStreams
+        ) {
+          fetchSeriesStreams().catch(() => {});
+        }
       }
-      if (vodCatalogStatus === 'idle' && fetchVodStreams) {
+      return;
+    }
+
+    if (activeCategoryId === 'all') {
+      if (section === 'movies' && vodCatalogStatus === 'idle' && fetchVodStreams) {
         fetchVodStreams().catch(() => {});
-      }
-      if (seriesCatalogStatus === 'idle' && fetchSeriesStreams) {
+      } else if (section === 'series' && seriesCatalogStatus === 'idle' && fetchSeriesStreams) {
         fetchSeriesStreams().catch(() => {});
       }
     }
@@ -844,8 +902,72 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     section,
     credentials,
     sessionReady,
+    hasSearchForEffect,
+    activeCategoryId,
     liveCatalogStatus,
     vodCatalogStatus,
+    seriesCatalogStatus,
+    fetchLiveStreams,
+    fetchVodStreams,
+    fetchSeriesStreams,
+  ]);
+
+  // Cooperative global catalog loading for Showcase Mode (Início, Filmes vitrine, Séries vitrine)
+  // Pauses starting new heavy background loads during video playback (`isPaused`) or when a category is selected.
+  useEffect(() => {
+    if (!credentials || !sessionReady || isPaused || hasSearchForEffect) return;
+    if (section !== 'inicio' && (activeCategoryId !== null || isCategoriesMenuOpen)) {
+      return;
+    }
+
+    if (section === 'inicio' && liveCatalogStatus === 'idle' && fetchLiveStreams) {
+      fetchLiveStreams().catch(() => {});
+    }
+
+    const vodCatsDone =
+      vodCategoriesStatus === 'ready' || vodCategoriesStatus === 'error';
+    const seriesCatsDone =
+      seriesCategoriesStatus === 'ready' || seriesCategoriesStatus === 'error';
+
+    const needsVodGlobal =
+      (section === 'inicio' || section === 'movies') &&
+      vodCatsDone &&
+      vodCatalogStatus === 'idle' &&
+      Boolean(fetchVodStreams);
+    const needsSeriesGlobal =
+      (section === 'inicio' || section === 'series') &&
+      seriesCatsDone &&
+      seriesCatalogStatus === 'idle' &&
+      Boolean(fetchSeriesStreams);
+
+    if (!needsVodGlobal && !needsSeriesGlobal) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (needsVodGlobal && fetchVodStreams) {
+        fetchVodStreams().catch(() => {});
+      }
+      if (needsSeriesGlobal && fetchSeriesStreams) {
+        fetchSeriesStreams().catch(() => {});
+      }
+    }, 35);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [
+    section,
+    credentials,
+    sessionReady,
+    isPaused,
+    hasSearchForEffect,
+    activeCategoryId,
+    isCategoriesMenuOpen,
+    liveCatalogStatus,
+    vodCategoriesStatus,
+    vodCatalogStatus,
+    seriesCategoriesStatus,
     seriesCatalogStatus,
     fetchLiveStreams,
     fetchVodStreams,
@@ -2758,6 +2880,28 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
 
   // Domain categories for 'movies' / 'series'
   const realCategories = section === 'movies' ? vodCategories : seriesCategories;
+  const isRealCategorySelected = Boolean(
+    activeCategoryId !== null &&
+      activeCategoryId !== 'all' &&
+      activeCategoryId !== 'nc_recent' &&
+      activeCategoryId !== 'nc_fav'
+  );
+  const isSelectedRealCategoryLoaded = Boolean(
+    isRealCategorySelected &&
+      activeCategoryId &&
+      (section === 'movies'
+        ? allVodStreams.length > 0 ||
+          vodCatalogStatus === 'ready' ||
+          (isVodCategoryLoaded ? isVodCategoryLoaded(activeCategoryId) : false)
+        : section === 'series'
+          ? allSeriesStreams.length > 0 ||
+            seriesCatalogStatus === 'ready' ||
+            (isSeriesCategoryLoaded
+              ? isSeriesCategoryLoaded(activeCategoryId)
+              : false)
+          : false)
+  );
+
   const isCategoriesLoading =
     section === 'movies'
       ? vodCategoriesStatus === 'loading' || (loadingVod && vodCategories.length === 0)
@@ -2766,15 +2910,81 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         : false;
   const isCatalogLoading =
     section === 'movies'
-      ? vodCatalogStatus === 'loading' || loadingVod
+      ? (vodCatalogStatus === 'idle' && !vodError && !vodCategoriesError) ||
+        vodCatalogStatus === 'loading' ||
+        loadingVod
       : section === 'series'
-        ? seriesCatalogStatus === 'loading' || loadingSeries
-        : loadingVod || loadingSeries || loadingLive;
+        ? (seriesCatalogStatus === 'idle' && !seriesError && !seriesCategoriesError) ||
+          seriesCatalogStatus === 'loading' ||
+          loadingSeries
+        : (liveCatalogStatus === 'idle' && allLiveStreams.length === 0) ||
+          (vodCatalogStatus === 'idle' && allVodStreams.length === 0) ||
+          (seriesCatalogStatus === 'idle' && allSeriesStreams.length === 0) ||
+          loadingVod ||
+          loadingSeries ||
+          loadingLive;
+
+  const isInicioSearchCoverageIncomplete = Boolean(
+    hasSearch &&
+      section === 'inicio' &&
+      (liveCatalogStatus === 'idle' ||
+        liveCatalogStatus === 'loading' ||
+        vodCatalogStatus === 'idle' ||
+        vodCatalogStatus === 'loading' ||
+        seriesCatalogStatus === 'idle' ||
+        seriesCatalogStatus === 'loading' ||
+        loadingLive ||
+        loadingVod ||
+        loadingSeries)
+  );
+
+  const isDomainSearchCoverageIncomplete = Boolean(
+    hasSearch &&
+      (section === 'movies'
+        ? vodCatalogStatus === 'idle' ||
+          vodCatalogStatus === 'loading' ||
+          (loadingVod && allVodStreams.length === 0)
+        : section === 'series'
+          ? seriesCatalogStatus === 'idle' ||
+            seriesCatalogStatus === 'loading' ||
+            (loadingSeries && allSeriesStreams.length === 0)
+          : false)
+  );
+
+  const isGridViewLoading =
+    hasSearch
+      ? isDomainSearchCoverageIncomplete
+      : isRealCategorySelected
+        ? !isSelectedRealCategoryLoaded &&
+          (section === 'movies'
+            ? vodCategoryStatus === 'loading' ||
+              vodCatalogStatus === 'loading' ||
+              loadingVod
+            : seriesCategoryStatus === 'loading' ||
+              seriesCatalogStatus === 'loading' ||
+              loadingSeries)
+        : activeCategoryId === 'all'
+          ? section === 'movies'
+            ? vodCatalogStatus === 'idle' ||
+              vodCatalogStatus === 'loading' ||
+              loadingVod
+            : seriesCatalogStatus === 'idle' ||
+              seriesCatalogStatus === 'loading' ||
+              loadingSeries
+          : false;
 
   const domainCategoriesError =
     section === 'movies' ? vodCategoriesError : section === 'series' ? seriesCategoriesError : null;
   const domainCatalogError =
-    section === 'movies' ? vodError : section === 'series' ? seriesError : null;
+    section === 'movies'
+      ? isRealCategorySelected
+        ? vodCategoryError || vodError
+        : vodError
+      : section === 'series'
+        ? isRealCategorySelected
+          ? seriesCategoryError || seriesError
+          : seriesError
+        : null;
 
   const handleRetryDomain = useCallback(async () => {
     setIsRetryingDomain(true);
@@ -2784,7 +2994,9 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         if (vodCategoriesStatus === 'error' || vodCategoriesError) {
           if (fetchVodCategories) tasks.push(fetchVodCategories());
         }
-        if (vodCatalogStatus === 'error' || vodError || tasks.length === 0) {
+        if (isRealCategorySelected && activeCategoryId && fetchVodStreams) {
+          tasks.push(fetchVodStreams(activeCategoryId));
+        } else if (vodCatalogStatus === 'error' || vodError || tasks.length === 0) {
           if (fetchVodStreams) tasks.push(fetchVodStreams());
         }
         await Promise.all(tasks);
@@ -2793,7 +3005,9 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         if (seriesCategoriesStatus === 'error' || seriesCategoriesError) {
           if (fetchSeriesCategories) tasks.push(fetchSeriesCategories());
         }
-        if (seriesCatalogStatus === 'error' || seriesError || tasks.length === 0) {
+        if (isRealCategorySelected && activeCategoryId && fetchSeriesStreams) {
+          tasks.push(fetchSeriesStreams(activeCategoryId));
+        } else if (seriesCatalogStatus === 'error' || seriesError || tasks.length === 0) {
           if (fetchSeriesStreams) tasks.push(fetchSeriesStreams());
         }
         await Promise.all(tasks);
@@ -2803,6 +3017,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     }
   }, [
     section,
+    isRealCategorySelected,
+    activeCategoryId,
     vodCategoriesStatus,
     vodCategoriesError,
     vodCatalogStatus,
@@ -2858,15 +3074,23 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         savedScrollTopRef.current = 0;
       }
 
-      // Support legacy mock contexts where allVodStreams / allSeriesStreams is empty and fetchVodStreams(catId) populates vodStreams
-      if (
-        catId !== 'all' &&
+      if (catId === 'all') {
+        if (section === 'movies' && vodCatalogStatus !== 'ready' && fetchVodStreams) {
+          fetchVodStreams().catch(() => {});
+        } else if (
+          section === 'series' &&
+          seriesCatalogStatus !== 'ready' &&
+          fetchSeriesStreams
+        ) {
+          fetchSeriesStreams().catch(() => {});
+        }
+      } else if (
         catId !== 'nc_recent' &&
         catId !== 'nc_fav'
       ) {
-        if (section === 'movies' && allVodStreams.length === 0 && fetchVodStreams) {
+        if (section === 'movies' && fetchVodStreams) {
           fetchVodStreams(catId).catch(() => {});
-        } else if (section === 'series' && allSeriesStreams.length === 0 && fetchSeriesStreams) {
+        } else if (section === 'series' && fetchSeriesStreams) {
           fetchSeriesStreams(catId).catch(() => {});
         }
       }
@@ -2882,8 +3106,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     [
       activeCategoryId,
       section,
-      allVodStreams.length,
-      allSeriesStreams.length,
+      vodCatalogStatus,
+      seriesCatalogStatus,
       fetchVodStreams,
       fetchSeriesStreams,
     ]
@@ -3099,12 +3323,16 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       section === 'movies'
         ? allVodStreams.length > 0
           ? allVodStreams
-          : vodStreams
+          : getPartialVodStreamsForSearch
+            ? getPartialVodStreamsForSearch()
+            : vodStreams
         : allSeriesStreams.length > 0
           ? allSeriesStreams
-          : seriesStreams;
+          : getPartialSeriesStreamsForSearch
+            ? getPartialSeriesStreamsForSearch()
+            : seriesStreams;
 
-    // On-demand search searches across the ENTIRE domain catalog, even outside a selected category
+    // On-demand search searches across the ENTIRE domain catalog (or all partial data loaded so far while global finishes)
     if (hasSearch) {
       return fullPool.filter((item) => {
         const name = (item.name || item.title || '').toLowerCase();
@@ -3131,13 +3359,37 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       if (allVodStreams.length > 0) {
         return vodIndex.getSortedByCategory(activeCategoryId);
       }
-      return vodStreams.filter((m) => String(m.category_id) === String(activeCategoryId));
+      if (getVodCategoryStreams) {
+        const cached = getVodCategoryStreams(activeCategoryId);
+        if (cached.length > 0 || (isVodCategoryLoaded && isVodCategoryLoaded(activeCategoryId))) {
+          return cached;
+        }
+      }
+      return vodStreams.filter((m) => {
+        if (String(m.category_id ?? '') === String(activeCategoryId)) return true;
+        if (Array.isArray(m.category_ids)) {
+          return m.category_ids.some((id: any) => String(id) === String(activeCategoryId));
+        }
+        return false;
+      });
     }
 
     if (allSeriesStreams.length > 0) {
       return seriesIndex.getSortedByCategory(activeCategoryId);
     }
-    return seriesStreams.filter((s) => String(s.category_id) === String(activeCategoryId));
+    if (getSeriesCategoryStreams) {
+      const cached = getSeriesCategoryStreams(activeCategoryId);
+      if (cached.length > 0 || (isSeriesCategoryLoaded && isSeriesCategoryLoaded(activeCategoryId))) {
+        return cached;
+      }
+    }
+    return seriesStreams.filter((s) => {
+      if (String(s.category_id ?? '') === String(activeCategoryId)) return true;
+      if (Array.isArray(s.category_ids)) {
+        return s.category_ids.some((id: any) => String(id) === String(activeCategoryId));
+      }
+      return false;
+    });
   }, [
     section,
     activeCategoryId,
@@ -3151,6 +3403,12 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     domainFavoriteItems,
     vodIndex,
     seriesIndex,
+    getVodCategoryStreams,
+    isVodCategoryLoaded,
+    getPartialVodStreamsForSearch,
+    getSeriesCategoryStreams,
+    isSeriesCategoryLoaded,
+    getPartialSeriesStreamsForSearch,
   ]);
 
   const {
@@ -3173,8 +3431,18 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   const inicioSearchResults = useMemo(() => {
     if (section !== 'inicio' || !hasSearch) return null;
     const livePool = allLiveStreams.length > 0 ? allLiveStreams : liveStreams;
-    const vodPool = allVodStreams.length > 0 ? allVodStreams : vodStreams;
-    const seriesPool = allSeriesStreams.length > 0 ? allSeriesStreams : seriesStreams;
+    const vodPool =
+      allVodStreams.length > 0
+        ? allVodStreams
+        : getPartialVodStreamsForSearch
+          ? getPartialVodStreamsForSearch()
+          : vodStreams;
+    const seriesPool =
+      allSeriesStreams.length > 0
+        ? allSeriesStreams
+        : getPartialSeriesStreamsForSearch
+          ? getPartialSeriesStreamsForSearch()
+          : seriesStreams;
 
     return {
       live: livePool.filter((s) => (s.name || '').toLowerCase().includes(normalizedQuery)),
@@ -3191,6 +3459,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     vodStreams,
     allSeriesStreams,
     seriesStreams,
+    getPartialVodStreamsForSearch,
+    getPartialSeriesStreamsForSearch,
   ]);
 
   const inicioSearchWindowMetrics = useMemo(() => {
@@ -3467,15 +3737,41 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               </span>
             </h2>
 
+            {isInicioSearchCoverageIncomplete &&
+              (inicioSearchResults.live.length > 0 ||
+                inicioSearchResults.vod.length > 0 ||
+                inicioSearchResults.series.length > 0) && (
+                <div
+                  data-search-coverage-status="partial-results"
+                  className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-nc-text-secondary text-sm"
+                >
+                  <Loader2 className="w-4 h-4 animate-spin text-nc-primary shrink-0" />
+                  <span>
+                    Exibindo resultados parciais enquanto o restante do catálogo termina de carregar...
+                  </span>
+                </div>
+              )}
+
             {inicioSearchResults.live.length === 0 &&
               inicioSearchResults.vod.length === 0 &&
-              inicioSearchResults.series.length === 0 && (
+              inicioSearchResults.series.length === 0 &&
+              (isInicioSearchCoverageIncomplete ? (
+                <div
+                  data-search-coverage-status="partial-loading"
+                  className="flex flex-col items-center justify-center py-20 text-nc-text-secondary"
+                >
+                  <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
+                  <p className="text-lg">
+                    Buscando &ldquo;{searchQuery}&rdquo; em todo o catálogo...
+                  </p>
+                </div>
+              ) : (
                 <div className="text-center py-20 text-nc-text-secondary">
                   <p className="text-lg">
                     Nenhum resultado encontrado para &ldquo;{searchQuery}&rdquo;
                   </p>
                 </div>
-              )}
+              ))}
 
             {inicioSearchResults.live.length > 0 && (
               <VirtualizedInicioSearchSection
@@ -3536,10 +3832,31 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               </h2>
             </div>
 
-            {isCatalogLoading && displayedGridItems.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-20 text-nc-text-secondary">
+            {isDomainSearchCoverageIncomplete && displayedGridItems.length > 0 && (
+              <div
+                data-search-coverage-status="partial-results"
+                className="mb-4 flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-nc-text-secondary text-sm"
+              >
+                <Loader2 className="w-4 h-4 animate-spin text-nc-primary shrink-0" />
+                <span>
+                  Exibindo resultados parciais enquanto o catálogo completo de {sectionTitle.toLowerCase()} termina de carregar...
+                </span>
+              </div>
+            )}
+
+            {isGridViewLoading && displayedGridItems.length === 0 ? (
+              <div
+                data-search-coverage-status={
+                  isDomainSearchCoverageIncomplete ? 'partial-loading' : undefined
+                }
+                className="flex flex-col items-center justify-center py-20 text-nc-text-secondary"
+              >
                 <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
-                <p>Carregando {sectionTitle.toLowerCase()}...</p>
+                <p>
+                  {isDomainSearchCoverageIncomplete
+                    ? `Buscando "${searchQuery}" em todo o catálogo de ${sectionTitle.toLowerCase()}...`
+                    : `Carregando ${sectionTitle.toLowerCase()}...`}
+                </p>
               </div>
             ) : displayedGridItems.length === 0 ? (
               <div className="text-center py-20 text-nc-text-secondary">

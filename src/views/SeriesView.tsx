@@ -1,5 +1,9 @@
 import React from 'react';
-import { useXtreamSeries, useXtreamCredentials } from '../context/XtreamContext';
+import {
+  useXtreamSeries,
+  useXtreamCredentials,
+  useXtreamSession,
+} from '../context/XtreamContext';
 import { CatalogShowcaseView } from '../components/CatalogShowcaseView';
 
 export interface SeriesViewProps {
@@ -25,17 +29,23 @@ export const SeriesView = React.memo(function SeriesView({
   isPaused = false,
 }: SeriesViewProps) {
   const { credentials } = useXtreamCredentials();
+  const { sessionReady } = useXtreamSession();
   const {
     seriesCategories,
     seriesStreams,
     allSeriesStreams,
     loadingSeries,
     seriesError,
+    seriesCategoryError,
     seriesCategoriesStatus,
     seriesCatalogStatus,
+    seriesCategoryStatus,
     seriesCategoriesError,
     fetchSeriesCategories,
     fetchSeriesStreams,
+    isSeriesCategoryLoaded,
+    getSeriesCategoryStreams,
+    getPartialSeriesStreamsForSearch,
   } = useXtreamSeries();
 
   return (
@@ -50,11 +60,17 @@ export const SeriesView = React.memo(function SeriesView({
       allSeriesStreams={allSeriesStreams}
       loadingSeries={loadingSeries}
       seriesError={seriesError}
+      seriesCategoryError={seriesCategoryError}
       seriesCategoriesStatus={seriesCategoriesStatus}
       seriesCatalogStatus={seriesCatalogStatus}
+      seriesCategoryStatus={seriesCategoryStatus}
       seriesCategoriesError={seriesCategoriesError}
       fetchSeriesCategories={fetchSeriesCategories}
       fetchSeriesStreams={fetchSeriesStreams}
+      isSeriesCategoryLoaded={isSeriesCategoryLoaded}
+      getSeriesCategoryStreams={getSeriesCategoryStreams}
+      getPartialSeriesStreamsForSearch={getPartialSeriesStreamsForSearch}
+      sessionReady={sessionReady}
     />
   );
 });

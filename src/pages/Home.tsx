@@ -139,11 +139,13 @@ function StartupImageCacheCoordinator({
   serverUrl,
   allSixFinished,
   isAuthRejected,
+  isPaused,
   onReady,
 }: {
   serverUrl?: string | null;
   allSixFinished: boolean;
   isAuthRejected: boolean;
+  isPaused: boolean;
   onReady: () => void;
 }) {
   const { allLiveStreams } = useXtreamLive();
@@ -166,7 +168,7 @@ function StartupImageCacheCoordinator({
       startedForSessionRef.current = false;
       return;
     }
-    if (startedForSessionRef.current) {
+    if (isPaused || startedForSessionRef.current) {
       return;
     }
     startedForSessionRef.current = true;
@@ -207,6 +209,7 @@ function StartupImageCacheCoordinator({
   }, [
     allSixFinished,
     isAuthRejected,
+    isPaused,
     serverUrl,
     allLiveStreams,
     allVodStreams,
@@ -263,6 +266,8 @@ function HomeContent({ credentials }: { credentials: any }) {
 
   // Overlay state & isolated session context consumption
   const {
+    sessionReady,
+    initialCategoriesReady,
     allSixFinished,
     hasTransientCategoriesFailure,
     transientFailureMessage,
@@ -471,12 +476,18 @@ function HomeContent({ credentials }: { credentials: any }) {
 
   const [isOpeningDismissed, setIsOpeningDismissed] = useState(false);
   const [showContinueButton, setShowContinueButton] = useState(false);
-  const [isPriorityImagesReady, setIsPriorityImagesReady] = useState(
+  const [, setIsPriorityImagesReady] = useState(
     () => !isAndroidPersistentImageCacheAvailable()
   );
 
+  // Release interface for interaction once session & initial category prerequisites are ready,
+  // without waiting for all 6 full catalogs or secondary priority image preparation to finish.
+  const isInterfaceReadyForInteraction = Boolean(
+    sessionReady && (initialCategoriesReady || allSixFinished)
+  );
+
   const isCatalogTransferGateActive =
-    !allSixFinished && !isAuthRejected && !isOpeningDismissed;
+    !isInterfaceReadyForInteraction && !isAuthRejected && !isOpeningDismissed;
   setCatalogTransferPhaseActiveForImageCache(isCatalogTransferGateActive);
 
   useEffect(() => {
@@ -493,12 +504,12 @@ function HomeContent({ credentials }: { credentials: any }) {
     setIsPriorityImagesReady(true);
   }, []);
 
-  // Automatically close without minimum artificial delay when all six + priority covers are ready or if auth is rejected
+  // Automatically close initial loading screen as soon as essential prerequisites are ready or if auth is rejected
   useEffect(() => {
-    if ((allSixFinished && isPriorityImagesReady) || isAuthRejected) {
+    if (isInterfaceReadyForInteraction || isAuthRejected) {
       setIsOpeningDismissed(true);
     }
-  }, [allSixFinished, isPriorityImagesReady, isAuthRejected]);
+  }, [isInterfaceReadyForInteraction, isAuthRejected]);
 
   // Throttle low-priority background image preloading during rapid D-Pad navigation or active video playback
   useEffect(() => {
@@ -532,7 +543,7 @@ function HomeContent({ credentials }: { credentials: any }) {
   }, [isOpeningDismissed]);
 
   const isOverlayActive =
-    !isOpeningDismissed && !(allSixFinished && isPriorityImagesReady) && !isAuthRejected;
+    !isOpeningDismissed && !isInterfaceReadyForInteraction && !isAuthRejected;
 
   const handleReturnToLoginForRecovery = () => {
     const reason =
@@ -1014,6 +1025,7 @@ function HomeContent({ credentials }: { credentials: any }) {
         serverUrl={credentials?.serverUrl}
         allSixFinished={allSixFinished}
         isAuthRejected={isAuthRejected}
+        isPaused={Boolean(activeVideo)}
         onReady={handlePriorityImagesReady}
       />
     </>

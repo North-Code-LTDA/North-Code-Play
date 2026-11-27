@@ -44,8 +44,20 @@ export const HomeView = React.memo(function HomeView({
     fetchSeriesStreams,
     sessionReady,
     liveCatalogStatus,
+    vodCategoriesStatus,
     vodCatalogStatus,
+    vodCategoryStatus,
+    vodCategoryError,
+    isVodCategoryLoaded,
+    getVodCategoryStreams,
+    getPartialVodStreamsForSearch,
+    seriesCategoriesStatus,
     seriesCatalogStatus,
+    seriesCategoryStatus,
+    seriesCategoryError,
+    isSeriesCategoryLoaded,
+    getSeriesCategoryStreams,
+    getPartialSeriesStreamsForSearch,
   } = useXtreamContext();
 
   return (
@@ -65,14 +77,26 @@ export const HomeView = React.memo(function HomeView({
       vodStreams={vodStreams}
       allVodStreams={allVodStreams}
       loadingVod={loadingVod}
+      vodCategoriesStatus={vodCategoriesStatus}
       vodCatalogStatus={vodCatalogStatus}
+      vodCategoryStatus={vodCategoryStatus}
+      vodCategoryError={vodCategoryError}
       fetchVodStreams={fetchVodStreams}
+      isVodCategoryLoaded={isVodCategoryLoaded}
+      getVodCategoryStreams={getVodCategoryStreams}
+      getPartialVodStreamsForSearch={getPartialVodStreamsForSearch}
       seriesCategories={seriesCategories}
       seriesStreams={seriesStreams}
       allSeriesStreams={allSeriesStreams}
       loadingSeries={loadingSeries}
+      seriesCategoriesStatus={seriesCategoriesStatus}
       seriesCatalogStatus={seriesCatalogStatus}
+      seriesCategoryStatus={seriesCategoryStatus}
+      seriesCategoryError={seriesCategoryError}
       fetchSeriesStreams={fetchSeriesStreams}
+      isSeriesCategoryLoaded={isSeriesCategoryLoaded}
+      getSeriesCategoryStreams={getSeriesCategoryStreams}
+      getPartialSeriesStreamsForSearch={getPartialSeriesStreamsForSearch}
       sessionReady={sessionReady}
     />
   );

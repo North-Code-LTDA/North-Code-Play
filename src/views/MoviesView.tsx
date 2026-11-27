@@ -1,5 +1,9 @@
 import React from 'react';
-import { useXtreamVod, useXtreamCredentials } from '../context/XtreamContext';
+import {
+  useXtreamVod,
+  useXtreamCredentials,
+  useXtreamSession,
+} from '../context/XtreamContext';
 import { CatalogShowcaseView } from '../components/CatalogShowcaseView';
 
 export interface MoviesViewProps {
@@ -25,17 +29,23 @@ export const MoviesView = React.memo(function MoviesView({
   isPaused = false,
 }: MoviesViewProps) {
   const { credentials } = useXtreamCredentials();
+  const { sessionReady } = useXtreamSession();
   const {
     vodCategories,
     vodStreams,
     allVodStreams,
     loadingVod,
     vodError,
+    vodCategoryError,
     vodCategoriesStatus,
     vodCatalogStatus,
+    vodCategoryStatus,
     vodCategoriesError,
     fetchVodCategories,
     fetchVodStreams,
+    isVodCategoryLoaded,
+    getVodCategoryStreams,
+    getPartialVodStreamsForSearch,
   } = useXtreamVod();
 
   return (
@@ -50,11 +60,17 @@ export const MoviesView = React.memo(function MoviesView({
       allVodStreams={allVodStreams}
       loadingVod={loadingVod}
       vodError={vodError}
+      vodCategoryError={vodCategoryError}
       vodCategoriesStatus={vodCategoriesStatus}
       vodCatalogStatus={vodCatalogStatus}
+      vodCategoryStatus={vodCategoryStatus}
       vodCategoriesError={vodCategoriesError}
       fetchVodCategories={fetchVodCategories}
       fetchVodStreams={fetchVodStreams}
+      isVodCategoryLoaded={isVodCategoryLoaded}
+      getVodCategoryStreams={getVodCategoryStreams}
+      getPartialVodStreamsForSearch={getPartialVodStreamsForSearch}
+      sessionReady={sessionReady}
     />
   );
 });
