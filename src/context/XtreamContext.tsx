@@ -161,6 +161,11 @@ export interface XtreamSessionContextData {
   retrySession: () => Promise<void>;
 }
 
+export interface CatalogFetchOptions {
+  priority?: "user" | "secondary";
+  preserveActiveCategory?: boolean;
+}
+
 export interface XtreamLiveContextData {
   liveCategories: Category[];
   liveStreams: LiveStream[];
@@ -172,7 +177,10 @@ export interface XtreamLiveContextData {
   loadingLive: boolean;
   loadedLiveCatalog: boolean;
   fetchLiveCategories: () => Promise<void>;
-  fetchLiveStreams: (categoryId?: string) => Promise<void>;
+  fetchLiveStreams: (
+    categoryId?: string,
+    options?: CatalogFetchOptions
+  ) => Promise<void>;
 }
 
 export interface XtreamVodContextData {
@@ -190,7 +198,10 @@ export interface XtreamVodContextData {
   loadingVod: boolean;
   loadedVodCatalog: boolean;
   fetchVodCategories: () => Promise<void>;
-  fetchVodStreams: (categoryId?: string) => Promise<void>;
+  fetchVodStreams: (
+    categoryId?: string,
+    options?: CatalogFetchOptions
+  ) => Promise<void>;
   isVodCategoryLoaded: (categoryId: string) => boolean;
   getVodCategoryStreams: (categoryId: string) => VodStream[];
   getPartialVodStreamsForSearch: () => VodStream[];
@@ -211,7 +222,10 @@ export interface XtreamSeriesContextData {
   loadingSeries: boolean;
   loadedSeriesCatalog: boolean;
   fetchSeriesCategories: () => Promise<void>;
-  fetchSeriesStreams: (categoryId?: string) => Promise<void>;
+  fetchSeriesStreams: (
+    categoryId?: string,
+    options?: CatalogFetchOptions
+  ) => Promise<void>;
   isSeriesCategoryLoaded: (categoryId: string) => boolean;
   getSeriesCategoryStreams: (categoryId: string) => SeriesStream[];
   getPartialSeriesStreamsForSearch: () => SeriesStream[];
@@ -1192,16 +1206,25 @@ export function XtreamProvider({
 
   // Live Streams Catalog Fetch
   const fetchLiveStreams = useCallback(
-    async (categoryId?: string) => {
+    async (categoryId?: string, options?: CatalogFetchOptions) => {
       if (!credentials) return;
-      // Record most recent category requested
-      latestLiveCategoryRef.current = categoryId;
+      const normalizedCategoryId =
+        categoryId !== undefined &&
+        categoryId !== null &&
+        String(categoryId).trim() !== ""
+          ? String(categoryId).trim()
+          : undefined;
+
+      if (!options?.preserveActiveCategory || normalizedCategoryId !== undefined) {
+        latestLiveCategoryRef.current = normalizedCategoryId;
+      }
 
       // If catalog is already loaded and ready, immediately apply local filter via O(1) index
       if (liveCatalogStatusRef.current === "ready") {
         const source = allLiveStreamsRef.current;
-        if (categoryId) {
-          setLiveStreams(getOrCreateLiveIndex(source).getByCategory(categoryId));
+        const targetCat = latestLiveCategoryRef.current;
+        if (targetCat) {
+          setLiveStreams(getOrCreateLiveIndex(source).getByCategory(targetCat));
         } else {
           setLiveStreams(source);
         }
@@ -1209,7 +1232,8 @@ export function XtreamProvider({
       }
 
       const currentSession = sessionRef.current;
-      const priority = categoryId ? 100 : 5; // User category request has high priority
+      const priority =
+        normalizedCategoryId || options?.priority === "user" ? 100 : 5;
 
       return enqueueOperation("live_catalog", priority, async (signal, coordPrio) => {
         if (sessionRef.current !== currentSession || signal.aborted) {
@@ -1332,7 +1356,13 @@ export function XtreamProvider({
           setVodError(msg || "Falha ao carregar filmes.");
           vodCatalogStatusRef.current = "error";
           setVodCatalogStatus("error");
-          if (latestVodCategoryRef.current) {
+          // Section 6: Do not invalidate a category that was already loaded with success or has its own request in flight
+          const activeCat = latestVodCategoryRef.current;
+          if (
+            activeCat &&
+            !vodCategoryCacheRef.current.has(activeCat) &&
+            !inFlightVodCategoriesRef.current.has(activeCat)
+          ) {
             setVodCategoryError(msg || "Falha ao carregar filmes.");
             setVodCategoryStatus("error");
           }
@@ -1344,7 +1374,7 @@ export function XtreamProvider({
 
   // VOD Streams Catalog Fetch (Progressive: category-first when full catalog not yet started, index reuse when full catalog ready)
   const fetchVodStreams = useCallback(
-    async (categoryId?: string) => {
+    async (categoryId?: string, options?: CatalogFetchOptions) => {
       if (!credentials) return;
       const normalizedCategoryId =
         categoryId !== undefined &&
@@ -1353,28 +1383,44 @@ export function XtreamProvider({
           ? String(categoryId).trim()
           : undefined;
 
-      // Record most recent category requested
+      // Global catalog requested (e.g., Showcase, HeroBanner, Global Search, Virtual Categories, "Ver todos")
+      if (!normalizedCategoryId) {
+        const shouldPreserveActiveCategory = Boolean(options?.preserveActiveCategory);
+        if (!shouldPreserveActiveCategory) {
+          latestVodCategoryRef.current = undefined;
+          setActiveVodCategoryId(null);
+        }
+
+        if (vodCatalogStatusRef.current === "ready") {
+          const source = allVodStreamsRef.current;
+          const activeCat = latestVodCategoryRef.current;
+          if (activeCat) {
+            setVodStreams(getOrCreateVodIndex(source).getByCategory(activeCat));
+            setVodCategoryStatus("ready");
+            setVodCategoryError(null);
+          } else {
+            setVodStreams(source);
+            setVodCategoryStatus("idle");
+            setVodCategoryError(null);
+          }
+          return;
+        }
+
+        const globalPriority = options?.priority === "user" ? 100 : 2;
+        return enqueueGlobalVodCatalog(globalPriority);
+      }
+
+      // Specific category requested: record most recent category selection
       latestVodCategoryRef.current = normalizedCategoryId;
-      setActiveVodCategoryId(normalizedCategoryId ?? null);
+      setActiveVodCategoryId(normalizedCategoryId);
 
       // Rule 1: If global catalog is already loaded and ready, use exclusively its O(1) local index
       if (vodCatalogStatusRef.current === "ready") {
         const source = allVodStreamsRef.current;
-        if (normalizedCategoryId) {
-          setVodStreams(getOrCreateVodIndex(source).getByCategory(normalizedCategoryId));
-          setVodCategoryStatus("ready");
-          setVodCategoryError(null);
-        } else {
-          setVodStreams(source);
-          setVodCategoryStatus("idle");
-          setVodCategoryError(null);
-        }
+        setVodStreams(getOrCreateVodIndex(source).getByCategory(normalizedCategoryId));
+        setVodCategoryStatus("ready");
+        setVodCategoryError(null);
         return;
-      }
-
-      // Global catalog requested explicitly (e.g., Showcase, HeroBanner, Global Search, "Ver todos")
-      if (!normalizedCategoryId) {
-        return enqueueGlobalVodCatalog(2);
       }
 
       // Rule 2: If category is already available in the session category cache, reuse its data and index immediately
@@ -1467,6 +1513,20 @@ export function XtreamProvider({
             return;
           }
 
+          // Section 6: A late filtered response must not overwrite a global catalog that already finished
+          if (vodCatalogStatusRef.current === "ready") {
+            if (latestVodCategoryRef.current === normalizedCategoryId) {
+              setVodStreams(
+                getOrCreateVodIndex(allVodStreamsRef.current).getByCategory(
+                  normalizedCategoryId
+                )
+              );
+              setVodCategoryStatus("ready");
+              setVodCategoryError(null);
+            }
+            return;
+          }
+
           // Section 8: Verify provider category_id filter compliance
           const compliance = inspectCategoryFilterCompliance(
             streams,
@@ -1477,7 +1537,8 @@ export function XtreamProvider({
             setVodProviderSupportsCategoryFilter(false);
             if (
               compliance.matchingItems.length > 0 &&
-              latestVodCategoryRef.current === normalizedCategoryId
+              latestVodCategoryRef.current === normalizedCategoryId &&
+              vodCatalogStatusRef.current !== "ready"
             ) {
               setVodStreams(compliance.matchingItems);
             }
@@ -1524,12 +1585,28 @@ export function XtreamProvider({
           ) {
             return;
           }
+          // Section 6: Ignore late filtered failure if global catalog already succeeded
+          if (vodCatalogStatusRef.current === "ready") {
+            if (latestVodCategoryRef.current === normalizedCategoryId) {
+              setVodStreams(
+                getOrCreateVodIndex(allVodStreamsRef.current).getByCategory(
+                  normalizedCategoryId
+                )
+              );
+              setVodCategoryStatus("ready");
+              setVodCategoryError(null);
+            }
+            return;
+          }
           const msg = await registerErrorAndCheckAuth(
             err,
             currentSession,
             currentSignal
           );
           if (sessionRef.current !== currentSession || currentSignal.aborted) {
+            return;
+          }
+          if (vodCatalogStatusRef.current === "ready") {
             return;
           }
           if (latestVodCategoryRef.current === normalizedCategoryId) {
@@ -1622,7 +1699,13 @@ export function XtreamProvider({
           setSeriesError(msg || "Falha ao carregar séries.");
           seriesCatalogStatusRef.current = "error";
           setSeriesCatalogStatus("error");
-          if (latestSeriesCategoryRef.current) {
+          // Section 6: Do not invalidate a category that was already loaded with success or has its own request in flight
+          const activeCat = latestSeriesCategoryRef.current;
+          if (
+            activeCat &&
+            !seriesCategoryCacheRef.current.has(activeCat) &&
+            !inFlightSeriesCategoriesRef.current.has(activeCat)
+          ) {
             setSeriesCategoryError(msg || "Falha ao carregar séries.");
             setSeriesCategoryStatus("error");
           }
@@ -1634,7 +1717,7 @@ export function XtreamProvider({
 
   // Series Streams Catalog Fetch (Progressive: category-first when full catalog not yet started, index reuse when full catalog ready)
   const fetchSeriesStreams = useCallback(
-    async (categoryId?: string) => {
+    async (categoryId?: string, options?: CatalogFetchOptions) => {
       if (!credentials) return;
       const normalizedCategoryId =
         categoryId !== undefined &&
@@ -1643,30 +1726,46 @@ export function XtreamProvider({
           ? String(categoryId).trim()
           : undefined;
 
-      // Record most recent category requested
+      // Global catalog requested (e.g., Showcase, HeroBanner, Global Search, Virtual Categories, "Ver todos")
+      if (!normalizedCategoryId) {
+        const shouldPreserveActiveCategory = Boolean(options?.preserveActiveCategory);
+        if (!shouldPreserveActiveCategory) {
+          latestSeriesCategoryRef.current = undefined;
+          setActiveSeriesCategoryId(null);
+        }
+
+        if (seriesCatalogStatusRef.current === "ready") {
+          const source = allSeriesStreamsRef.current;
+          const activeCat = latestSeriesCategoryRef.current;
+          if (activeCat) {
+            setSeriesStreams(getOrCreateSeriesIndex(source).getByCategory(activeCat));
+            setSeriesCategoryStatus("ready");
+            setSeriesCategoryError(null);
+          } else {
+            setSeriesStreams(source);
+            setSeriesCategoryStatus("idle");
+            setSeriesCategoryError(null);
+          }
+          return;
+        }
+
+        const globalPriority = options?.priority === "user" ? 100 : 1;
+        return enqueueGlobalSeriesCatalog(globalPriority);
+      }
+
+      // Specific category requested: record most recent category selection
       latestSeriesCategoryRef.current = normalizedCategoryId;
-      setActiveSeriesCategoryId(normalizedCategoryId ?? null);
+      setActiveSeriesCategoryId(normalizedCategoryId);
 
       // Rule 1: If global catalog is already loaded and ready, use exclusively its O(1) local index
       if (seriesCatalogStatusRef.current === "ready") {
         const source = allSeriesStreamsRef.current;
-        if (normalizedCategoryId) {
-          setSeriesStreams(
-            getOrCreateSeriesIndex(source).getByCategory(normalizedCategoryId)
-          );
-          setSeriesCategoryStatus("ready");
-          setSeriesCategoryError(null);
-        } else {
-          setSeriesStreams(source);
-          setSeriesCategoryStatus("idle");
-          setSeriesCategoryError(null);
-        }
+        setSeriesStreams(
+          getOrCreateSeriesIndex(source).getByCategory(normalizedCategoryId)
+        );
+        setSeriesCategoryStatus("ready");
+        setSeriesCategoryError(null);
         return;
-      }
-
-      // Global catalog requested explicitly (e.g., Showcase, HeroBanner, Global Search, "Ver todos")
-      if (!normalizedCategoryId) {
-        return enqueueGlobalSeriesCatalog(1);
       }
 
       // Rule 2: If category is already available in the session category cache, reuse its data and index immediately
@@ -1759,6 +1858,20 @@ export function XtreamProvider({
             return;
           }
 
+          // Section 6: A late filtered response must not overwrite a global catalog that already finished
+          if (seriesCatalogStatusRef.current === "ready") {
+            if (latestSeriesCategoryRef.current === normalizedCategoryId) {
+              setSeriesStreams(
+                getOrCreateSeriesIndex(allSeriesStreamsRef.current).getByCategory(
+                  normalizedCategoryId
+                )
+              );
+              setSeriesCategoryStatus("ready");
+              setSeriesCategoryError(null);
+            }
+            return;
+          }
+
           // Section 8: Verify provider category_id filter compliance
           const compliance = inspectCategoryFilterCompliance(
             streams,
@@ -1769,7 +1882,8 @@ export function XtreamProvider({
             setSeriesProviderSupportsCategoryFilter(false);
             if (
               compliance.matchingItems.length > 0 &&
-              latestSeriesCategoryRef.current === normalizedCategoryId
+              latestSeriesCategoryRef.current === normalizedCategoryId &&
+              seriesCatalogStatusRef.current !== "ready"
             ) {
               setSeriesStreams(compliance.matchingItems);
             }
@@ -1816,12 +1930,28 @@ export function XtreamProvider({
           ) {
             return;
           }
+          // Section 6: Ignore late filtered failure if global catalog already succeeded
+          if (seriesCatalogStatusRef.current === "ready") {
+            if (latestSeriesCategoryRef.current === normalizedCategoryId) {
+              setSeriesStreams(
+                getOrCreateSeriesIndex(allSeriesStreamsRef.current).getByCategory(
+                  normalizedCategoryId
+                )
+              );
+              setSeriesCategoryStatus("ready");
+              setSeriesCategoryError(null);
+            }
+            return;
+          }
           const msg = await registerErrorAndCheckAuth(
             err,
             currentSession,
             currentSignal
           );
           if (sessionRef.current !== currentSession || currentSignal.aborted) {
+            return;
+          }
+          if (seriesCatalogStatusRef.current === "ready") {
             return;
           }
           if (latestSeriesCategoryRef.current === normalizedCategoryId) {
@@ -2323,12 +2453,8 @@ export function XtreamMockProvider({
   const defaultGetVodCategoryStreams = useCallback(
     (categoryId: string) => {
       const all = value.allVodStreams ?? [];
-      if (all.length > 0) {
-        return getOrCreateVodIndex(all).getSortedByCategory(categoryId);
-      }
-      return (value.vodStreams ?? []).filter(
-        (m) => String(m.category_id) === String(categoryId)
-      );
+      const source = all.length > 0 ? all : value.vodStreams ?? [];
+      return getOrCreateVodIndex(source).getSortedByCategory(categoryId);
     },
     [value.allVodStreams, value.vodStreams]
   );
@@ -2342,12 +2468,8 @@ export function XtreamMockProvider({
   const defaultGetSeriesCategoryStreams = useCallback(
     (categoryId: string) => {
       const all = value.allSeriesStreams ?? [];
-      if (all.length > 0) {
-        return getOrCreateSeriesIndex(all).getSortedByCategory(categoryId);
-      }
-      return (value.seriesStreams ?? []).filter(
-        (s) => String(s.category_id) === String(categoryId)
-      );
+      const source = all.length > 0 ? all : value.seriesStreams ?? [];
+      return getOrCreateSeriesIndex(source).getSortedByCategory(categoryId);
     },
     [value.allSeriesStreams, value.seriesStreams]
   );

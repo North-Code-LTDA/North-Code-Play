@@ -228,8 +228,12 @@ export interface CatalogShowcaseViewProps {
   liveStreams?: any[];
   allLiveStreams?: any[];
   loadingLive?: boolean;
+  liveError?: string | null;
   liveCatalogStatus?: string;
-  fetchLiveStreams?: (categoryId?: string) => Promise<void>;
+  fetchLiveStreams?: (
+    categoryId?: string,
+    options?: { priority?: 'user' | 'secondary'; preserveActiveCategory?: boolean }
+  ) => Promise<void>;
 
   // VOD domain (used in 'inicio' and 'movies')
   vodCategories?: any[];
@@ -243,7 +247,10 @@ export interface CatalogShowcaseViewProps {
   vodCategoryStatus?: string;
   vodCategoriesError?: string | null;
   fetchVodCategories?: () => Promise<void>;
-  fetchVodStreams?: (categoryId?: string) => Promise<void>;
+  fetchVodStreams?: (
+    categoryId?: string,
+    options?: { priority?: 'user' | 'secondary'; preserveActiveCategory?: boolean }
+  ) => Promise<void>;
   isVodCategoryLoaded?: (categoryId: string) => boolean;
   getVodCategoryStreams?: (categoryId: string) => any[];
   getPartialVodStreamsForSearch?: () => any[];
@@ -260,7 +267,10 @@ export interface CatalogShowcaseViewProps {
   seriesCategoryStatus?: string;
   seriesCategoriesError?: string | null;
   fetchSeriesCategories?: () => Promise<void>;
-  fetchSeriesStreams?: (categoryId?: string) => Promise<void>;
+  fetchSeriesStreams?: (
+    categoryId?: string,
+    options?: { priority?: 'user' | 'secondary'; preserveActiveCategory?: boolean }
+  ) => Promise<void>;
   isSeriesCategoryLoaded?: (categoryId: string) => boolean;
   getSeriesCategoryStreams?: (categoryId: string) => any[];
   getPartialSeriesStreamsForSearch?: () => any[];
@@ -679,6 +689,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   liveStreams = EMPTY_ARRAY,
   allLiveStreams = EMPTY_ARRAY,
   loadingLive = false,
+  liveError = null,
   liveCatalogStatus = 'idle',
   fetchLiveStreams,
   vodCategories = EMPTY_ARRAY,
@@ -850,7 +861,297 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
   const normalizedQueryForEffect = searchQuery.trim().toLowerCase();
   const hasSearchForEffect = normalizedQueryForEffect.length > 0;
 
-  // Immediate global coverage trigger when user requests Global Search or "Ver todos"
+  // Build O(1) catalog indexes only for relevant domains
+  const vodIndex = useMemo(
+    () => getOrCreateVodIndex(section === 'series' ? EMPTY_ARRAY : allVodStreams),
+    [section, allVodStreams]
+  );
+  const seriesIndex = useMemo(
+    () => getOrCreateSeriesIndex(section === 'movies' ? EMPTY_ARRAY : allSeriesStreams),
+    [section, allSeriesStreams]
+  );
+
+  // Partial category-cache pools and O(1) indexes (reused before global catalog finishes)
+  const partialVodPool = useMemo(() => {
+    if (section === 'series') return EMPTY_ARRAY;
+    if (allVodStreams.length > 0) return EMPTY_ARRAY;
+    if (getPartialVodStreamsForSearch) {
+      const partial = getPartialVodStreamsForSearch();
+      if (partial.length > 0) return partial;
+    }
+    return vodStreams;
+  }, [section, allVodStreams.length, getPartialVodStreamsForSearch, vodStreams]);
+
+  const partialVodIndex = useMemo(
+    () => getOrCreateVodIndex(partialVodPool),
+    [partialVodPool]
+  );
+
+  const partialSeriesPool = useMemo(() => {
+    if (section === 'movies') return EMPTY_ARRAY;
+    if (allSeriesStreams.length > 0) return EMPTY_ARRAY;
+    if (getPartialSeriesStreamsForSearch) {
+      const partial = getPartialSeriesStreamsForSearch();
+      if (partial.length > 0) return partial;
+    }
+    return seriesStreams;
+  }, [section, allSeriesStreams.length, getPartialSeriesStreamsForSearch, seriesStreams]);
+
+  const partialSeriesIndex = useMemo(
+    () => getOrCreateSeriesIndex(partialSeriesPool),
+    [partialSeriesPool]
+  );
+
+  // Domain-specific Continue Watching rows and history resolution tracking
+  const {
+    continueWatchingItems,
+    hasDomainHistoryRecords,
+    hasUnresolvedVodHistory,
+    hasUnresolvedSeriesHistory,
+  } = useMemo(() => {
+    if (section === 'movies') {
+      const result: any[] = [];
+      const seen = new Set<string>();
+      let hasHistory = false;
+      let hasUnresolvedVod = false;
+      for (const r of historyRecords) {
+        if (r.type === 'movie' && (r.positionSec ?? 0) > 30) {
+          hasHistory = true;
+          const item =
+            vodIndex.getById(r.id) ?? partialVodIndex.getById(r.id);
+          if (item) {
+            const idStr = String(item.stream_id ?? item.id);
+            const rowKey = `movie_${idStr}`;
+            if (!seen.has(rowKey)) {
+              seen.add(rowKey);
+              result.push({ ...item, rowKey });
+            }
+          } else {
+            hasUnresolvedVod = true;
+          }
+        }
+      }
+      return {
+        continueWatchingItems: result.length > 0 ? result : EMPTY_ARRAY,
+        hasDomainHistoryRecords: hasHistory,
+        hasUnresolvedVodHistory:
+          hasUnresolvedVod &&
+          allVodStreams.length === 0 &&
+          vodCatalogStatus !== 'ready',
+        hasUnresolvedSeriesHistory: false,
+      };
+    }
+
+    if (section === 'series') {
+      const result: any[] = [];
+      const seen = new Set<string>();
+      let hasHistory = false;
+      let hasUnresolvedSeries = false;
+      for (const r of historyRecords) {
+        if ((r.positionSec ?? 0) <= 30) continue;
+        const seriesLookupId = r.type === 'episode' ? r.parentSeriesId : undefined;
+        if (!seriesLookupId) continue;
+        hasHistory = true;
+        const item =
+          seriesIndex.getById(seriesLookupId) ??
+          partialSeriesIndex.getById(seriesLookupId);
+        if (item) {
+          const idStr = String(item.series_id ?? item.id);
+          const rowKey = `series_${idStr}`;
+          if (!seen.has(rowKey)) {
+            seen.add(rowKey);
+            result.push({ ...item, rowKey });
+          }
+        } else {
+          hasUnresolvedSeries = true;
+        }
+      }
+      return {
+        continueWatchingItems: result.length > 0 ? result : EMPTY_ARRAY,
+        hasDomainHistoryRecords: hasHistory,
+        hasUnresolvedVodHistory: false,
+        hasUnresolvedSeriesHistory:
+          hasUnresolvedSeries &&
+          allSeriesStreams.length === 0 &&
+          seriesCatalogStatus !== 'ready',
+      };
+    }
+
+    // 'inicio': mixed movies + series
+    const result: any[] = [];
+    const seen = new Set<string>();
+    let hasHistory = false;
+    let hasUnresolvedVod = false;
+    let hasUnresolvedSeries = false;
+    for (const r of historyRecords) {
+      if ((r.positionSec ?? 0) <= 30) continue;
+      if (r.type === 'movie') {
+        hasHistory = true;
+        const item =
+          vodIndex.getById(r.id) ?? partialVodIndex.getById(r.id);
+        if (item) {
+          const idStr = String(item.stream_id ?? item.id);
+          const rowKey = `movie_${idStr}`;
+          if (!seen.has(rowKey)) {
+            seen.add(rowKey);
+            result.push({ ...item, rowKey });
+          }
+        } else {
+          hasUnresolvedVod = true;
+        }
+      } else if (r.type === 'episode' && r.parentSeriesId) {
+        hasHistory = true;
+        const item =
+          seriesIndex.getById(r.parentSeriesId) ??
+          partialSeriesIndex.getById(r.parentSeriesId);
+        if (item) {
+          const idStr = String(item.series_id ?? item.id);
+          const rowKey = `series_${idStr}`;
+          if (!seen.has(rowKey)) {
+            seen.add(rowKey);
+            result.push({ ...item, rowKey });
+          }
+        } else {
+          hasUnresolvedSeries = true;
+        }
+      }
+    }
+    return {
+      continueWatchingItems: result.length > 0 ? result : EMPTY_ARRAY,
+      hasDomainHistoryRecords: hasHistory,
+      hasUnresolvedVodHistory:
+        hasUnresolvedVod &&
+        allVodStreams.length === 0 &&
+        vodCatalogStatus !== 'ready',
+      hasUnresolvedSeriesHistory:
+        hasUnresolvedSeries &&
+        allSeriesStreams.length === 0 &&
+        seriesCatalogStatus !== 'ready',
+    };
+  }, [
+    section,
+    historyRecords,
+    allVodStreams.length,
+    allSeriesStreams.length,
+    vodCatalogStatus,
+    seriesCatalogStatus,
+    vodIndex,
+    seriesIndex,
+    partialVodIndex,
+    partialSeriesIndex,
+  ]);
+
+  // Domain-specific Favorites rows (for 'movies' and 'series') and reconciliation tracking
+  const {
+    domainFavoriteItems,
+    hasDomainFavorites,
+    hasUnresolvedVodFavorites,
+    hasUnresolvedSeriesFavorites,
+  } = useMemo(() => {
+    if (section === 'movies') {
+      const movieFavs = favorites.filter((f) => f && f.type === 'movie');
+      if (movieFavs.length === 0) {
+        return {
+          domainFavoriteItems: EMPTY_ARRAY,
+          hasDomainFavorites: false,
+          hasUnresolvedVodFavorites: false,
+          hasUnresolvedSeriesFavorites: false,
+        };
+      }
+      const result: any[] = [];
+      let hasUnresolved = false;
+      for (const fav of movieFavs) {
+        const found =
+          vodIndex.getById(fav.id) ?? partialVodIndex.getById(fav.id);
+        if (found) {
+          result.push(found);
+        } else {
+          hasUnresolved = true;
+          const favAny = fav as any;
+          result.push({
+            stream_id: fav.id,
+            name: fav.name || favAny.title || 'Filme Favorito',
+            stream_icon: fav.cover || favAny.image || '',
+            rating: favAny.rating || fav.extraData?.rating || '',
+            year: favAny.year || fav.extraData?.year || '',
+            category_name: favAny.category || 'Favorito',
+            stream_type: 'movie',
+          });
+        }
+      }
+      return {
+        domainFavoriteItems: result,
+        hasDomainFavorites: true,
+        hasUnresolvedVodFavorites:
+          hasUnresolved &&
+          allVodStreams.length === 0 &&
+          vodCatalogStatus !== 'ready',
+        hasUnresolvedSeriesFavorites: false,
+      };
+    }
+
+    if (section === 'series') {
+      const seriesFavs = favorites.filter((f) => f && f.type === 'series');
+      if (seriesFavs.length === 0) {
+        return {
+          domainFavoriteItems: EMPTY_ARRAY,
+          hasDomainFavorites: false,
+          hasUnresolvedVodFavorites: false,
+          hasUnresolvedSeriesFavorites: false,
+        };
+      }
+      const result: any[] = [];
+      let hasUnresolved = false;
+      for (const fav of seriesFavs) {
+        const found =
+          seriesIndex.getById(fav.id) ?? partialSeriesIndex.getById(fav.id);
+        if (found) {
+          result.push(found);
+        } else {
+          hasUnresolved = true;
+          const favAny = fav as any;
+          result.push({
+            series_id: fav.id,
+            name: fav.name || favAny.title || 'Série Favorita',
+            cover: fav.cover || favAny.image || '',
+            rating: favAny.rating || fav.extraData?.rating || '',
+            year: favAny.year || fav.extraData?.year || '',
+            category_name: favAny.category || 'Favorito',
+            stream_type: 'series',
+          });
+        }
+      }
+      return {
+        domainFavoriteItems: result,
+        hasDomainFavorites: true,
+        hasUnresolvedVodFavorites: false,
+        hasUnresolvedSeriesFavorites:
+          hasUnresolved &&
+          allSeriesStreams.length === 0 &&
+          seriesCatalogStatus !== 'ready',
+      };
+    }
+
+    return {
+      domainFavoriteItems: EMPTY_ARRAY,
+      hasDomainFavorites: false,
+      hasUnresolvedVodFavorites: false,
+      hasUnresolvedSeriesFavorites: false,
+    };
+  }, [
+    section,
+    favorites,
+    allVodStreams.length,
+    allSeriesStreams.length,
+    vodCatalogStatus,
+    seriesCatalogStatus,
+    vodIndex,
+    seriesIndex,
+    partialVodIndex,
+    partialSeriesIndex,
+  ]);
+
+  // Immediate global coverage trigger when user requests Global Search, "Ver todos", or virtual categories with unresolved records
   useEffect(() => {
     if (!credentials || !sessionReady) return;
     if (hasSearchForEffect) {
@@ -859,44 +1160,124 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           (liveCatalogStatus === 'idle' || liveCatalogStatus === 'loading') &&
           fetchLiveStreams
         ) {
-          fetchLiveStreams().catch(() => {});
+          fetchLiveStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          }).catch(() => {});
         }
         if (
           (vodCatalogStatus === 'idle' || vodCatalogStatus === 'loading') &&
           fetchVodStreams
         ) {
-          fetchVodStreams().catch(() => {});
+          fetchVodStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          }).catch(() => {});
         }
         if (
           (seriesCatalogStatus === 'idle' || seriesCatalogStatus === 'loading') &&
           fetchSeriesStreams
         ) {
-          fetchSeriesStreams().catch(() => {});
+          fetchSeriesStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          }).catch(() => {});
         }
       } else if (section === 'movies') {
         if (
           (vodCatalogStatus === 'idle' || vodCatalogStatus === 'loading') &&
           fetchVodStreams
         ) {
-          fetchVodStreams().catch(() => {});
+          fetchVodStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          }).catch(() => {});
         }
       } else if (section === 'series') {
         if (
           (seriesCatalogStatus === 'idle' || seriesCatalogStatus === 'loading') &&
           fetchSeriesStreams
         ) {
-          fetchSeriesStreams().catch(() => {});
+          fetchSeriesStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          }).catch(() => {});
         }
       }
       return;
     }
 
     if (activeCategoryId === 'all') {
-      if (section === 'movies' && vodCatalogStatus === 'idle' && fetchVodStreams) {
-        fetchVodStreams().catch(() => {});
-      } else if (section === 'series' && seriesCatalogStatus === 'idle' && fetchSeriesStreams) {
-        fetchSeriesStreams().catch(() => {});
+      if (
+        section === 'movies' &&
+        (vodCatalogStatus === 'idle' || vodCatalogStatus === 'loading') &&
+        fetchVodStreams
+      ) {
+        fetchVodStreams(undefined, {
+          priority: 'user',
+          preserveActiveCategory: false,
+        }).catch(() => {});
+      } else if (
+        section === 'series' &&
+        (seriesCatalogStatus === 'idle' || seriesCatalogStatus === 'loading') &&
+        fetchSeriesStreams
+      ) {
+        fetchSeriesStreams(undefined, {
+          priority: 'user',
+          preserveActiveCategory: false,
+        }).catch(() => {});
       }
+      return;
+    }
+
+    if (activeCategoryId === 'nc_recent') {
+      if (
+        section === 'movies' &&
+        hasUnresolvedVodHistory &&
+        (vodCatalogStatus === 'idle' || vodCatalogStatus === 'loading') &&
+        fetchVodStreams
+      ) {
+        fetchVodStreams(undefined, {
+          priority: 'user',
+          preserveActiveCategory: true,
+        }).catch(() => {});
+      } else if (
+        section === 'series' &&
+        hasUnresolvedSeriesHistory &&
+        (seriesCatalogStatus === 'idle' || seriesCatalogStatus === 'loading') &&
+        fetchSeriesStreams
+      ) {
+        fetchSeriesStreams(undefined, {
+          priority: 'user',
+          preserveActiveCategory: true,
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    if (activeCategoryId === 'nc_fav') {
+      if (
+        section === 'movies' &&
+        hasUnresolvedVodFavorites &&
+        (vodCatalogStatus === 'idle' || vodCatalogStatus === 'loading') &&
+        fetchVodStreams
+      ) {
+        fetchVodStreams(undefined, {
+          priority: 'user',
+          preserveActiveCategory: true,
+        }).catch(() => {});
+      } else if (
+        section === 'series' &&
+        hasUnresolvedSeriesFavorites &&
+        (seriesCatalogStatus === 'idle' || seriesCatalogStatus === 'loading') &&
+        fetchSeriesStreams
+      ) {
+        fetchSeriesStreams(undefined, {
+          priority: 'user',
+          preserveActiveCategory: true,
+        }).catch(() => {});
+      }
+      return;
     }
   }, [
     section,
@@ -904,6 +1285,10 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     sessionReady,
     hasSearchForEffect,
     activeCategoryId,
+    hasUnresolvedVodHistory,
+    hasUnresolvedSeriesHistory,
+    hasUnresolvedVodFavorites,
+    hasUnresolvedSeriesFavorites,
     liveCatalogStatus,
     vodCatalogStatus,
     seriesCatalogStatus,
@@ -921,7 +1306,10 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     }
 
     if (section === 'inicio' && liveCatalogStatus === 'idle' && fetchLiveStreams) {
-      fetchLiveStreams().catch(() => {});
+      fetchLiveStreams(undefined, {
+        priority: 'secondary',
+        preserveActiveCategory: true,
+      }).catch(() => {});
     }
 
     const vodCatsDone =
@@ -946,10 +1334,16 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
 
     const timer = setTimeout(() => {
       if (needsVodGlobal && fetchVodStreams) {
-        fetchVodStreams().catch(() => {});
+        fetchVodStreams(undefined, {
+          priority: 'secondary',
+          preserveActiveCategory: true,
+        }).catch(() => {});
       }
       if (needsSeriesGlobal && fetchSeriesStreams) {
-        fetchSeriesStreams().catch(() => {});
+        fetchSeriesStreams(undefined, {
+          priority: 'secondary',
+          preserveActiveCategory: true,
+        }).catch(() => {});
       }
     }, 35);
 
@@ -973,150 +1367,6 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     fetchVodStreams,
     fetchSeriesStreams,
   ]);
-
-  // Build O(1) catalog indexes only for relevant domains
-  const vodIndex = useMemo(
-    () => getOrCreateVodIndex(section === 'series' ? EMPTY_ARRAY : allVodStreams),
-    [section, allVodStreams]
-  );
-  const seriesIndex = useMemo(
-    () => getOrCreateSeriesIndex(section === 'movies' ? EMPTY_ARRAY : allSeriesStreams),
-    [section, allSeriesStreams]
-  );
-
-  // Domain-specific Continue Watching rows
-  const continueWatchingItems = useMemo(() => {
-    if (section === 'movies') {
-      if (allVodStreams.length === 0) return EMPTY_ARRAY;
-      const result: any[] = [];
-      const seen = new Set<string>();
-      for (const r of historyRecords) {
-        if (r.type === 'movie' && (r.positionSec ?? 0) > 30) {
-          const item = vodIndex.getById(r.id);
-          if (item) {
-            const idStr = String(item.stream_id ?? item.id);
-            const rowKey = `movie_${idStr}`;
-            if (!seen.has(rowKey)) {
-              seen.add(rowKey);
-              result.push({ ...item, rowKey });
-            }
-          }
-        }
-      }
-      return result;
-    }
-
-    if (section === 'series') {
-      if (allSeriesStreams.length === 0) return EMPTY_ARRAY;
-      const result: any[] = [];
-      const seen = new Set<string>();
-      for (const r of historyRecords) {
-        if ((r.positionSec ?? 0) <= 30) continue;
-        const seriesLookupId = r.type === 'episode' ? r.parentSeriesId : undefined;
-        if (!seriesLookupId) continue;
-        const item = seriesIndex.getById(seriesLookupId);
-        if (item) {
-          const idStr = String(item.series_id ?? item.id);
-          const rowKey = `series_${idStr}`;
-          if (!seen.has(rowKey)) {
-            seen.add(rowKey);
-            result.push({ ...item, rowKey });
-          }
-        }
-      }
-      return result;
-    }
-
-    // 'inicio': mixed movies + series
-    if (allVodStreams.length === 0 && allSeriesStreams.length === 0) return EMPTY_ARRAY;
-    const result: any[] = [];
-    const seen = new Set<string>();
-    for (const r of historyRecords) {
-      if ((r.positionSec ?? 0) <= 30) continue;
-      if (r.type === 'movie') {
-        const item = vodIndex.getById(r.id);
-        if (item) {
-          const idStr = String(item.stream_id ?? item.id);
-          const rowKey = `movie_${idStr}`;
-          if (!seen.has(rowKey)) {
-            seen.add(rowKey);
-            result.push({ ...item, rowKey });
-          }
-        }
-      } else if (r.type === 'episode' && r.parentSeriesId) {
-        const item = seriesIndex.getById(r.parentSeriesId);
-        if (item) {
-          const idStr = String(item.series_id ?? item.id);
-          const rowKey = `series_${idStr}`;
-          if (!seen.has(rowKey)) {
-            seen.add(rowKey);
-            result.push({ ...item, rowKey });
-          }
-        }
-      }
-    }
-    return result;
-  }, [
-    section,
-    historyRecords,
-    allVodStreams.length,
-    allSeriesStreams.length,
-    vodIndex,
-    seriesIndex,
-  ]);
-
-  // Domain-specific Favorites rows (for 'movies' and 'series')
-  const domainFavoriteItems = useMemo(() => {
-    if (section === 'movies') {
-      const movieFavs = favorites.filter((f) => f && f.type === 'movie');
-      if (movieFavs.length === 0) return EMPTY_ARRAY;
-      const result: any[] = [];
-      for (const fav of movieFavs) {
-        const found = vodIndex.getById(fav.id);
-        if (found) {
-          result.push(found);
-        } else {
-          const favAny = fav as any;
-          result.push({
-            stream_id: fav.id,
-            name: fav.name || favAny.title || 'Filme Favorito',
-            stream_icon: fav.cover || favAny.image || '',
-            rating: favAny.rating || fav.extraData?.rating || '',
-            year: favAny.year || fav.extraData?.year || '',
-            category_name: favAny.category || 'Favorito',
-            stream_type: 'movie',
-          });
-        }
-      }
-      return result;
-    }
-
-    if (section === 'series') {
-      const seriesFavs = favorites.filter((f) => f && f.type === 'series');
-      if (seriesFavs.length === 0) return EMPTY_ARRAY;
-      const result: any[] = [];
-      for (const fav of seriesFavs) {
-        const found = seriesIndex.getById(fav.id);
-        if (found) {
-          result.push(found);
-        } else {
-          const favAny = fav as any;
-          result.push({
-            series_id: fav.id,
-            name: fav.name || favAny.title || 'Série Favorita',
-            cover: fav.cover || favAny.image || '',
-            rating: favAny.rating || fav.extraData?.rating || '',
-            year: favAny.year || fav.extraData?.year || '',
-            category_name: favAny.category || 'Favorito',
-            stream_type: 'series',
-          });
-        }
-      }
-      return result;
-    }
-
-    return EMPTY_ARRAY;
-  }, [section, favorites, vodIndex, seriesIndex]);
 
   // Featured items (complete sorted catalog references cached by catalogIndex; virtualized horizontally when large)
   const featuredMovies = useMemo(() => {
@@ -2924,7 +3174,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           loadingSeries ||
           loadingLive;
 
-  const isInicioSearchCoverageIncomplete = Boolean(
+  const isInicioSearchCoverageLoading = Boolean(
     hasSearch &&
       section === 'inicio' &&
       (liveCatalogStatus === 'idle' ||
@@ -2938,7 +3188,19 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         loadingSeries)
   );
 
-  const isDomainSearchCoverageIncomplete = Boolean(
+  const isInicioSearchCoverageFailed = Boolean(
+    hasSearch &&
+      section === 'inicio' &&
+      ((liveCatalogStatus === 'error' && allLiveStreams.length === 0) ||
+        (vodCatalogStatus === 'error' && allVodStreams.length === 0) ||
+        (seriesCatalogStatus === 'error' && allSeriesStreams.length === 0))
+  );
+
+  const isInicioSearchCoverageIncomplete = Boolean(
+    isInicioSearchCoverageLoading || isInicioSearchCoverageFailed
+  );
+
+  const isDomainSearchCoverageLoading = Boolean(
     hasSearch &&
       (section === 'movies'
         ? vodCatalogStatus === 'idle' ||
@@ -2951,9 +3213,74 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           : false)
   );
 
+  const isDomainSearchCoverageFailed = Boolean(
+    hasSearch &&
+      (section === 'movies'
+        ? (vodCatalogStatus === 'error' || Boolean(vodError)) &&
+          allVodStreams.length === 0
+        : section === 'series'
+          ? (seriesCatalogStatus === 'error' || Boolean(seriesError)) &&
+            allSeriesStreams.length === 0
+          : false)
+  );
+
+  const isDomainSearchCoverageIncomplete = Boolean(
+    isDomainSearchCoverageLoading || isDomainSearchCoverageFailed
+  );
+
+  const isVirtualCategoryCoverageLoading = Boolean(
+    !hasSearch &&
+      (activeCategoryId === 'nc_recent'
+        ? section === 'movies'
+          ? hasUnresolvedVodHistory &&
+            (vodCatalogStatus === 'idle' ||
+              vodCatalogStatus === 'loading' ||
+              loadingVod)
+          : section === 'series'
+            ? hasUnresolvedSeriesHistory &&
+              (seriesCatalogStatus === 'idle' ||
+                seriesCatalogStatus === 'loading' ||
+                loadingSeries)
+            : false
+        : activeCategoryId === 'nc_fav'
+          ? section === 'movies'
+            ? hasUnresolvedVodFavorites &&
+              (vodCatalogStatus === 'idle' ||
+                vodCatalogStatus === 'loading' ||
+                loadingVod)
+            : section === 'series'
+              ? hasUnresolvedSeriesFavorites &&
+                (seriesCatalogStatus === 'idle' ||
+                  seriesCatalogStatus === 'loading' ||
+                  loadingSeries)
+              : false
+          : false)
+  );
+
+  const isVirtualCategoryCoverageFailed = Boolean(
+    !hasSearch &&
+      (activeCategoryId === 'nc_recent'
+        ? section === 'movies'
+          ? hasUnresolvedVodHistory &&
+            (vodCatalogStatus === 'error' || Boolean(vodError))
+          : section === 'series'
+            ? hasUnresolvedSeriesHistory &&
+              (seriesCatalogStatus === 'error' || Boolean(seriesError))
+            : false
+        : activeCategoryId === 'nc_fav'
+          ? section === 'movies'
+            ? hasUnresolvedVodFavorites &&
+              (vodCatalogStatus === 'error' || Boolean(vodError))
+            : section === 'series'
+              ? hasUnresolvedSeriesFavorites &&
+                (seriesCatalogStatus === 'error' || Boolean(seriesError))
+              : false
+          : false)
+  );
+
   const isGridViewLoading =
     hasSearch
-      ? isDomainSearchCoverageIncomplete
+      ? isDomainSearchCoverageLoading
       : isRealCategorySelected
         ? !isSelectedRealCategoryLoaded &&
           (section === 'movies'
@@ -2971,20 +3298,127 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
             : seriesCatalogStatus === 'idle' ||
               seriesCatalogStatus === 'loading' ||
               loadingSeries
-          : false;
+          : activeCategoryId === 'nc_recent'
+            ? isVirtualCategoryCoverageLoading
+            : false;
 
   const domainCategoriesError =
     section === 'movies' ? vodCategoriesError : section === 'series' ? seriesCategoriesError : null;
   const domainCatalogError =
     section === 'movies'
-      ? isRealCategorySelected
-        ? vodCategoryError || vodError
-        : vodError
+      ? isRealCategorySelected && !hasSearch
+        ? isSelectedRealCategoryLoaded
+          ? null
+          : vodCategoryError || vodError
+        : (activeCategoryId === 'nc_recent' || activeCategoryId === 'nc_fav') &&
+            !hasSearch
+          ? isVirtualCategoryCoverageFailed
+            ? vodError || 'Falha ao carregar o catálogo completo de filmes.'
+            : null
+          : vodError
       : section === 'series'
-        ? isRealCategorySelected
-          ? seriesCategoryError || seriesError
-          : seriesError
+        ? isRealCategorySelected && !hasSearch
+          ? isSelectedRealCategoryLoaded
+            ? null
+            : seriesCategoryError || seriesError
+          : (activeCategoryId === 'nc_recent' || activeCategoryId === 'nc_fav') &&
+              !hasSearch
+            ? isVirtualCategoryCoverageFailed
+              ? seriesError || 'Falha ao carregar o catálogo completo de séries.'
+              : null
+            : seriesError
         : null;
+
+  const handleRetryInicioSearch = useCallback(async () => {
+    setIsRetryingDomain(true);
+    try {
+      const tasks: Promise<any>[] = [];
+      if (
+        (liveCatalogStatus === 'error' ||
+          liveCatalogStatus === 'idle' ||
+          Boolean(liveError)) &&
+        allLiveStreams.length === 0 &&
+        fetchLiveStreams
+      ) {
+        tasks.push(
+          fetchLiveStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          })
+        );
+      }
+      if (
+        (vodCatalogStatus === 'error' ||
+          vodCatalogStatus === 'idle' ||
+          Boolean(vodError)) &&
+        allVodStreams.length === 0 &&
+        fetchVodStreams
+      ) {
+        tasks.push(
+          fetchVodStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          })
+        );
+      }
+      if (
+        (seriesCatalogStatus === 'error' ||
+          seriesCatalogStatus === 'idle' ||
+          Boolean(seriesError)) &&
+        allSeriesStreams.length === 0 &&
+        fetchSeriesStreams
+      ) {
+        tasks.push(
+          fetchSeriesStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          })
+        );
+      }
+      if (tasks.length === 0) {
+        if (allLiveStreams.length === 0 && fetchLiveStreams) {
+          tasks.push(
+            fetchLiveStreams(undefined, {
+              priority: 'user',
+              preserveActiveCategory: true,
+            })
+          );
+        }
+        if (allVodStreams.length === 0 && fetchVodStreams) {
+          tasks.push(
+            fetchVodStreams(undefined, {
+              priority: 'user',
+              preserveActiveCategory: true,
+            })
+          );
+        }
+        if (allSeriesStreams.length === 0 && fetchSeriesStreams) {
+          tasks.push(
+            fetchSeriesStreams(undefined, {
+              priority: 'user',
+              preserveActiveCategory: true,
+            })
+          );
+        }
+      }
+      await Promise.all(tasks);
+    } finally {
+      setIsRetryingDomain(false);
+    }
+  }, [
+    liveCatalogStatus,
+    liveError,
+    allLiveStreams.length,
+    fetchLiveStreams,
+    vodCatalogStatus,
+    vodError,
+    allVodStreams.length,
+    fetchVodStreams,
+    seriesCatalogStatus,
+    seriesError,
+    allSeriesStreams.length,
+    fetchSeriesStreams,
+  ]);
 
   const handleRetryDomain = useCallback(async () => {
     setIsRetryingDomain(true);
@@ -2994,10 +3428,27 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         if (vodCategoriesStatus === 'error' || vodCategoriesError) {
           if (fetchVodCategories) tasks.push(fetchVodCategories());
         }
-        if (isRealCategorySelected && activeCategoryId && fetchVodStreams) {
+        if (
+          isRealCategorySelected &&
+          !hasSearch &&
+          activeCategoryId &&
+          fetchVodStreams
+        ) {
           tasks.push(fetchVodStreams(activeCategoryId));
-        } else if (vodCatalogStatus === 'error' || vodError || tasks.length === 0) {
-          if (fetchVodStreams) tasks.push(fetchVodStreams());
+        } else if (
+          hasSearch ||
+          vodCatalogStatus === 'error' ||
+          vodError ||
+          tasks.length === 0
+        ) {
+          if (fetchVodStreams) {
+            tasks.push(
+              fetchVodStreams(undefined, {
+                priority: 'user',
+                preserveActiveCategory: activeCategoryId !== 'all',
+              })
+            );
+          }
         }
         await Promise.all(tasks);
       } else if (section === 'series') {
@@ -3005,10 +3456,27 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         if (seriesCategoriesStatus === 'error' || seriesCategoriesError) {
           if (fetchSeriesCategories) tasks.push(fetchSeriesCategories());
         }
-        if (isRealCategorySelected && activeCategoryId && fetchSeriesStreams) {
+        if (
+          isRealCategorySelected &&
+          !hasSearch &&
+          activeCategoryId &&
+          fetchSeriesStreams
+        ) {
           tasks.push(fetchSeriesStreams(activeCategoryId));
-        } else if (seriesCatalogStatus === 'error' || seriesError || tasks.length === 0) {
-          if (fetchSeriesStreams) tasks.push(fetchSeriesStreams());
+        } else if (
+          hasSearch ||
+          seriesCatalogStatus === 'error' ||
+          seriesError ||
+          tasks.length === 0
+        ) {
+          if (fetchSeriesStreams) {
+            tasks.push(
+              fetchSeriesStreams(undefined, {
+                priority: 'user',
+                preserveActiveCategory: activeCategoryId !== 'all',
+              })
+            );
+          }
         }
         await Promise.all(tasks);
       }
@@ -3017,6 +3485,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     }
   }, [
     section,
+    hasSearch,
     isRealCategorySelected,
     activeCategoryId,
     vodCategoriesStatus,
@@ -3076,18 +3545,65 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
 
       if (catId === 'all') {
         if (section === 'movies' && vodCatalogStatus !== 'ready' && fetchVodStreams) {
-          fetchVodStreams().catch(() => {});
+          fetchVodStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: false,
+          }).catch(() => {});
         } else if (
           section === 'series' &&
           seriesCatalogStatus !== 'ready' &&
           fetchSeriesStreams
         ) {
-          fetchSeriesStreams().catch(() => {});
+          fetchSeriesStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: false,
+          }).catch(() => {});
         }
-      } else if (
-        catId !== 'nc_recent' &&
-        catId !== 'nc_fav'
-      ) {
+      } else if (catId === 'nc_recent') {
+        if (
+          section === 'movies' &&
+          hasUnresolvedVodHistory &&
+          vodCatalogStatus !== 'ready' &&
+          fetchVodStreams
+        ) {
+          fetchVodStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          }).catch(() => {});
+        } else if (
+          section === 'series' &&
+          hasUnresolvedSeriesHistory &&
+          seriesCatalogStatus !== 'ready' &&
+          fetchSeriesStreams
+        ) {
+          fetchSeriesStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          }).catch(() => {});
+        }
+      } else if (catId === 'nc_fav') {
+        if (
+          section === 'movies' &&
+          hasUnresolvedVodFavorites &&
+          vodCatalogStatus !== 'ready' &&
+          fetchVodStreams
+        ) {
+          fetchVodStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          }).catch(() => {});
+        } else if (
+          section === 'series' &&
+          hasUnresolvedSeriesFavorites &&
+          seriesCatalogStatus !== 'ready' &&
+          fetchSeriesStreams
+        ) {
+          fetchSeriesStreams(undefined, {
+            priority: 'user',
+            preserveActiveCategory: true,
+          }).catch(() => {});
+        }
+      } else {
         if (section === 'movies' && fetchVodStreams) {
           fetchVodStreams(catId).catch(() => {});
         } else if (section === 'series' && fetchSeriesStreams) {
@@ -3106,6 +3622,10 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
     [
       activeCategoryId,
       section,
+      hasUnresolvedVodHistory,
+      hasUnresolvedSeriesHistory,
+      hasUnresolvedVodFavorites,
+      hasUnresolvedSeriesFavorites,
       vodCatalogStatus,
       seriesCatalogStatus,
       fetchVodStreams,
@@ -3737,7 +4257,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               </span>
             </h2>
 
-            {isInicioSearchCoverageIncomplete &&
+            {isInicioSearchCoverageLoading &&
               (inicioSearchResults.live.length > 0 ||
                 inicioSearchResults.vod.length > 0 ||
                 inicioSearchResults.series.length > 0) && (
@@ -3752,10 +4272,41 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                 </div>
               )}
 
+            {!isInicioSearchCoverageLoading &&
+              isInicioSearchCoverageFailed &&
+              (inicioSearchResults.live.length > 0 ||
+                inicioSearchResults.vod.length > 0 ||
+                inicioSearchResults.series.length > 0) && (
+                <div
+                  role="status"
+                  data-search-coverage-status="partial-error"
+                  className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+                >
+                  <div className="flex items-start sm:items-center gap-2.5">
+                    <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+                    <span className="nc-text-subtitle text-amber-200 whitespace-normal break-words">
+                      Exibindo resultados parciais disponíveis. Não foi possível carregar todos os catálogos para concluir a busca.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    data-search-retry="inicio"
+                    disabled={isRetryingDomain}
+                    onClick={handleRetryInicioSearch}
+                    className="px-3.5 py-1.5 rounded-lg bg-nc-primary text-black nc-text-subtitle font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${isRetryingDomain ? 'animate-spin' : ''}`}
+                    />
+                    <span>Tentar novamente</span>
+                  </button>
+                </div>
+              )}
+
             {inicioSearchResults.live.length === 0 &&
               inicioSearchResults.vod.length === 0 &&
               inicioSearchResults.series.length === 0 &&
-              (isInicioSearchCoverageIncomplete ? (
+              (isInicioSearchCoverageLoading ? (
                 <div
                   data-search-coverage-status="partial-loading"
                   className="flex flex-col items-center justify-center py-20 text-nc-text-secondary"
@@ -3765,8 +4316,37 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                     Buscando &ldquo;{searchQuery}&rdquo; em todo o catálogo...
                   </p>
                 </div>
+              ) : isInicioSearchCoverageFailed ? (
+                <div
+                  role="status"
+                  data-search-coverage-status="error-incomplete"
+                  className="flex flex-col items-center justify-center py-16 px-4 text-center text-nc-text-secondary"
+                >
+                  <AlertCircle className="w-10 h-10 text-amber-400 mb-3" />
+                  <p className="text-lg text-white font-semibold mb-1">
+                    Busca incompleta para &ldquo;{searchQuery}&rdquo;
+                  </p>
+                  <p className="text-sm text-nc-text-secondary max-w-md mb-5">
+                    Não foi possível carregar todos os catálogos necessários para concluir a busca global.
+                  </p>
+                  <button
+                    type="button"
+                    data-search-retry="inicio"
+                    disabled={isRetryingDomain}
+                    onClick={handleRetryInicioSearch}
+                    className="px-4 py-2 rounded-xl bg-nc-primary text-black nc-text-subtitle font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 ${isRetryingDomain ? 'animate-spin' : ''}`}
+                    />
+                    <span>Tentar novamente</span>
+                  </button>
+                </div>
               ) : (
-                <div className="text-center py-20 text-nc-text-secondary">
+                <div
+                  data-search-coverage-status="complete-empty"
+                  className="text-center py-20 text-nc-text-secondary"
+                >
                   <p className="text-lg">
                     Nenhum resultado encontrado para &ldquo;{searchQuery}&rdquo;
                   </p>
@@ -3832,7 +4412,7 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               </h2>
             </div>
 
-            {isDomainSearchCoverageIncomplete && displayedGridItems.length > 0 && (
+            {isDomainSearchCoverageLoading && displayedGridItems.length > 0 && (
               <div
                 data-search-coverage-status="partial-results"
                 className="mb-4 flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-nc-text-secondary text-sm"
@@ -3844,37 +4424,133 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
               </div>
             )}
 
+            {!isDomainSearchCoverageLoading &&
+              isDomainSearchCoverageFailed &&
+              displayedGridItems.length > 0 && (
+                <div
+                  role="status"
+                  data-search-coverage-status="partial-error"
+                  className="mb-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+                >
+                  <div className="flex items-start sm:items-center gap-2.5">
+                    <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+                    <span className="nc-text-subtitle text-amber-200 whitespace-normal break-words">
+                      Exibindo resultados parciais disponíveis. Não foi possível carregar o catálogo completo de {sectionTitle.toLowerCase()}.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    data-search-retry={section}
+                    disabled={isRetryingDomain}
+                    onClick={handleRetryDomain}
+                    className="px-3.5 py-1.5 rounded-lg bg-nc-primary text-black nc-text-subtitle font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${isRetryingDomain ? 'animate-spin' : ''}`}
+                    />
+                    <span>Tentar novamente</span>
+                  </button>
+                </div>
+              )}
+
             {isGridViewLoading && displayedGridItems.length === 0 ? (
               <div
                 data-search-coverage-status={
-                  isDomainSearchCoverageIncomplete ? 'partial-loading' : undefined
+                  isDomainSearchCoverageLoading ? 'partial-loading' : undefined
+                }
+                data-virtual-category-coverage-status={
+                  !hasSearch && isVirtualCategoryCoverageLoading
+                    ? 'partial-loading'
+                    : undefined
                 }
                 className="flex flex-col items-center justify-center py-20 text-nc-text-secondary"
               >
                 <Loader2 className="w-8 h-8 animate-spin text-nc-primary mb-4" />
                 <p>
-                  {isDomainSearchCoverageIncomplete
+                  {isDomainSearchCoverageLoading
                     ? `Buscando "${searchQuery}" em todo o catálogo de ${sectionTitle.toLowerCase()}...`
                     : `Carregando ${sectionTitle.toLowerCase()}...`}
                 </p>
               </div>
             ) : displayedGridItems.length === 0 ? (
-              <div className="text-center py-20 text-nc-text-secondary">
-                {section === 'movies' ? (
-                  <Film className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                ) : (
-                  <Tv className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                )}
-                <p>
-                  {hasSearch
-                    ? `Nenhum resultado encontrado em ${sectionTitle} para "${searchQuery}".`
-                    : activeCategoryId === 'nc_recent'
-                      ? `Você ainda não assistiu a ${sectionTitle.toLowerCase()} recentemente.`
-                      : activeCategoryId === 'nc_fav'
-                        ? `Você ainda não adicionou ${sectionTitle.toLowerCase()} aos favoritos.`
-                        : `Nenhum título encontrado nesta categoria.`}
-                </p>
-              </div>
+              hasSearch && isDomainSearchCoverageFailed ? (
+                <div
+                  role="status"
+                  data-search-coverage-status="error-incomplete"
+                  className="flex flex-col items-center justify-center py-16 px-4 text-center text-nc-text-secondary"
+                >
+                  <AlertCircle className="w-10 h-10 text-amber-400 mb-3" />
+                  <p className="text-lg text-white font-semibold mb-1">
+                    Busca incompleta em {sectionTitle} para &ldquo;{searchQuery}&rdquo;
+                  </p>
+                  <p className="text-sm text-nc-text-secondary max-w-md mb-5">
+                    Não foi possível carregar o catálogo completo de {sectionTitle.toLowerCase()} para concluir a busca.
+                  </p>
+                  <button
+                    type="button"
+                    data-search-retry={section}
+                    disabled={isRetryingDomain}
+                    onClick={handleRetryDomain}
+                    className="px-4 py-2 rounded-xl bg-nc-primary text-black nc-text-subtitle font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 ${isRetryingDomain ? 'animate-spin' : ''}`}
+                    />
+                    <span>Tentar novamente</span>
+                  </button>
+                </div>
+              ) : !hasSearch &&
+                activeCategoryId === 'nc_recent' &&
+                hasDomainHistoryRecords &&
+                isVirtualCategoryCoverageFailed ? (
+                <div
+                  role="status"
+                  data-virtual-category-coverage-status="error-incomplete"
+                  className="flex flex-col items-center justify-center py-16 px-4 text-center text-nc-text-secondary"
+                >
+                  <AlertCircle className="w-10 h-10 text-amber-400 mb-3" />
+                  <p className="text-lg text-white font-semibold mb-1">
+                    Não foi possível carregar seus itens assistidos recentemente
+                  </p>
+                  <p className="text-sm text-nc-text-secondary max-w-md mb-5">
+                    O catálogo completo de {sectionTitle.toLowerCase()} é necessário para localizar o histórico salvo.
+                  </p>
+                  <button
+                    type="button"
+                    data-virtual-category-retry={section}
+                    disabled={isRetryingDomain}
+                    onClick={handleRetryDomain}
+                    className="px-4 py-2 rounded-xl bg-nc-primary text-black nc-text-subtitle font-semibold hover:bg-nc-primary-hover transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 ${isRetryingDomain ? 'animate-spin' : ''}`}
+                    />
+                    <span>Tentar novamente</span>
+                  </button>
+                </div>
+              ) : (
+                <div
+                  data-search-coverage-status={
+                    hasSearch ? 'complete-empty' : undefined
+                  }
+                  className="text-center py-20 text-nc-text-secondary"
+                >
+                  {section === 'movies' ? (
+                    <Film className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                  ) : (
+                    <Tv className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                  )}
+                  <p>
+                    {hasSearch
+                      ? `Nenhum resultado encontrado em ${sectionTitle} para "${searchQuery}".`
+                      : activeCategoryId === 'nc_recent'
+                        ? `Você ainda não assistiu a ${sectionTitle.toLowerCase()} recentemente.`
+                        : activeCategoryId === 'nc_fav'
+                          ? `Você ainda não adicionou ${sectionTitle.toLowerCase()} aos favoritos.`
+                          : `Nenhum título encontrado nesta categoria.`}
+                  </p>
+                </div>
+              )
             ) : (
               <>
                 {topSpacerPx > 0 && (

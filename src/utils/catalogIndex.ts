@@ -51,11 +51,14 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
     byCategoryId,
     getByCategory(categoryId) {
       if (categoryId === undefined || categoryId === null) return [];
-      return byCategoryId.get(String(categoryId)) || [];
+      const rawKey = String(categoryId);
+      const trimmedKey = rawKey.trim();
+      return byCategoryId.get(trimmedKey) || byCategoryId.get(rawKey) || [];
     },
     getById(id) {
       if (id === undefined || id === null || id === '') return undefined;
-      return byId.get(String(id));
+      const rawKey = String(id);
+      return byId.get(rawKey) ?? byId.get(rawKey.trim());
     },
     getSortedAll() {
       const maxYear = new Date().getFullYear() + 1;
@@ -68,13 +71,14 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
     },
     getSortedByCategory(categoryId) {
       if (categoryId === undefined || categoryId === null) return [];
-      const key = String(categoryId);
+      const rawKey = String(categoryId);
+      const key = rawKey.trim();
       const maxYear = new Date().getFullYear() + 1;
       const existing = sortedByCategoryCache.get(key);
       if (existing && existing.year === maxYear) {
         return existing.sorted;
       }
-      const rawCat = byCategoryId.get(key) || [];
+      const rawCat = byCategoryId.get(key) || byCategoryId.get(rawKey) || [];
       if (
         rawCat.length > 0 &&
         rawCat.length === safeItems.length &&
@@ -89,6 +93,62 @@ function instantiateRankedCatalogIndex<T extends Record<string, any>>(
       return sorted;
     },
   };
+}
+
+function addItemToCategoryBucket<T>(
+  byCategoryId: Map<string, T[]>,
+  catKey: string,
+  item: T
+): void {
+  let bucket = byCategoryId.get(catKey);
+  if (!bucket) {
+    bucket = [];
+    byCategoryId.set(catKey, bucket);
+  }
+  bucket.push(item);
+}
+
+function indexItemIntoCategoryBuckets<T extends Record<string, any>>(
+  item: T,
+  byCategoryId: Map<string, T[]>
+): void {
+  const primaryRaw = item.category_id;
+  const primaryKey =
+    primaryRaw !== undefined && primaryRaw !== null ? String(primaryRaw).trim() : '';
+  const rawCategoryIds = item.category_ids;
+
+  if (!Array.isArray(rawCategoryIds) || rawCategoryIds.length === 0) {
+    addItemToCategoryBucket(byCategoryId, primaryKey, item);
+    return;
+  }
+
+  let addedAny = false;
+  let seenKeys: Set<string> | null = null;
+
+  if (primaryKey !== '') {
+    addItemToCategoryBucket(byCategoryId, primaryKey, item);
+    addedAny = true;
+  }
+
+  for (let j = 0; j < rawCategoryIds.length; j++) {
+    const cid = rawCategoryIds[j];
+    if (cid === undefined || cid === null) continue;
+    const key = String(cid).trim();
+    if (!key || key === primaryKey) continue;
+    if (seenKeys) {
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+    } else {
+      seenKeys = new Set<string>();
+      seenKeys.add(key);
+    }
+    addItemToCategoryBucket(byCategoryId, key, item);
+    addedAny = true;
+  }
+
+  if (!addedAny) {
+    addItemToCategoryBucket(byCategoryId, '', item);
+  }
 }
 
 function createRankedCatalogIndex<T extends Record<string, any>>(
@@ -111,13 +171,7 @@ function createRankedCatalogIndex<T extends Record<string, any>>(
       }
     }
 
-    const catKey = String(item.category_id ?? '');
-    let bucket = byCategoryId.get(catKey);
-    if (!bucket) {
-      bucket = [];
-      byCategoryId.set(catKey, bucket);
-    }
-    bucket.push(item);
+    indexItemIntoCategoryBuckets(item, byCategoryId);
   }
 
   return instantiateRankedCatalogIndex(safeItems, byId, byCategoryId);
@@ -271,13 +325,7 @@ async function buildRankedCatalogIndexCooperatively<T extends Record<string, any
           }
         }
 
-        const catKey = String(item.category_id ?? '');
-        let bucket = byCategoryId.get(catKey);
-        if (!bucket) {
-          bucket = [];
-          byCategoryId.set(catKey, bucket);
-        }
-        bucket.push(item);
+        indexItemIntoCategoryBuckets(item, byCategoryId);
       }
 
       batchIdx++;

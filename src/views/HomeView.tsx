@@ -39,6 +39,9 @@ export const HomeView = React.memo(function HomeView({
     loadingLive,
     loadingVod,
     loadingSeries,
+    liveError,
+    vodError,
+    seriesError,
     fetchLiveStreams,
     fetchVodStreams,
     fetchSeriesStreams,
@@ -71,12 +74,14 @@ export const HomeView = React.memo(function HomeView({
       liveStreams={liveStreams}
       allLiveStreams={allLiveStreams}
       loadingLive={loadingLive}
+      liveError={liveError}
       liveCatalogStatus={liveCatalogStatus}
       fetchLiveStreams={fetchLiveStreams}
       vodCategories={vodCategories}
       vodStreams={vodStreams}
       allVodStreams={allVodStreams}
       loadingVod={loadingVod}
+      vodError={vodError}
       vodCategoriesStatus={vodCategoriesStatus}
       vodCatalogStatus={vodCatalogStatus}
       vodCategoryStatus={vodCategoryStatus}
@@ -89,6 +94,7 @@ export const HomeView = React.memo(function HomeView({
       seriesStreams={seriesStreams}
       allSeriesStreams={allSeriesStreams}
       loadingSeries={loadingSeries}
+      seriesError={seriesError}
       seriesCategoriesStatus={seriesCategoriesStatus}
       seriesCatalogStatus={seriesCatalogStatus}
       seriesCategoryStatus={seriesCategoryStatus}
