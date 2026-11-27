@@ -860,11 +860,14 @@ function MediaImageInner({
     resolvedUrl && (loadedImageUrlsCache.has(resolvedUrl) || Boolean(instantLocalSrc))
   );
 
-  // Track identity and monotonic generation independently of visibility/authorization
+  // Track visual identity generation separately from effect mount/cleanup lifecycle
+  // so React StrictMode's extra setup/cleanup/setup pass never invalidates legitimate
+  // onLoad/onError events for the currently rendered image.
   const currentKey = `${itemId ?? ''}_${resolvedUrl ?? ''}`;
   const prevKeyRef = useRef(currentKey);
   const activeKeyRef = useRef(currentKey);
-  const generationRef = useRef<number>(1);
+  const identityGenerationRef = useRef<number>(1);
+  const asyncLifecycleEpochRef = useRef<number>(1);
   const isMountedRef = useRef<boolean>(true);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRecoveryAbortRef = useRef<AbortController | null>(null);
@@ -886,10 +889,21 @@ function MediaImageInner({
     }
   };
 
-  const isCurrentOperationValid = (capturedKey: string, capturedGeneration: number): boolean =>
+  const isCurrentVisualIdentityValid = (
+    capturedKey: string,
+    capturedIdentityGeneration: number
+  ): boolean =>
     isMountedRef.current &&
     activeKeyRef.current === capturedKey &&
-    generationRef.current === capturedGeneration;
+    identityGenerationRef.current === capturedIdentityGeneration;
+
+  const isCurrentAsyncOperationValid = (
+    capturedKey: string,
+    capturedIdentityGeneration: number,
+    capturedLifecycleEpoch: number
+  ): boolean =>
+    isCurrentVisualIdentityValid(capturedKey, capturedIdentityGeneration) &&
+    asyncLifecycleEpochRef.current === capturedLifecycleEpoch;
 
   // Authorization is strictly controlled by `active` (independent of priority hints and loadedImageUrlsCache)
   const shouldAuthorizeNow = Boolean(active);
@@ -916,11 +930,11 @@ function MediaImageInner({
   });
   const [attempt, setAttempt] = useState(0);
 
-  // Synchronously advance generation and reset state ONLY when image identity (source or server) changes
+  // Synchronously advance visual identity generation and reset state ONLY when image identity (source or server) changes
   if (prevKeyRef.current !== currentKey) {
     prevKeyRef.current = currentKey;
     activeKeyRef.current = currentKey;
-    generationRef.current += 1;
+    identityGenerationRef.current += 1;
     localRecoveryAttemptedRef.current = false;
     nativeCacheBypassedForIdentityRef.current = false;
     cancelActiveRecovery();
@@ -977,14 +991,16 @@ function MediaImageInner({
     }
   }
 
-  const renderGeneration = generationRef.current;
+  const renderIdentityGeneration = identityGenerationRef.current;
 
-  // Cancel any scheduled retry timer or active recovery and invalidate generation on unmount
+  // Manage mount/unmount lifecycle epoch and cancel pending async work on cleanup
+  // without mutating identityGenerationRef (keeping current render's DOM handlers valid in StrictMode)
   useEffect(() => {
     isMountedRef.current = true;
+    asyncLifecycleEpochRef.current += 1;
     return () => {
       isMountedRef.current = false;
-      generationRef.current += 1;
+      asyncLifecycleEpochRef.current += 1;
       cancelActiveRecovery();
       clearScheduledRetryTimer();
     };
@@ -1004,11 +1020,12 @@ function MediaImageInner({
     }
 
     const opKey = currentKey;
-    const opGeneration = generationRef.current;
+    const opIdentityGeneration = identityGenerationRef.current;
+    const opLifecycleEpoch = asyncLifecycleEpochRef.current;
 
     const syncHit = getInstantCachedImageSrc(resolvedUrl);
     if (syncHit && !localRecoveryAttemptedRef.current) {
-      if (!isCurrentOperationValid(opKey, opGeneration)) return;
+      if (!isCurrentAsyncOperationValid(opKey, opIdentityGeneration, opLifecycleEpoch)) return;
       rememberLoadedImageUrl(resolvedUrl);
       setEffectiveImgSrc(syncHit);
       setEffectiveImgProvenance('local_file');
@@ -1029,7 +1046,12 @@ function MediaImageInner({
       signal: abortCtrl?.signal,
     })
       .then((outcome) => {
-        if (cancelled || !isCurrentOperationValid(opKey, opGeneration)) return;
+        if (
+          cancelled ||
+          !isCurrentAsyncOperationValid(opKey, opIdentityGeneration, opLifecycleEpoch)
+        ) {
+          return;
+        }
         const nextProvenance: EffectiveImageProvenance = outcome.isLocalFile
           ? 'local_file'
           : inferDirectSourceProvenance(outcome.src);
@@ -1050,7 +1072,11 @@ function MediaImageInner({
         }
       })
       .catch((err) => {
-        if (cancelled || abortCtrl?.signal.aborted || !isCurrentOperationValid(opKey, opGeneration)) {
+        if (
+          cancelled ||
+          abortCtrl?.signal.aborted ||
+          !isCurrentAsyncOperationValid(opKey, opIdentityGeneration, opLifecycleEpoch)
+        ) {
           return;
         }
         if (isDeterministicImageCacheIneligibilityError(err)) {
@@ -1079,21 +1105,24 @@ function MediaImageInner({
     ) {
       localRecoveryAttemptedRef.current = true;
       const opKey = currentKey;
-      const opGeneration = generationRef.current;
+      const opIdentityGeneration = identityGenerationRef.current;
+      const opLifecycleEpoch = asyncLifecycleEpochRef.current;
       let cancelled = false;
+      let settled = false;
       cancelActiveRecovery();
       const recoveryCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       activeRecoveryAbortRef.current = recoveryCtrl;
 
       recoverFromCorruptedLocalImage(resolvedUrl, { signal: recoveryCtrl?.signal })
         .then((recovered) => {
+          settled = true;
           if (activeRecoveryAbortRef.current === recoveryCtrl) {
             activeRecoveryAbortRef.current = null;
           }
           if (
             cancelled ||
             recoveryCtrl?.signal.aborted ||
-            !isCurrentOperationValid(opKey, opGeneration)
+            !isCurrentAsyncOperationValid(opKey, opIdentityGeneration, opLifecycleEpoch)
           ) {
             return;
           }
@@ -1115,13 +1144,14 @@ function MediaImageInner({
           setStatus('loaded');
         })
         .catch((err) => {
+          settled = true;
           if (activeRecoveryAbortRef.current === recoveryCtrl) {
             activeRecoveryAbortRef.current = null;
           }
           if (
             cancelled ||
             recoveryCtrl?.signal.aborted ||
-            !isCurrentOperationValid(opKey, opGeneration)
+            !isCurrentAsyncOperationValid(opKey, opIdentityGeneration, opLifecycleEpoch)
           ) {
             return;
           }
@@ -1137,6 +1167,13 @@ function MediaImageInner({
         if (activeRecoveryAbortRef.current === recoveryCtrl) {
           activeRecoveryAbortRef.current = null;
         }
+        if (
+          !settled &&
+          activeKeyRef.current === opKey &&
+          identityGenerationRef.current === opIdentityGeneration
+        ) {
+          localRecoveryAttemptedRef.current = false;
+        }
       };
     }
   }, [useAndroidDiskCache, effectiveImgProvenance, effectiveImgSrc, currentKey, resolvedUrl]);
@@ -1144,9 +1181,9 @@ function MediaImageInner({
   const handleImageError = (
     e: React.SyntheticEvent<HTMLImageElement, Event>,
     eventKey: string,
-    eventGeneration: number
+    eventIdentityGeneration: number
   ) => {
-    if (!isCurrentOperationValid(eventKey, eventGeneration)) {
+    if (!isCurrentVisualIdentityValid(eventKey, eventIdentityGeneration)) {
       return;
     }
 
@@ -1166,7 +1203,8 @@ function MediaImageInner({
       localRecoveryAttemptedRef.current = true;
       setStatus('loading');
       const opKey = eventKey;
-      const opGeneration = eventGeneration;
+      const opIdentityGeneration = eventIdentityGeneration;
+      const opLifecycleEpoch = asyncLifecycleEpochRef.current;
       cancelActiveRecovery();
       const recoveryCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       activeRecoveryAbortRef.current = recoveryCtrl;
@@ -1178,7 +1216,7 @@ function MediaImageInner({
           }
           if (
             recoveryCtrl?.signal.aborted ||
-            !isCurrentOperationValid(opKey, opGeneration)
+            !isCurrentAsyncOperationValid(opKey, opIdentityGeneration, opLifecycleEpoch)
           ) {
             return;
           }
@@ -1207,7 +1245,7 @@ function MediaImageInner({
           }
           if (
             recoveryCtrl?.signal.aborted ||
-            !isCurrentOperationValid(opKey, opGeneration)
+            !isCurrentAsyncOperationValid(opKey, opIdentityGeneration, opLifecycleEpoch)
           ) {
             return;
           }
@@ -1228,11 +1266,12 @@ function MediaImageInner({
       clearScheduledRetryTimer();
       activeRetryTimersCount++;
       const timerKey = eventKey;
-      const timerGeneration = eventGeneration;
+      const timerIdentityGeneration = eventIdentityGeneration;
+      const timerLifecycleEpoch = asyncLifecycleEpochRef.current;
       retryTimerRef.current = setTimeout(() => {
         retryTimerRef.current = null;
         activeRetryTimersCount = Math.max(0, activeRetryTimersCount - 1);
-        if (!isCurrentOperationValid(timerKey, timerGeneration)) {
+        if (!isCurrentAsyncOperationValid(timerKey, timerIdentityGeneration, timerLifecycleEpoch)) {
           return;
         }
         setAttempt(1);
@@ -1249,9 +1288,9 @@ function MediaImageInner({
   const handleImageLoad = (
     e: React.SyntheticEvent<HTMLImageElement, Event>,
     eventKey: string,
-    eventGeneration: number
+    eventIdentityGeneration: number
   ) => {
-    if (!isCurrentOperationValid(eventKey, eventGeneration)) {
+    if (!isCurrentVisualIdentityValid(eventKey, eventIdentityGeneration)) {
       return;
     }
     rememberLoadedImageUrl(resolvedUrl);
@@ -1295,15 +1334,15 @@ function MediaImageInner({
 
   return (
     <img
-      key={`${currentKey}_gen_${renderGeneration}_attempt_${attempt}`}
+      key={`${currentKey}_gen_${renderIdentityGeneration}_attempt_${attempt}`}
       src={effectiveImgSrc}
       alt={alt}
       loading={effectiveLoading}
       decoding={effectiveDecoding}
       fetchPriority={effectiveFetchPriority}
       className={`${className} ${status === 'loaded' ? 'opacity-100' : 'opacity-0'} transition-opacity duration-200`}
-      onError={(e) => handleImageError(e, currentKey, renderGeneration)}
-      onLoad={(e) => handleImageLoad(e, currentKey, renderGeneration)}
+      onError={(e) => handleImageError(e, currentKey, renderIdentityGeneration)}
+      onLoad={(e) => handleImageLoad(e, currentKey, renderIdentityGeneration)}
       {...rest}
     />
   );
