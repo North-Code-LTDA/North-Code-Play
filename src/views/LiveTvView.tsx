@@ -20,9 +20,11 @@ import { MediaImage, observeContainerVisibility, notifyContainerScrollForFallbac
 import { useFavorites } from '../hooks/useFavorites';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
 import {
+  collectLiveChannelLogoCandidates,
   extractExplicitMediaMimeType,
   getValidMediaId,
   normalizeDirectMediaSource,
+  normalizeImageCandidates,
   preparePlaybackMediaSource,
   PlaybackSourceMetadata,
 } from '../utils/mediaUtils';
@@ -1134,7 +1136,16 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
       ? epgSnapshot.currentProgram.title
       : 'Programação indisponível';
 
-  const logoSrc = group.stream_icon || primaryStream?.stream_icon;
+  const logoCandidates = useMemo(
+    () =>
+      normalizeImageCandidates(
+        collectLiveChannelLogoCandidates(primaryStream, group),
+        credentials?.serverUrl
+      ),
+    [primaryStream, group, credentials?.serverUrl]
+  );
+  const logoSrc = logoCandidates[0] ?? null;
+  const logoFallbackSrcs = logoCandidates.length > 1 ? logoCandidates.slice(1) : undefined;
   const logoSrcRef = useRef<unknown>(logoSrc);
   logoSrcRef.current = logoSrc;
   const enterHoldStartRef = useRef<number | null>(null);
@@ -1304,6 +1315,7 @@ const LiveChannelCard = React.memo(function LiveChannelCard({
             {logoSrc && (
               <MediaImage
                 src={logoSrc}
+                fallbackSrcs={logoFallbackSrcs}
                 serverUrl={credentials?.serverUrl}
                 alt={group.displayName}
                 itemId={primaryStreamId}
@@ -2474,9 +2486,19 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
     [selectedChannel, selectedGroup]
   );
 
-  const rightPanePrimaryLogo = selectedGroup
-    ? selectedGroup.stream_icon || getGroupPrimaryStream(selectedGroup)?.stream_icon
-    : null;
+  const rightPaneLogoCandidates = useMemo(
+    () =>
+      selectedGroup
+        ? normalizeImageCandidates(
+            collectLiveChannelLogoCandidates(selectedChannel, selectedGroup),
+            credentials?.serverUrl
+          )
+        : [],
+    [selectedChannel, selectedGroup, credentials?.serverUrl]
+  );
+  const rightPanePrimaryLogo = rightPaneLogoCandidates[0] ?? null;
+  const rightPaneLogoFallbacks =
+    rightPaneLogoCandidates.length > 1 ? rightPaneLogoCandidates.slice(1) : undefined;
 
   const currentEpgProgram = rightPaneEpg?.currentProgram ?? null;
 
@@ -2666,6 +2688,7 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
                   {rightPanePrimaryLogo && (
                     <MediaImage
                       src={rightPanePrimaryLogo}
+                      fallbackSrcs={rightPaneLogoFallbacks}
                       serverUrl={credentials?.serverUrl}
                       alt={selectedGroup.displayName}
                       itemId={getStreamIdString(selectedChannel)}

@@ -20,11 +20,14 @@ import { VideoPlayer } from './VideoPlayer';
 import { ExternalSubtitleTrackInput } from './player/types';
 import { extractXtreamSubtitles } from './player/trackUtils';
 import {
+  collectEpisodeThumbnailCandidates,
+  collectSeriesHeroCandidates,
   extractExplicitMediaMimeType,
   getEpisodeId,
   normalizeContainerExtension,
   normalizeDirectMediaSource,
   normalizeEpisodesBySeason,
+  normalizeImageCandidates,
   normalizeImageSource,
   normalizeMetadataText,
   preparePlaybackMediaSource,
@@ -735,15 +738,6 @@ export const SeriesDetails = React.memo(function SeriesDetails({
   const titleId = `series-details-title-${seriesId}`;
   const favorited = isFavorite(seriesId, 'series');
 
-  const heroBackdropUrl = useMemo(() => {
-    const rawBackdrop = Array.isArray(info.backdrop_path)
-      ? info.backdrop_path.find((b: any) => typeof b === 'string' && b.trim().length > 0)
-      : typeof info.backdrop_path === 'string' && info.backdrop_path.trim().length > 0
-        ? info.backdrop_path
-        : '';
-    return normalizeImageSource(rawBackdrop);
-  }, [info.backdrop_path]);
-
   const heroCoverUrl = useMemo(
     () =>
       normalizeImageSource(info.cover_big || info.cover) ||
@@ -751,7 +745,33 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     [info.cover_big, info.cover, seriesCover]
   );
 
-  const heroImageUrl = heroBackdropUrl || heroCoverUrl;
+  const heroImageCandidates = useMemo(
+    () =>
+      normalizeImageCandidates(
+        collectSeriesHeroCandidates(info, seriesCover),
+        credentials?.serverUrl
+      ),
+    [info, seriesCover, credentials?.serverUrl]
+  );
+
+  const heroImageUrl = heroImageCandidates[0] ?? null;
+  const heroImageFallbackSrcs =
+    heroImageCandidates.length > 1 ? heroImageCandidates.slice(1) : undefined;
+
+  const seasonMetaByKey = useMemo(() => {
+    const map = new Map<string, Record<string, unknown>>();
+    const seasonsArr = seriesInfo?.seasons;
+    if (Array.isArray(seasonsArr)) {
+      for (const s of seasonsArr) {
+        if (!s || typeof s !== 'object') continue;
+        const rawNum = s.season_number ?? s.season ?? s.id;
+        if (rawNum !== undefined && rawNum !== null && String(rawNum).trim()) {
+          map.set(String(rawNum).trim(), s as Record<string, unknown>);
+        }
+      }
+    }
+    return map;
+  }, [seriesInfo?.seasons]);
 
   const releaseYear = useMemo(
     () => extractCleanYear(info.releasedate || info.releaseDate || info.release_date || info.year),
@@ -1323,6 +1343,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         {heroImageUrl ? (
           <MediaImage
             src={heroImageUrl}
+            fallbackSrcs={heroImageFallbackSrcs}
             serverUrl={credentials?.serverUrl}
             alt={displayTitle}
             itemId={seriesId}
@@ -1693,19 +1714,26 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                     const epId = getEpisodeId(episode);
                     const epNum = episode.episode_num || idx + 1;
                     const epTitle = episode.title || `Episódio ${epNum}`;
-                    const epRawImage =
-                      episode.info?.movie_image ||
-                      episode.info?.cover_big ||
-                      episode.info?.episode_image ||
-                      episode.movie_image ||
-                      episode.cover ||
-                      episode.stream_icon ||
-                      '';
-                    const epThumbUrl =
-                      normalizeImageSource(epRawImage) ||
-                      heroBackdropUrl ||
-                      heroCoverUrl ||
-                      '';
+                    const episodeSeasonKey =
+                      effectiveSelectedGroup?.kind === 'season'
+                        ? effectiveSelectedGroup.seasonKey
+                        : episode.season !== undefined && episode.season !== null
+                          ? String(episode.season).trim()
+                          : null;
+                    const matchingSeasonMeta =
+                      episodeSeasonKey !== null ? seasonMetaByKey.get(episodeSeasonKey) ?? null : null;
+                    const epThumbCandidates = normalizeImageCandidates(
+                      collectEpisodeThumbnailCandidates(
+                        episode,
+                        matchingSeasonMeta,
+                        info,
+                        seriesCover
+                      ),
+                      credentials?.serverUrl
+                    );
+                    const epThumbUrl = epThumbCandidates[0] ?? '';
+                    const epThumbFallbacks =
+                      epThumbCandidates.length > 1 ? epThumbCandidates.slice(1) : undefined;
                     const epDurationInfo = formatEpisodeDuration(
                       episode.info?.duration || episode.duration,
                       episode.info?.duration_secs || episode.duration_secs
@@ -1787,6 +1815,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                           {epThumbUrl ? (
                             <MediaImage
                               src={epThumbUrl}
+                              fallbackSrcs={epThumbFallbacks}
                               serverUrl={credentials?.serverUrl}
                               alt={epTitle}
                               itemId={epId ?? undefined}

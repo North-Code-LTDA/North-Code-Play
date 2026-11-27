@@ -35,7 +35,9 @@ import {
   getHeroBannerItems,
 } from '../utils/catalogIndex';
 import {
-  buildDirectImageUrl,
+  collectLiveChannelLogoCandidates,
+  collectMoviePosterCandidates,
+  collectSeriesPosterCandidates,
   extractExplicitMediaMimeType,
   getEpisodeId,
   getValidMediaId,
@@ -51,7 +53,7 @@ import {
   scheduleBackgroundLowPriorityPreload,
   computeAdaptiveInitialCardsPerRow,
   isAndroidPersistentImageCacheAvailable,
-  extractCatalogItemRawImage,
+  selectSinglePreloadImageUrlForItem,
 } from '../services/androidImageCache';
 import { extractXtreamSubtitles } from './player/trackUtils';
 import { getValidYear } from '../utils/catalogRanking';
@@ -549,6 +551,7 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
             focusedVirtualIdx === virtualIndex;
 
           if (domain === 'live') {
+            const liveLogoCandidates = collectLiveChannelLogoCandidates(entry, entry);
             return (
               <div
                 key={itemKey}
@@ -579,7 +582,8 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
                 >
                   <div className="flex-1 flex items-center justify-center overflow-hidden p-2">
                     <MediaImage
-                      src={entry.stream_icon}
+                      src={liveLogoCandidates[0]}
+                      fallbackSrcs={liveLogoCandidates.slice(1)}
                       serverUrl={credentials?.serverUrl}
                       alt={itemTitle}
                       itemId={rawId}
@@ -598,11 +602,14 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
             );
           }
 
-          const coverSrc =
-            domain === 'series'
-              ? entry.cover || entry.stream_icon
-              : entry.stream_icon || entry.cover;
           const payload = domain === 'series' ? { ...entry, stream_type: 'series' } : entry;
+          const cachedDetailsInfo = credentials
+            ? getCachedHeroDetails(credentials, payload)?.info ?? null
+            : null;
+          const coverCandidates =
+            domain === 'series'
+              ? collectSeriesPosterCandidates(entry, cachedDetailsInfo)
+              : collectMoviePosterCandidates(entry, cachedDetailsInfo);
 
           return (
             <div
@@ -639,7 +646,8 @@ const VirtualizedInicioSearchSection = React.memo(function VirtualizedInicioSear
                 className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card border border-nc-border flex flex-col justify-end"
               >
                 <MediaImage
-                  src={coverSrc}
+                  src={coverCandidates[0]}
+                  fallbackSrcs={coverCandidates.slice(1)}
                   serverUrl={credentials?.serverUrl}
                   alt={itemTitle}
                   itemId={rawId}
@@ -2115,8 +2123,9 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
           desc.type === 'live' ? budget.landscapeCardsPerRow : budget.posterCardsPerRow;
         const limit = Math.min(rowBudget, items.length);
         for (let c = 0; c < limit; c++) {
-          const raw = extractCatalogItemRawImage(items[c]);
-          const resolved = buildDirectImageUrl(raw, credentials?.serverUrl);
+          const resolved = selectSinglePreloadImageUrlForItem(items[c], credentials?.serverUrl, {
+            type: desc.type === 'live' ? 'live' : desc.type === 'series' ? 'series' : 'vod',
+          });
           if (resolved) {
             preloadUrls.push(resolved);
           }
@@ -4585,7 +4594,16 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                     const itemId = item.stream_id ?? item.series_id ?? item.id ?? virtualIndex;
                     const itemKey = String(itemId);
                     const itemTitle = item.name || item.title || sectionTitle;
-                    const itemImage = item.stream_icon || item.cover || item.image;
+                    const isItemSeries = section === 'series' || isSeriesItem(item);
+                    const cachedGridDetailsInfo = credentials
+                      ? getCachedHeroDetails(
+                          credentials,
+                          isItemSeries ? { ...item, stream_type: 'series' } : item
+                        )?.info ?? null
+                      : null;
+                    const itemImageCandidates = isItemSeries
+                      ? collectSeriesPosterCandidates(item, cachedGridDetailsInfo)
+                      : collectMoviePosterCandidates(item, cachedGridDetailsInfo);
                     const releaseYear =
                       item._precomputedYear !== undefined
                         ? item._precomputedYear || null
@@ -4632,7 +4650,8 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                           className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card border border-nc-border flex flex-col justify-end"
                         >
                           <MediaImage
-                            src={itemImage}
+                            src={itemImageCandidates[0]}
+                            fallbackSrcs={itemImageCandidates.slice(1)}
                             serverUrl={credentials?.serverUrl}
                             alt={itemTitle}
                             itemId={itemId}

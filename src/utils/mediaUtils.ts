@@ -678,6 +678,263 @@ export function buildDirectImageUrl(
   return null;
 }
 
+export const DEFAULT_MAX_IMAGE_CANDIDATES = 3;
+
+/**
+ * Resolves, filters, deduplicates, and bounds an ordered list of raw image sources
+ * (strings, nested arrays of strings, null/undefined) for a single content item.
+ *
+ * Guarantees:
+ * - Preserves original priority order.
+ * - Preserves signed absolute HTTP/HTTPS URLs literally via `buildDirectImageUrl`.
+ * - Deduplicates AFTER final URL resolution.
+ * - Discards empty, invalid, malformed, or unsupported entries without throwing.
+ * - Caps the returned list to `maxCandidates` (default: 3).
+ * - Never fabricates URLs from IDs, titles, or external services.
+ */
+export function normalizeImageCandidates(
+  sources: unknown,
+  serverUrl?: string | null,
+  maxCandidates: number = DEFAULT_MAX_IMAGE_CANDIDATES
+): string[] {
+  const limit =
+    typeof maxCandidates === "number" && Number.isFinite(maxCandidates)
+      ? Math.max(0, Math.floor(maxCandidates))
+      : DEFAULT_MAX_IMAGE_CANDIDATES;
+  if (limit === 0 || sources === null || sources === undefined) {
+    return [];
+  }
+
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+
+  const visit = (entry: unknown): void => {
+    if (resolved.length >= limit || entry === null || entry === undefined) {
+      return;
+    }
+    if (Array.isArray(entry)) {
+      for (let i = 0; i < entry.length && resolved.length < limit; i++) {
+        visit(entry[i]);
+      }
+      return;
+    }
+    if (typeof entry !== "string") {
+      return;
+    }
+    const url = buildDirectImageUrl(entry, serverUrl);
+    if (!url || seen.has(url)) {
+      return;
+    }
+    seen.add(url);
+    resolved.push(url);
+  };
+
+  visit(sources);
+  return resolved;
+}
+
+/**
+ * Collects ordered raw logo candidates strictly belonging to a live channel and its
+ * grouped variants (never crossing into other channels).
+ */
+export function collectLiveChannelLogoCandidates(
+  primaryChannel?: Record<string, unknown> | null,
+  group?: {
+    stream_icon?: unknown;
+    primaryStream?: Record<string, unknown> | null;
+    variants?: ReadonlyArray<{ stream?: Record<string, unknown> | null } | null> | null;
+    allStreams?: ReadonlyArray<Record<string, unknown> | null> | null;
+  } | null
+): unknown[] {
+  const raw: unknown[] = [];
+  if (primaryChannel && typeof primaryChannel === "object") {
+    raw.push(primaryChannel.stream_icon, primaryChannel.logo, primaryChannel.cover);
+  }
+  if (group && typeof group === "object") {
+    raw.push(group.stream_icon);
+    if (group.primaryStream && typeof group.primaryStream === "object") {
+      raw.push(group.primaryStream.stream_icon, group.primaryStream.logo);
+    }
+    if (Array.isArray(group.variants)) {
+      for (const variant of group.variants) {
+        if (variant && variant.stream && typeof variant.stream === "object") {
+          raw.push(variant.stream.stream_icon, variant.stream.logo);
+        }
+      }
+    }
+    if (Array.isArray(group.allStreams)) {
+      for (const s of group.allStreams) {
+        if (s && typeof s === "object") {
+          raw.push(s.stream_icon, s.logo);
+        }
+      }
+    }
+  }
+  return raw;
+}
+
+/**
+ * Collects ordered raw vertical poster candidates for a VOD movie card.
+ * Keeps vertical poster priority and never substitutes horizontal backdrops.
+ */
+export function collectMoviePosterCandidates(
+  item?: Record<string, unknown> | null,
+  cachedDetailsInfo?: Record<string, unknown> | null
+): unknown[] {
+  const raw: unknown[] = [];
+  if (item && typeof item === "object") {
+    raw.push(item.stream_icon, item.movie_image, item.cover, item.cover_big, item.image);
+  }
+  if (cachedDetailsInfo && typeof cachedDetailsInfo === "object") {
+    raw.push(
+      cachedDetailsInfo.movie_image,
+      cachedDetailsInfo.cover_big,
+      cachedDetailsInfo.cover
+    );
+  }
+  return raw;
+}
+
+/**
+ * Collects ordered raw vertical poster candidates for a Series card.
+ * Keeps vertical cover priority and never substitutes horizontal backdrops.
+ */
+export function collectSeriesPosterCandidates(
+  item?: Record<string, unknown> | null,
+  cachedDetailsInfo?: Record<string, unknown> | null
+): unknown[] {
+  const raw: unknown[] = [];
+  if (item && typeof item === "object") {
+    raw.push(item.cover, item.cover_big, item.stream_icon, item.image);
+  }
+  if (cachedDetailsInfo && typeof cachedDetailsInfo === "object") {
+    raw.push(
+      cachedDetailsInfo.cover,
+      cachedDetailsInfo.cover_big,
+      cachedDetailsInfo.movie_image
+    );
+  }
+  return raw;
+}
+
+/**
+ * Collects ordered raw hero/backdrop candidates for MovieDetails.
+ */
+export function collectMovieHeroCandidates(
+  info?: Record<string, unknown> | null,
+  fallbackStreamIcon?: unknown,
+  catalogItem?: Record<string, unknown> | null
+): unknown[] {
+  return [
+    info?.backdrop_path,
+    catalogItem?.backdrop_path,
+    info?.cover_big,
+    info?.movie_image,
+    info?.cover,
+    fallbackStreamIcon,
+    catalogItem?.stream_icon,
+    catalogItem?.cover,
+    catalogItem?.image,
+  ];
+}
+
+/**
+ * Collects ordered raw hero/backdrop candidates for SeriesDetails.
+ */
+export function collectSeriesHeroCandidates(
+  info?: Record<string, unknown> | null,
+  fallbackSeriesCover?: unknown
+): unknown[] {
+  return [
+    info?.backdrop_path,
+    info?.cover_big,
+    info?.cover,
+    info?.movie_image,
+    fallbackSeriesCover,
+  ];
+}
+
+/**
+ * Collects ordered raw thumbnail candidates for a single series episode:
+ * 1. Episode's own image fields.
+ * 2. Matching season cover (when provided for the exact season).
+ * 3. Series backdrop/cover as final fallback.
+ * Never borrows artwork from another episode.
+ */
+export function collectEpisodeThumbnailCandidates(
+  episode?: Record<string, unknown> | null,
+  seasonMeta?: Record<string, unknown> | null,
+  seriesInfo?: Record<string, unknown> | null,
+  fallbackSeriesCover?: unknown
+): unknown[] {
+  const epInfo =
+    episode && typeof episode.info === "object" && episode.info !== null
+      ? (episode.info as Record<string, unknown>)
+      : null;
+
+  return [
+    epInfo?.movie_image,
+    epInfo?.cover_big,
+    epInfo?.episode_image,
+    epInfo?.cover,
+    episode?.movie_image,
+    episode?.cover,
+    episode?.stream_icon,
+    seasonMeta?.cover_big,
+    seasonMeta?.cover,
+    seriesInfo?.backdrop_path,
+    seriesInfo?.cover_big,
+    seriesInfo?.cover,
+    fallbackSeriesCover,
+  ];
+}
+
+export interface HeroBannerImageCandidatePlan {
+  horizontalUrls: string[];
+  verticalUrls: string[];
+  allCandidates: string[];
+}
+
+/**
+ * Resolves HeroBanner horizontal backdrop and vertical cover candidates separately
+ * while enforcing the global 3-candidate cap and strict horizontal-first priority.
+ */
+export function collectHeroBannerCandidates(
+  item?: Record<string, unknown> | null,
+  detailsInfo?: Record<string, unknown> | null,
+  serverUrl?: string | null,
+  maxCandidates: number = DEFAULT_MAX_IMAGE_CANDIDATES
+): HeroBannerImageCandidatePlan {
+  const horizontalUrls = normalizeImageCandidates(
+    [detailsInfo?.backdrop_path, item?.backdrop_path],
+    serverUrl,
+    maxCandidates
+  );
+  const verticalUrls = normalizeImageCandidates(
+    [
+      item?.stream_icon,
+      item?.cover,
+      item?.cover_big,
+      item?.image,
+      detailsInfo?.movie_image,
+      detailsInfo?.cover_big,
+      detailsInfo?.cover,
+    ],
+    serverUrl,
+    maxCandidates
+  );
+  const allCandidates = normalizeImageCandidates(
+    [...horizontalUrls, ...verticalUrls],
+    serverUrl,
+    maxCandidates
+  );
+  return {
+    horizontalUrls,
+    verticalUrls,
+    allCandidates,
+  };
+}
+
 const FORBIDDEN_SEASON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 /**

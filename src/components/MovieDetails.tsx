@@ -9,6 +9,7 @@ import {
 import { useXtreamCredentials } from '../context/XtreamContext';
 import {
   fetchOrReuseHeroDetails,
+  getCachedHeroDetails,
   getHeroAccountScopeKey,
 } from '../services/heroSessionCache';
 import { useFavorites } from '../hooks/useFavorites';
@@ -18,9 +19,12 @@ import {
   clearItemProgress,
 } from '../utils/playbackHistory';
 import {
+  collectMovieHeroCandidates,
+  collectMoviePosterCandidates,
   extractExplicitMediaMimeType,
   normalizeContainerExtension,
   normalizeDirectMediaSource,
+  normalizeImageCandidates,
   normalizeImageSource,
   normalizeMetadataText,
   preparePlaybackMediaSource,
@@ -424,17 +428,28 @@ export const MovieDetails = React.memo(function MovieDetails({
   const displayTitle = info.name || movieData.name || activeStreamName || 'Filme';
   const titleId = `movie-details-title-${activeStreamId}`;
 
-  // Resolve primary backdrop / hero image
-  const heroImageUrl = useMemo(() => {
-    const rawBackdrop = Array.isArray(info.backdrop_path)
-      ? info.backdrop_path.find((b: any) => typeof b === 'string' && b.trim().length > 0)
-      : typeof info.backdrop_path === 'string' && info.backdrop_path.trim().length > 0
-        ? info.backdrop_path
-        : '';
-    return normalizeImageSource(
-      rawBackdrop || info.cover_big || info.movie_image || activeStreamIcon
+  const matchingCatalogMovie = useMemo(() => {
+    if (!Array.isArray(catalogMovies) || catalogMovies.length === 0) return null;
+    const targetId = String(activeStreamId);
+    return (
+      catalogMovies.find(
+        (m) => m && String(m.stream_id ?? m.id ?? '') === targetId
+      ) ?? null
     );
-  }, [info.backdrop_path, info.cover_big, info.movie_image, activeStreamIcon]);
+  }, [catalogMovies, activeStreamId]);
+
+  // Resolve ordered hero / backdrop candidates (up to 3 distinct resolved URLs)
+  const heroImageCandidates = useMemo(
+    () =>
+      normalizeImageCandidates(
+        collectMovieHeroCandidates(info, activeStreamIcon, matchingCatalogMovie),
+        credentials?.serverUrl
+      ),
+    [info, activeStreamIcon, matchingCatalogMovie, credentials?.serverUrl]
+  );
+  const heroImageUrl = heroImageCandidates[0] ?? null;
+  const heroImageFallbackSrcs =
+    heroImageCandidates.length > 1 ? heroImageCandidates.slice(1) : undefined;
 
   // Real metadata fields (never fabricate unavailable fields)
   const releaseYear = useMemo(
@@ -771,6 +786,7 @@ export const MovieDetails = React.memo(function MovieDetails({
         {heroImageUrl ? (
           <MediaImage
             src={heroImageUrl}
+            fallbackSrcs={heroImageFallbackSrcs}
             serverUrl={credentials?.serverUrl}
             alt={displayTitle}
             itemId={activeStreamId}
@@ -1011,9 +1027,10 @@ export const MovieDetails = React.memo(function MovieDetails({
                 {similarMovies.map((simItem: any, idx: number) => {
                   const simId = simItem.stream_id ?? simItem.id ?? idx;
                   const simTitle = simItem.name || simItem.title || 'Filme';
-                  const simImage = normalizeImageSource(
-                    simItem.stream_icon || simItem.cover || simItem.image || ''
-                  );
+                  const simCachedInfo = credentials
+                    ? getCachedHeroDetails(credentials, simItem)?.info ?? null
+                    : null;
+                  const simCandidates = collectMoviePosterCandidates(simItem, simCachedInfo);
                   const simYear = extractCleanYear(
                     simItem.year || simItem.releasedate || simItem.releaseDate,
                     simItem._precomputedYear
@@ -1051,7 +1068,8 @@ export const MovieDetails = React.memo(function MovieDetails({
                       >
                         <div className="relative w-full aspect-video bg-[#1f1f1f] overflow-hidden shrink-0">
                           <MediaImage
-                            src={simImage}
+                            src={simCandidates[0]}
+                            fallbackSrcs={simCandidates.slice(1)}
                             serverUrl={credentials?.serverUrl}
                             alt={simTitle}
                             itemId={simId}

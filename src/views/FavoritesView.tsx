@@ -1,16 +1,30 @@
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { Play, Tv, Film, PlaySquare, Heart, AlertCircle, RefreshCw, Search, X } from 'lucide-react';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
-import { useXtreamCredentials } from '../context/XtreamContext';
+import {
+  useXtreamCredentials,
+  useXtreamLive,
+  useXtreamVod,
+  useXtreamSeries,
+} from '../context/XtreamContext';
 import { MovieDetails } from '../components/MovieDetails';
 import { SeriesDetails } from '../components/SeriesDetails';
 import { HorizontalRow } from '../components/HorizontalRow';
 import { MediaImage } from '../components/MediaImage';
 import {
+  collectLiveChannelLogoCandidates,
+  collectMoviePosterCandidates,
+  collectSeriesPosterCandidates,
   extractExplicitMediaMimeType,
   normalizeImageSource,
   preparePlaybackMediaSource,
 } from '../utils/mediaUtils';
+import {
+  getOrCreateLiveIndex,
+  getOrCreateVodIndex,
+  getOrCreateSeriesIndex,
+} from '../utils/catalogIndex';
+import { getCachedHeroDetails } from '../services/heroSessionCache';
 import { OnPlayMediaHandler } from '../components/player/types';
 import { recordPlaybackPosition } from '../utils/playbackHistory';
 import { useVirtualWindow } from '../hooks/useVirtualWindow';
@@ -96,6 +110,78 @@ export const FavoritesView = React.memo(function FavoritesView({
 }: FavoritesViewProps) {
   const { favorites, toggleFavorite, favoriteError, clearFavoriteError } = useFavorites();
   const { credentials } = useXtreamCredentials();
+  const { allLiveStreams, liveStreams } = useXtreamLive();
+  const { allVodStreams, vodStreams } = useXtreamVod();
+  const { allSeriesStreams, seriesStreams } = useXtreamSeries();
+
+  // O(1) lookup indexes over already-loaded current-session catalog data (never triggers network fetches)
+  const liveIndex = useMemo(
+    () => getOrCreateLiveIndex(allLiveStreams.length > 0 ? allLiveStreams : liveStreams),
+    [allLiveStreams, liveStreams]
+  );
+  const vodIndex = useMemo(
+    () => getOrCreateVodIndex(allVodStreams.length > 0 ? allVodStreams : vodStreams),
+    [allVodStreams, vodStreams]
+  );
+  const seriesIndex = useMemo(
+    () => getOrCreateSeriesIndex(allSeriesStreams.length > 0 ? allSeriesStreams : seriesStreams),
+    [allSeriesStreams, seriesStreams]
+  );
+
+  const resolveFavoriteImageCandidates = useCallback(
+    (fav: FavoriteItem): unknown[] => {
+      const extra =
+        fav.extraData && typeof fav.extraData === 'object'
+          ? (fav.extraData as Record<string, unknown>)
+          : null;
+
+      if (fav.type === 'live') {
+        const matchedLive = liveIndex.getById(fav.id);
+        return [
+          fav.cover,
+          extra?.stream_icon,
+          extra?.cover,
+          ...collectLiveChannelLogoCandidates(matchedLive as Record<string, unknown> | null, null),
+        ];
+      }
+
+      if (fav.type === 'series') {
+        const matchedSeries = seriesIndex.getById(fav.id);
+        const cachedDetailsInfo = credentials
+          ? getCachedHeroDetails(credentials, { series_id: fav.id, stream_type: 'series' })?.info ??
+            null
+          : null;
+        return [
+          fav.cover,
+          extra?.cover,
+          extra?.cover_big,
+          extra?.stream_icon,
+          ...collectSeriesPosterCandidates(
+            matchedSeries as Record<string, unknown> | null,
+            cachedDetailsInfo
+          ),
+        ];
+      }
+
+      const matchedVod = vodIndex.getById(fav.id);
+      const cachedDetailsInfo = credentials
+        ? getCachedHeroDetails(credentials, { stream_id: fav.id, stream_type: 'movie' })?.info ??
+          null
+        : null;
+      return [
+        fav.cover,
+        extra?.stream_icon,
+        extra?.movie_image,
+        extra?.cover,
+        extra?.cover_big,
+        ...collectMoviePosterCandidates(
+          matchedVod as Record<string, unknown> | null,
+          cachedDetailsInfo
+        ),
+      ];
+    },
+    [liveIndex, vodIndex, seriesIndex, credentials]
+  );
 
   const [filterType, setFilterType] = useState<FavoritesFilterType>('all');
   const [selectedMovie, setSelectedMovie] = useState<FavoriteItem | null>(null);
@@ -690,17 +776,23 @@ export const FavoritesView = React.memo(function FavoritesView({
             </div>
 
             <div className="flex-1 flex items-center justify-center overflow-hidden my-1.5 px-4 py-2 rounded-lg bg-black/45 border border-white/[0.04] relative">
-              <MediaImage
-                src={fav.cover}
-                serverUrl={credentials?.serverUrl}
-                alt={fav.name}
-                itemId={fav.id}
-                itemName={fav.name}
-                active={isAuthorized}
-                loading="lazy"
-                decoding="async"
-                className="nc-fav-card-img max-h-full max-w-full object-contain transition-transform duration-200 group-hover:scale-105"
-              />
+              {(() => {
+                const favCandidates = resolveFavoriteImageCandidates(fav);
+                return (
+                  <MediaImage
+                    src={favCandidates[0]}
+                    fallbackSrcs={favCandidates.slice(1)}
+                    serverUrl={credentials?.serverUrl}
+                    alt={fav.name}
+                    itemId={fav.id}
+                    itemName={fav.name}
+                    active={isAuthorized}
+                    loading="lazy"
+                    decoding="async"
+                    className="nc-fav-card-img max-h-full max-w-full object-contain transition-transform duration-200 group-hover:scale-105"
+                  />
+                );
+              })()}
               <div className="nc-card-play-overlay absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
                 <div className="nc-card-play-badge w-10 h-10 rounded-full bg-nc-primary flex items-center justify-center text-black shadow-lg transform scale-90 group-hover:scale-100 group-focus:scale-100 transition-transform">
                   <Play className="w-5 h-5 fill-current ml-0.5" />
@@ -722,17 +814,23 @@ export const FavoritesView = React.memo(function FavoritesView({
             data-card-visual="true"
             className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card border border-nc-border flex flex-col justify-end"
           >
-            <MediaImage
-              src={fav.cover}
-              serverUrl={credentials?.serverUrl}
-              alt={fav.name}
-              itemId={fav.id}
-              itemName={fav.name}
-              active={isAuthorized}
-              loading="lazy"
-              decoding="async"
-              className="absolute inset-0 w-full h-full object-cover"
-            />
+            {(() => {
+              const favCandidates = resolveFavoriteImageCandidates(fav);
+              return (
+                <MediaImage
+                  src={favCandidates[0]}
+                  fallbackSrcs={favCandidates.slice(1)}
+                  serverUrl={credentials?.serverUrl}
+                  alt={fav.name}
+                  itemId={fav.id}
+                  itemName={fav.name}
+                  active={isAuthorized}
+                  loading="lazy"
+                  decoding="async"
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              );
+            })()}
             <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/35 to-transparent" />
 
             <button

@@ -1,5 +1,12 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { buildDirectImageUrl, normalizeImageSource } from '../utils/mediaUtils';
+import {
+  collectHeroBannerCandidates,
+  collectLiveChannelLogoCandidates,
+  collectMoviePosterCandidates,
+  collectSeriesPosterCandidates,
+  normalizeImageCandidates,
+  normalizeImageSource,
+} from '../utils/mediaUtils';
 import { safeReadStorage, safeSetStorage } from '../utils/accountUtils';
 import { getOrCreateVodIndex, getOrCreateSeriesIndex, getHeroBannerItems } from '../utils/catalogIndex';
 import type { DisplayMode } from '../platform/tvEnvironment';
@@ -10,12 +17,27 @@ export const DEFAULT_IMAGE_CACHE_MAX_BYTES = 120 * 1024 * 1024; // 120 MB
 export const VISITED_CATEGORIES_STORAGE_KEY = 'nc_visited_image_categories_v1';
 export const MAX_VISITED_CATEGORIES_HISTORY = 16;
 export const MAX_LOW_PRIORITY_PENDING_TASKS = 24;
+export const MAX_TEMPORARY_IMAGE_FAILURES = 2500;
+export const DEFAULT_TEMPORARY_IMAGE_FAILURE_TTL_MS = 60_000;
+export const DEFAULT_RATE_LIMIT_HOST_COOLDOWN_MS = 30_000;
+
+let testClockOffsetMs = 0;
 
 function getMonotonicNowMs(): number {
-  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
-    return performance.now();
+  const base =
+    typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+  return base + testClockOffsetMs;
+}
+
+/**
+ * Avança o relógio monotônico interno exclusivamente para testes automatizados de TTL.
+ */
+export function advanceAndroidImageCacheClockForTest(deltaMs: number): void {
+  if (typeof deltaMs === 'number' && Number.isFinite(deltaMs) && deltaMs > 0) {
+    testClockOffsetMs += deltaMs;
   }
-  return Date.now();
 }
 
 const SAFE_IMAGE_FILE_NAME_REGEX =
@@ -249,6 +271,59 @@ export function isDeterministicImageCacheIneligibilityError(err: unknown): boole
   return DETERMINISTIC_CACHE_INELIGIBLE_CODES.has(code);
 }
 
+/**
+ * Identifica respostas HTTP 401/403 (restrição de acesso/autenticação), que nunca devem ser
+ * contornadas via carregamento direto e nunca devem ser penalizadas como indisponibilidade permanente.
+ */
+export function isImageAccessDeniedError(err: unknown): boolean {
+  const code = extractImageCacheErrorCode(err);
+  return code === 'HTTP_401' || code === 'HTTP_403';
+}
+
+/**
+ * Identifica resposta HTTP 429 (rate limit do provedor/CDN), que deve evitar rajadas imediatas
+ * contra o mesmo host e nunca deve ser tratada como falha permanente.
+ */
+export function isImageRateLimitError(err: unknown): boolean {
+  return extractImageCacheErrorCode(err) === 'HTTP_429';
+}
+
+export function isImageAccessOrRateLimitError(err: unknown): boolean {
+  return isImageAccessDeniedError(err) || isImageRateLimitError(err);
+}
+
+/**
+ * Identifica respostas definitivas de recurso ausente (HTTP 404/410) retornadas pelo plugin nativo.
+ */
+export function isImageNotFoundError(err: unknown): boolean {
+  const code = extractImageCacheErrorCode(err);
+  return code === 'HTTP_404' || code === 'HTTP_410';
+}
+
+/**
+ * Identifica erros originados por cancelamento, desmontagem, troca de item ou encerramento de sessão,
+ * os quais jamais devem penalizar a URL na memória temporária de falhas.
+ */
+export function isImageCancellationOrSessionError(err: unknown): boolean {
+  const code = extractImageCacheErrorCode(err);
+  if (code === 'ABORTED' || code === 'SESSION_CLEARED') {
+    return true;
+  }
+  if (err && typeof err === 'object') {
+    const obj = err as { name?: unknown; message?: unknown; isAborted?: unknown };
+    if (obj.name === 'AbortError' || obj.isAborted === true) {
+      return true;
+    }
+    if (
+      typeof obj.message === 'string' &&
+      /(?:cancelad|desmontad|logout|sess[aã]o encerrada)/i.test(obj.message)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 let registeredPlugin: ImageDiskCacheNativePlugin | null = null;
 let pluginOverrideForTest: ImageDiskCacheNativePlugin | null = null;
 let convertFileSrcOverrideForTest: ((filePath: string) => string) | null = null;
@@ -322,6 +397,129 @@ function rememberDirectOnlyImageUrl(url: string, ttlMs?: number): void {
     }
   }
   directOnlyImageUrls.set(trimmed, expiresAt);
+}
+
+/**
+ * Memória temporária em RAM de URLs de imagem com falha recente na sessão atual (IMG02).
+ * Mantida ESTRITAMENTE separada de `directOnlyImageUrls`:
+ * - `directOnlyImageUrls` controla elegibilidade ao cache persistente em disco Android;
+ * - `temporaryImageFailures` controla penalização temporária de URLs indisponíveis (TTL ~60s, máx. 2500 entradas).
+ * Limpa integralmente no logout (`clearImageCacheOnLogout`) e quando uma URL carrega com sucesso.
+ */
+const temporaryImageFailures = new Map<string, number>();
+
+const MAX_RATE_LIMITED_IMAGE_HOSTS = 256;
+const rateLimitedImageHosts = new Map<string, number>();
+
+export function getImageUrlHostOrigin(url: string | null | undefined): string | null {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+export function recordRateLimitedImageHost(
+  url: string | null | undefined,
+  ttlMs: number = DEFAULT_RATE_LIMIT_HOST_COOLDOWN_MS
+): void {
+  const origin = getImageUrlHostOrigin(url);
+  if (!origin) return;
+  const effectiveTtl =
+    typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0
+      ? ttlMs
+      : DEFAULT_RATE_LIMIT_HOST_COOLDOWN_MS;
+  const expiresAt = getMonotonicNowMs() + effectiveTtl;
+  if (rateLimitedImageHosts.has(origin)) {
+    rateLimitedImageHosts.delete(origin);
+    rateLimitedImageHosts.set(origin, expiresAt);
+    return;
+  }
+  if (rateLimitedImageHosts.size >= MAX_RATE_LIMITED_IMAGE_HOSTS) {
+    const oldest = rateLimitedImageHosts.keys().next().value;
+    if (oldest !== undefined) {
+      rateLimitedImageHosts.delete(oldest);
+    }
+  }
+  rateLimitedImageHosts.set(origin, expiresAt);
+}
+
+export function isImageHostRateLimited(url: string | null | undefined): boolean {
+  const origin = getImageUrlHostOrigin(url);
+  if (!origin) return false;
+  const expiresAt = rateLimitedImageHosts.get(origin);
+  if (expiresAt === undefined) return false;
+  if (getMonotonicNowMs() < expiresAt) {
+    return true;
+  }
+  rateLimitedImageHosts.delete(origin);
+  return false;
+}
+
+export function recordTemporaryImageFailure(
+  url: string | null | undefined,
+  ttlMs: number = DEFAULT_TEMPORARY_IMAGE_FAILURE_TTL_MS
+): void {
+  if (!url || typeof url !== 'string') return;
+  const trimmed = url.trim();
+  if (!trimmed || /^(?:data:|blob:)/i.test(trimmed)) return;
+  const effectiveTtl =
+    typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0
+      ? ttlMs
+      : DEFAULT_TEMPORARY_IMAGE_FAILURE_TTL_MS;
+  const expiresAt = getMonotonicNowMs() + effectiveTtl;
+  if (temporaryImageFailures.has(trimmed)) {
+    temporaryImageFailures.delete(trimmed);
+    temporaryImageFailures.set(trimmed, expiresAt);
+    return;
+  }
+  if (temporaryImageFailures.size >= MAX_TEMPORARY_IMAGE_FAILURES) {
+    const oldest = temporaryImageFailures.keys().next().value;
+    if (oldest !== undefined) {
+      temporaryImageFailures.delete(oldest);
+    }
+  }
+  temporaryImageFailures.set(trimmed, expiresAt);
+}
+
+export function isImageUrlTemporarilyFailed(url: string | null | undefined): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  const expiresAt = temporaryImageFailures.get(trimmed);
+  if (expiresAt === undefined) return false;
+  if (getMonotonicNowMs() < expiresAt) {
+    return true;
+  }
+  temporaryImageFailures.delete(trimmed);
+  return false;
+}
+
+export function clearTemporaryImageFailure(url: string | null | undefined): void {
+  if (!url || typeof url !== 'string') return;
+  const trimmed = url.trim();
+  if (!trimmed) return;
+  temporaryImageFailures.delete(trimmed);
+}
+
+export function clearTemporaryImageFailures(): void {
+  temporaryImageFailures.clear();
+  rateLimitedImageHosts.clear();
+}
+
+export function getTemporaryImageFailureCountForTest(): number {
+  const now = getMonotonicNowMs();
+  for (const [k, expiresAt] of Array.from(temporaryImageFailures.entries())) {
+    if (now >= expiresAt) {
+      temporaryImageFailures.delete(k);
+    }
+  }
+  return temporaryImageFailures.size;
 }
 
 /**
@@ -1123,6 +1321,9 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       // evitando novas tentativas nativas repetitivas sem penalizar falhas transitórias
       if (isDeterministicImageCacheIneligibilityError(errorObj)) {
         rememberDirectOnlyImageUrl(url, DETERMINISTIC_REJECTION_COOLDOWN_MS);
+      } else if (isImageRateLimitError(errorObj)) {
+        // Resposta HTTP 429: ativa arrefecimento curto para o host sem penalizar como indisponibilidade permanente
+        recordRateLimitedImageHost(url);
       }
     }
     settleTaskResolvers(task, null, errorObj);
@@ -1420,6 +1621,7 @@ export async function clearImageCacheOnLogout(): Promise<void> {
   hydratedByShaKeyMap.clear();
   shaKeyToUrlMap.clear();
   directOnlyImageUrls.clear();
+  clearTemporaryImageFailures();
   pendingTouchedKeys.splice(0, pendingTouchedKeys.length);
   isHydrated = false;
   hydrationPromise = null;
@@ -1588,8 +1790,63 @@ export function extractCatalogItemRawImage(item: any): string | null {
   return normalizeImageSource(candidate);
 }
 
-function extractRawCoverFromItem(item: any): unknown {
-  return extractCatalogItemRawImage(item);
+/**
+ * Seleciona NO MÁXIMO UMA única URL elegível para pré-carregamento de um item,
+ * respeitando a ordem prioritária do domínio e evitando URLs temporariamente penalizadas
+ * ou sob limitação de taxa (HTTP 429). Nunca expande um item em múltiplos downloads de preload.
+ */
+export function selectSinglePreloadImageUrlForItem(
+  item: any,
+  serverUrl?: string | null,
+  options?: {
+    type?: 'live' | 'vod' | 'series' | 'hero';
+    cachedDetailsInfo?: Record<string, unknown> | null;
+  }
+): string | null {
+  if (!item) return null;
+  let rawSources: unknown;
+  if (typeof item === 'string' || Array.isArray(item)) {
+    rawSources = item;
+  } else if (typeof item === 'object') {
+    const mode = options?.type;
+    if (mode === 'hero') {
+      rawSources = collectHeroBannerCandidates(
+        item,
+        options?.cachedDetailsInfo ?? null,
+        serverUrl,
+        3
+      ).allCandidates;
+    } else if (mode === 'live') {
+      rawSources = collectLiveChannelLogoCandidates(item, null);
+    } else if (mode === 'series') {
+      rawSources = collectSeriesPosterCandidates(item, options?.cachedDetailsInfo ?? null);
+    } else if (mode === 'vod') {
+      rawSources = collectMoviePosterCandidates(item, options?.cachedDetailsInfo ?? null);
+    } else {
+      rawSources = [
+        item.stream_icon,
+        item.cover,
+        item.cover_big,
+        item.movie_image,
+        item.logo,
+        item.image,
+      ];
+    }
+  } else {
+    return null;
+  }
+
+  const candidates = normalizeImageCandidates(rawSources, serverUrl, 3);
+  for (const url of candidates) {
+    if (
+      isEligibleForAndroidImageDiskCache(url) &&
+      !isImageUrlTemporarilyFailed(url) &&
+      !isImageHostRateLimited(url)
+    ) {
+      return url;
+    }
+  }
+  return null;
 }
 
 export interface HomeStartupImagePlan {
@@ -1654,22 +1911,25 @@ export function buildHomeStartupImagePlan(params: {
   const seenPriority = new Set<string>();
 
   const pushUnique = (url: string | null, bucket: string[]) => {
-    if (!url || !isEligibleForAndroidImageDiskCache(url)) return;
+    if (
+      !url ||
+      !isEligibleForAndroidImageDiskCache(url) ||
+      isImageUrlTemporarilyFailed(url) ||
+      isImageHostRateLimited(url)
+    ) {
+      return;
+    }
     if (!seenPriority.has(url)) {
       seenPriority.add(url);
       bucket.push(url);
     }
   };
 
-  // Camada 1: Imagem principal do HeroBanner (e segundo slide imediato)
+  // Camada 1: Imagem principal do HeroBanner (e segundo slide imediato) — 1 única URL por slide
   for (let i = 0; i < Math.min(2, heroItems.length); i++) {
     const item = heroItems[i];
-    const backdropRaw =
-      (Array.isArray(item?.backdrop_path) ? item.backdrop_path[0] : item?.backdrop_path) ||
-      item?.cover_big ||
-      extractRawCoverFromItem(item);
-    const backdropUrl = buildDirectImageUrl(backdropRaw, serverUrl);
-    pushUnique(backdropUrl, tier1HeroUrls);
+    const heroUrl = selectSinglePreloadImageUrlForItem(item, serverUrl, { type: 'hero' });
+    pushUnique(heroUrl, tier1HeroUrls);
   }
 
   // Descritores preguiçosos (lazy) das fileiras da Home, na mesma ordem exata de CatalogShowcaseView.tsx
@@ -1742,7 +2002,7 @@ export function buildHomeStartupImagePlan(params: {
     }
   }
 
-  // Camada 2: Capas visíveis das primeiras fileiras da Home
+  // Camada 2: Capas visíveis das primeiras fileiras da Home (no máximo 1 URL elegível por item)
   const firstRowsLimit = Math.min(budget.visibleRowsCount, rowDescriptors.length);
   for (let r = 0; r < firstRowsLimit; r++) {
     const desc = rowDescriptors[r];
@@ -1750,7 +2010,9 @@ export function buildHomeStartupImagePlan(params: {
     const rowBudget = desc.isLandscape ? budget.landscapeCardsPerRow : budget.posterCardsPerRow;
     const cardsLimit = Math.min(rowBudget, rowItems.length);
     for (let c = 0; c < cardsLimit; c++) {
-      const resolved = buildDirectImageUrl(extractRawCoverFromItem(rowItems[c]), serverUrl);
+      const resolved = selectSinglePreloadImageUrlForItem(rowItems[c], serverUrl, {
+        type: desc.isLandscape ? 'live' : undefined,
+      });
       pushUnique(resolved, tier2FirstRowsVisibleUrls);
     }
   }
@@ -1765,7 +2027,9 @@ export function buildHomeStartupImagePlan(params: {
     const cardsLimit = Math.min(rowBudget, rowItems.length);
     const beforeLen = tier3NextRowsUrls.length;
     for (let c = 0; c < cardsLimit; c++) {
-      const resolved = buildDirectImageUrl(extractRawCoverFromItem(rowItems[c]), serverUrl);
+      const resolved = selectSinglePreloadImageUrlForItem(rowItems[c], serverUrl, {
+        type: desc.isLandscape ? 'live' : undefined,
+      });
       pushUnique(resolved, tier3NextRowsUrls);
     }
     if (tier3NextRowsUrls.length > beforeLen) {
@@ -1784,7 +2048,9 @@ export function buildHomeStartupImagePlan(params: {
         const rowBudget = desc.isLandscape ? budget.landscapeCardsPerRow : budget.posterCardsPerRow;
         const cardsLimit = Math.min(rowBudget, rowItems.length);
         for (let c = 0; c < cardsLimit; c++) {
-          const resolved = buildDirectImageUrl(extractRawCoverFromItem(rowItems[c]), serverUrl);
+          const resolved = selectSinglePreloadImageUrlForItem(rowItems[c], serverUrl, {
+            type: desc.isLandscape ? 'live' : undefined,
+          });
           pushUnique(resolved, tier4VisitedCategoryUrls);
         }
       }
@@ -1796,7 +2062,9 @@ export function buildHomeStartupImagePlan(params: {
     const rowBudget = desc.isLandscape ? budget.landscapeCardsPerRow : budget.posterCardsPerRow;
     const cardsLimit = Math.min(rowBudget, rowItems.length);
     for (let c = 0; c < cardsLimit; c++) {
-      const resolved = buildDirectImageUrl(extractRawCoverFromItem(rowItems[c]), serverUrl);
+      const resolved = selectSinglePreloadImageUrlForItem(rowItems[c], serverUrl, {
+        type: desc.isLandscape ? 'live' : undefined,
+      });
       pushUnique(resolved, tier4VisitedCategoryUrls);
     }
   }
@@ -1843,8 +2111,11 @@ export async function executeHomeStartupImagePreparation(
     onProgress?: (preparedCount: number, totalCount: number) => void;
   }
 ): Promise<StartupImagePreparationResult> {
-  const eligiblePriorityUrls = plan.priorityUrls.filter((u) =>
-    isEligibleForAndroidImageDiskCache(u)
+  const eligiblePriorityUrls = plan.priorityUrls.filter(
+    (u) =>
+      isEligibleForAndroidImageDiskCache(u) &&
+      !isImageUrlTemporarilyFailed(u) &&
+      !isImageHostRateLimited(u)
   );
   const totalTargetCount = eligiblePriorityUrls.length;
 
@@ -1896,7 +2167,13 @@ export async function executeHomeStartupImagePreparation(
 
   const enqueueTier = (urls: string[], priority: ImagePreloadPriority) =>
     urls
-      .filter((url) => isEligibleForAndroidImageDiskCache(url) && !alreadyOnDiskSet.has(url))
+      .filter(
+        (url) =>
+          isEligibleForAndroidImageDiskCache(url) &&
+          !alreadyOnDiskSet.has(url) &&
+          !isImageUrlTemporarilyFailed(url) &&
+          !isImageHostRateLimited(url)
+      )
       .map((url) =>
         acquireCachedImage(url, { priority })
           .then(() => {
@@ -1985,7 +2262,15 @@ export function scheduleBackgroundLowPriorityPreload(urls: string[]): void {
     if (currentLowPriorityQueued >= MAX_LOW_PRIORITY_PENDING_TASKS) {
       break;
     }
-    if (!url || !isEligibleForAndroidImageDiskCache(url) || getInstantCachedImageSrc(url)) continue;
+    if (
+      !url ||
+      !isEligibleForAndroidImageDiskCache(url) ||
+      isImageUrlTemporarilyFailed(url) ||
+      isImageHostRateLimited(url) ||
+      getInstantCachedImageSrc(url)
+    ) {
+      continue;
+    }
     if (inFlightTasksByUrl.has(url.trim())) continue;
     currentLowPriorityQueued++;
     void acquireCachedImage(url, { priority: 'low' }).catch(() => {
@@ -1999,10 +2284,12 @@ export function scheduleBackgroundLowPriorityPreload(urls: string[]): void {
  */
 export function resetAndroidImageCacheForTest(): void {
   currentSessionEpoch++;
+  testClockOffsetMs = 0;
   resolvedUrlToEntryMap.clear();
   hydratedByShaKeyMap.clear();
   shaKeyToUrlMap.clear();
   directOnlyImageUrls.clear();
+  clearTemporaryImageFailures();
   pendingTouchedKeys.splice(0, pendingTouchedKeys.length);
   inFlightTasksByUrl.clear();
   pendingQueue.splice(0, pendingQueue.length);

@@ -1,9 +1,9 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Info, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useXtreamCredentials } from '../context/XtreamContext';
-import { MediaImage } from './MediaImage';
-import { buildDirectImageUrl, normalizeImageSource } from '../utils/mediaUtils';
+import { MediaImage, MediaImageResolvedSourceInfo } from './MediaImage';
+import { collectHeroBannerCandidates } from '../utils/mediaUtils';
 import { getValidYear } from '../utils/catalogRanking';
 import { computeHeroItemsFromList } from '../utils/catalogIndex';
 import {
@@ -19,7 +19,10 @@ import {
 import {
   getInstantCachedImageSrc,
   isAndroidPersistentImageCacheAvailable,
+  isImageHostRateLimited,
+  isImageUrlTemporarilyFailed,
   scheduleBackgroundLowPriorityPreload,
+  selectSinglePreloadImageUrlForItem,
 } from '../services/androidImageCache';
 import { usePerformanceProfile } from '../platform/performanceProfile';
 
@@ -279,6 +282,23 @@ export const HeroBanner = React.memo(function HeroBanner({
       : null;
   });
 
+  const [resolvedHeroImageState, setResolvedHeroImageState] = useState<{
+    scopeKey: string;
+    itemIdentity: string;
+    info: MediaImageResolvedSourceInfo;
+  } | null>(null);
+
+  const handleHeroResolvedSourceChange = useCallback(
+    (info: MediaImageResolvedSourceInfo) => {
+      setResolvedHeroImageState({
+        scopeKey,
+        itemIdentity: currentItemIdentity,
+        info,
+      });
+    },
+    [scopeKey, currentItemIdentity]
+  );
+
   useEffect(() => {
     activePlayRequestIdRef.current = null;
     playPendingRef.current = false;
@@ -362,13 +382,10 @@ export const HeroBanner = React.memo(function HeroBanner({
     const timer = setTimeout(() => {
       if (!isMountedRef.current || effectivelyPaused || isAutoRotationSuspended) return;
       const cachedNext = getCachedHeroDetails(credentials, nextItem);
-      const rawNextImg =
-        normalizeImageSource(cachedNext?.info?.backdrop_path) ||
-        normalizeImageSource(nextItem.backdrop_path) ||
-        normalizeImageSource(nextItem.cover) ||
-        normalizeImageSource(nextItem.stream_icon);
-      if (!rawNextImg) return;
-      const resolvedNextUrl = buildDirectImageUrl(rawNextImg, credentials.serverUrl);
+      const resolvedNextUrl = selectSinglePreloadImageUrlForItem(nextItem, credentials.serverUrl, {
+        type: 'hero',
+        cachedDetailsInfo: cachedNext?.info ?? null,
+      });
       if (!resolvedNextUrl || getInstantCachedImageSrc(resolvedNextUrl)) return;
       scheduleBackgroundLowPriorityPreload([resolvedNextUrl]);
     }, 600);
@@ -382,25 +399,56 @@ export const HeroBanner = React.memo(function HeroBanner({
 
   const activeDetails = activeDetailsResponse?.info || null;
 
-  const horizontalBackdrop =
-    normalizeImageSource(activeDetails?.backdrop_path) ||
-    normalizeImageSource(currentItem.backdrop_path) ||
-    '';
-  const verticalCover =
-    normalizeImageSource(currentItem.stream_icon) ||
-    normalizeImageSource(currentItem.cover) ||
-    normalizeImageSource(activeDetails?.movie_image) ||
-    normalizeImageSource(activeDetails?.cover) ||
-    '';
+  const heroCandidatePlan = collectHeroBannerCandidates(
+    currentItem,
+    activeDetails,
+    credentials?.serverUrl
+  );
+  const horizontalUrlSet = new Set(heroCandidatePlan.horizontalUrls);
+  const heroPrimarySrc = heroCandidatePlan.allCandidates[0] ?? '';
+  const heroFallbackSrcs =
+    heroCandidatePlan.allCandidates.length > 1
+      ? heroCandidatePlan.allCandidates.slice(1)
+      : undefined;
 
-  const hasHorizontalBackdrop = Boolean(horizontalBackdrop);
-  const hasVerticalCoverOnly = !hasHorizontalBackdrop && Boolean(verticalCover);
-  const activeImageSrc = horizontalBackdrop || verticalCover || '';
-  const imageMode = hasHorizontalBackdrop
-    ? 'horizontal-backdrop'
-    : hasVerticalCoverOnly
-      ? 'vertical-cover'
-      : 'none';
+  // Determine active visual modality ('horizontal-backdrop' | 'vertical-cover' | 'none')
+  // from the actually active/loaded MediaImage candidate without ever remounting MediaImage
+  // or stretching a vertical cover in horizontal-backdrop mode.
+  const activeResolvedInfo =
+    resolvedHeroImageState &&
+    resolvedHeroImageState.scopeKey === scopeKey &&
+    resolvedHeroImageState.itemIdentity === currentItemIdentity
+      ? resolvedHeroImageState.info
+      : null;
+
+  let imageMode: 'horizontal-backdrop' | 'vertical-cover' | 'none' = 'none';
+  if (heroCandidatePlan.allCandidates.length > 0) {
+    if (activeResolvedInfo) {
+      if (
+        activeResolvedInfo.status === 'failed' ||
+        activeResolvedInfo.status === 'empty' ||
+        !activeResolvedInfo.src
+      ) {
+        imageMode = 'none';
+      } else if (horizontalUrlSet.has(activeResolvedInfo.src)) {
+        imageMode = 'horizontal-backdrop';
+      } else {
+        imageMode = 'vertical-cover';
+      }
+    } else {
+      const firstViable =
+        heroCandidatePlan.allCandidates.find(
+          (u) => !isImageUrlTemporarilyFailed(u) && !isImageHostRateLimited(u)
+        ) ?? null;
+      if (!firstViable) {
+        imageMode = 'none';
+      } else if (horizontalUrlSet.has(firstViable)) {
+        imageMode = 'horizontal-backdrop';
+      } else {
+        imageMode = 'vertical-cover';
+      }
+    }
+  }
 
   const canContinue = Boolean(canContinueItem?.(currentItem));
   const synopsisText =
@@ -417,53 +465,69 @@ export const HeroBanner = React.memo(function HeroBanner({
     currentItem.releaseDate ||
     (getValidYear(currentItem) > 0 ? getValidYear(currentItem) : '');
 
-  const imageLayerContent = hasHorizontalBackdrop ? (
-    <>
-      <MediaImage
-        src={activeImageSrc}
-        serverUrl={credentials?.serverUrl}
-        alt={currentItem.name}
-        itemId={itemKey}
-        itemName={currentItem.name}
-        priority={true}
-        active={!effectivelyPaused}
-        className="w-full h-full object-cover object-center opacity-85"
-      />
+  const imageLayerContent =
+    heroCandidatePlan.allCandidates.length > 0 ? (
       <div
-        data-hero-scrim-primary="true"
-        className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/55 to-black/15"
-      />
-      <div
-        data-hero-scrim-secondary="true"
-        className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/55 to-transparent"
-      />
-    </>
-  ) : hasVerticalCoverOnly ? (
-    <div className="relative w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]">
-      <div className="absolute inset-y-0 right-0 w-full sm:w-3/5 flex items-center justify-center sm:justify-end pr-4 sm:pr-8 md:pr-14 py-5 sm:py-7 opacity-45 sm:opacity-90">
-        <MediaImage
-          src={activeImageSrc}
-          serverUrl={credentials?.serverUrl}
-          alt={currentItem.name}
-          itemId={itemKey}
-          itemName={currentItem.name}
-          priority={true}
-          active={!effectivelyPaused}
-          className="h-full max-h-[260px] sm:max-h-[360px] md:max-h-[420px] w-auto aspect-[2/3] object-contain rounded-xl shadow-2xl border border-white/15"
-        />
+        className={
+          imageMode === 'horizontal-backdrop'
+            ? 'relative w-full h-full'
+            : 'relative w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]'
+        }
+      >
+        <div
+          className={
+            imageMode === 'horizontal-backdrop'
+              ? 'absolute inset-0 w-full h-full'
+              : imageMode === 'vertical-cover'
+                ? 'absolute inset-y-0 right-0 w-full sm:w-3/5 flex items-center justify-center sm:justify-end pr-4 sm:pr-8 md:pr-14 py-5 sm:py-7 opacity-45 sm:opacity-90'
+                : 'hidden'
+          }
+        >
+          <MediaImage
+            src={heroPrimarySrc}
+            fallbackSrcs={heroFallbackSrcs}
+            serverUrl={credentials?.serverUrl}
+            alt={currentItem.name}
+            itemId={itemKey}
+            itemName={currentItem.name}
+            priority={true}
+            active={!effectivelyPaused}
+            onResolvedSourceChange={handleHeroResolvedSourceChange}
+            className={
+              imageMode === 'horizontal-backdrop'
+                ? 'w-full h-full object-cover object-center opacity-85'
+                : 'h-full max-h-[260px] sm:max-h-[360px] md:max-h-[420px] w-auto aspect-[2/3] object-contain rounded-xl shadow-2xl border border-white/15'
+            }
+          />
+        </div>
+        {imageMode === 'horizontal-backdrop' && (
+          <>
+            <div
+              data-hero-scrim-primary="true"
+              className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/55 to-black/15"
+            />
+            <div
+              data-hero-scrim-secondary="true"
+              className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/55 to-transparent"
+            />
+          </>
+        )}
+        {imageMode === 'vertical-cover' && (
+          <>
+            <div
+              data-hero-scrim-primary="true"
+              className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/70 to-transparent"
+            />
+            <div
+              data-hero-scrim-secondary="true"
+              className="absolute inset-0 bg-gradient-to-r from-[#08090d] via-[#08090d]/90 to-transparent"
+            />
+          </>
+        )}
       </div>
-      <div
-        data-hero-scrim-primary="true"
-        className="absolute inset-0 bg-gradient-to-t from-[#08090d] via-[#08090d]/70 to-transparent"
-      />
-      <div
-        data-hero-scrim-secondary="true"
-        className="absolute inset-0 bg-gradient-to-r from-[#08090d] via-[#08090d]/90 to-transparent"
-      />
-    </div>
-  ) : (
-    <div className="w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]" />
-  );
+    ) : (
+      <div className="w-full h-full bg-gradient-to-br from-[#171923] via-[#0e1017] to-[#08090d]" />
+    );
 
   const textLayerContent = (
     <>

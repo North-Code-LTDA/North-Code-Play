@@ -19,6 +19,12 @@ import {
   VERTICAL_HOME_ROOT_MARGIN,
   HORIZONTAL_ROW_ROOT_MARGIN,
 } from './MediaImage';
+import {
+  collectLiveChannelLogoCandidates,
+  collectMoviePosterCandidates,
+  collectSeriesPosterCandidates,
+} from '../utils/mediaUtils';
+import { getCachedHeroDetails } from '../services/heroSessionCache';
 
 export const HORIZONTAL_VIRTUAL_OVERSCAN = 3;
 
@@ -1432,20 +1438,39 @@ export const HorizontalRow = React.memo(function HorizontalRow({
                   data-card-visual="true"
                   className="nc-card-visual-layer relative w-full h-full rounded-xl overflow-hidden bg-nc-bg-card"
                 >
-                  <MediaImage
-                    src={item.stream_icon || item.cover}
-                    serverUrl={credentials?.serverUrl}
-                    alt={item.name}
-                    itemId={item.stream_id || item.series_id || item.id}
-                    itemName={item.name}
-                    active={isCardAuthorized}
-                    priority={false}
-                    loading="lazy"
-                    decoding="async"
-                    className={`w-full h-full ${
-                      type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'
-                    }`}
-                  />
+                  {(() => {
+                    const isItemSeries =
+                      type === 'series' ||
+                      item.stream_type === 'series' ||
+                      Boolean(item.series_id && !item.stream_id);
+                    const cachedDetailsInfo =
+                      type !== 'live' && credentials
+                        ? getCachedHeroDetails(credentials, item)?.info ?? null
+                        : null;
+                    const cardCandidates =
+                      type === 'live'
+                        ? collectLiveChannelLogoCandidates(item, item)
+                        : isItemSeries
+                          ? collectSeriesPosterCandidates(item, cachedDetailsInfo)
+                          : collectMoviePosterCandidates(item, cachedDetailsInfo);
+                    return (
+                      <MediaImage
+                        src={cardCandidates[0]}
+                        fallbackSrcs={cardCandidates.slice(1)}
+                        serverUrl={credentials?.serverUrl}
+                        alt={item.name}
+                        itemId={item.stream_id || item.series_id || item.id}
+                        itemName={item.name}
+                        active={isCardAuthorized}
+                        priority={false}
+                        loading="lazy"
+                        decoding="async"
+                        className={`w-full h-full ${
+                          type === 'live' ? 'object-contain p-2 bg-black/40' : 'object-cover'
+                        }`}
+                      />
+                    );
+                  })()}
 
                   <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity flex items-end p-4">
                     <p className="text-white font-medium text-sm truncate w-full">{item.name}</p>
