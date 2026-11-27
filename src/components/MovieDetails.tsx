@@ -7,7 +7,10 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { useXtreamCredentials } from '../context/XtreamContext';
-import { fetchOrReuseHeroDetails } from '../services/heroSessionCache';
+import {
+  fetchOrReuseHeroDetails,
+  getHeroAccountScopeKey,
+} from '../services/heroSessionCache';
 import { useFavorites } from '../hooks/useFavorites';
 import {
   getItemProgress,
@@ -201,7 +204,11 @@ export const MovieDetails = React.memo(function MovieDetails({
   const activeContainerExtProp = activeMovie.containerExtension;
   const activeDirectSourceProp = activeMovie.directSource;
 
-  const [details, setDetails] = useState<any>(null);
+  const [detailsState, setDetailsState] = useState<{
+    scopeKey: string;
+    streamId: string;
+    data: any;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [favActionError, setFavActionError] = useState<string | null>(null);
@@ -211,6 +218,29 @@ export const MovieDetails = React.memo(function MovieDetails({
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
     typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 1280
   );
+
+  const currentScopeKey = getHeroAccountScopeKey(credentials);
+  const currentStreamIdStr = String(activeStreamId);
+  const scopedDetails =
+    detailsState &&
+    detailsState.scopeKey === currentScopeKey &&
+    detailsState.streamId === currentStreamIdStr
+      ? detailsState.data
+      : null;
+  const rawInfo =
+    scopedDetails?.info && typeof scopedDetails.info === 'object' ? scopedDetails.info : {};
+  const rawMovieData =
+    scopedDetails?.movie_data && typeof scopedDetails.movie_data === 'object'
+      ? scopedDetails.movie_data
+      : {};
+  const detailsMatchActiveStream =
+    scopedDetails !== null &&
+    (rawMovieData.stream_id === undefined ||
+      rawMovieData.stream_id === null ||
+      String(rawMovieData.stream_id) === currentStreamIdStr);
+  const validatedDetails = detailsMatchActiveStream ? scopedDetails : null;
+  const info = detailsMatchActiveStream ? rawInfo : {};
+  const movieData = detailsMatchActiveStream ? rawMovieData : {};
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const primaryPlayBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -289,7 +319,6 @@ export const MovieDetails = React.memo(function MovieDetails({
   }, [favActionError, clearFavoriteError]);
 
   const handleToggleFavorite = () => {
-    const info = details?.info || {};
     const coverImage = normalizeImageSource(
       info.movie_image || info.cover_big || activeStreamIcon
     );
@@ -317,11 +346,13 @@ export const MovieDetails = React.memo(function MovieDetails({
     let cancelled = false;
     const abortController =
       typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const fetchScopeKey = getHeroAccountScopeKey(credentials);
+    const fetchStreamId = String(activeStreamId);
 
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
-    setDetails(null);
+    setDetailsState(null);
     setShowResumePrompt(false);
     setPlayError(null);
 
@@ -342,7 +373,11 @@ export const MovieDetails = React.memo(function MovieDetails({
           }
         );
         if (cancelled || abortController?.signal.aborted) return;
-        setDetails(data);
+        setDetailsState({
+          scopeKey: fetchScopeKey,
+          streamId: fetchStreamId,
+          data,
+        });
       } catch (err: any) {
         if (cancelled || abortController?.signal.aborted || err?.name === 'AbortError') return;
         console.error('Error fetching movie details:', err);
@@ -360,16 +395,6 @@ export const MovieDetails = React.memo(function MovieDetails({
       abortController?.abort();
     };
   }, [credentials, activeStreamId]);
-
-  const rawInfo = details?.info && typeof details.info === 'object' ? details.info : {};
-  const rawMovieData =
-    details?.movie_data && typeof details.movie_data === 'object' ? details.movie_data : {};
-  const detailsMatchActiveStream =
-    rawMovieData.stream_id === undefined ||
-    rawMovieData.stream_id === null ||
-    String(rawMovieData.stream_id) === String(activeStreamId);
-  const info = detailsMatchActiveStream ? rawInfo : {};
-  const movieData = detailsMatchActiveStream ? rawMovieData : {};
 
   const displayTitle = info.name || movieData.name || activeStreamName || 'Filme';
   const titleId = `movie-details-title-${activeStreamId}`;
@@ -578,7 +603,9 @@ export const MovieDetails = React.memo(function MovieDetails({
         containerExtension: containerExt,
         directSource: resolvedDirectSource ?? undefined,
       });
-      const extractedSubs = extractXtreamSubtitles(details, credentials.serverUrl);
+      const extractedSubs = validatedDetails
+        ? extractXtreamSubtitles(validatedDetails, credentials.serverUrl)
+        : [];
       onPlay(
         url,
         displayTitle,

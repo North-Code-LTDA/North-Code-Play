@@ -11,15 +11,20 @@ import {
 } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
 import { useXtreamCredentials } from '../context/XtreamContext';
-import { fetchOrReuseHeroDetails } from '../services/heroSessionCache';
+import {
+  fetchOrReuseHeroDetails,
+  getHeroAccountScopeKey,
+} from '../services/heroSessionCache';
 import { useFavorites, FavoriteItem } from '../hooks/useFavorites';
 import { VideoPlayer } from './VideoPlayer';
 import { ExternalSubtitleTrackInput } from './player/types';
 import { extractXtreamSubtitles } from './player/trackUtils';
 import {
   buildDirectMediaUrl,
+  getEpisodeId,
   normalizeContainerExtension,
   normalizeDirectMediaSource,
+  normalizeEpisodesBySeason,
   normalizeImageSource,
   normalizeMetadataText,
 } from '../utils/mediaUtils';
@@ -149,60 +154,11 @@ function extractCleanYear(rawDate?: string | number | null): string | null {
   return match ? match[1] : null;
 }
 
-function sortSeasonKeys(keys: string[]): string[] {
-  return [...keys].sort((a, b) => {
-    const aTrim = a.trim();
-    const bTrim = b.trim();
-    const aIsNum = /^\d+$/.test(aTrim);
-    const bIsNum = /^\d+$/.test(bTrim);
-    if (aIsNum && bIsNum) {
-      return parseInt(aTrim, 10) - parseInt(bTrim, 10);
-    }
-    if (aIsNum) return -1;
-    if (bIsNum) return 1;
-    return aTrim.localeCompare(bTrim, undefined, { numeric: true, sensitivity: 'base' });
-  });
-}
-
 function escapeSelectorValue(val: string): string {
   if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
     return CSS.escape(val);
   }
   return String(val).replace(/["\\]/g, '\\$&');
-}
-
-function normalizeEpisodesBySeason(rawEpisodes: unknown): Record<string, any[]> {
-  if (!rawEpisodes || typeof rawEpisodes !== 'object') return {};
-
-  if (Array.isArray(rawEpisodes)) {
-    const grouped: Record<string, any[]> = {};
-    for (const ep of rawEpisodes) {
-      if (!ep || typeof ep !== 'object') continue;
-      const rawSeason = (ep as any).season;
-      const seasonKey =
-        rawSeason !== undefined && rawSeason !== null && String(rawSeason).trim() !== ''
-          ? String(rawSeason).trim()
-          : '1';
-      if (!grouped[seasonKey]) grouped[seasonKey] = [];
-      grouped[seasonKey].push(ep);
-    }
-    return grouped;
-  }
-
-  const normalized: Record<string, any[]> = {};
-  for (const [seasonKey, seasonValue] of Object.entries(rawEpisodes as Record<string, unknown>)) {
-    if (Array.isArray(seasonValue)) {
-      normalized[seasonKey] = seasonValue.filter((ep) => ep && typeof ep === 'object');
-    } else if (seasonValue && typeof seasonValue === 'object') {
-      const values = Object.values(seasonValue as Record<string, unknown>).filter(
-        (ep) => ep && typeof ep === 'object'
-      );
-      if (values.length > 0) {
-        normalized[seasonKey] = values;
-      }
-    }
-  }
-  return normalized;
 }
 
 export const SeriesDetails = React.memo(function SeriesDetails({
@@ -217,9 +173,22 @@ export const SeriesDetails = React.memo(function SeriesDetails({
 
   const [loadingInfo, setLoadingInfo] = useState(true);
   const [errorInfo, setErrorInfo] = useState<string | null>(null);
-  const [seriesInfo, setSeriesInfo] = useState<any | null>(null);
+  const [seriesState, setSeriesState] = useState<{
+    scopeKey: string;
+    seriesId: string;
+    data: any;
+  } | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string | null>(null);
   const [isSeasonMenuOpen, setIsSeasonMenuOpen] = useState(false);
+
+  const currentScopeKey = getHeroAccountScopeKey(credentials);
+  const currentSeriesIdStr = String(seriesId);
+  const seriesInfo =
+    seriesState &&
+    seriesState.scopeKey === currentScopeKey &&
+    seriesState.seriesId === currentSeriesIdStr
+      ? seriesState.data
+      : null;
 
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [savedProgress, setSavedProgress] = useState(0);
@@ -380,15 +349,19 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     }
   }, [seriesId]);
 
-  const episodesBySeason = useMemo(
+  const normalizedSeriesEpisodes = useMemo(
     () => normalizeEpisodesBySeason(seriesInfo?.episodes),
     [seriesInfo]
   );
 
-  const sortedSeasons = useMemo(
-    () => sortSeasonKeys(Object.keys(episodesBySeason)),
-    [episodesBySeason]
-  );
+  const episodesBySeason = normalizedSeriesEpisodes.seasons;
+  const sortedSeasons = normalizedSeriesEpisodes.sortedSeasonKeys;
+  const unseasonedEpisodes = normalizedSeriesEpisodes.unseasonedEpisodes;
+
+  const effectiveSelectedSeason =
+    selectedSeason && Object.prototype.hasOwnProperty.call(episodesBySeason, selectedSeason)
+      ? selectedSeason
+      : null;
 
   // Autofocus primary action when series details finish loading
   useEffect(() => {
@@ -578,10 +551,16 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     let cancelled = false;
     const abortController =
       typeof AbortController !== 'undefined' ? new AbortController() : null;
-    setSeriesInfo(null);
+    const fetchScopeKey = getHeroAccountScopeKey(credentials);
+    const fetchSeriesId = String(seriesId);
+
+    setSeriesState(null);
     setSelectedSeason(null);
     setIsSeasonMenuOpen(false);
     setShowResumeModal(false);
+    setSelectedEpisode(null);
+    setPlayingEpisodeData(null);
+    setFailedEpisode(null);
     setPlayError(null);
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
@@ -606,17 +585,22 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         );
         if (cancelled || abortController?.signal.aborted) return;
         if (!info || typeof info !== 'object') {
-          setSeriesInfo(null);
+          setSeriesState(null);
           setErrorInfo('Não foi possível carregar os detalhes da série.');
           return;
         }
-        setSeriesInfo(info);
+        setSeriesState({
+          scopeKey: fetchScopeKey,
+          seriesId: fetchSeriesId,
+          data: info,
+        });
         const normalizedEpisodes = normalizeEpisodesBySeason(info.episodes);
-        const seasons = sortSeasonKeys(Object.keys(normalizedEpisodes));
+        const seasons = normalizedEpisodes.sortedSeasonKeys;
         if (seasons.length > 0) {
           const firstWithEpisodes =
             seasons.find(
-              (s) => normalizedEpisodes[s] && normalizedEpisodes[s].length > 0
+              (s) =>
+                normalizedEpisodes.seasons[s] && normalizedEpisodes.seasons[s].length > 0
             ) || seasons[0];
           setSelectedSeason(firstWithEpisodes);
         } else {
@@ -625,7 +609,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       } catch (err: any) {
         if (cancelled || abortController?.signal.aborted || err?.name === 'AbortError') return;
         console.error(err);
-        setSeriesInfo(null);
+        setSeriesState(null);
         setErrorInfo('Não foi possível carregar os detalhes da série.');
       } finally {
         if (!cancelled) {
@@ -696,9 +680,9 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     return `${sortedSeasons.length} ${sortedSeasons.length === 1 ? 'temporada' : 'temporadas'}`;
   }, [sortedSeasons.length]);
 
-  // Flatten all episodes in sorted season order to determine contextual primary CTA
+  // Flatten all episodes in sorted season order (followed by unseasoned episodes) to determine contextual primary CTA
   const allSeriesEpisodes = useMemo(() => {
-    const entries: Array<{ seasonKey: string; episode: any; episodeIndex: number }> = [];
+    const entries: Array<{ seasonKey: string | null; episode: any; episodeIndex: number }> = [];
     for (const sKey of sortedSeasons) {
       const list = episodesBySeason[sKey];
       if (!Array.isArray(list)) continue;
@@ -708,17 +692,22 @@ export const SeriesDetails = React.memo(function SeriesDetails({
         }
       });
     }
+    unseasonedEpisodes.forEach((ep: any, idx: number) => {
+      if (ep && typeof ep === 'object') {
+        entries.push({ seasonKey: null, episode: ep, episodeIndex: idx });
+      }
+    });
     return entries;
-  }, [episodesBySeason, sortedSeasons]);
+  }, [episodesBySeason, sortedSeasons, unseasonedEpisodes]);
 
   // Contextual Primary Episode Target (Continue in-progress episode vs Play first available episode)
   const primaryEpisodeTarget = useMemo(() => {
     if (allSeriesEpisodes.length === 0) return null;
 
-    const byId = new Map<string, { seasonKey: string; episode: any; episodeIndex: number }>();
+    const byId = new Map<string, { seasonKey: string | null; episode: any; episodeIndex: number }>();
     for (const entry of allSeriesEpisodes) {
-      const epId = entry.episode.id ?? entry.episode.stream_id;
-      if (epId !== undefined && epId !== null) {
+      const epId = getEpisodeId(entry.episode);
+      if (epId !== null) {
         byId.set(String(epId), entry);
       }
     }
@@ -745,7 +734,10 @@ export const SeriesDetails = React.memo(function SeriesDetails({
           seasonKey: matched.seasonKey,
           episode: matched.episode,
           epNum,
-          label: `Continuar T${matched.seasonKey}:E${epNum}`,
+          label:
+            matched.seasonKey !== null
+              ? `Continuar T${matched.seasonKey}:E${epNum}`
+              : `Continuar Episódio ${epNum}`,
           progressSec,
           savedMinutes,
           totalMinutes: durInfo.totalMinutes,
@@ -756,8 +748,9 @@ export const SeriesDetails = React.memo(function SeriesDetails({
 
     // 2. Fallback scan via getItemProgress
     for (const entry of allSeriesEpisodes) {
-      if (entry.episode.id === undefined || entry.episode.id === null) continue;
-      const progressSec = getItemProgress(credentials, 'episode', entry.episode.id);
+      const epId = getEpisodeId(entry.episode);
+      if (epId === null) continue;
+      const progressSec = getItemProgress(credentials, 'episode', epId);
       if (progressSec > 30) {
         const epNum = entry.episode.episode_num || entry.episodeIndex + 1;
         const durInfo = formatEpisodeDuration(
@@ -775,7 +768,10 @@ export const SeriesDetails = React.memo(function SeriesDetails({
           seasonKey: entry.seasonKey,
           episode: entry.episode,
           epNum,
-          label: `Continuar T${entry.seasonKey}:E${epNum}`,
+          label:
+            entry.seasonKey !== null
+              ? `Continuar T${entry.seasonKey}:E${epNum}`
+              : `Continuar Episódio ${epNum}`,
           progressSec,
           savedMinutes,
           totalMinutes: durInfo.totalMinutes,
@@ -784,7 +780,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       }
     }
 
-    // 3. Default to the first available episode of the first valid season
+    // 3. Default to the first available episode
     const first = allSeriesEpisodes[0];
     const firstEpNum = first.episode.episode_num || 1;
     return {
@@ -792,7 +788,10 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       seasonKey: first.seasonKey,
       episode: first.episode,
       epNum: firstEpNum,
-      label: `Assistir T${first.seasonKey}:E${firstEpNum}`,
+      label:
+        first.seasonKey !== null
+          ? `Assistir T${first.seasonKey}:E${firstEpNum}`
+          : `Assistir Episódio ${firstEpNum}`,
       progressSec: 0,
       savedMinutes: 0,
       totalMinutes: null,
@@ -800,17 +799,29 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     };
   }, [allSeriesEpisodes, historyRecords, credentials]);
 
-  const executePlay = (episode: any, startAt: number = 0, seasonOverride?: string) => {
-    const activeSeasonForPlay = seasonOverride || selectedSeason || '1';
-    const epId = episode?.id ?? episode?.stream_id;
-    if (epId !== undefined && epId !== null) {
+  const executePlay = (episode: any, startAt: number = 0, seasonOverride?: string | null) => {
+    const activeSeasonForPlay =
+      seasonOverride !== undefined ? seasonOverride : effectiveSelectedSeason;
+    const epId = getEpisodeId(episode);
+    const episodeDirectSource =
+      normalizeDirectMediaSource(episode?.direct_source) ||
+      normalizeDirectMediaSource(episode?.info?.direct_source);
+
+    if (epId !== null) {
       lastEpisodeIdRef.current = String(epId);
     }
     if (scrollContainerRef.current && !playingEpisodeData && !showResumeModal && !playError) {
       savedEpisodeScrollTopRef.current = scrollContainerRef.current.scrollTop;
     }
 
-    if (epId !== undefined && epId !== null) {
+    if (epId === null && !episodeDirectSource) {
+      setShowResumeModal(false);
+      setPlayError('Não foi possível reproduzir este episódio: identificador inválido ou ausente.');
+      setFailedEpisode(null);
+      return;
+    }
+
+    if (epId !== null) {
       recordPlaybackPosition(credentials, {
         id: epId,
         type: 'episode',
@@ -827,21 +838,24 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     try {
       setPlayError(null);
       setFailedEpisode(null);
-      const episodeDirectSource =
-        normalizeDirectMediaSource(episode?.direct_source) ||
-        normalizeDirectMediaSource(episode?.info?.direct_source);
       const ext = normalizeContainerExtension(episode?.container_extension) || 'mp4';
       const mediaUrl = buildDirectMediaUrl(credentials, {
         type: 'series',
-        streamId: epId,
+        streamId: epId ?? '',
         containerExtension: ext,
         directSource: episodeDirectSource ?? undefined,
       });
 
       const episodeSubs = extractXtreamSubtitles(episode, credentials.serverUrl);
+      const epNumberOrId = episode?.episode_num || epId || 1;
+      const playbackTitle =
+        activeSeasonForPlay !== null
+          ? `${displayTitle} - S${activeSeasonForPlay}E${epNumberOrId}`
+          : `${displayTitle} - Episódio ${epNumberOrId}`;
+
       setPlayingEpisodeData({
         url: mediaUrl,
-        title: `${displayTitle} - S${activeSeasonForPlay}E${episode.episode_num || epId}`,
+        title: playbackTitle,
         startAt,
         episode,
         subtitles: episodeSubs.length > 0 ? episodeSubs : undefined,
@@ -854,44 +868,59 @@ export const SeriesDetails = React.memo(function SeriesDetails({
     }
   };
 
+  const currentSeasonEpisodes: any[] = useMemo(() => {
+    if (effectiveSelectedSeason) {
+      const list = episodesBySeason[effectiveSelectedSeason];
+      return Array.isArray(list) ? list : [];
+    }
+    if (sortedSeasons.length === 0 && unseasonedEpisodes.length > 0) {
+      return unseasonedEpisodes;
+    }
+    return [];
+  }, [effectiveSelectedSeason, episodesBySeason, sortedSeasons.length, unseasonedEpisodes]);
+
   const handleNextEpisode = () => {
-    if (!selectedSeason || !playingEpisodeData) return;
-    const episodes = episodesBySeason[selectedSeason];
-    if (!Array.isArray(episodes)) return;
-    const playingEpId = String(
-      playingEpisodeData.episode?.id ?? playingEpisodeData.episode?.stream_id ?? ''
-    );
+    if (!playingEpisodeData) return;
+    const episodes = currentSeasonEpisodes;
+    if (!Array.isArray(episodes) || episodes.length === 0) return;
+    const playingEpId = getEpisodeId(playingEpisodeData.episode);
+    if (playingEpId === null) return;
     const currentIndex = episodes.findIndex(
-      (e: any) => String(e?.id ?? e?.stream_id ?? '') === playingEpId
+      (e: any) => {
+        const candId = getEpisodeId(e);
+        return candId !== null && String(candId) === String(playingEpId);
+      }
     );
     if (currentIndex !== -1 && currentIndex < episodes.length - 1) {
-      executePlay(episodes[currentIndex + 1], 0, selectedSeason);
+      executePlay(episodes[currentIndex + 1], 0, effectiveSelectedSeason);
     }
   };
 
   const handlePreviousEpisode = () => {
-    if (!selectedSeason || !playingEpisodeData) return;
-    const episodes = episodesBySeason[selectedSeason];
-    if (!Array.isArray(episodes)) return;
-    const playingEpId = String(
-      playingEpisodeData.episode?.id ?? playingEpisodeData.episode?.stream_id ?? ''
-    );
+    if (!playingEpisodeData) return;
+    const episodes = currentSeasonEpisodes;
+    if (!Array.isArray(episodes) || episodes.length === 0) return;
+    const playingEpId = getEpisodeId(playingEpisodeData.episode);
+    if (playingEpId === null) return;
     const currentIndex = episodes.findIndex(
-      (e: any) => String(e?.id ?? e?.stream_id ?? '') === playingEpId
+      (e: any) => {
+        const candId = getEpisodeId(e);
+        return candId !== null && String(candId) === String(playingEpId);
+      }
     );
     if (currentIndex > 0) {
-      executePlay(episodes[currentIndex - 1], 0, selectedSeason);
+      executePlay(episodes[currentIndex - 1], 0, effectiveSelectedSeason);
     }
   };
 
   const handlePlayEpisodeClick = (
     episode: any,
     fromHeroCta: boolean = false,
-    seasonOverride?: string
+    seasonOverride?: string | null
   ) => {
-    const epId = episode?.id ?? episode?.stream_id;
+    const epId = getEpisodeId(episode);
     lastTriggerWasHeroRef.current = fromHeroCta;
-    if (epId !== undefined && epId !== null) {
+    if (epId !== null) {
       lastEpisodeIdRef.current = String(epId);
     }
     if (scrollContainerRef.current) {
@@ -901,7 +930,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       setSelectedSeason(seasonOverride);
     }
     const progress =
-      epId !== undefined && epId !== null
+      epId !== null
         ? getItemProgress(credentials, 'episode', epId)
         : 0;
     if (progress > 30) {
@@ -937,12 +966,6 @@ export const SeriesDetails = React.memo(function SeriesDetails({
       scrollContainerRef.current.scrollTop = preservedScrollTop;
     }
   };
-
-  const currentSeasonEpisodes: any[] = useMemo(() => {
-    if (!selectedSeason) return [];
-    const list = episodesBySeason[selectedSeason];
-    return Array.isArray(list) ? list : [];
-  }, [selectedSeason, episodesBySeason]);
 
   const hasAboutSection = Boolean(
     directorText ||
@@ -1079,19 +1102,15 @@ export const SeriesDetails = React.memo(function SeriesDetails({
           (() => {
             let hasNext = false;
             let hasPrev = false;
-            if (selectedSeason) {
-              const episodes = episodesBySeason[selectedSeason];
-              if (Array.isArray(episodes)) {
-                const playingEpId = String(
-                  playingEpisodeData.episode?.id ?? playingEpisodeData.episode?.stream_id ?? ''
-                );
-                const currIdx = episodes.findIndex(
-                  (e: any) => String(e?.id ?? e?.stream_id ?? '') === playingEpId
-                );
-                if (currIdx !== -1) {
-                  if (currIdx < episodes.length - 1) hasNext = true;
-                  if (currIdx > 0) hasPrev = true;
-                }
+            const playingEpId = getEpisodeId(playingEpisodeData.episode);
+            if (currentSeasonEpisodes.length > 0 && playingEpId !== null) {
+              const currIdx = currentSeasonEpisodes.findIndex((e: any) => {
+                const candId = getEpisodeId(e);
+                return candId !== null && String(candId) === String(playingEpId);
+              });
+              if (currIdx !== -1) {
+                if (currIdx < currentSeasonEpisodes.length - 1) hasNext = true;
+                if (currIdx > 0) hasPrev = true;
               }
             }
             return (
@@ -1105,7 +1124,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                 }
                 contentType="episode"
                 startAt={playingEpisodeData.startAt}
-                streamId={playingEpisodeData.episode.id}
+                streamId={playingEpId ?? undefined}
                 externalSubtitles={playingEpisodeData.subtitles}
                 onBack={() => {
                   setPlayingEpisodeData(null);
@@ -1379,7 +1398,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
             >
               <h2 className="text-lg sm:text-2xl font-bold text-white">Episódios</h2>
 
-              {sortedSeasons.length > 0 && selectedSeason && (
+              {sortedSeasons.length > 0 && effectiveSelectedSeason && (
                 <div className="relative" data-scroll-block="true">
                   <div
                     data-nav-row="true"
@@ -1391,13 +1410,13 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                       type="button"
                       aria-haspopup="listbox"
                       aria-expanded={isSeasonMenuOpen}
-                      aria-label={`Selecionar temporada, atual Temporada ${selectedSeason}`}
+                      aria-label={`Selecionar temporada, atual Temporada ${effectiveSelectedSeason}`}
                       data-season-dropdown-trigger="true"
                       data-season-selected="true"
                       onClick={() => setIsSeasonMenuOpen((prev) => !prev)}
                       className="nc-tv-season-btn min-w-[175px] sm:min-w-[210px] px-4 py-2.5 rounded-md bg-[#242424] hover:bg-[#2f2f2f] text-white font-semibold text-sm sm:text-base border border-white/25 flex items-center justify-between gap-3 transition-colors shadow-md cursor-pointer"
                     >
-                      <span>Temporada {selectedSeason}</span>
+                      <span>Temporada {effectiveSelectedSeason}</span>
                       <ChevronDown
                         className={`w-4 h-4 text-white/80 transition-transform duration-200 shrink-0 ${
                           isSeasonMenuOpen ? 'rotate-180' : ''
@@ -1416,7 +1435,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                       className="absolute right-0 mt-1.5 min-w-[240px] sm:min-w-[270px] max-h-72 overflow-y-auto rounded-md bg-[#242424] border border-white/25 shadow-[0_16px_48px_rgba(0,0,0,0.92)] py-1.5 z-50 flex flex-col"
                     >
                       {sortedSeasons.map((seasonNum) => {
-                        const isSelected = selectedSeason === seasonNum;
+                        const isSelected = effectiveSelectedSeason === seasonNum;
                         const epCount = Array.isArray(episodesBySeason[seasonNum])
                           ? episodesBySeason[seasonNum].length
                           : 0;
@@ -1449,13 +1468,14 @@ export const SeriesDetails = React.memo(function SeriesDetails({
               )}
             </div>
 
-            {sortedSeasons.length > 0 ? (
+            {sortedSeasons.length > 0 || unseasonedEpisodes.length > 0 ? (
               <div
                 data-nav-zone="episodes"
                 className="nc-tv-episode-list flex flex-col divide-y divide-white/10"
               >
                 {currentSeasonEpisodes.length > 0 ? (
                   currentSeasonEpisodes.map((episode: any, idx: number) => {
+                    const epId = getEpisodeId(episode);
                     const epNum = episode.episode_num || idx + 1;
                     const epTitle = episode.title || `Episódio ${epNum}`;
                     const epRawImage =
@@ -1486,8 +1506,8 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                         ?.trim() || null;
 
                     const epProgressSec =
-                      episode.id !== undefined && episode.id !== null
-                        ? getItemProgress(credentials, 'episode', episode.id)
+                      epId !== null
+                        ? getItemProgress(credentials, 'episode', epId)
                         : 0;
                     const epSavedMinutes =
                       epProgressSec > 30 ? Math.max(1, Math.floor(epProgressSec / 60)) : 0;
@@ -1508,11 +1528,11 @@ export const SeriesDetails = React.memo(function SeriesDetails({
 
                     return (
                       <div
-                        key={episode.id ?? idx}
+                        key={epId !== null ? String(epId) : `ep-idx-${idx}`}
                         tabIndex={0}
                         role="button"
                         data-nav-item="true"
-                        data-episode-id={String(episode.id)}
+                        data-episode-id={epId !== null ? String(epId) : undefined}
                         data-episode-num={String(epNum)}
                         data-scroll-block="true"
                         aria-label={epTitle}
@@ -1544,7 +1564,7 @@ export const SeriesDetails = React.memo(function SeriesDetails({
                               src={epThumbUrl}
                               serverUrl={credentials?.serverUrl}
                               alt={epTitle}
-                              itemId={episode.id}
+                              itemId={epId ?? undefined}
                               itemName={epTitle}
                               className="w-full h-full object-cover object-center"
                             />

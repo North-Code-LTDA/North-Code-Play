@@ -87,7 +87,10 @@ function repairCommonHttpProtocolTypos(input: string): string {
   return fixed;
 }
 
-function isValidServerHostname(hostname: string): boolean {
+function isValidServerHostname(
+  hostname: string,
+  allowSingleLabelInternal: boolean = false
+): boolean {
   if (!hostname) return false;
   const lower = hostname.toLowerCase();
 
@@ -97,16 +100,12 @@ function isValidServerHostname(hostname: string): boolean {
     return inner.length >= 2 && /^[0-9a-f:]+$/i.test(inner) && inner.includes(":");
   }
 
-  if (lower === "localhost") {
-    return true;
-  }
-
-  // Must contain at least one dot (domain or IPv4) and not start/end with dot or contain empty labels
-  if (!lower.includes(".") || lower.startsWith(".") || lower.endsWith(".") || lower.includes("..")) {
+  // Reject empty, leading dot, or consecutive dots (e.g. ".", "..", ".example.com", "a..b")
+  if (lower.startsWith(".") || lower.includes("..")) {
     return false;
   }
 
-  // IPv4 validation
+  // IPv4 validation (strict 4 octets, no trailing dot)
   if (/^\d+(?:\.\d+)+$/.test(lower)) {
     const octets = lower.split(".");
     if (octets.length !== 4) return false;
@@ -117,15 +116,43 @@ function isValidServerHostname(hostname: string): boolean {
     });
   }
 
-  // Domain hostname labels (supports standard DNS and punycode labels)
-  const labels = lower.split(".");
-  if (labels.length < 2) return false;
-  return labels.every(
+  // Allow a single trailing dot for valid FQDNs (e.g. "example.com.", "localhost.")
+  const normalizedHost = lower.endsWith(".") ? lower.slice(0, -1) : lower;
+  if (!normalizedHost || normalizedHost.length > 253) {
+    return false;
+  }
+
+  if (normalizedHost === "localhost") {
+    return true;
+  }
+
+  const labels = normalizedHost.split(".");
+  const allValidLabels = labels.every(
     (label) =>
       label.length >= 1 &&
       label.length <= 63 &&
       /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
   );
+  if (!allValidLabels) {
+    return false;
+  }
+
+  // Multi-label domain name (e.g. example.com, panel.internal.local, example.com.)
+  if (labels.length >= 2) {
+    // Reject dotted numeric strings with trailing dot (e.g. "1.2.3.4.")
+    if (labels.every((label) => /^\d+$/.test(label))) {
+      return false;
+    }
+    return true;
+  }
+
+  // Single-label internal network hostname (e.g. http://iptv:8080, https://my-server, iptv:8080)
+  // Accepted only when explicit HTTP/HTTPS scheme or explicit port is provided, and must contain a letter
+  if (allowSingleLabelInternal && /[a-z]/.test(labels[0])) {
+    return true;
+  }
+
+  return false;
 }
 
 function prepareHttpCandidateUrl(rawInput: string): URL | null {
@@ -147,6 +174,7 @@ function prepareHttpCandidateUrl(rawInput: string): URL | null {
 
   let candidate = repaired;
   const hasHttpScheme = /^https?:\/\//i.test(repaired);
+  let hasExplicitPort = false;
 
   if (!hasHttpScheme) {
     // Explicit non-HTTP scheme with :// (e.g. ftp://, rtmp://, ws://)
@@ -163,6 +191,7 @@ function prepareHttpCandidateUrl(rawInput: string): URL | null {
       if (DISALLOWED_URL_SCHEMES.has(prefix) || !looksLikePort) {
         return null;
       }
+      hasExplicitPort = true;
     }
 
     candidate = `http://${repaired}`;
@@ -189,7 +218,18 @@ function prepareHttpCandidateUrl(rawInput: string): URL | null {
     return null;
   }
 
-  if (!isValidServerHostname(parsed.hostname)) {
+  // Reject purely numeric single-label hosts before WHATWG URL IPv4 coercion (e.g. "http://12345")
+  const authorityPart = candidate.replace(/^https?:\/\//i, "").split(/[/?#]/)[0];
+  const rawHostOnly = authorityPart.startsWith("[")
+    ? authorityPart
+    : authorityPart.split(":")[0];
+  if (/^\d+$/.test(rawHostOnly)) {
+    return null;
+  }
+
+  const allowSingleLabelInternal =
+    hasHttpScheme || hasExplicitPort || Boolean(parsed.port);
+  if (!isValidServerHostname(parsed.hostname, allowSingleLabelInternal)) {
     return null;
   }
 
@@ -511,6 +551,161 @@ export function buildDirectImageUrl(
   return null;
 }
 
+const FORBIDDEN_SEASON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * Validates a media identifier (stream_id, series_id, episode id), preserving original
+ * string or number precision without coercion. Rejects null, undefined, empty/whitespace
+ * strings, NaN, and non-finite numbers.
+ */
+export function getValidMediaId(rawId: unknown): string | number | null {
+  if (typeof rawId === "number") {
+    return Number.isFinite(rawId) ? rawId : null;
+  }
+  if (typeof rawId === "string") {
+    const trimmed = rawId.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
+
+/**
+ * Resolves a valid episode identifier consistently across `id` and `stream_id`.
+ * Never fabricates an identifier or returns empty/invalid values.
+ */
+export function getEpisodeId(episode: unknown): string | number | null {
+  if (!episode || typeof episode !== "object") return null;
+  const ep = episode as Record<string, unknown>;
+  return getValidMediaId(ep.id) ?? getValidMediaId(ep.stream_id);
+}
+
+/**
+ * Sorts season keys numerically when possible, falling back to natural locale order.
+ */
+export function sortSeasonKeys(keys: string[]): string[] {
+  return [...keys].sort((a, b) => {
+    const aTrim = a.trim();
+    const bTrim = b.trim();
+    const aIsNum = /^\d+$/.test(aTrim);
+    const bIsNum = /^\d+$/.test(bTrim);
+    if (aIsNum && bIsNum) {
+      return parseInt(aTrim, 10) - parseInt(bTrim, 10);
+    }
+    if (aIsNum) return -1;
+    if (bIsNum) return 1;
+    return aTrim.localeCompare(bTrim, undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+export interface NormalizedSeriesEpisodes {
+  seasons: Record<string, any[]>;
+  sortedSeasonKeys: string[];
+  unseasonedEpisodes: any[];
+}
+
+function normalizeSeasonKeyToken(rawSeason: unknown): string | null {
+  if (typeof rawSeason === "number") {
+    return Number.isFinite(rawSeason) ? String(rawSeason) : null;
+  }
+  if (typeof rawSeason === "string") {
+    const trimmed = rawSeason.trim();
+    if (!trimmed) return null;
+    const lower = trimmed.toLowerCase();
+    if (lower === "null" || lower === "undefined") return null;
+    if (FORBIDDEN_SEASON_KEYS.has(lower)) return null;
+    return trimmed;
+  }
+  return null;
+}
+
+/**
+ * Shared lightweight normalizer for Xtream `episodes` structures across all series consumers:
+ * - Season maps of episode arrays (`Record<string, Episode[]>`)
+ * - Season maps of episode objects (`Record<string, Record<string, Episode>>`)
+ * - Flat episode arrays (`Episode[]`)
+ *
+ * Uses null-prototype storage and blocks special prototype property names.
+ * Never fabricates season "1" when a flat episode lacks valid season information;
+ * instead exposes those items explicitly in `unseasonedEpisodes`.
+ * Preserves original episode object references without cloning.
+ */
+export function normalizeEpisodesBySeason(
+  rawEpisodes: unknown
+): NormalizedSeriesEpisodes {
+  const seasons: Record<string, any[]> = Object.create(null);
+  const unseasonedEpisodes: any[] = [];
+
+  if (!rawEpisodes || typeof rawEpisodes !== "object") {
+    return { seasons, sortedSeasonKeys: [], unseasonedEpisodes };
+  }
+
+  if (Array.isArray(rawEpisodes)) {
+    for (const ep of rawEpisodes) {
+      if (!ep || typeof ep !== "object" || Array.isArray(ep)) continue;
+      const epObj = ep as Record<string, unknown>;
+      const seasonKey =
+        normalizeSeasonKeyToken(epObj.season) ??
+        normalizeSeasonKeyToken(epObj.season_num) ??
+        normalizeSeasonKeyToken(epObj.season_number);
+
+      if (seasonKey !== null) {
+        if (!Object.prototype.hasOwnProperty.call(seasons, seasonKey)) {
+          seasons[seasonKey] = [];
+        }
+        seasons[seasonKey].push(ep);
+      } else {
+        unseasonedEpisodes.push(ep);
+      }
+    }
+    return {
+      seasons,
+      sortedSeasonKeys: sortSeasonKeys(Object.keys(seasons)),
+      unseasonedEpisodes,
+    };
+  }
+
+  const rawMap = rawEpisodes as Record<string, unknown>;
+  for (const rawKey of Object.keys(rawMap)) {
+    const seasonKey = normalizeSeasonKeyToken(rawKey);
+    if (seasonKey === null) continue;
+    const seasonValue = rawMap[rawKey];
+
+    if (Array.isArray(seasonValue)) {
+      const validEpisodes = seasonValue.filter(
+        (ep) => ep && typeof ep === "object" && !Array.isArray(ep)
+      );
+      if (!Object.prototype.hasOwnProperty.call(seasons, seasonKey)) {
+        seasons[seasonKey] = validEpisodes;
+      } else {
+        seasons[seasonKey].push(...validEpisodes);
+      }
+    } else if (seasonValue && typeof seasonValue === "object") {
+      const objVal = seasonValue as Record<string, unknown>;
+      const validEpisodes: any[] = [];
+      for (const epKey of Object.keys(objVal)) {
+        if (FORBIDDEN_SEASON_KEYS.has(epKey.toLowerCase())) continue;
+        const ep = objVal[epKey];
+        if (ep && typeof ep === "object" && !Array.isArray(ep)) {
+          validEpisodes.push(ep);
+        }
+      }
+      if (validEpisodes.length > 0) {
+        if (!Object.prototype.hasOwnProperty.call(seasons, seasonKey)) {
+          seasons[seasonKey] = validEpisodes;
+        } else {
+          seasons[seasonKey].push(...validEpisodes);
+        }
+      }
+    }
+  }
+
+  return {
+    seasons,
+    sortedSeasonKeys: sortSeasonKeys(Object.keys(seasons)),
+    unseasonedEpisodes,
+  };
+}
+
 export interface BuildDirectMediaUrlOptions {
   type: "live" | "movie" | "series";
   streamId: string | number;
@@ -522,10 +717,12 @@ export interface BuildDirectMediaUrlOptions {
 /**
  * Builds DIRECT media stream URLs from browser to the IPTV Xtream provider.
  * - Uses valid HTTP/HTTPS `directSource` literally without adding Xtream credentials.
- * - Otherwise follows standard Xtream Codes routing conventions:
- *   - Live:   /live/{username}/{password}/{stream_id}.{format}
- *   - Movies: /movie/{username}/{password}/{stream_id}.{container_extension}
- *   - Series: /series/{username}/{password}/{episode_id}.{container_extension}
+ * - Validates streamId and serverUrl explicitly; never constructs URLs with empty/undefined IDs.
+ * - For Live TV, respects provider `allowedOutputFormats` order without artificial whitelists:
+ *   - Explicit empty `[]` fails with a controlled error instead of emitting an unapproved format.
+ *   - Non-empty list uses explicit `containerExtension` only if included in `allowedOutputFormats`,
+ *     otherwise selects `allowedOutputFormats[0]`.
+ *   - Absent `allowedOutputFormats` falls back to `containerExtension || "m3u8"`.
  */
 export function buildDirectMediaUrl(
   credentials: Pick<XtreamCredentials, "serverUrl" | "username" | "password">,
@@ -543,25 +740,35 @@ export function buildDirectMediaUrl(
     throw new Error("URL do servidor Xtream inválida para construir o endereço de reprodução.");
   }
 
+  const validStreamId = getValidMediaId(streamId);
+  if (validStreamId === null) {
+    throw new Error(
+      "Identificador de mídia inválido ou ausente para construir o endereço de reprodução."
+    );
+  }
+
   const user = encodeURIComponent(credentials.username);
   const pass = encodeURIComponent(credentials.password);
-  const id = encodeURIComponent(String(streamId).trim());
+  const id = encodeURIComponent(String(validStreamId));
 
   if (type === "live") {
-    let format = "m3u8";
-
+    const normalizedFormats = normalizeAllowedOutputFormats(allowedOutputFormats);
     const cleanedExt = normalizeContainerExtension(containerExtension);
-    if (cleanedExt) {
-      format = cleanedExt;
-    } else {
-      const normalizedFormats = normalizeAllowedOutputFormats(allowedOutputFormats);
-      if (normalizedFormats && normalizedFormats.length > 0) {
-        if (normalizedFormats.includes("m3u8")) {
-          format = "m3u8";
-        } else if (normalizedFormats.includes("ts")) {
-          format = "ts";
-        }
+    let format: string;
+
+    if (normalizedFormats !== undefined) {
+      if (normalizedFormats.length === 0) {
+        throw new Error(
+          "O provedor não informou nenhum formato de saída permitido para este canal ao vivo."
+        );
       }
+      if (cleanedExt && normalizedFormats.includes(cleanedExt)) {
+        format = cleanedExt;
+      } else {
+        format = normalizedFormats[0];
+      }
+    } else {
+      format = cleanedExt || "m3u8";
     }
 
     return `${cleanBase}/live/${user}/${pass}/${id}.${encodeURIComponent(format)}`;

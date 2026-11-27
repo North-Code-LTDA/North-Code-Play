@@ -34,8 +34,11 @@ import {
 import {
   buildDirectMediaUrl,
   buildDirectImageUrl,
+  getEpisodeId,
+  getValidMediaId,
   normalizeContainerExtension,
   normalizeDirectMediaSource,
+  normalizeEpisodesBySeason,
   normalizeImageSource,
 } from '../utils/mediaUtils';
 import {
@@ -2378,61 +2381,73 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         );
 
         const executeConfirmedSeriesPlay = (resolvedDetails: any) => {
-          const episodesMap = resolvedDetails?.episodes || item?.episodes;
+          const episodesSource = resolvedDetails?.episodes ?? item?.episodes;
+          const normalized = normalizeEpisodesBySeason(episodesSource);
+          const allEntries: Array<{ seasonKey: string | null; ep: any }> = [];
+          for (const seasonKey of normalized.sortedSeasonKeys) {
+            const seasonList = normalized.seasons[seasonKey];
+            if (!Array.isArray(seasonList)) continue;
+            for (const ep of seasonList) {
+              allEntries.push({ seasonKey, ep });
+            }
+          }
+          for (const ep of normalized.unseasonedEpisodes) {
+            allEntries.push({ seasonKey: null, ep });
+          }
 
           if (latestEpisodeRecord) {
             if (
-              episodesMap &&
-              typeof episodesMap === 'object' &&
+              allEntries.length > 0 &&
               creds?.serverUrl &&
               creds?.username &&
               creds?.password
             ) {
-              let foundEp: any = null;
-              let foundSeasonKey = '1';
-              for (const seasonKey of Object.keys(episodesMap)) {
-                const seasonList = episodesMap[seasonKey];
-                if (Array.isArray(seasonList)) {
-                  const match = seasonList.find(
-                    (ep: any) =>
-                      String(ep.id ?? ep.stream_id) === String(latestEpisodeRecord.id)
-                  );
-                  if (match) {
-                    foundEp = match;
-                    foundSeasonKey = seasonKey;
-                    break;
-                  }
-                }
-              }
+              const matchedEntry = allEntries.find((entry) => {
+                const epId = getEpisodeId(entry.ep);
+                return epId !== null && String(epId) === String(latestEpisodeRecord.id);
+              });
 
-              if (foundEp) {
+              if (matchedEntry) {
+                const foundEp = matchedEntry.ep;
+                const foundSeasonKey = matchedEntry.seasonKey;
+                const epId = getEpisodeId(foundEp);
                 const epDirectSource =
                   normalizeDirectMediaSource(foundEp.direct_source) ||
                   normalizeDirectMediaSource(foundEp.info?.direct_source);
                 const confirmedExt = normalizeContainerExtension(foundEp.container_extension);
-                if (epDirectSource || confirmedExt) {
+                if ((epDirectSource || confirmedExt) && (epId !== null || epDirectSource)) {
                   const epNum = String(foundEp.episode_num || 1).padStart(2, '0');
-                  const sNum = String(foundSeasonKey).padStart(2, '0');
-                  const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${foundEp.title || `Episódio ${foundEp.episode_num || 1}`}`;
-                  const directUrl = buildDirectMediaUrl(creds, {
-                    type: 'series',
-                    streamId: latestEpisodeRecord.id,
-                    containerExtension: confirmedExt || 'mp4',
-                    directSource: epDirectSource ?? undefined,
-                  });
-                  if (directUrl) {
-                    const epSubs = extractXtreamSubtitles(foundEp, creds.serverUrl);
-                    playFn(
-                      directUrl,
-                      epTitle,
-                      latestEpisodeRecord.positionSec,
-                      latestEpisodeRecord.id,
-                      'episode',
-                      undefined,
-                      undefined,
-                      undefined,
-                      undefined,
-                      epSubs.length > 0 ? epSubs : undefined
+                  const epLabel = foundEp.title || `Episódio ${foundEp.episode_num || 1}`;
+                  const epTitle =
+                    foundSeasonKey !== null
+                      ? `${item.name || item.title} - S${String(foundSeasonKey).padStart(2, '0')}E${epNum} - ${epLabel}`
+                      : `${item.name || item.title} - ${epLabel}`;
+                  try {
+                    const directUrl = buildDirectMediaUrl(creds, {
+                      type: 'series',
+                      streamId: epId ?? latestEpisodeRecord.id,
+                      containerExtension: confirmedExt || 'mp4',
+                      directSource: epDirectSource ?? undefined,
+                    });
+                    if (directUrl) {
+                      const epSubs = extractXtreamSubtitles(foundEp, creds.serverUrl);
+                      playFn(
+                        directUrl,
+                        epTitle,
+                        latestEpisodeRecord.positionSec,
+                        epId ?? latestEpisodeRecord.id,
+                        'episode',
+                        undefined,
+                        undefined,
+                        undefined,
+                        undefined,
+                        epSubs.length > 0 ? epSubs : undefined
+                      );
+                      return;
+                    }
+                  } catch (err: any) {
+                    setPlayError(
+                      err?.message || 'Não foi possível iniciar a reprodução do episódio.'
                     );
                     return;
                   }
@@ -2446,33 +2461,35 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
             return;
           }
 
-          if (episodesMap && typeof episodesMap === 'object' && creds?.serverUrl) {
-            const seasons = Object.keys(episodesMap);
-            if (seasons.length > 0) {
-              const firstSeasonList = episodesMap[seasons[0]];
-              if (Array.isArray(firstSeasonList) && firstSeasonList.length > 0) {
-                const firstEp = firstSeasonList[0];
-                const epId = firstEp.id ?? firstEp.stream_id;
-                const epDirectSource =
-                  normalizeDirectMediaSource(firstEp.direct_source) ||
-                  normalizeDirectMediaSource(firstEp.info?.direct_source);
-                const epExt = normalizeContainerExtension(firstEp.container_extension) || 'mp4';
+          if (allEntries.length > 0 && creds?.serverUrl) {
+            const firstEntry = allEntries[0];
+            const firstEp = firstEntry.ep;
+            const epId = getEpisodeId(firstEp);
+            const epDirectSource =
+              normalizeDirectMediaSource(firstEp.direct_source) ||
+              normalizeDirectMediaSource(firstEp.info?.direct_source);
+            if (epId !== null || epDirectSource) {
+              const epExt = normalizeContainerExtension(firstEp.container_extension) || 'mp4';
+              try {
                 const directUrl = buildDirectMediaUrl(creds, {
                   type: 'series',
-                  streamId: epId,
+                  streamId: epId ?? '',
                   containerExtension: epExt,
                   directSource: epDirectSource ?? undefined,
                 });
                 if (directUrl) {
-                  const sNum = String(seasons[0]).padStart(2, '0');
                   const epNum = String(firstEp.episode_num || 1).padStart(2, '0');
-                  const epTitle = `${item.name || item.title} - S${sNum}E${epNum} - ${firstEp.title || 'Episódio 1'}`;
+                  const epLabel = firstEp.title || 'Episódio 1';
+                  const epTitle =
+                    firstEntry.seasonKey !== null
+                      ? `${item.name || item.title} - S${String(firstEntry.seasonKey).padStart(2, '0')}E${epNum} - ${epLabel}`
+                      : `${item.name || item.title} - ${epLabel}`;
                   const epSubs = extractXtreamSubtitles(firstEp, creds.serverUrl);
                   playFn(
                     directUrl,
                     epTitle,
                     0,
-                    epId,
+                    epId ?? undefined,
                     'episode',
                     undefined,
                     undefined,
@@ -2482,6 +2499,11 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
                   );
                   return;
                 }
+              } catch (err: any) {
+                setPlayError(
+                  err?.message || 'Não foi possível iniciar a reprodução do episódio.'
+                );
+                return;
               }
             }
           }
@@ -2492,14 +2514,21 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
         const cachedFullSeries = creds
           ? getCachedHeroDetails(creds, item, { requireEpisodes: true })
           : null;
-        const existingEpisodesSource =
-          detailsResponse?.episodes && typeof detailsResponse.episodes === 'object'
-            ? detailsResponse
-            : item?.episodes && typeof item.episodes === 'object'
-              ? item
-              : cachedFullSeries?.episodes && typeof cachedFullSeries.episodes === 'object'
-                ? cachedFullSeries
-                : null;
+        const detailsResponseMatchesSeries =
+          detailsResponse &&
+          typeof detailsResponse === 'object' &&
+          detailsResponse.episodes &&
+          typeof detailsResponse.episodes === 'object' &&
+          (detailsResponse.info?.series_id === undefined ||
+            detailsResponse.info?.series_id === null ||
+            String(detailsResponse.info.series_id) === sId);
+        const existingEpisodesSource = detailsResponseMatchesSeries
+          ? detailsResponse
+          : item?.episodes && typeof item.episodes === 'object'
+            ? item
+            : cachedFullSeries?.episodes && typeof cachedFullSeries.episodes === 'object'
+              ? cachedFullSeries
+              : null;
         if (existingEpisodesSource) {
           executeConfirmedSeriesPlay(existingEpisodesSource);
           return;
@@ -2542,55 +2571,62 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       }
 
       // Movie direct play / resume
-      const movieId = item.stream_id ?? item.id;
-      if (creds?.serverUrl && creds?.username && creds?.password && movieId !== undefined) {
+      const movieId = getValidMediaId(item.stream_id) ?? getValidMediaId(item.id);
+      if (creds?.serverUrl && creds?.username && creds?.password && movieId !== null) {
         const effectiveMovieDetails =
           detailsResponse || getCachedHeroDetails(creds, item);
         const detailMovieData = effectiveMovieDetails?.movie_data;
         const detailsMatchMovie =
-          !detailMovieData ||
-          detailMovieData.stream_id === undefined ||
-          detailMovieData.stream_id === null ||
-          String(detailMovieData.stream_id) === String(movieId);
+          Boolean(effectiveMovieDetails && typeof effectiveMovieDetails === 'object') &&
+          (!detailMovieData ||
+            detailMovieData.stream_id === undefined ||
+            detailMovieData.stream_id === null ||
+            String(detailMovieData.stream_id) === String(movieId));
+        const validatedMovieDetails = detailsMatchMovie ? effectiveMovieDetails : null;
         const movieDirectSource =
-          (detailsMatchMovie
+          (validatedMovieDetails
             ? normalizeDirectMediaSource(detailMovieData?.direct_source) ||
-              normalizeDirectMediaSource(effectiveMovieDetails?.info?.direct_source)
+              normalizeDirectMediaSource(validatedMovieDetails?.info?.direct_source)
             : null) || normalizeDirectMediaSource(item.direct_source);
         const ext =
-          (detailsMatchMovie
+          (validatedMovieDetails
             ? normalizeContainerExtension(detailMovieData?.container_extension)
             : null) ||
           normalizeContainerExtension(item.container_extension) ||
           'mp4';
-        const directUrl = buildDirectMediaUrl(creds, {
-          type: 'movie',
-          streamId: movieId,
-          containerExtension: ext,
-          directSource: movieDirectSource ?? undefined,
-        });
-        if (directUrl) {
-          const savedSec = getItemProgress(creds, 'movie', movieId);
-          const recordSec =
-            records.find((r) => r.type === 'movie' && String(r.id) === String(movieId))
-              ?.positionSec ?? 0;
-          const resumeSec = Math.max(savedSec, recordSec);
-          const movieSubs = extractXtreamSubtitles(
-            effectiveMovieDetails || item,
-            creds.serverUrl
-          );
-          playFn(
-            directUrl,
-            item.name || item.title || 'Filme',
-            resumeSec > 30 ? resumeSec : 0,
-            movieId,
-            'movie',
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            movieSubs.length > 0 ? movieSubs : undefined
-          );
+        try {
+          const directUrl = buildDirectMediaUrl(creds, {
+            type: 'movie',
+            streamId: movieId,
+            containerExtension: ext,
+            directSource: movieDirectSource ?? undefined,
+          });
+          if (directUrl) {
+            const savedSec = getItemProgress(creds, 'movie', movieId);
+            const recordSec =
+              records.find((r) => r.type === 'movie' && String(r.id) === String(movieId))
+                ?.positionSec ?? 0;
+            const resumeSec = Math.max(savedSec, recordSec);
+            const movieSubs = extractXtreamSubtitles(
+              validatedMovieDetails || item,
+              creds.serverUrl
+            );
+            playFn(
+              directUrl,
+              item.name || item.title || 'Filme',
+              resumeSec > 30 ? resumeSec : 0,
+              movieId,
+              'movie',
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              movieSubs.length > 0 ? movieSubs : undefined
+            );
+            return;
+          }
+        } catch (err: any) {
+          setPlayError(err?.message || 'Não foi possível iniciar a reprodução do filme.');
           return;
         }
       }
@@ -2608,21 +2644,36 @@ export const CatalogShowcaseView = React.memo(function CatalogShowcaseView({
       return;
     }
     const creds = credentialsRef.current;
-    if (!creds?.serverUrl || !creds?.username || !creds?.password || stream.stream_id === undefined) {
+    const liveStreamId = getValidMediaId(stream.stream_id) ?? getValidMediaId(stream.id);
+    const liveDirectSource = normalizeDirectMediaSource(stream.direct_source) ?? undefined;
+    if (
+      !creds?.serverUrl ||
+      !creds?.username ||
+      !creds?.password ||
+      (liveStreamId === null && !liveDirectSource)
+    ) {
       setPlayError(
         `Não foi possível reproduzir "${stream.name || 'Canal'}": dados de conexão ou ID ausentes.`
       );
       return;
     }
     const liveExt = normalizeContainerExtension(stream.container_extension) || undefined;
-    const liveDirectSource = normalizeDirectMediaSource(stream.direct_source) ?? undefined;
-    const url = buildDirectMediaUrl(creds, {
-      type: 'live',
-      streamId: stream.stream_id,
-      containerExtension: liveExt,
-      allowedOutputFormats: creds.allowed_output_formats,
-      directSource: liveDirectSource,
-    });
+    let url = '';
+    try {
+      url = buildDirectMediaUrl(creds, {
+        type: 'live',
+        streamId: liveStreamId ?? '',
+        containerExtension: liveExt,
+        allowedOutputFormats: creds.allowed_output_formats,
+        directSource: liveDirectSource,
+      });
+    } catch (err: any) {
+      setPlayError(
+        err?.message ||
+          `Não foi possível reproduzir "${stream.name || 'Canal'}": endereço inválido.`
+      );
+      return;
+    }
     if (!url) {
       setPlayError(
         `Não foi possível reproduzir "${stream.name || 'Canal'}": dados de conexão ou ID ausentes.`

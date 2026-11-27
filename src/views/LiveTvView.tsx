@@ -19,7 +19,11 @@ import { VideoPlayer, VideoPlayerHandle } from '../components/VideoPlayer';
 import { MediaImage, observeContainerVisibility, notifyContainerScrollForFallback } from '../components/MediaImage';
 import { useFavorites } from '../hooks/useFavorites';
 import { useAccountPlaybackHistory, recordPlaybackPosition } from '../utils/playbackHistory';
-import { buildDirectMediaUrl } from '../utils/mediaUtils';
+import {
+  buildDirectMediaUrl,
+  getValidMediaId,
+  normalizeDirectMediaSource,
+} from '../utils/mediaUtils';
 import { setLiveTvPreviewPlaybackActiveForImagePreload } from '../services/androidImageCache';
 import {
   LiveChannelGroup,
@@ -2406,17 +2410,40 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
   onNextChannel,
   onPreviousChannel,
 }: LiveTvRightPaneProps) {
-  const activeStreamUrl = useMemo(() => {
-    if (!credentials || !selectedChannel) return '';
-    const sId = selectedChannel.stream_id ?? selectedChannel.id;
-    if (!sId) return '';
-    return buildDirectMediaUrl(credentials, {
-      type: 'live',
-      streamId: sId,
-      allowedOutputFormats: credentials.allowed_output_formats,
-      directSource: selectedChannel.direct_source,
-    });
+  const { url: activeStreamUrl, error: streamUrlError } = useMemo<{
+    url: string;
+    error: string | null;
+  }>(() => {
+    if (!credentials || !selectedChannel) return { url: '', error: null };
+    const sId =
+      getValidMediaId(selectedChannel.stream_id) ?? getValidMediaId(selectedChannel.id);
+    const validDirect = normalizeDirectMediaSource(selectedChannel.direct_source);
+    if (sId === null && !validDirect) {
+      return {
+        url: '',
+        error: 'Identificador do canal inválido ou ausente para reprodução.',
+      };
+    }
+    try {
+      const builtUrl = buildDirectMediaUrl(credentials, {
+        type: 'live',
+        streamId: sId ?? '',
+        containerExtension: selectedChannel.container_extension,
+        allowedOutputFormats: credentials.allowed_output_formats,
+        directSource: selectedChannel.direct_source,
+      });
+      return { url: builtUrl, error: null };
+    } catch (err: any) {
+      return {
+        url: '',
+        error:
+          err?.message ||
+          'Não foi possível preparar o endereço de reprodução deste canal.',
+      };
+    }
   }, [credentials, selectedChannel]);
+
+  const effectivePlaybackError = playbackError || streamUrlError;
 
   const hasActiveLivePreview = Boolean(selectedGroup && selectedChannel && activeStreamUrl);
   useEffect(() => {
@@ -2752,9 +2779,9 @@ const LiveTvRightPane = React.memo(function LiveTvRightPane({
                 </div>
               )}
 
-              {playbackError && (
+              {effectivePlaybackError && (
                 <p className="nc-notice-banner rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs text-red-200">
-                  {playbackError}
+                  {effectivePlaybackError}
                 </p>
               )}
             </div>

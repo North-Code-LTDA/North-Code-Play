@@ -156,10 +156,123 @@ function createInvalidFormatError(
   return err;
 }
 
+const HTTP_DATE_MONTHS: Record<string, number> = {
+  Jan: 0,
+  Feb: 1,
+  Mar: 2,
+  Apr: 3,
+  May: 4,
+  Jun: 5,
+  Jul: 6,
+  Aug: 7,
+  Sep: 8,
+  Oct: 9,
+  Nov: 10,
+  Dec: 11,
+};
+
+function buildValidatedUtcTimestamp(
+  year: number,
+  monthIdx: number,
+  day: number,
+  hour: number,
+  min: number,
+  sec: number
+): number | undefined {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(monthIdx) ||
+    !Number.isInteger(day) ||
+    !Number.isInteger(hour) ||
+    !Number.isInteger(min) ||
+    !Number.isInteger(sec) ||
+    monthIdx < 0 ||
+    monthIdx > 11 ||
+    day < 1 ||
+    day > 31 ||
+    hour < 0 ||
+    hour > 23 ||
+    min < 0 ||
+    min > 59 ||
+    sec < 0 ||
+    sec > 59
+  ) {
+    return undefined;
+  }
+
+  const ms = Date.UTC(year, monthIdx, day, hour, min, sec);
+  const verify = new Date(ms);
+  if (
+    verify.getUTCFullYear() !== year ||
+    verify.getUTCMonth() !== monthIdx ||
+    verify.getUTCDate() !== day ||
+    verify.getUTCHours() !== hour ||
+    verify.getUTCMinutes() !== min ||
+    verify.getUTCSeconds() !== sec
+  ) {
+    return undefined;
+  }
+  return ms;
+}
+
+function parseStrictHttpDateMs(input: string, nowMs: number): number | undefined {
+  // 1. IMF-fixdate (RFC 9110 §5.6.7): "Sun, 06 Nov 1994 08:49:37 GMT"
+  const imfMatch = input.match(
+    /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat), (\d{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/
+  );
+  if (imfMatch) {
+    const day = Number(imfMatch[1]);
+    const monthIdx = HTTP_DATE_MONTHS[imfMatch[2]];
+    const year = Number(imfMatch[3]);
+    const hour = Number(imfMatch[4]);
+    const min = Number(imfMatch[5]);
+    const sec = Number(imfMatch[6]);
+    return buildValidatedUtcTimestamp(year, monthIdx, day, hour, min, sec);
+  }
+
+  // 2. Obsolete RFC 850: "Sunday, 06-Nov-94 08:49:37 GMT"
+  const rfc850Match = input.match(
+    /^(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday), (\d{2})-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\d{2}) (\d{2}):(\d{2}):(\d{2}) GMT$/
+  );
+  if (rfc850Match) {
+    const day = Number(rfc850Match[1]);
+    const monthIdx = HTTP_DATE_MONTHS[rfc850Match[2]];
+    const twoDigitYear = Number(rfc850Match[3]);
+    const currentYear = new Date(nowMs).getUTCFullYear();
+    const currentCentury = Math.floor(currentYear / 100) * 100;
+    let year = currentCentury + twoDigitYear;
+    if (year - currentYear > 50) {
+      year -= 100;
+    } else if (currentYear - year > 50) {
+      year += 100;
+    }
+    const hour = Number(rfc850Match[4]);
+    const min = Number(rfc850Match[5]);
+    const sec = Number(rfc850Match[6]);
+    return buildValidatedUtcTimestamp(year, monthIdx, day, hour, min, sec);
+  }
+
+  // 3. ANSI C asctime(): "Sun Nov  6 08:49:37 1994"
+  const asctimeMatch = input.match(
+    /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ( \d|\d{2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/
+  );
+  if (asctimeMatch) {
+    const monthIdx = HTTP_DATE_MONTHS[asctimeMatch[1]];
+    const day = Number(asctimeMatch[2].trim());
+    const hour = Number(asctimeMatch[3]);
+    const min = Number(asctimeMatch[4]);
+    const sec = Number(asctimeMatch[5]);
+    const year = Number(asctimeMatch[6]);
+    return buildValidatedUtcTimestamp(year, monthIdx, day, hour, min, sec);
+  }
+
+  return undefined;
+}
+
 /**
- * Interpreta o cabeçalho HTTP `Retry-After` nos formatos:
+ * Interpreta o cabeçalho HTTP `Retry-After` estritamente nos formatos RFC 9110/7231:
  * - segundos numéricos inteiros não negativos (ex.: "5", "0");
- * - HTTP-date RFC 9110/7231 (ex.: "Wed, 21 Oct 2015 07:28:00 GMT").
+ * - HTTP-date válido (IMF-fixdate, RFC 850 ou asctime).
  * Retorna o tempo de espera em milissegundos (>= 0) ou `undefined` se ausente/inválido.
  */
 export function parseRetryAfterMs(
@@ -175,10 +288,11 @@ export function parseRetryAfterMs(
     : rawHeaderValue;
 
   if (typeof candidate === 'number') {
-    if (!Number.isFinite(candidate) || candidate < 0 || !Number.isInteger(candidate)) {
+    if (!Number.isSafeInteger(candidate) || candidate < 0) {
       return undefined;
     }
-    return candidate * 1000;
+    const ms = candidate * 1000;
+    return Number.isFinite(ms) ? ms : undefined;
   }
 
   if (typeof candidate !== 'string') {
@@ -192,19 +306,15 @@ export function parseRetryAfterMs(
 
   if (/^\d+$/.test(trimmed)) {
     const seconds = Number(trimmed);
-    if (!Number.isFinite(seconds) || seconds < 0) {
+    if (!Number.isSafeInteger(seconds) || seconds < 0) {
       return undefined;
     }
-    return seconds * 1000;
+    const ms = seconds * 1000;
+    return Number.isFinite(ms) ? ms : undefined;
   }
 
-  // Rejeita formatos numéricos inválidos (negativos, decimais ou com sinal) para evitar parse ambíguo de data
-  if (/^[+-]?\d+(?:\.\d+)?$/.test(trimmed)) {
-    return undefined;
-  }
-
-  const parsedDateMs = Date.parse(trimmed);
-  if (!Number.isFinite(parsedDateMs)) {
+  const parsedDateMs = parseStrictHttpDateMs(trimmed, nowMs);
+  if (parsedDateMs === undefined || !Number.isFinite(parsedDateMs)) {
     return undefined;
   }
 

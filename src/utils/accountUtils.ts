@@ -1,4 +1,4 @@
-import { XtreamCredentials, XtreamUserInfo } from '../types';
+import { XtreamCredentials, XtreamServerInfo, XtreamUserInfo } from '../types';
 import { normalizeAllowedOutputFormats, normalizeServerUrl } from './mediaUtils';
 
 export const FAVORITES_KEY_PREFIX = 'northcode_favorites_';
@@ -33,8 +33,8 @@ export interface FormattedAccountConnections {
 }
 
 /**
- * Extracts non-sensitive account metadata from an Xtream `user_info` object for persistence
- * without duplicating password or fabricating absent fields.
+ * Extracts minimal non-sensitive account metadata from an Xtream `user_info` object for persistence.
+ * Omits password, redundant username, and free-form provider `message` strings.
  */
 export function extractPersistableUserInfo(
   rawUserInfo: unknown
@@ -47,22 +47,24 @@ export function extractPersistableUserInfo(
   const safeInfo: XtreamUserInfo = {};
   let hasField = false;
 
-  const copyIfDefined = (key: keyof XtreamUserInfo) => {
+  const copyScalarIfDefined = (key: keyof XtreamUserInfo) => {
     const val = src[key as string];
-    if (val !== undefined && val !== null) {
+    if (
+      typeof val === 'string' ||
+      typeof val === 'number' ||
+      typeof val === 'boolean'
+    ) {
       safeInfo[key] = val as any;
       hasField = true;
     }
   };
 
-  copyIfDefined('username');
-  copyIfDefined('status');
-  copyIfDefined('exp_date');
-  copyIfDefined('active_cons');
-  copyIfDefined('max_connections');
-  copyIfDefined('is_trial');
-  copyIfDefined('created_at');
-  copyIfDefined('message');
+  copyScalarIfDefined('status');
+  copyScalarIfDefined('exp_date');
+  copyScalarIfDefined('active_cons');
+  copyScalarIfDefined('max_connections');
+  copyScalarIfDefined('is_trial');
+  copyScalarIfDefined('created_at');
 
   const normalizedFormats = normalizeAllowedOutputFormats(src.allowed_output_formats);
   if (normalizedFormats !== undefined) {
@@ -74,13 +76,49 @@ export function extractPersistableUserInfo(
 }
 
 /**
- * Parses a non-negative integer connection count (numeric or textual).
- * Returns null when absent, null, empty, or invalid — never turns missing values into "0".
+ * Extracts only minimal pertinent scalar server metadata from an Xtream `server_info` object.
+ * Avoids persisting raw provider blobs or unrelated/sensitive fields.
+ */
+export function extractPersistableServerInfo(
+  rawServerInfo: unknown
+): XtreamServerInfo | undefined {
+  if (!rawServerInfo || typeof rawServerInfo !== 'object' || Array.isArray(rawServerInfo)) {
+    return undefined;
+  }
+
+  const src = rawServerInfo as Record<string, unknown>;
+  const safeServer: XtreamServerInfo = {};
+  let hasField = false;
+
+  const copyScalar = (key: keyof XtreamServerInfo) => {
+    const val = src[key as string];
+    if (typeof val === 'string' || (typeof val === 'number' && Number.isFinite(val))) {
+      safeServer[key] = val as any;
+      hasField = true;
+    }
+  };
+
+  copyScalar('url');
+  copyScalar('port');
+  copyScalar('https_port');
+  copyScalar('server_protocol');
+  copyScalar('rtmp_port');
+  copyScalar('timezone');
+  copyScalar('timestamp_now');
+  copyScalar('time_now');
+
+  return hasField ? safeServer : undefined;
+}
+
+/**
+ * Parses a non-negative safe integer connection count (numeric or textual).
+ * Returns null when absent, null, empty, out of safe integer bounds, or invalid —
+ * never turns missing values into "0".
  */
 export function parseConnectionCount(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === 'number') {
-    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    if (!Number.isSafeInteger(value) || value < 0) {
       return null;
     }
     return String(value);
@@ -90,14 +128,47 @@ export function parseConnectionCount(value: unknown): string | null {
     if (!trimmed || !/^\d+$/.test(trimmed)) {
       return null;
     }
-    return String(parseInt(trimmed, 10));
+    const num = Number(trimmed);
+    if (!Number.isSafeInteger(num) || num < 0) {
+      return null;
+    }
+    return String(num);
   }
   return null;
 }
 
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    year < 1970 ||
+    year > 2150 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return false;
+  }
+  const check = new Date(Date.UTC(year, month - 1, day));
+  return (
+    check.getUTCFullYear() === year &&
+    check.getUTCMonth() === month - 1 &&
+    check.getUTCDate() === day
+  );
+}
+
+function formatPtBrDateParts(year: number, month: number, day: number): string {
+  return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+}
+
 /**
  * Formats account expiration date from numeric or textual Unix timestamps (seconds or milliseconds)
- * or valid ISO/date strings. Never presents missing/null exp_date as confirmed lifetime access.
+ * or strictly validated ISO/SQL date strings.
+ * - For date-only strings (`YYYY-MM-DD`), compares strictly by calendar date without fabricating a clock time.
+ * - Rejects invalid calendar dates (e.g. Feb 30) and malformed date strings cleanly as Indisponível.
+ * - Never presents missing/null exp_date as confirmed lifetime access.
  */
 export function formatAccountExpiration(
   expDate: unknown,
@@ -134,34 +205,92 @@ export function formatAccountExpiration(
 
     if (/^\d+$/.test(trimmed)) {
       const num = Number(trimmed);
-      if (!Number.isFinite(num) || num <= 0) {
+      if (!Number.isSafeInteger(num) || num <= 0) {
         return { label: 'Indisponível', isAvailable: false, isExpired: false };
       }
       timestampMs = num >= 1e11 ? num : num * 1000;
     } else {
-      const ymdMatch = trimmed.match(
-        /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/
+      // Strictly date-only YYYY-MM-DD: compare by calendar day without inventing clock time
+      const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (dateOnlyMatch) {
+        const year = Number(dateOnlyMatch[1]);
+        const month = Number(dateOnlyMatch[2]);
+        const day = Number(dateOnlyMatch[3]);
+        if (!isValidCalendarDate(year, month, day)) {
+          return { label: 'Indisponível', isAvailable: false, isExpired: false };
+        }
+        const nowDate = new Date(nowMs);
+        const nowYear = nowDate.getFullYear();
+        const nowMonth = nowDate.getMonth() + 1;
+        const nowDay = nowDate.getDate();
+        const isExpired =
+          year < nowYear ||
+          (year === nowYear &&
+            (month < nowMonth || (month === nowMonth && day < nowDay)));
+        const formattedDate = formatPtBrDateParts(year, month, day);
+        return {
+          label: isExpired
+            ? `Expirou em ${formattedDate}`
+            : `Expira em ${formattedDate}`,
+          isAvailable: true,
+          isExpired,
+        };
+      }
+
+      // Strictly validated date-with-time: YYYY-MM-DD[ T]HH:mm(:ss(.sss)?)?(Z|±HH:MM)?
+      const dateTimeMatch = trimmed.match(
+        /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-](\d{2}):?(\d{2}))?$/i
       );
-      if (ymdMatch) {
-        const year = Number(ymdMatch[1]);
-        const month = Number(ymdMatch[2]);
-        const day = Number(ymdMatch[3]);
-        const hour = ymdMatch[4] ? Number(ymdMatch[4]) : 12;
-        const min = ymdMatch[5] ? Number(ymdMatch[5]) : 0;
-        const sec = ymdMatch[6] ? Number(ymdMatch[6]) : 0;
-        const d = new Date(year, month - 1, day, hour, min, sec);
-        if (
-          d.getFullYear() === year &&
-          d.getMonth() === month - 1 &&
-          d.getDate() === day
-        ) {
-          timestampMs = d.getTime();
+      if (!dateTimeMatch) {
+        return { label: 'Indisponível', isAvailable: false, isExpired: false };
+      }
+
+      const year = Number(dateTimeMatch[1]);
+      const month = Number(dateTimeMatch[2]);
+      const day = Number(dateTimeMatch[3]);
+      const hour = Number(dateTimeMatch[4]);
+      const min = Number(dateTimeMatch[5]);
+      const sec = dateTimeMatch[6] !== undefined ? Number(dateTimeMatch[6]) : 0;
+      const ms =
+        dateTimeMatch[7] !== undefined
+          ? Number(dateTimeMatch[7].padEnd(3, '0'))
+          : 0;
+
+      if (
+        !isValidCalendarDate(year, month, day) ||
+        hour > 23 ||
+        min > 59 ||
+        sec > 59
+      ) {
+        return { label: 'Indisponível', isAvailable: false, isExpired: false };
+      }
+
+      const tz = dateTimeMatch[8];
+      if (tz) {
+        let offsetMs = 0;
+        if (tz.toUpperCase() !== 'Z') {
+          const tzSign = tz.startsWith('-') ? -1 : 1;
+          const tzHour = Number(dateTimeMatch[9]);
+          const tzMin = Number(dateTimeMatch[10]);
+          if (tzHour > 23 || tzMin > 59) {
+            return { label: 'Indisponível', isAvailable: false, isExpired: false };
+          }
+          offsetMs = tzSign * (tzHour * 60 + tzMin) * 60 * 1000;
         }
+        timestampMs = Date.UTC(year, month - 1, day, hour, min, sec, ms) - offsetMs;
       } else {
-        const parsedMs = Date.parse(trimmed);
-        if (Number.isFinite(parsedMs)) {
-          timestampMs = parsedMs;
+        const d = new Date(year, month - 1, day, hour, min, sec, ms);
+        if (
+          d.getFullYear() !== year ||
+          d.getMonth() !== month - 1 ||
+          d.getDate() !== day ||
+          d.getHours() !== hour ||
+          d.getMinutes() !== min ||
+          d.getSeconds() !== sec
+        ) {
+          return { label: 'Indisponível', isAvailable: false, isExpired: false };
         }
+        timestampMs = d.getTime();
       }
     }
   } else {
@@ -178,7 +307,11 @@ export function formatAccountExpiration(
     return { label: 'Indisponível', isAvailable: false, isExpired: false };
   }
 
-  const formattedDate = date.toLocaleDateString('pt-BR');
+  const formattedDate = formatPtBrDateParts(
+    year,
+    date.getMonth() + 1,
+    date.getDate()
+  );
   const isExpired = timestampMs < nowMs;
   return {
     label: isExpired ? `Expirou em ${formattedDate}` : `Expira em ${formattedDate}`,
@@ -300,6 +433,44 @@ export function getFavoritesKey(
 // Alias for backwards compatibility across components
 export const getAccountKey = getFavoritesKey;
 
+/**
+ * Returns proven equivalent legacy storage keys whose server URL included a trailing
+ * `/player_api.php` or `/get.php` for the EXACT same canonical server and exact username.
+ * Used strictly as read-only compatibility fallback when the canonical key is absent.
+ */
+export function getLegacyEquivalentStorageKeys(
+  canonicalKey: string,
+  prefix: string
+): string[] {
+  if (!canonicalKey || !prefix || !canonicalKey.startsWith(prefix)) {
+    return [];
+  }
+  try {
+    const encodedTuple = canonicalKey.slice(prefix.length);
+    const decoded = decodeURIComponent(encodedTuple);
+    const parsed = JSON.parse(decoded);
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 2 ||
+      typeof parsed[0] !== 'string' ||
+      typeof parsed[1] !== 'string'
+    ) {
+      return [];
+    }
+    const [normServer, cleanUser] = parsed;
+    if (!normServer || !cleanUser) return [];
+    if (/\/(?:player_api|get)\.php$/i.test(normServer)) {
+      return [];
+    }
+    return [
+      `${prefix}${encodeURIComponent(JSON.stringify([`${normServer}/player_api.php`, cleanUser]))}`,
+      `${prefix}${encodeURIComponent(JSON.stringify([`${normServer}/get.php`, cleanUser]))}`,
+    ];
+  } catch {
+    return [];
+  }
+}
+
 export interface StorageReadResult {
   success: boolean;
   value: string | null;
@@ -342,6 +513,7 @@ export interface StoredFavoritesResult {
   success: boolean;
   items: FavoriteItem[];
   raw: string | null;
+  sourceKey?: string;
   error?: any;
 }
 
@@ -371,6 +543,8 @@ export function parseFavoritesJson(raw: string | null): FavoriteItem[] {
 /**
  * Reads stored favorites array for an account key.
  * Distinguishes between read failure (success: false) and absent/empty key (success: true, items: []).
+ * When the canonical key is absent (raw === null), falls back read-only to proven equivalent legacy
+ * `/player_api.php` or `/get.php` keys for the exact same server + username without overwriting or deleting data.
  */
 export function readStoredFavorites(accountKey: string): StoredFavoritesResult {
   if (!accountKey) return { success: false, items: [], raw: null };
@@ -381,7 +555,27 @@ export function readStoredFavorites(accountKey: string): StoredFavoritesResult {
   }
 
   const raw = readRes.value;
-  return { success: true, items: parseFavoritesJson(raw), raw };
+  if (raw !== null) {
+    return { success: true, items: parseFavoritesJson(raw), raw, sourceKey: accountKey };
+  }
+
+  const legacyKeys = getLegacyEquivalentStorageKeys(accountKey, FAVORITES_KEY_PREFIX);
+  for (const legacyKey of legacyKeys) {
+    const legacyRead = safeReadStorage(legacyKey);
+    if (legacyRead.success && legacyRead.value !== null && legacyRead.value.trim() !== '') {
+      const legacyItems = parseFavoritesJson(legacyRead.value);
+      if (legacyItems.length > 0) {
+        return {
+          success: true,
+          items: legacyItems,
+          raw: legacyRead.value,
+          sourceKey: legacyKey,
+        };
+      }
+    }
+  }
+
+  return { success: true, items: [], raw: null, sourceKey: accountKey };
 }
 
 /**

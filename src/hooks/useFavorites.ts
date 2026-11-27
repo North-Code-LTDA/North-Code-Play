@@ -3,6 +3,7 @@ import { XtreamCredentials } from '../types';
 import { useOptionalXtreamCredentials } from '../context/XtreamContext';
 import {
   getFavoritesKey,
+  getLegacyEquivalentStorageKeys,
   safeReadStorage,
   readStoredFavorites,
   parseFavoritesJson,
@@ -65,21 +66,42 @@ export function getCachedFavoritesForAccount(accountKey: string): FavoriteItem[]
 
   const raw = readRes.value;
 
-  // If raw string matches cache, return cached items (stable reference for useSyncExternalStore)
-  if (cached && cached.raw === raw) {
+  // Canonical key exists in localStorage (even if empty "[]") — always use canonical exclusively
+  if (raw !== null) {
+    if (cached && cached.raw === raw) {
+      return cached.items;
+    }
+    if (raw.trim() === '') {
+      accountMemoryCache.set(accountKey, { raw, items: EMPTY_FAVORITES });
+      return EMPTY_FAVORITES;
+    }
+    const items = parseFavoritesJson(raw);
+    accountMemoryCache.set(accountKey, { raw, items });
+    return items;
+  }
+
+  // Canonical key is absent (raw === null): check proven equivalent legacy keys read-only
+  const legacyKeys = getLegacyEquivalentStorageKeys(accountKey, FAVORITES_KEY_PREFIX);
+  for (const legacyKey of legacyKeys) {
+    const legacyRead = safeReadStorage(legacyKey);
+    if (legacyRead.success && legacyRead.value !== null && legacyRead.value.trim() !== '') {
+      const legacyCacheToken = `__legacy__:${legacyKey}:${legacyRead.value}`;
+      if (cached && cached.raw === legacyCacheToken) {
+        return cached.items;
+      }
+      const legacyItems = parseFavoritesJson(legacyRead.value);
+      if (legacyItems.length > 0) {
+        accountMemoryCache.set(accountKey, { raw: legacyCacheToken, items: legacyItems });
+        return legacyItems;
+      }
+    }
+  }
+
+  if (cached && cached.raw === null) {
     return cached.items;
   }
-
-  // Key absent from localStorage or empty string represents valid empty list
-  if (raw === null || raw.trim() === '') {
-    accountMemoryCache.set(accountKey, { raw: null, items: EMPTY_FAVORITES });
-    return EMPTY_FAVORITES;
-  }
-
-  // Deserialize items directly from the raw string obtained in the single read above (no second read!)
-  const items = parseFavoritesJson(raw);
-  accountMemoryCache.set(accountKey, { raw, items });
-  return items;
+  accountMemoryCache.set(accountKey, { raw: null, items: EMPTY_FAVORITES });
+  return EMPTY_FAVORITES;
 }
 
 /**

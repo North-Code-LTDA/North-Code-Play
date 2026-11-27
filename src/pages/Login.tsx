@@ -6,6 +6,7 @@ import { Eye, EyeOff, Loader2, AlertCircle, Check, X, Pencil } from 'lucide-reac
 import { XtreamService } from '../services/xtreamService';
 import { MediaImage } from '../components/MediaImage';
 import {
+  extractPersistableServerInfo,
   extractPersistableUserInfo,
   readAutoLoginState,
   safeSaveCredentials,
@@ -214,12 +215,7 @@ export function Login() {
         authResponse?.user_info?.allowed_output_formats
       );
       const persistableUserInfo = extractPersistableUserInfo(authResponse?.user_info);
-      const rawServerInfo =
-        authResponse?.server_info &&
-        typeof authResponse.server_info === 'object' &&
-        !Array.isArray(authResponse.server_info)
-          ? authResponse.server_info
-          : undefined;
+      const persistableServerInfo = extractPersistableServerInfo(authResponse?.server_info);
 
       const fullCredentials: XtreamCredentials = {
         ...baseCredentials,
@@ -227,7 +223,7 @@ export function Login() {
           ? { allowed_output_formats: normalizedFormats }
           : {}),
         ...(persistableUserInfo ? { user_info: persistableUserInfo } : {}),
-        ...(rawServerInfo ? { server_info: rawServerInfo } : {}),
+        ...(persistableServerInfo ? { server_info: persistableServerInfo } : {}),
       };
 
       // If validation succeeds, save and redirect

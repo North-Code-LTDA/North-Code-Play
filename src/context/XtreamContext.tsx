@@ -202,9 +202,14 @@ export function XtreamProvider({
   const [authError, setAuthError] = useState<string | null>(null);
   const isAuthRejectedRef = useRef<boolean>(false);
   isAuthRejectedRef.current = isAuthRejected;
+  const AUTH_RECHECK_COOLDOWN_MS = 15000;
   const authRecheckInFlightRef = useRef<{
     session: number;
     promise: Promise<{ rejected: boolean; message?: string }>;
+  } | null>(null);
+  const lastAuthRecheckRef = useRef<{
+    session: number;
+    completedAt: number;
   } | null>(null);
 
   const isAbortedOperation = useCallback(
@@ -262,8 +267,25 @@ export function XtreamProvider({
         ) {
           recheckPromise = authRecheckInFlightRef.current.promise;
         } else {
+          const lastRecheck = lastAuthRecheckRef.current;
+          if (
+            lastRecheck &&
+            lastRecheck.session === currentSession &&
+            Date.now() - lastRecheck.completedAt < AUTH_RECHECK_COOLDOWN_MS
+          ) {
+            return fallbackMsg;
+          }
+
           recheckPromise = XtreamService.authenticate(credentials, { signal })
-            .then(() => ({ rejected: false }))
+            .then(() => {
+              if (sessionRef.current === currentSession && !signal?.aborted) {
+                lastAuthRecheckRef.current = {
+                  session: currentSession,
+                  completedAt: Date.now(),
+                };
+              }
+              return { rejected: false };
+            })
             .catch((authCheckErr: any) => {
               if (
                 sessionRef.current === currentSession &&
@@ -275,6 +297,15 @@ export function XtreamProvider({
                   message:
                     authCheckErr?.message ||
                     "Usuário ou senha inválidos ou conta desativada.",
+                };
+              }
+              if (
+                sessionRef.current === currentSession &&
+                !isAbortedOperation(authCheckErr, signal)
+              ) {
+                lastAuthRecheckRef.current = {
+                  session: currentSession,
+                  completedAt: Date.now(),
                 };
               }
               return { rejected: false };
@@ -509,6 +540,7 @@ export function XtreamProvider({
     pendingSetRef.current.clear();
     inFlightPromisesRef.current.clear();
     authRecheckInFlightRef.current = null;
+    lastAuthRecheckRef.current = null;
     activeCountRef.current = 0;
 
     // Reset data
@@ -1057,6 +1089,8 @@ export function XtreamProvider({
   const retrySession = useCallback(async () => {
     if (!credentials) return;
     const currentSession = sessionRef.current;
+    // Manual retry always bypasses automatic auth recheck cooldown
+    lastAuthRecheckRef.current = null;
 
     if (isAuthRejectedRef.current) {
       try {

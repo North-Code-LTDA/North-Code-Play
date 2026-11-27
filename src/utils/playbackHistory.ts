@@ -1,5 +1,10 @@
 import { useSyncExternalStore, useCallback, useMemo } from 'react';
-import { getAccountKey, safeReadStorage, safeSetStorage } from './accountUtils';
+import {
+  getAccountKey,
+  getLegacyEquivalentStorageKeys,
+  safeReadStorage,
+  safeSetStorage,
+} from './accountUtils';
 
 export const HISTORY_KEY_PREFIX = 'northcode_history_';
 export const HISTORY_UPDATED_EVENT = 'northcode_history_updated';
@@ -311,6 +316,29 @@ function createSnapshotFromValidatedMap(
   };
 }
 
+/**
+ * Checks proven equivalent legacy `/player_api.php` or `/get.php` history keys strictly read-only
+ * when the canonical history key is absent (`raw === null`), without overwriting or deleting data.
+ */
+function readLegacyEquivalentHistoryFallback(
+  historyKey: string
+): { cacheRaw: string; map: Readonly<PlaybackHistoryMap> } | null {
+  const legacyKeys = getLegacyEquivalentStorageKeys(historyKey, HISTORY_KEY_PREFIX);
+  for (const legacyKey of legacyKeys) {
+    const legacyRead = safeReadStorage(legacyKey);
+    if (legacyRead.success && legacyRead.value !== null && legacyRead.value.trim() !== '') {
+      const validatedLegacyMap = parseAndValidateHistoryJson(legacyRead.value);
+      if (validatedLegacyMap !== null && Object.keys(validatedLegacyMap).length > 0) {
+        return {
+          cacheRaw: `__legacy__:${legacyKey}:${legacyRead.value}`,
+          map: validatedLegacyMap,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 function getSortedRecordsFromSnapshot(
   snapshot: HistorySnapshot,
   typeFilter?: PlaybackType
@@ -378,6 +406,19 @@ function resolveSnapshotForRead(
 
   const raw = readRes.value;
   if (raw === null || raw === undefined) {
+    const legacyFallback = readLegacyEquivalentHistoryFallback(historyKey);
+    if (legacyFallback) {
+      if (cached && cached.raw === legacyFallback.cacheRaw) {
+        markSnapshotVerifiedForMicrotask(cached);
+        return cached;
+      }
+      const legacySnap = createSnapshotFromValidatedMap(
+        legacyFallback.cacheRaw,
+        legacyFallback.map
+      );
+      setCachedSnapshot(historyKey, legacySnap);
+      return legacySnap;
+    }
     if (cached && cached.raw === null) {
       markSnapshotVerifiedForMicrotask(cached);
       return cached;
@@ -419,6 +460,16 @@ function readHistoryBaseMapForWrite(historyKey: string): Readonly<PlaybackHistor
 
   const raw = readRes.value;
   if (raw === null || raw === undefined) {
+    const legacyFallback = readLegacyEquivalentHistoryFallback(historyKey);
+    if (legacyFallback) {
+      if (!cached || cached.raw !== legacyFallback.cacheRaw) {
+        setCachedSnapshot(
+          historyKey,
+          createSnapshotFromValidatedMap(legacyFallback.cacheRaw, legacyFallback.map)
+        );
+      }
+      return legacyFallback.map;
+    }
     if (!cached || cached.raw !== null) {
       setCachedSnapshot(historyKey, createEmptySnapshot(null));
     }
@@ -571,6 +622,16 @@ export function readHistoryMap(historyKey: string): PlaybackHistoryMap | null {
     return null;
   }
   if (readRes.value === null || readRes.value === undefined) {
+    const legacyFallback = readLegacyEquivalentHistoryFallback(historyKey);
+    if (legacyFallback) {
+      if (!cached || cached.raw !== legacyFallback.cacheRaw) {
+        setCachedSnapshot(
+          historyKey,
+          createSnapshotFromValidatedMap(legacyFallback.cacheRaw, legacyFallback.map)
+        );
+      }
+      return { ...legacyFallback.map };
+    }
     if (!cached || cached.raw !== null) {
       setCachedSnapshot(historyKey, createEmptySnapshot(null));
     }

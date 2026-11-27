@@ -253,10 +253,27 @@ export const HeroBanner = React.memo(function HeroBanner({
   }, [heroItems, domain, effectivelyPaused, isPlayPending, isAutoRotationSuspended]);
 
   const currentItem = heroItems[safeCurrentIndex];
-
-  const [activeDetailsResponse, setActiveDetailsResponse] = useState<any>(() =>
-    currentItem && credentials ? getCachedHeroDetails(credentials, currentItem) : null
+  const isSeries = Boolean(
+    currentItem &&
+      (currentItem.stream_type === 'series' ||
+        Boolean(currentItem.series_id && !currentItem.stream_id))
   );
+  const itemKey = currentItem
+    ? String(currentItem.stream_id ?? currentItem.series_id ?? currentItem.id ?? currentItem.name)
+    : '';
+  const currentItemIdentity = currentItem ? `${isSeries ? 'series' : 'movie'}:${itemKey}` : '';
+
+  const [activeDetailsState, setActiveDetailsState] = useState<{
+    scopeKey: string;
+    itemIdentity: string;
+    data: any;
+  } | null>(() => {
+    const cached =
+      currentItem && credentials ? getCachedHeroDetails(credentials, currentItem) : null;
+    return cached
+      ? { scopeKey, itemIdentity: currentItemIdentity, data: cached }
+      : null;
+  });
 
   useEffect(() => {
     playPendingRef.current = false;
@@ -265,17 +282,24 @@ export const HeroBanner = React.memo(function HeroBanner({
 
   useEffect(() => {
     if (!currentItem || !credentials) {
-      setActiveDetailsResponse(null);
+      setActiveDetailsState(null);
       return;
     }
+
+    const fetchScopeKey = scopeKey;
+    const fetchItemIdentity = currentItemIdentity;
 
     const cached = getCachedHeroDetails(credentials, currentItem);
     if (cached !== null) {
-      setActiveDetailsResponse(cached);
+      setActiveDetailsState({
+        scopeKey: fetchScopeKey,
+        itemIdentity: fetchItemIdentity,
+        data: cached,
+      });
       return;
     }
 
-    setActiveDetailsResponse(null);
+    setActiveDetailsState(null);
 
     if (effectivelyPaused) return;
     if (!needsHeroDetailsFetch(credentials, currentItem)) return;
@@ -289,7 +313,11 @@ export const HeroBanner = React.memo(function HeroBanner({
       requireEpisodes: false,
     }).then((res) => {
       if (isCurrent && !abortController?.signal.aborted && res) {
-        setActiveDetailsResponse(res);
+        setActiveDetailsState({
+          scopeKey: fetchScopeKey,
+          itemIdentity: fetchItemIdentity,
+          data: res,
+        });
       }
     });
 
@@ -297,7 +325,18 @@ export const HeroBanner = React.memo(function HeroBanner({
       isCurrent = false;
       abortController?.abort();
     };
-  }, [currentItem, credentials, effectivelyPaused]);
+  }, [currentItem, credentials, effectivelyPaused, scopeKey, currentItemIdentity]);
+
+  // Synchronously validate details against current account scope and current item identity
+  // so stale details from a previous slide or account are never rendered or passed to onPlay
+  const activeDetailsResponse =
+    activeDetailsState &&
+    activeDetailsState.scopeKey === scopeKey &&
+    activeDetailsState.itemIdentity === currentItemIdentity
+      ? activeDetailsState.data
+      : currentItem && credentials
+        ? getCachedHeroDetails(credentials, currentItem)
+        : null;
 
   // Gradual preparation of at most the single immediate next slide on Android after stabilizing current slide
   useEffect(() => {
@@ -358,13 +397,7 @@ export const HeroBanner = React.memo(function HeroBanner({
       ? 'vertical-cover'
       : 'none';
 
-  const isSeries =
-    currentItem.stream_type === 'series' ||
-    Boolean(currentItem.series_id && !currentItem.stream_id);
   const canContinue = Boolean(canContinueItem?.(currentItem));
-  const itemKey = String(
-    currentItem.stream_id || currentItem.series_id || currentItem.id || currentItem.name
-  );
   const synopsisText =
     activeDetails?.plot ||
     activeDetails?.overview ||
