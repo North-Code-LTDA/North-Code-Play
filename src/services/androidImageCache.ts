@@ -280,12 +280,32 @@ export function isImageAccessDeniedError(err: unknown): boolean {
   return code === 'HTTP_401' || code === 'HTTP_403';
 }
 
+export const IMAGE_RATE_LIMIT_COOLDOWN_ERROR_CODE = 'HOST_RATE_LIMITED_COOLDOWN';
+
 /**
- * Identifica resposta HTTP 429 (rate limit do provedor/CDN), que deve evitar rajadas imediatas
- * contra o mesmo host e nunca deve ser tratada como falha permanente.
+ * Identifica exclusivamente uma resposta HTTP 429 efetivamente recebida do provedor/CDN.
+ * Somente este caso pode iniciar ou renovar o período de espera (cooldown) da origem.
+ */
+export function isImageRateLimitResponseError(err: unknown): boolean {
+  return extractImageCacheErrorCode(err) === 'HTTP_429';
+}
+
+/**
+ * Identifica uma transferência nativa bloqueada localmente porque a origem já se encontra
+ * em período de espera (cooldown) ativo por HTTP 429.
+ * Não renova o cooldown e não penaliza a URL individualmente como indisponível.
+ */
+export function isImageRateLimitCooldownError(err: unknown): boolean {
+  return extractImageCacheErrorCode(err) === IMAGE_RATE_LIMIT_COOLDOWN_ERROR_CODE;
+}
+
+/**
+ * Identifica erro de limitação de taxa (resposta HTTP 429 real ou bloqueio local pelo cooldown ativo),
+ * que deve evitar rajadas imediatas e fallback direto contra o mesmo host e nunca deve ser tratado
+ * como indisponibilidade permanente.
  */
 export function isImageRateLimitError(err: unknown): boolean {
-  return extractImageCacheErrorCode(err) === 'HTTP_429';
+  return isImageRateLimitResponseError(err) || isImageRateLimitCooldownError(err);
 }
 
 export function isImageAccessOrRateLimitError(err: unknown): boolean {
@@ -1179,6 +1199,16 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       }
     }
 
+    // Impedir o início de novas transferências nativas para origens em cooldown ativo por HTTP 429,
+    // inclusive tarefas que já estavam enfileiradas antes da chegada da resposta 429.
+    // Comunica erro estruturado distinguível sem renovar o cooldown e sem retornar URL remota como fallback.
+    if (isImageHostRateLimited(url)) {
+      throw createImageCacheError(
+        'Transferência bloqueada temporariamente: origem em período de espera por HTTP 429.',
+        IMAGE_RATE_LIMIT_COOLDOWN_ERROR_CODE
+      );
+    }
+
     const recentAccessedKeys = drainPendingTouchedKeys();
     const plugin = getNativeImageCachePlugin();
     const nativeRes: AcquireImageNativeResult = await plugin.acquireImage({
@@ -1321,8 +1351,8 @@ async function executeQueuedAcquireTask(task: QueuedAcquireTask): Promise<void> 
       // evitando novas tentativas nativas repetitivas sem penalizar falhas transitórias
       if (isDeterministicImageCacheIneligibilityError(errorObj)) {
         rememberDirectOnlyImageUrl(url, DETERMINISTIC_REJECTION_COOLDOWN_MS);
-      } else if (isImageRateLimitError(errorObj)) {
-        // Resposta HTTP 429: ativa arrefecimento curto para o host sem penalizar como indisponibilidade permanente
+      } else if (isImageRateLimitResponseError(errorObj)) {
+        // Somente uma resposta HTTP 429 efetivamente recebida inicia ou renova o cooldown da origem
         recordRateLimitedImageHost(url);
       }
     }

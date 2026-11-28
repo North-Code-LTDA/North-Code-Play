@@ -9,6 +9,7 @@ import {
   isDeterministicImageCacheIneligibilityError,
   isImageAccessDeniedError,
   isImageRateLimitError,
+  isImageRateLimitResponseError,
   isImageNotFoundError,
   isImageCancellationOrSessionError,
   getImageUrlHostOrigin,
@@ -864,6 +865,15 @@ export function observeContainerVisibility({
  * 6. Resets retry budget and cancels pending timers on unmount or when source/serverUrl changes.
  * 7. Uses `loadedImageUrlsCache` (up to 2,500 entries) to preserve visual state (`loaded`) when authorized.
  */
+function hasValidInstantLocalImage(url: string | null | undefined): boolean {
+  if (!url) return false;
+  return Boolean(
+    isAndroidPersistentImageCacheAvailable() &&
+      isEligibleForAndroidImageDiskCache(url) &&
+      getInstantCachedImageSrc(url)
+  );
+}
+
 function findFirstViableCandidateIndex(
   candidates: ReadonlyArray<string>,
   startIndex: number = 0,
@@ -875,8 +885,10 @@ function findFirstViableCandidateIndex(
     if (!url) continue;
     if (attemptedUrls && attemptedUrls.has(url)) continue;
     if (isImageUrlTemporarilyFailed(url)) continue;
-    if (isImageHostRateLimited(url)) continue;
-    if (avoidHostOrigin && getImageUrlHostOrigin(url) === avoidHostOrigin) continue;
+    // Valid local cached files remain usable even while the remote origin is in HTTP 429 cooldown
+    const hasLocalFile = hasValidInstantLocalImage(url);
+    if (!hasLocalFile && isImageHostRateLimited(url)) continue;
+    if (!hasLocalFile && avoidHostOrigin && getImageUrlHostOrigin(url) === avoidHostOrigin) continue;
     return i;
   }
   return -1;
@@ -976,6 +988,7 @@ function MediaImageInner({
     itemId: normalizedItemId,
     serverUrl: normalizedServerUrl,
     primaryUrl: primaryCandidateUrl,
+    candidates,
     candidatesSignature,
     hadCandidates: candidates.length > 0,
   });
@@ -1008,6 +1021,7 @@ function MediaImageInner({
   const [effectiveImgSrc, setEffectiveImgSrc] = useState<string | null>(
     initialPresentation.effectiveSrc
   );
+  const effectiveImgSrcRef = useRef<string | null>(initialPresentation.effectiveSrc);
   const [effectiveImgProvenance, setEffectiveImgProvenance] = useState<EffectiveImageProvenance>(
     initialPresentation.provenance
   );
@@ -1059,20 +1073,24 @@ function MediaImageInner({
   const becameEmpty = prevSnap.hadCandidates && candidates.length === 0;
   const becameNonEmpty = !prevSnap.hadCandidates && candidates.length > 0;
   const activeUrlRemoved = Boolean(prevActiveUrl && !candidates.includes(prevActiveUrl));
-  const primaryUpgraded = Boolean(
-    primaryCandidateUrl &&
-      prevSnap.primaryUrl !== primaryCandidateUrl &&
-      !isImageUrlTemporarilyFailed(primaryCandidateUrl) &&
-      !isImageHostRateLimited(primaryCandidateUrl)
+  const disjointCandidatesWithoutActive = Boolean(
+    !prevActiveUrl &&
+      prevSnap.hadCandidates &&
+      candidates.length > 0 &&
+      !candidates.some((url) => prevSnap.candidates.includes(url))
   );
 
+  // Full identity reset occurs ONLY on legitimate content/server/session change,
+  // empty<->non-empty transition, removal of the currently used source, or a completely
+  // disjoint candidate set after failure. Arriving higher-priority metadata for the same
+  // logical item never resets an already-loaded image or its shared budgets.
   const needsFullIdentityReset =
     itemIdChanged ||
     serverUrlChanged ||
     becameEmpty ||
     becameNonEmpty ||
     activeUrlRemoved ||
-    primaryUpgraded;
+    disjointCandidatesWithoutActive;
 
   let currentCandidateIndex = activeCandidateIndex;
   let currentCandidateUrl: string | null =
@@ -1087,6 +1105,7 @@ function MediaImageInner({
       itemId: normalizedItemId,
       serverUrl: normalizedServerUrl,
       primaryUrl: primaryCandidateUrl,
+      candidates,
       candidatesSignature,
       hadCandidates: candidates.length > 0,
     };
@@ -1125,26 +1144,64 @@ function MediaImageInner({
     setStatus(nextPres.status);
   } else {
     if (prevSnap.candidatesSignature !== candidatesSignature) {
+      const primaryChanged = Boolean(
+        primaryCandidateUrl && prevSnap.primaryUrl !== primaryCandidateUrl
+      );
       prevIdentitySnapshotRef.current = {
         itemId: normalizedItemId,
         serverUrl: normalizedServerUrl,
         primaryUrl: primaryCandidateUrl,
+        candidates,
         candidatesSignature,
         hadCandidates: candidates.length > 0,
       };
-      // If active URL shifted index due to penalized higher-priority metadata arriving, relocate cleanly without resetting
+
       if (prevActiveUrl) {
         const relocatedIdx = candidates.indexOf(prevActiveUrl);
-        if (relocatedIdx >= 0 && relocatedIdx !== activeCandidateIndex) {
+        const canAdoptUnloadedPrimary = Boolean(
+          status !== 'loaded' &&
+            primaryChanged &&
+            primaryCandidateUrl &&
+            primaryCandidateUrl !== prevActiveUrl &&
+            attemptedUrlsRef.current.size < DEFAULT_MAX_IMAGE_CANDIDATES &&
+            !attemptedUrlsRef.current.has(primaryCandidateUrl) &&
+            !isImageUrlTemporarilyFailed(primaryCandidateUrl) &&
+            (hasValidInstantLocalImage(primaryCandidateUrl) ||
+              !isImageHostRateLimited(primaryCandidateUrl))
+        );
+
+        if (canAdoptUnloadedPrimary && primaryCandidateUrl) {
+          // Image is NOT yet loaded: adopt the newly arrived viable primary candidate
+          // within the same logical cycle without resetting global cycle/retry/recovery budgets
+          attemptedUrlsRef.current.add(primaryCandidateUrl);
+          candidateGenerationRef.current += 1;
+          nativeCacheBypassedForCandidateRef.current = false;
+          cancelActiveRecovery();
+          clearScheduledRetryTimer();
+          const nextPres = resolveCandidateInitialPresentation(primaryCandidateUrl, true);
+          activeUrlRef.current = primaryCandidateUrl;
+          currentCandidateIndex = 0;
+          currentCandidateUrl = primaryCandidateUrl;
+          currentStatus = nextPres.status;
+          currentEffectiveSrc = nextPres.effectiveSrc;
+          setActiveCandidateIndex(0);
+          setAttempt(0);
+          setEffectiveImgSrc(nextPres.effectiveSrc);
+          setEffectiveImgProvenance(nextPres.provenance);
+          setStatus(nextPres.status);
+        } else if (relocatedIdx >= 0) {
+          // Preserve the already-loaded (or ongoing) source in place; update only its index if shifted
           currentCandidateIndex = relocatedIdx;
           currentCandidateUrl = candidates[relocatedIdx];
-          setActiveCandidateIndex(relocatedIdx);
+          if (relocatedIdx !== activeCandidateIndex) {
+            setActiveCandidateIndex(relocatedIdx);
+          }
         }
       } else if (
         status === 'failed' &&
         attemptedUrlsRef.current.size < DEFAULT_MAX_IMAGE_CANDIDATES
       ) {
-        // Previously failed cycle received a brand new unattempted non-penalized candidate
+        // Previously failed cycle received a brand new unattempted viable candidate within shared budget
         const newlyAvailableIdx = findFirstViableCandidateIndex(
           candidates,
           0,
@@ -1192,7 +1249,7 @@ function MediaImageInner({
       if (
         !currentCandidateUrl ||
         isImageUrlTemporarilyFailed(currentCandidateUrl) ||
-        isImageHostRateLimited(currentCandidateUrl)
+        (!activeInstantLocal && isImageHostRateLimited(currentCandidateUrl))
       ) {
         const freshIdx = findFirstViableCandidateIndex(candidates, 0);
         const freshUrl = freshIdx >= 0 ? candidates[freshIdx] : null;
@@ -1221,6 +1278,7 @@ function MediaImageInner({
         }
       }
     } else if (
+      currentStatus !== 'loaded' &&
       activeUseDiskCache &&
       !nativeCacheBypassedForCandidateRef.current &&
       activeInstantLocal &&
@@ -1240,6 +1298,7 @@ function MediaImageInner({
   const activeCycleKey = activeCycleKeyRef.current;
   const renderIdentityGeneration = identityGenerationRef.current;
   const renderCandidateGeneration = candidateGenerationRef.current;
+  effectiveImgSrcRef.current = currentEffectiveSrc;
   const useAndroidDiskCache = Boolean(
     currentCandidateUrl &&
       isAndroidPersistentImageCacheAvailable() &&
@@ -1262,7 +1321,7 @@ function MediaImageInner({
     if (attemptedUrlsRef.current.size < DEFAULT_MAX_IMAGE_CANDIDATES) {
       const nextIdx = findFirstViableCandidateIndex(
         list,
-        currentCandidateIndex + 1,
+        0,
         attemptedUrlsRef.current,
         options?.avoidHostOrigin ?? null
       );
@@ -1340,7 +1399,13 @@ function MediaImageInner({
 
   // Coordinate persistent disk cache acquisition on Android when authorized
   useEffect(() => {
-    if (!isAuthorized || !currentCandidateUrl || currentStatus === 'failed' || currentStatus === 'empty') {
+    if (
+      !isAuthorized ||
+      !currentCandidateUrl ||
+      currentStatus === 'failed' ||
+      currentStatus === 'empty' ||
+      (currentStatus === 'loaded' && Boolean(effectiveImgSrcRef.current))
+    ) {
       return;
     }
     if (!useAndroidDiskCache || nativeCacheBypassedForCandidateRef.current) {
@@ -1432,9 +1497,14 @@ function MediaImageInner({
           return;
         }
 
-        // HTTP 429: never bypass via direct <img> and never blast alternative requests to the same host
+        // HTTP 429 (real response) or active host cooldown:
+        // never bypass via direct <img>, never penalize individual URL as unavailable,
+        // and never blast alternative requests to the same host.
+        // Only a real HTTP 429 response may start or renew the host cooldown.
         if (isImageRateLimitError(err)) {
-          recordRateLimitedImageHost(targetUrl);
+          if (isImageRateLimitResponseError(err)) {
+            recordRateLimitedImageHost(targetUrl);
+          }
           advanceToCandidateOrFail(targetUrl, {
             recordFailure: false,
             avoidHostOrigin: getImageUrlHostOrigin(targetUrl),
@@ -1460,11 +1530,7 @@ function MediaImageInner({
         const list = candidatesRef.current;
         const hasNextAlternative =
           attemptedUrlsRef.current.size < DEFAULT_MAX_IMAGE_CANDIDATES &&
-          findFirstViableCandidateIndex(
-            list,
-            currentCandidateIndex + 1,
-            attemptedUrlsRef.current
-          ) >= 0;
+          findFirstViableCandidateIndex(list, 0, attemptedUrlsRef.current) >= 0;
 
         // If native download failed with definitive 404/410 OR another alternative candidate is ready,
         // penalize temporarily and advance sequentially without issuing a redundant direct <img> fetch
@@ -1485,7 +1551,6 @@ function MediaImageInner({
   }, [
     isAuthorized,
     activeCycleKey,
-    currentCandidateIndex,
     currentCandidateUrl,
     currentStatus,
     useAndroidDiskCache,
@@ -1571,7 +1636,9 @@ function MediaImageInner({
             return;
           }
           if (isImageRateLimitError(err)) {
-            recordRateLimitedImageHost(targetUrl);
+            if (isImageRateLimitResponseError(err)) {
+              recordRateLimitedImageHost(targetUrl);
+            }
             advanceToCandidateOrFail(targetUrl, {
               recordFailure: false,
               avoidHostOrigin: getImageUrlHostOrigin(targetUrl),
@@ -1591,11 +1658,7 @@ function MediaImageInner({
           const list = candidatesRef.current;
           const hasNextAlternative =
             attemptedUrlsRef.current.size < DEFAULT_MAX_IMAGE_CANDIDATES &&
-            findFirstViableCandidateIndex(
-              list,
-              currentCandidateIndex + 1,
-              attemptedUrlsRef.current
-            ) >= 0;
+            findFirstViableCandidateIndex(list, 0, attemptedUrlsRef.current) >= 0;
           if (isImageNotFoundError(err) || hasNextAlternative) {
             advanceToCandidateOrFail(targetUrl, { recordFailure: true });
             return;
@@ -1720,7 +1783,9 @@ function MediaImageInner({
             return;
           }
           if (isImageRateLimitError(err)) {
-            recordRateLimitedImageHost(failedUrl);
+            if (isImageRateLimitResponseError(err)) {
+              recordRateLimitedImageHost(failedUrl);
+            }
             advanceToCandidateOrFail(failedUrl, {
               recordFailure: false,
               avoidHostOrigin: getImageUrlHostOrigin(failedUrl),
@@ -1740,11 +1805,7 @@ function MediaImageInner({
           const list = candidatesRef.current;
           const hasNextAlternative =
             attemptedUrlsRef.current.size < DEFAULT_MAX_IMAGE_CANDIDATES &&
-            findFirstViableCandidateIndex(
-              list,
-              currentCandidateIndex + 1,
-              attemptedUrlsRef.current
-            ) >= 0;
+            findFirstViableCandidateIndex(list, 0, attemptedUrlsRef.current) >= 0;
           if (isImageNotFoundError(err) || hasNextAlternative) {
             advanceToCandidateOrFail(failedUrl, { recordFailure: true });
             return;
@@ -1759,11 +1820,7 @@ function MediaImageInner({
     const list = candidatesRef.current;
     const hasNextAlternative =
       attemptedUrlsRef.current.size < DEFAULT_MAX_IMAGE_CANDIDATES &&
-      findFirstViableCandidateIndex(
-        list,
-        currentCandidateIndex + 1,
-        attemptedUrlsRef.current
-      ) >= 0;
+      findFirstViableCandidateIndex(list, 0, attemptedUrlsRef.current) >= 0;
 
     if (hasNextAlternative) {
       advanceToCandidateOrFail(failedUrl, { recordFailure: true });
